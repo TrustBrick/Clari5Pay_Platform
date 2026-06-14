@@ -1,0 +1,138 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+    background: #f0f4fb;
+    color: #0a2540;
+  }
+
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+  }
+
+  input::placeholder,
+  select {
+    font-family: inherit;
+  }
+}
+
+@layer utilities {
+  .grad-primary {
+    background: linear-gradient(135deg, #0052cc, #00a3ff);
+  }
+
+  .grad-green {
+    background: linear-gradient(135deg, #26d00c, #0052cc);
+  }
+
+  .grad-dark {
+    background: linear-gradient(135deg, #0a2540, #0052cc);
+  }
+
+  .sidebar-active {
+    background: rgba(0, 82, 204, 0.18);
+    border-left: 3px solid #0052cc;
+    color: #7eb8ff;
+  }
+}
+
+@keyframes pulse-orb {
+  from {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease forwards;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.4s ease forwards;
+}
+
+/* Mobile sidebar */
+@media (max-width: 860px) {
+  .sidebar {
+    transform: translateX(-248px) !important;
+  }
+
+  .sidebar.open {
+    transform: translateX(0) !important;
+  }
+
+  .main-header {
+    left: 0 !important;
+  }
+
+  .main-content {
+    margin-left: 0 !important;
+  }
+
+  .hamburger {
+    display: flex !important;
+  }
+
+  .mob-close {
+    display: flex !important;
+  }
+
+  .mob-overlay {
+    display: block !important;
+  }
+
+  .login-left {
+    display: none !important;
+  }
+
+  .login-logo-mobile {
+    display: flex !important;
+  }
+}
+
+@media (max-width: 600px) {
+  .main-content {
+    padding: 14px !important;
+  }
+}

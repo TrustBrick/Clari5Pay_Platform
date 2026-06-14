@@ -1,0 +1,57 @@
+import type { NavItem, UserRole } from '../types';
+
+export const NAV: Record<UserRole, NavItem[]> = {
+  MERCHANT: [
+    { key: 'dashboard', icon: '⬡', label: 'Dashboard' },
+    { key: 'deposit', icon: '↓', label: 'Deposit Request' },
+    { key: 'withdrawal', icon: '↑', label: 'Withdrawal Request' },
+    { key: 'settlement', icon: '⇄', label: 'Settlement' },
+    { key: 'transactions', icon: '≡', label: 'Transactions' },
+    { key: 'balance', icon: '◎', label: 'Balance Enquiry' },
+    { key: 'risk', icon: '⚑', label: 'Risk Analysis' },
+    { key: 'integrations', icon: '⊕', label: 'Integrations' },
+    { key: 'ai-assistant', icon: '🤖', label: 'AI Assistant' },
+    { key: 'profile', icon: '◉', label: 'Profile' },
+  ],
+  ADMIN: [
+    { key: 'admin-dashboard', icon: '⬡', label: 'Overview' },
+    { key: 'admin-merchants', icon: '▤', label: 'Merchants' },
+    { key: 'admin-approvals', icon: '✓', label: 'Approvals', badge: 3 },
+    { key: 'admin-transactions', icon: '≡', label: 'All Transactions' },
+    { key: 'ai-assistant', icon: '🤖', label: 'AI Assistant' },
+    { key: 'profile', icon: '◉', label: 'Profile' },
+  ],
+  SUPER_ADMIN: [
+    { key: 'sa-dashboard', icon: '⬡', label: 'Platform Overview' },
+    { key: 'sa-admins', icon: '🛡', label: 'Admin Management' },
+    { key: 'sa-merchants', icon: '▤', label: 'Merchant Management' },
+    { key: 'sa-approvals', icon: '✓', label: 'Final Approvals', badge: 2 },
+    { key: 'sa-transactions', icon: '≡', label: 'All Transactions' },
+    { key: 'sa-risk', icon: '⚑', label: 'Risk Intelligence' },
+    { key: 'ai-assistant', icon: '🤖', label: 'AI Assistant' },
+    { key: 'profile', icon: '◉', label: 'Profile' },
+  ],
+};
+
+export const PAGE_TITLES: Record<string, string> = {
+  dashboard: 'Dashboard',
+  deposit: 'Deposit Request',
+  withdrawal: 'Withdrawal Request',
+  settlement: 'Settlement',
+  transactions: 'Transactions',
+  balance: 'Balance Enquiry',
+  risk: 'Risk Analysis',
+  integrations: 'Integrations',
+  'ai-assistant': 'AI Assistant',
+  profile: 'Profile',
+  'admin-dashboard': 'Admin Overview',
+  'admin-merchants': 'Merchants',
+  'admin-approvals': 'Approvals',
+  'admin-transactions': 'All Transactions',
+  'sa-dashboard': 'Platform Overview',
+  'sa-admins': 'Admin Management',
+  'sa-merchants': 'Merchant Management',
+  'sa-approvals': 'Final Approvals',
+  'sa-transactions': 'All Transactions',
+  'sa-risk': 'Risk Intelligence',
+};
