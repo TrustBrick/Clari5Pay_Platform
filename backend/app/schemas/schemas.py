@@ -1,7 +1,7 @@
 from datetime import datetime, date
 from typing import Optional
 from pydantic import BaseModel, EmailStr
-from app.models.models import UserRole, RiskLevel, TxType, TxStatus
+from app.models.models import UserRole, RiskLevel, TxType, TxStatus, AccountType
 
 
 # ─── User Schemas ─────────────────────────────────────────────────────────────
@@ -10,6 +10,7 @@ class UserBase(BaseModel):
     email: str
     name: str
     role: UserRole
+    phone: Optional[str] = None
     active: bool = True
     pay_in: Optional[str] = None
     pay_out: Optional[str] = None
@@ -42,6 +43,12 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class ProfileUpdateRequest(BaseModel):
+    email: Optional[str] = None
+    new_password: Optional[str] = None
+    current_password: Optional[str] = None
+
+
 # ─── Auth Schemas ─────────────────────────────────────────────────────────────
 class Token(BaseModel):
     access_token: str
@@ -66,7 +73,11 @@ class TransactionOut(BaseModel):
     time: str
     depositType: Optional[str] = None
     member: Optional[str] = None
+    memberId: Optional[str] = None
     bank: Optional[str] = None
+    merchantProof: Optional[str] = None
+    adminProof: Optional[str] = None
+    adminRef: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -79,6 +90,7 @@ class DepositCreate(BaseModel):
     memberId: str
     segment: str = "A"
     profile: str = "NEW"
+    proof: Optional[str] = None
 
 
 class WithdrawalCreate(BaseModel):
@@ -88,10 +100,50 @@ class WithdrawalCreate(BaseModel):
     accountNumber: str
     ifsc: str
     bankName: str
+    proof: Optional[str] = None
 
 
 class SettlementCreate(BaseModel):
     amount: float
+    memberId: Optional[str] = None
+    proof: Optional[str] = None
+
+
+class CheckRequest(BaseModel):
+    adminRef: str
+    adminProof: Optional[str] = None
+
+
+# ─── Account Schemas ──────────────────────────────────────────────────────────
+class AccountCreate(BaseModel):
+    reference_number: Optional[str] = None
+    account_name: str
+    account_number: str
+    ifsc_code: str
+    bank_name: str
+    branch: str
+    account_type: AccountType
+    status: str = "ACTIVE"
+    merchant_id: Optional[int] = None
+
+
+# ─── Support Chat Schemas ─────────────────────────────────────────────────────
+class SupportMessageCreate(BaseModel):
+    merchant_id: Optional[int] = None  # required when sent by a support agent
+    content: str
+
+
+class SupportMessageOut(BaseModel):
+    id: int
+    merchant_id: int
+    sender: str
+    sender_name: str
+    content: str
+    read: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 # ─── AI Schemas ───────────────────────────────────────────────────────────────

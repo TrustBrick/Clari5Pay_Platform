@@ -5,14 +5,13 @@ import { PAGE_TITLES } from './utils/nav';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import LoginPage from './pages/LoginPage';
-import AIAssistantPage from './pages/AIAssistantPage';
 import {
-  MerchantDashboard, DepositForm, WithdrawalForm, SettlementForm,
-  TransactionHistory, BalancePage, RiskPage, IntegrationsPage, ProfilePage,
+  MerchantDashboard, DepositManagement, WithdrawalManagement, SettlementManagement,
+  TransactionHistory, BalancePage, RiskPage, MerchantSupportChat, ProfilePage,
 } from './pages/MerchantPages';
 import {
-  AdminDashboard, AdminMerchantsPage,
-  SaDashboard, SaAdminsPage, SaMerchantsPage, SaRiskPage,
+  AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
+  SaDashboard, SaAdminsPage,
 } from './pages/AdminPages';
 
 const App: React.FC = () => {
@@ -35,25 +34,20 @@ const App: React.FC = () => {
     const props = { user };
     const map: Record<string, React.ReactNode> = {
       dashboard: <MerchantDashboard {...props} />,
-      deposit: <DepositForm {...props} />,
-      withdrawal: <WithdrawalForm {...props} />,
-      settlement: <SettlementForm {...props} />,
+      deposit: <DepositManagement {...props} />,
+      withdrawal: <WithdrawalManagement {...props} />,
+      settlement: <SettlementManagement {...props} />,
       transactions: <TransactionHistory {...props} />,
       balance: <BalancePage {...props} />,
       risk: <RiskPage {...props} />,
-      integrations: <IntegrationsPage />,
-      'ai-assistant': <AIAssistantPage {...props} />,
+      support: <MerchantSupportChat {...props} />,
       profile: <ProfilePage {...props} />,
       'admin-dashboard': <AdminDashboard {...props} />,
       'admin-merchants': <AdminMerchantsPage />,
-      'admin-approvals': <AdminDashboard {...props} />,
-      'admin-transactions': <TransactionHistory {...props} />,
+      'admin-transactions': <AdminTransactionsPage />,
+      'admin-accounts': <AdminAccountsPage />,
       'sa-dashboard': <SaDashboard />,
       'sa-admins': <SaAdminsPage />,
-      'sa-merchants': <SaMerchantsPage />,
-      'sa-approvals': <SaDashboard />,
-      'sa-transactions': <TransactionHistory {...props} />,
-      'sa-risk': <SaRiskPage />,
     };
     return map[page] || map[user.role === 'MERCHANT' ? 'dashboard' : user.role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard'];
   };

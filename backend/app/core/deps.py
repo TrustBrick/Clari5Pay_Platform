@@ -48,3 +48,9 @@ async def get_current_merchant(current_user: User = Depends(get_current_user)) -
     if current_user.role != UserRole.MERCHANT:
         raise HTTPException(status_code=403, detail="Merchant access required")
     return current_user
+
+
+async def get_current_support(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role != UserRole.SUPPORT_AGENT:
+        raise HTTPException(status_code=403, detail="Support agent access required")
+    return current_user

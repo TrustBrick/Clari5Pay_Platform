@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.db.session import engine, Base
-from app.api.routes import auth, users, transactions, ai
+from app.api.routes import auth, users, transactions, ai, accounts, support
 
 
 @asynccontextmanager
@@ -24,7 +24,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_ORIGIN, "http://localhost:3000", "http://localhost:5173"],
+    allow_origins=[
+        settings.FRONTEND_ORIGIN,
+        "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
+        "http://localhost:5173", "http://localhost:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,6 +37,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(transactions.router)
+app.include_router(accounts.router)
+app.include_router(support.router)
 app.include_router(ai.router)
 
 

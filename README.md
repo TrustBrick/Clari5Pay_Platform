@@ -158,38 +158,63 @@ npm run dev
 
 ## 🔐 Demo Credentials
 
-| Username | Password | Role |
-|----------|----------|------|
-| `superadmin` | `pass123` | 👑 Super Admin |
-| `admin1` | `pass123` | 🛡 Admin |
-| `merchant1` | `pass123` | 🏪 Merchant (Nexus Fintech) |
-| `merchant2` | `pass123` | 🏪 Merchant (BrightPay Inc.) |
+| Username | Password | Role | Portal |
+|----------|----------|------|--------|
+| `superadmin` | `pass123` | 👑 Super Admin | Main app |
+| `admin1` | `pass123` | 🛡 Admin | Main app |
+| `merchant1` | `pass123` | 🏪 Merchant (Nexus Fintech) | Main app |
+| `merchant2` | `pass123` | 🏪 Merchant (BrightPay Inc.) | Main app |
+| `support1` | `pass123` | 💬 Customer Support Agent | **Support portal** |
+
+### Local ports (Docker Compose)
+
+| Service | URL |
+|---------|-----|
+| Main app (merchant/admin/super-admin) | http://localhost:3001 |
+| **Customer Support portal** | http://localhost:3002 |
+| Backend API | http://localhost:8001 |
+| API docs | http://localhost:8001/docs |
+
+> The **Customer Support portal** is a separate frontend app (`support-frontend/`) that
+> talks to the same backend. Support agents sign in there to chat with merchants in
+> real time over WebSockets. Merchants chat from the **Customer Support** item in the
+> main app's sidebar.
 
 ---
 
-## 🔄 Transaction Workflow
+## 🔄 Request Workflow
 
 ```
-Merchant submits (PENDING)
+Merchant submits a request (DEPOSIT/WITHDRAWAL/SETTLEMENT_REQUEST, status ACCOUNT_REQUESTED)
+   — optionally attaches a proof document/image
         ↓
-Admin reviews → Approve (ADMIN_APPROVED) or Reject (REJECTED)
+Admin clicks "Check" → reviews merchant proof, uploads its own document + reference number
         ↓
-Super Admin → Complete (COMPLETED) or SA Reject (SA_REJECTED)
+Status becomes ACCOUNT_SUBMITTED
 ```
+
+> Merchants are created by **Admins** (not the Super Admin). The Super Admin manages
+> Admins and monitors how many merchants each Admin created. Each managed bank account
+> lives in `account_master`; `account_transaction` links accounts to merchant transactions.
 
 ---
+
+## 💬 Customer Support (real-time chat)
+
+A dedicated **Customer Support portal** (`support-frontend/`, port **3002**) lets support
+agents chat with merchants in real time:
+
+- Merchants open **Customer Support** in the main app sidebar and message support.
+- Support agents sign in to the support portal, see every merchant conversation
+  (searchable by merchant, with unread counts), reply, and view merchant details while chatting.
+- Messages are delivered instantly over **WebSockets** (`/api/support/ws`) and persisted
+  in the `support_messages` table; a REST fallback (`/api/support/messages`) is also available.
 
 ## 🤖 AI Assistant
 
-The AI Assistant (available in the sidebar for all roles) is powered by **Anthropic Claude (claude-sonnet-4-6)**.
-
-It can help with:
-- Explaining transaction statuses and workflows
-- Understanding fee structures and payment codes
-- Risk analysis interpretation
-- Platform navigation and feature guidance
-
-Configure `ANTHROPIC_API_KEY` in `backend/.env` to enable it.
+The Claude-powered AI chat endpoint (`/api/ai`) remains in the backend, but the in-app
+**AI Assistant** screens have been removed from the merchant/admin/super-admin portals.
+Configure `ANTHROPIC_API_KEY` in `backend/.env` if you want to use the endpoint.
 
 ---
 
@@ -204,15 +229,27 @@ Configure `ANTHROPIC_API_KEY` in `backend/.env` to enable it.
 | POST | `/api/transactions/deposit` | Submit deposit |
 | POST | `/api/transactions/withdrawal` | Submit withdrawal |
 | POST | `/api/transactions/settlement` | Submit settlement |
-| POST | `/api/transactions/{id}/approve` | Admin approve |
-| POST | `/api/transactions/{id}/reject` | Admin reject |
-| POST | `/api/transactions/{id}/complete` | SA complete |
-| POST | `/api/transactions/{id}/sa-reject` | SA reject |
+| POST | `/api/transactions/{id}/check` | Admin check → ACCOUNT_SUBMITTED (proof + ref) |
+| POST | `/api/transactions/{id}/approve` | Admin approve (legacy) |
+| POST | `/api/transactions/{id}/reject` | Admin reject (legacy) |
+| POST | `/api/transactions/{id}/complete` | SA complete (legacy) |
+| POST | `/api/transactions/{id}/sa-reject` | SA reject (legacy) |
 | GET | `/api/users/merchants` | List merchants (Admin+) |
-| GET | `/api/users/admins` | List admins (SA only) |
-| POST | `/api/users/merchants` | Create merchant |
+| GET | `/api/users/admins` | List admins + merchant counts (SA only) |
+| GET | `/api/users/admins/{id}/merchants` | Merchants created by an admin (SA only) |
+| POST | `/api/users/merchants` | Create merchant (Admin only) |
 | POST | `/api/users/admins` | Create admin (SA only) |
+| DELETE | `/api/users/admins/{id}` | Delete admin (SA only) |
+| DELETE | `/api/users/merchants/{id}` | Delete merchant (Admin+) |
 | PATCH | `/api/users/{id}/toggle` | Toggle active status |
+| PATCH | `/api/users/me` | Update own email/password (persisted immediately) |
+| GET | `/api/accounts` | List bank accounts (search by `?q=` merchant) |
+| POST | `/api/accounts` | Create bank account (Admin+) |
+| GET | `/api/accounts/{ref}` | Account details |
+| WS | `/api/support/ws?token=` | Real-time support chat |
+| GET | `/api/support/conversations` | All merchant conversations (Support) |
+| GET | `/api/support/messages/{merchantId}` | Conversation history |
+| POST | `/api/support/messages` | Send message (REST fallback) |
 | POST | `/api/ai` | Claude AI chat |
 
 Full interactive docs: **http://localhost:8000/docs**

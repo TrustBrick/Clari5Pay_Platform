@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
-from app.schemas.schemas import DepositCreate, WithdrawalCreate, SettlementCreate
+from app.schemas.schemas import DepositCreate, WithdrawalCreate, SettlementCreate, CheckRequest
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -28,7 +28,11 @@ def _t(t: Transaction) -> dict:
         "time": t.tx_time,
         "depositType": t.deposit_type,
         "member": t.member_name,
+        "memberId": t.member_id,
         "bank": t.bank_name,
+        "merchantProof": t.merchant_proof,
+        "adminProof": t.admin_proof,
+        "adminRef": t.admin_ref,
     }
 
 
@@ -64,9 +68,9 @@ async def create_deposit(
 ):
     tx = Transaction(
         ref="TEMP",
-        type=TxType.DEPOSIT,
+        type=TxType.DEPOSIT_REQUEST,
         amount=data.amount,
-        status=TxStatus.PENDING,
+        status=TxStatus.ACCOUNT_REQUESTED,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
         tx_date=date.today(),
@@ -75,6 +79,7 @@ async def create_deposit(
         member_name=data.memberName,
         member_id=data.memberId,
         segment=data.segment,
+        merchant_proof=data.proof,
     )
     db.add(tx)
     await db.flush()
@@ -91,21 +96,21 @@ async def create_withdrawal(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if (current_user.balance or 0) < data.amount:
-        raise HTTPException(status_code=400, detail="Insufficient balance")
     tx = Transaction(
         ref="TEMP",
-        type=TxType.WITHDRAWAL,
+        type=TxType.WITHDRAWAL_REQUEST,
         amount=data.amount,
-        status=TxStatus.PENDING,
+        status=TxStatus.ACCOUNT_REQUESTED,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
         tx_date=date.today(),
         tx_time=datetime.now().strftime("%H:%M:%S"),
+        member_id=data.memberId,
         bank_name=data.bankName,
         account_holder=data.accountHolder,
         account_number=data.accountNumber,
         ifsc=data.ifsc,
+        merchant_proof=data.proof,
     )
     db.add(tx)
     await db.flush()
@@ -122,17 +127,17 @@ async def create_settlement(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if (current_user.balance or 0) < data.amount:
-        raise HTTPException(status_code=400, detail="Insufficient balance")
     tx = Transaction(
         ref="TEMP",
-        type=TxType.SETTLEMENT,
+        type=TxType.SETTLEMENT_REQUEST,
         amount=data.amount,
-        status=TxStatus.PENDING,
+        status=TxStatus.ACCOUNT_REQUESTED,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
         tx_date=date.today(),
         tx_time=datetime.now().strftime("%H:%M:%S"),
+        member_id=data.memberId,
+        merchant_proof=data.proof,
     )
     db.add(tx)
     await db.flush()
@@ -152,6 +157,25 @@ async def _get_tx(tx_id: str, db: AsyncSession) -> Transaction:
     return tx
 
 
+@router.post("/{tx_id}/check")
+async def check_transaction(
+    tx_id: str,
+    data: CheckRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Admin reviews merchant proof, uploads its own document + reference number, marks submitted."""
+    tx = await _get_tx(tx_id, db)
+    tx.admin_ref = data.adminRef
+    if data.adminProof:
+        tx.admin_proof = data.adminProof
+    tx.status = TxStatus.ACCOUNT_SUBMITTED
+    await db.flush()
+    await db.refresh(tx)
+    return _t(tx)
+
+
+# ─── Legacy approval workflow (kept for backward compatibility) ────────────────
 @router.post("/{tx_id}/approve")
 async def approve_transaction(
     tx_id: str,
@@ -159,8 +183,6 @@ async def approve_transaction(
     _: User = Depends(get_current_admin),
 ):
     tx = await _get_tx(tx_id, db)
-    if tx.status != TxStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Transaction not in PENDING state")
     tx.status = TxStatus.ADMIN_APPROVED
     await db.flush()
     return _t(tx)
@@ -173,8 +195,6 @@ async def reject_transaction(
     _: User = Depends(get_current_admin),
 ):
     tx = await _get_tx(tx_id, db)
-    if tx.status != TxStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Transaction not in PENDING state")
     tx.status = TxStatus.REJECTED
     await db.flush()
     return _t(tx)
@@ -187,8 +207,6 @@ async def complete_transaction(
     _: User = Depends(get_current_super_admin),
 ):
     tx = await _get_tx(tx_id, db)
-    if tx.status != TxStatus.ADMIN_APPROVED:
-        raise HTTPException(status_code=400, detail="Transaction not in ADMIN_APPROVED state")
     tx.status = TxStatus.COMPLETED
     await db.flush()
     return _t(tx)
@@ -201,8 +219,6 @@ async def sa_reject_transaction(
     _: User = Depends(get_current_super_admin),
 ):
     tx = await _get_tx(tx_id, db)
-    if tx.status != TxStatus.ADMIN_APPROVED:
-        raise HTTPException(status_code=400, detail="Transaction not in ADMIN_APPROVED state")
     tx.status = TxStatus.SA_REJECTED
     await db.flush()
     return _t(tx)

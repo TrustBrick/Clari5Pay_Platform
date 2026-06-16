@@ -1,7 +1,7 @@
 import axios from 'axios';
-import type { LoginRequest, LoginResponse, Transaction, User } from '../types';
+import type { Account, LoginRequest, LoginResponse, SupportMessage, Transaction, User } from '../types';
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 const api = axios.create({ baseURL: BASE_URL });
 
@@ -76,6 +76,55 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/sa-reject`);
     return res.data;
   },
+  check: async (id: string, data: { adminRef: string; adminProof?: string }) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/check`, data);
+    return res.data;
+  },
+};
+
+export const accountAPI = {
+  list: async (q?: string) => {
+    const res = await api.get<Account[]>('/api/accounts', { params: q ? { q } : undefined });
+    return res.data;
+  },
+  get: async (ref: string) => {
+    const res = await api.get<Account>(`/api/accounts/${ref}`);
+    return res.data;
+  },
+  create: async (data: Record<string, unknown>) => {
+    const res = await api.post<Account>('/api/accounts', data);
+    return res.data;
+  },
+};
+
+export const supportAPI = {
+  conversations: async () => {
+    const res = await api.get('/api/support/conversations');
+    return res.data;
+  },
+  messages: async (merchantId: number) => {
+    const res = await api.get<SupportMessage[]>(`/api/support/messages/${merchantId}`);
+    return res.data;
+  },
+  myMessages: async () => {
+    const res = await api.get<SupportMessage[]>('/api/support/my-messages');
+    return res.data;
+  },
+  send: async (content: string, merchantId?: number) => {
+    const res = await api.post<SupportMessage>('/api/support/messages', { content, merchant_id: merchantId });
+    return res.data;
+  },
+  merchant: async (merchantId: number) => {
+    const res = await api.get(`/api/support/merchant/${merchantId}`);
+    return res.data;
+  },
+};
+
+/** Build a WebSocket URL for the support chat using the stored auth token. */
+export const supportWsUrl = () => {
+  const token = localStorage.getItem('clari5pay_token') || '';
+  const base = BASE_URL.replace(/^http/, 'ws');
+  return `${base}/api/support/ws?token=${encodeURIComponent(token)}`;
 };
 
 export const userAPI = {
@@ -95,12 +144,28 @@ export const userAPI = {
     const res = await api.post<User>('/api/users/merchants', data);
     return res.data;
   },
+  deleteAdmin: async (id: number) => {
+    const res = await api.delete(`/api/users/admins/${id}`);
+    return res.data;
+  },
+  deleteMerchant: async (id: number) => {
+    const res = await api.delete(`/api/users/merchants/${id}`);
+    return res.data;
+  },
+  getAdminMerchants: async (adminId: number) => {
+    const res = await api.get<User[]>(`/api/users/admins/${adminId}/merchants`);
+    return res.data;
+  },
   toggleStatus: async (id: number) => {
     const res = await api.patch<User>(`/api/users/${id}/toggle`);
     return res.data;
   },
   changePassword: async (data: { current_password: string; new_password: string }) => {
     const res = await api.post('/api/users/change-password', data);
+    return res.data;
+  },
+  updateProfile: async (data: { email?: string; new_password?: string; current_password?: string }) => {
+    const res = await api.patch<User>('/api/users/me', data);
     return res.data;
   },
 };

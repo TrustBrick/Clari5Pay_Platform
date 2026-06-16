@@ -1,4 +1,4 @@
-export type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'MERCHANT';
+export type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'MERCHANT' | 'SUPPORT_AGENT';
 
 export interface User {
   id: number;
@@ -7,8 +7,10 @@ export interface User {
   role: UserRole;
   email: string;
   name: string;
+  phone?: string;
   active: boolean;
   created: string;
+  createdBy?: number | null;
   // Merchant-only fields
   payIn?: string;
   payOut?: string;
@@ -18,6 +20,8 @@ export interface User {
   balance?: number;
   risk?: 'LOW' | 'MEDIUM' | 'HIGH';
   profile?: string;
+  // Super Admin monitoring
+  merchantCount?: number;
 }
 
 export type TxStatus =
@@ -27,9 +31,17 @@ export type TxStatus =
   | 'SUCCESSFUL'
   | 'REJECTED'
   | 'SA_REJECTED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'ACCOUNT_REQUESTED'
+  | 'ACCOUNT_SUBMITTED';
 
-export type TxType = 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT';
+export type TxType =
+  | 'DEPOSIT'
+  | 'WITHDRAWAL'
+  | 'SETTLEMENT'
+  | 'DEPOSIT_REQUEST'
+  | 'WITHDRAWAL_REQUEST'
+  | 'SETTLEMENT_REQUEST';
 
 export interface Transaction {
   id: string;
@@ -43,8 +55,39 @@ export interface Transaction {
   time: string;
   depositType?: string;
   member?: string;
+  memberId?: string;
   bank?: string;
+  merchantProof?: string | null;
+  adminProof?: string | null;
+  adminRef?: string | null;
   refPrefix?: string;
+}
+
+export interface Account {
+  id: number;
+  referenceNumber: string;
+  accountName: string;
+  accountNumber: string;
+  ifscCode: string;
+  bankName: string;
+  branch: string;
+  accountType: string;
+  status: string;
+  createdDate: string;
+  createdTime: string;
+  lastMaintenanceDate?: string | null;
+  lastMaintenanceTime?: string | null;
+  merchantName: string;
+}
+
+export interface SupportMessage {
+  id: number;
+  merchantId: number;
+  sender: 'MERCHANT' | 'SUPPORT';
+  senderName: string;
+  content: string;
+  read: boolean;
+  createdAt: string;
 }
 
 export interface NavItem {

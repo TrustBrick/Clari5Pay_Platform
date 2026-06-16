@@ -1,12 +1,15 @@
 """
-Seed the database with initial users and sample transactions.
+Seed the database with initial users and sample data.
 Run: python -m app.db.seed
 """
 import asyncio
 from datetime import date, datetime
 from sqlalchemy import select
 from app.db.session import engine, AsyncSessionLocal, Base
-from app.models.models import User, Transaction, UserRole, RiskLevel, TxType, TxStatus
+from app.models.models import (
+    User, Transaction, UserRole, RiskLevel, TxType, TxStatus,
+    AccountMaster, AccountTransaction, AccountType, SupportMessage, SupportSender,
+)
 from app.core.security import get_password_hash
 
 
@@ -22,27 +25,43 @@ async def seed():
             print("Already seeded. Skipping.")
             return
 
-        # Users
-        users = [
+        # ── Staff (super admin, admins, support agent) ──
+        staff = [
             User(
                 username="superadmin", hashed_password=get_password_hash("pass123"),
                 role=UserRole.SUPER_ADMIN, email="sa@clari5pay.io",
-                name="Arjun Sharma", active=True, created=date(2025, 1, 1),
+                name="Arjun Sharma", phone="+91 98000 11111", active=True, created=date(2025, 1, 1),
             ),
             User(
                 username="admin1", hashed_password=get_password_hash("pass123"),
                 role=UserRole.ADMIN, email="admin@clari5pay.io",
-                name="Priya Mehta", active=True, created=date(2025, 3, 10),
+                name="Priya Mehta", phone="+91 98000 22222", active=True, created=date(2025, 3, 10),
             ),
             User(
                 username="admin2", hashed_password=get_password_hash("pass123"),
                 role=UserRole.ADMIN, email="admin2@clari5pay.io",
-                name="Rahul Nair", active=True, created=date(2025, 5, 20),
+                name="Rahul Nair", phone="+91 98000 33333", active=True, created=date(2025, 5, 20),
             ),
+            User(
+                username="support1", hashed_password=get_password_hash("pass123"),
+                role=UserRole.SUPPORT_AGENT, email="support@clari5pay.io",
+                name="Sana Kapoor", phone="+91 98000 44444", active=True, created=date(2025, 2, 1),
+            ),
+        ]
+        for u in staff:
+            db.add(u)
+        await db.flush()
+
+        admin1 = (await db.execute(select(User).where(User.username == "admin1"))).scalar_one()
+        admin2 = (await db.execute(select(User).where(User.username == "admin2"))).scalar_one()
+
+        # ── Merchants (each created by an admin) ──
+        merchants = [
             User(
                 username="merchant1", hashed_password=get_password_hash("pass123"),
                 role=UserRole.MERCHANT, email="nexus@clari5pay.io",
-                name="Nexus Fintech Ltd.", active=True, created=date(2025, 6, 1),
+                name="Nexus Fintech Ltd.", phone="+91 90000 12345", active=True, created=date(2025, 6, 1),
+                created_by=admin1.id,
                 pay_in="DEP", pay_out="WIT", settlement="SET",
                 pay_in_fee=1.5, pay_out_fee=1.2, balance=485000,
                 risk=RiskLevel.LOW, profile="Maker",
@@ -50,44 +69,108 @@ async def seed():
             User(
                 username="merchant2", hashed_password=get_password_hash("pass123"),
                 role=UserRole.MERCHANT, email="bright@clari5pay.io",
-                name="BrightPay Inc.", active=True, created=date(2025, 7, 15),
+                name="BrightPay Inc.", phone="+1 415 555 0199", active=True, created=date(2025, 7, 15),
+                created_by=admin2.id,
                 pay_in="BDP", pay_out="BWI", settlement="BST",
                 pay_in_fee=1.8, pay_out_fee=1.4, balance=212000,
                 risk=RiskLevel.MEDIUM, profile="Checker",
             ),
+            User(
+                username="merchant3", hashed_password=get_password_hash("pass123"),
+                role=UserRole.MERCHANT, email="zenpay@clari5pay.io",
+                name="ZenPay Solutions", phone="+91 90000 67890", active=True, created=date(2025, 8, 2),
+                created_by=admin1.id,
+                pay_in="ZDP", pay_out="ZWI", settlement="ZST",
+                pay_in_fee=1.6, pay_out_fee=1.3, balance=98000,
+                risk=RiskLevel.LOW, profile="Maker",
+            ),
         ]
-        for u in users:
-            db.add(u)
+        for m in merchants:
+            db.add(m)
         await db.flush()
 
-        # Get merchant IDs
-        r1 = await db.execute(select(User).where(User.username == "merchant1"))
-        m1 = r1.scalar_one()
-        r2 = await db.execute(select(User).where(User.username == "merchant2"))
-        m2 = r2.scalar_one()
+        m1 = (await db.execute(select(User).where(User.username == "merchant1"))).scalar_one()
+        m2 = (await db.execute(select(User).where(User.username == "merchant2"))).scalar_one()
 
-        # Sample transactions
+        # ── Sample transactions (new request workflow + statuses) ──
         txns = [
-            Transaction(ref="DEP0000001", type=TxType.DEPOSIT, amount=125000, status=TxStatus.COMPLETED,
+            Transaction(ref="DEP0000001", type=TxType.DEPOSIT_REQUEST, amount=125000, status=TxStatus.ACCOUNT_SUBMITTED,
                 merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 10), tx_time="09:14:32",
-                deposit_type="NEFT", member_name="Raj Kumar"),
-            Transaction(ref="BWI0000001", type=TxType.WITHDRAWAL, amount=50000, status=TxStatus.ADMIN_APPROVED,
+                deposit_type="NEFT", member_name="Raj Kumar", member_id="MBR20240001",
+                admin_ref="ADMREF-1001"),
+            Transaction(ref="BWI0000001", type=TxType.WITHDRAWAL_REQUEST, amount=50000, status=TxStatus.ACCOUNT_REQUESTED,
                 merchant_id=m2.id, merchant_name=m2.name, tx_date=date(2026, 6, 11), tx_time="11:02:18",
-                bank_name="HDFC Bank"),
-            Transaction(ref="DEP0000002", type=TxType.DEPOSIT, amount=75000, status=TxStatus.PENDING,
+                member_id="MBR20240050", bank_name="HDFC Bank", account_holder="BrightPay Inc.",
+                account_number="50100123456789", ifsc="HDFC0001234"),
+            Transaction(ref="DEP0000002", type=TxType.DEPOSIT_REQUEST, amount=75000, status=TxStatus.ACCOUNT_REQUESTED,
                 merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 12), tx_time="08:45:00",
-                deposit_type="UPI", member_name="Anita Singh"),
-            Transaction(ref="BST0000001", type=TxType.SETTLEMENT, amount=200000, status=TxStatus.COMPLETED,
-                merchant_id=m2.id, merchant_name=m2.name, tx_date=date(2026, 6, 9), tx_time="15:30:00"),
-            Transaction(ref="WIT0000002", type=TxType.WITHDRAWAL, amount=30000, status=TxStatus.REJECTED,
+                deposit_type="UPI", member_name="Anita Singh", member_id="MBR20240001"),
+            Transaction(ref="BST0000001", type=TxType.SETTLEMENT_REQUEST, amount=200000, status=TxStatus.ACCOUNT_SUBMITTED,
+                merchant_id=m2.id, merchant_name=m2.name, tx_date=date(2026, 6, 9), tx_time="15:30:00",
+                member_id="MBR20240050", admin_ref="ADMREF-1002"),
+            Transaction(ref="WIT0000002", type=TxType.WITHDRAWAL_REQUEST, amount=30000, status=TxStatus.ACCOUNT_REQUESTED,
                 merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 8), tx_time="13:22:47",
-                bank_name="SBI"),
-            Transaction(ref="BDP0000001", type=TxType.DEPOSIT, amount=95000, status=TxStatus.PENDING,
+                member_id="MBR20240002", bank_name="SBI"),
+            Transaction(ref="BDP0000001", type=TxType.DEPOSIT_REQUEST, amount=95000, status=TxStatus.ACCOUNT_REQUESTED,
                 merchant_id=m2.id, merchant_name=m2.name, tx_date=date(2026, 6, 12), tx_time="10:05:33",
-                deposit_type="IMPS", member_name="Suresh Patel"),
+                deposit_type="IMPS", member_name="Suresh Patel", member_id="MBR20240051"),
+            Transaction(ref="DEP0000003", type=TxType.DEPOSIT_REQUEST, amount=60000, status=TxStatus.ACCOUNT_SUBMITTED,
+                merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 7), tx_time="12:00:00",
+                deposit_type="UPI", member_name="Raj Kumar", member_id="MBR20240001", admin_ref="ADMREF-1003"),
         ]
         for t in txns:
             db.add(t)
+        await db.flush()
+
+        # ── account_master + account_transaction ──
+        now = datetime.now().strftime("%H:%M:%S")
+        accounts = [
+            AccountMaster(
+                reference_number="ACC0000001", account_name="Nexus Settlement A/C",
+                account_number="50100100100100", ifsc_code="HDFC0001234", bank_name="HDFC Bank",
+                branch="MG Road, Bengaluru", account_type=AccountType.CURRENT, status="ACTIVE",
+                created_date=date(2025, 6, 2), created_time=now,
+                last_maintenance_date=date(2026, 6, 10), last_maintenance_time=now,
+            ),
+            AccountMaster(
+                reference_number="ACC0000002", account_name="BrightPay Payout A/C",
+                account_number="50100200200200", ifsc_code="ICIC0005678", bank_name="ICICI Bank",
+                branch="Bandra, Mumbai", account_type=AccountType.CURRENT, status="ACTIVE",
+                created_date=date(2025, 7, 16), created_time=now,
+                last_maintenance_date=date(2026, 6, 9), last_maintenance_time=now,
+            ),
+            AccountMaster(
+                reference_number="ACC0000003", account_name="ZenPay Operating A/C",
+                account_number="50100300300300", ifsc_code="SBIN0009999", bank_name="State Bank of India",
+                branch="Anna Salai, Chennai", account_type=AccountType.SAVINGS, status="INACTIVE",
+                created_date=date(2025, 8, 3), created_time=now,
+                last_maintenance_date=date(2026, 6, 1), last_maintenance_time=now,
+            ),
+        ]
+        for a in accounts:
+            db.add(a)
+        await db.flush()
+
+        links = [
+            AccountTransaction(reference_number="ACC0000001", member_id="MBR20240001",
+                transaction_reference_number="DEP0000001", transaction_date=date(2026, 6, 10), transaction_time=now),
+            AccountTransaction(reference_number="ACC0000002", member_id="MBR20240050",
+                transaction_reference_number="BST0000001", transaction_date=date(2026, 6, 9), transaction_time=now),
+        ]
+        for l in links:
+            db.add(l)
+
+        # ── Sample support conversation ──
+        msgs = [
+            SupportMessage(merchant_id=m1.id, sender=SupportSender.MERCHANT, sender_name=m1.name,
+                content="Hi, my deposit DEP0000002 is still pending. Can you check?", read=True),
+            SupportMessage(merchant_id=m1.id, sender=SupportSender.SUPPORT, sender_name="Sana Kapoor",
+                content="Hello! Sure, let me take a look at DEP0000002 for you right away.", read=True),
+            SupportMessage(merchant_id=m2.id, sender=SupportSender.MERCHANT, sender_name=m2.name,
+                content="How long does a settlement request usually take?", read=False),
+        ]
+        for msg in msgs:
+            db.add(msg)
 
         await db.commit()
         print("✅ Database seeded successfully!")
@@ -95,6 +178,7 @@ async def seed():
         print("  superadmin / pass123  →  Super Admin")
         print("  admin1 / pass123      →  Admin")
         print("  merchant1 / pass123   →  Merchant")
+        print("  support1 / pass123    →  Customer Support Agent")
 
 
 if __name__ == "__main__":
