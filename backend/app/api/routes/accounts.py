@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.models.models import AccountMaster, AccountTransaction, Transaction, User
 from app.core.deps import get_current_admin
 from app.schemas.schemas import AccountCreate
+from app.api.routes.system_logs import log_event
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -135,6 +136,27 @@ async def create_account(
         db.add(link)
         await db.flush()
 
+    await db.refresh(acc)
+    await log_event(db, "ACCOUNT_CREATED", f"Bank account {acc.reference_number} ({acc.bank_name}) created", actor=_)
+    name_map = await _merchant_name_map(db)
+    return _a(acc, name_map.get(acc.reference_number))
+
+
+@router.patch("/{reference_number}/toggle")
+async def toggle_account(
+    reference_number: str,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Flip an account's status between ACTIVE and INACTIVE."""
+    acc = (
+        await db.execute(select(AccountMaster).where(AccountMaster.reference_number == reference_number))
+    ).scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    acc.status = "INACTIVE" if (acc.status or "").upper() == "ACTIVE" else "ACTIVE"
+    await db.flush()
+    await log_event(db, "ACCOUNT_TOGGLED", f"Account {acc.reference_number} set {acc.status}", actor=actor)
     await db.refresh(acc)
     name_map = await _merchant_name_map(db)
     return _a(acc, name_map.get(acc.reference_number))

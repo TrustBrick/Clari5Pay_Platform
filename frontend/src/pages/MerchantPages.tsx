@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, CHART_DATA, typeLabel, fileToDataUrl } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, MiniBar, Modal, Badge } from '../components/UI';
+import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText } from '../utils/helpers';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, Modal, Badge } from '../components/UI';
 import TxTable from '../components/TxTable';
 import { transactionAPI, supportAPI, supportWsUrl, userAPI } from '../services/api';
+import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
-import type { Transaction, User, SupportMessage } from '../types';
+import type { Transaction, User, SupportMessage, BalanceSummary } from '../types';
 
 // ─── Proof upload field (shared by request forms) ──────────────────────────────
 const ProofUpload: React.FC<{ value: string | null; onChange: (v: string | null) => void }> = ({ value, onChange }) => {
@@ -23,35 +24,164 @@ const ProofUpload: React.FC<{ value: string | null; onChange: (v: string | null)
   );
 };
 
+// ─── Merchant payment-slip modal (pay using admin details, submit proof) ────────
+const SlipRow = ({ k, v }: { k: string; v: React.ReactNode }) => (
+  <div style={{ display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
+    <span style={{ fontSize:12,color:T.textMuted }}>{k}</span>
+    <span style={{ fontSize:12,fontWeight:700,color:T.textMain,textAlign:'right' }}>{v}</span>
+  </div>
+);
+
+export const MerchantSlipModal: React.FC<{
+  tx: Transaction;
+  onClose: () => void;
+  onSubmitted?: () => void;
+}> = ({ tx, onClose, onSubmitted }) => {
+  const { showToast } = useToast();
+  const [proof, setProof] = useState<string | null>(null);
+  const [ref, setRef] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) setProof(await fileToDataUrl(f));
+  };
+
+  const canSubmit = !!proof || !!ref.trim();
+  // Slip submission only applies to deposits awaiting the merchant's payment proof.
+  const canSubmitSlip = tx.type.startsWith('DEPOSIT') && tx.status === 'ACCOUNT_SUBMITTED';
+  const adminLabel = tx.type.startsWith('DEPOSIT') ? 'Payment Details from Admin' : 'Payment Receipt from Admin';
+
+  const submit = async () => {
+    if (!canSubmit) { showToast('Upload an image or enter a reference number', 'error'); return; }
+    setLoading(true);
+    try {
+      await transactionAPI.submitSlip(tx.id, { merchantProof: proof || undefined, merchantRef: ref.trim() || undefined });
+      showToast('Payment proof submitted');
+      onSubmitted?.();
+      onClose();
+    } catch {
+      showToast('Failed to submit proof', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const helper = proof
+    ? 'Image attached — reference number is now optional.'
+    : ref.trim()
+      ? 'Reference entered — image upload is now optional.'
+      : 'Upload an image or enter a reference number (at least one is required).';
+
+  const hasAdminDetails = !!(tx.adminProof || tx.adminBankDetails);
+  const downloadDetails = () => {
+    if (tx.adminProof) {
+      downloadDataUrl(tx.adminProof, `account-details-${tx.ref}.png`);
+    } else if (tx.adminBankDetails) {
+      const lines = [
+        `Clari5Pay — Payment Details for ${tx.ref}`,
+        `Amount: ${fmt(tx.amount)}`,
+        tx.adminBankDetails,
+        tx.adminUpiId ? `UPI ID: ${tx.adminUpiId}` : '',
+        tx.adminRef ? `Reference: ${tx.adminRef}` : '',
+      ].filter(Boolean).join('\n');
+      downloadText(lines, `account-details-${tx.ref}.txt`);
+    }
+  };
+
+  return (
+    <Modal title={`${canSubmitSlip ? 'Pay & Submit Proof' : 'Request Details'} — ${tx.ref}`} onClose={onClose}>
+      <div style={{ marginBottom:16 }}>
+        <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>{adminLabel}</p>
+        <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
+          <SlipRow k="Amount" v={fmt(tx.amount)} />
+          <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" />} />
+          {tx.adminUpiId && <SlipRow k="UPI ID" v={tx.adminUpiId} />}
+          {tx.adminBankDetails && <SlipRow k="Bank Details" v={tx.adminBankDetails} />}
+          {tx.adminRef && <SlipRow k="Reference" v={tx.adminRef} />}
+          {!tx.adminUpiId && !tx.adminBankDetails && !tx.adminRef && !tx.adminProof &&
+            <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting details from admin.</p>}
+        </div>
+        {tx.adminProof && <img src={tx.adminProof} alt="Admin details" style={{ width:'100%',maxHeight:200,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+        {hasAdminDetails && (
+          <Btn size="sm" variant="ghost" style={{ marginTop:10 }} onClick={downloadDetails}>
+            ⬇ Download {tx.type.startsWith('DEPOSIT') ? 'Account Details' : 'Receipt'}
+          </Btn>
+        )}
+      </div>
+
+      {/* Already-submitted slip (read-only) */}
+      {!canSubmitSlip && (tx.merchantProof || tx.merchantRef) && (
+        <div style={{ borderTop:`1px solid ${T.border}`,paddingTop:14,marginBottom:4 }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Your Submitted Proof</p>
+          {tx.merchantRef && <SlipRow k="Reference" v={tx.merchantRef} />}
+          {tx.merchantProof && <img src={tx.merchantProof} alt="slip" style={{ display:'block',marginTop:8,maxHeight:180,maxWidth:'100%',objectFit:'contain',borderRadius:8,border:`1px solid ${T.border}` }} />}
+        </div>
+      )}
+
+      {canSubmitSlip ? (
+        <div style={{ borderTop:`1px solid ${T.border}`,paddingTop:14 }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Submit Your Payment Proof</p>
+          <Input label="Reference Number" value={ref} onChange={e=>setRef(e.target.value)} placeholder="Payment / UTR reference" />
+          <div style={{ marginBottom:10 }}>
+            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Upload Slip Image</label>
+            <input type="file" accept="image/*,.pdf" onChange={onFile} style={{ fontSize:12 }} />
+            {proof && <img src={proof} alt="slip" style={{ display:'block',marginTop:8,maxHeight:160,maxWidth:'100%',objectFit:'contain',borderRadius:8,border:`1px solid ${T.border}` }} />}
+          </div>
+          <p style={{ fontSize:11,color:canSubmit?T.success:T.textMuted,margin:'0 0 14px',fontWeight:600 }}>{helper}</p>
+          <div style={{ display:'flex',gap:10 }}>
+            <Btn onClick={submit} disabled={loading||!canSubmit}>{loading?'Submitting...':'Submit Proof'}</Btn>
+            <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display:'flex',justifyContent:'flex-end' }}>
+          <Btn variant="secondary" onClick={onClose}>Close</Btn>
+        </div>
+      )}
+    </Modal>
+  );
+};
+
 // ─── Merchant Dashboard ──────────────────────────────────────────────────────
 export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
   const [txns, setTxns] = useState<Transaction[]>([]);
+  const [summary, setSummary] = useState<BalanceSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    transactionAPI.getMine().then(setTxns).catch(()=>setTxns([])).finally(()=>setLoading(false));
-  }, []);
+  const reload = () => Promise.all([transactionAPI.getMine(), transactionAPI.summary()])
+    .then(([t, s]) => { setTxns(t); setSummary(s); })
+    .catch(()=>{});
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  usePoll(reload);
 
-  const requested = txns.filter(t => t.status === 'ACCOUNT_REQUESTED');
+  // Dashboard shows only in-flight requests (Account Requested / Submitted / Pending).
+  const inFlight = txns.filter(t => t.status === 'ACCOUNT_REQUESTED' || t.status === 'ACCOUNT_SUBMITTED' || t.status === 'SLIP_SUBMITTED');
+
+  // Real-time status breakdown from this merchant's own records.
+  const cnt = (s: string) => txns.filter(t => t.status === s).length;
+  const statusData = [
+    { label: 'Account Requested', value: cnt('ACCOUNT_REQUESTED'), color: T.warning },
+    { label: 'Account Submitted', value: cnt('ACCOUNT_SUBMITTED'), color: T.info },
+    { label: 'Slip Submitted', value: cnt('SLIP_SUBMITTED'), color: T.blue },
+    { label: 'Completed', value: cnt('COMPLETED'), color: T.success },
+  ];
 
   return (
     <div>
       <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:16,marginBottom:22 }}>
-        <StatCard icon="💰" label="Available Balance" value={fmt(user.balance||0)} sub="Updated now" color={T.success} trend={8.4}/>
-        <StatCard icon="↓" label="Total Deposits" value={fmt(txns.filter(t=>t.type.startsWith('DEPOSIT')).reduce((a,t)=>a+t.amount,0))} color={T.blue}/>
-        <StatCard icon="↑" label="Withdrawals" value={fmt(txns.filter(t=>t.type.startsWith('WITHDRAWAL')).reduce((a,t)=>a+t.amount,0))} color={T.danger}/>
-        <StatCard icon="⧗" label="Account Requested" value={requested.length} sub="Awaiting review" color={T.warning}/>
+        <StatCard icon="💰" label="Available Balance" value={fmt(summary?.available ?? 0)} sub="Updated now" color={T.success}/>
+        <StatCard icon="↓" label="No. of Deposits" value={summary?.depositCount ?? 0} color={T.blue}/>
+        <StatCard icon="↑" label="No. of Withdrawals" value={summary?.withdrawalCount ?? 0} color={T.danger}/>
+        <StatCard icon="⧗" label="Pending Requests" value={inFlight.length} sub="In progress" color={T.warning}/>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'2fr 1fr',gap:16,marginBottom:22 }}>
         <Card style={{ padding:22 }}>
-          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14 }}>
-            <div><h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Transaction Volume</h3><p style={{ margin:0,fontSize:11,color:T.textMuted }}>Last 7 days</p></div>
-            <div style={{ display:'flex',gap:12,fontSize:10,color:T.textMuted }}>
-              <span style={{ display:'flex',alignItems:'center',gap:3 }}><span style={{ width:8,height:8,borderRadius:2,background:T.blue,display:'inline-block' }}/> Deposits</span>
-              <span style={{ display:'flex',alignItems:'center',gap:3 }}><span style={{ width:8,height:8,borderRadius:2,background:T.danger,display:'inline-block' }}/> Withdrawals</span>
-            </div>
+          <div style={{ marginBottom:14 }}>
+            <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Requests by Status</h3>
+            <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Live counts from your transactions</p>
           </div>
-          <MiniBar data={CHART_DATA}/>
+          <StatusChart data={statusData}/>
         </Card>
         <Card style={{ padding:22 }}>
           <h3 style={{ margin:'0 0 14px',fontSize:14,fontWeight:800 }}>Account Info</h3>
@@ -64,18 +194,17 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
         </Card>
       </div>
       <Card>
-        <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}><h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Recent Transactions</h3></div>
-        {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : <TxTable txns={txns.slice(0,5)}/>}
+        <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}><h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Pending Requests</h3></div>
+        {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : <TxTable txns={inFlight.slice(0,6)} viewerRole="MERCHANT"/>}
       </Card>
     </div>
   );
 };
 
 // ─── Deposit form (used inside the Request modal) ──────────────────────────────
-export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ user, onSubmitted }) => {
+export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ onSubmitted }) => {
   const { showToast } = useToast();
   const [form, setForm] = useState({ amount:'',depositType:'UPI',memberName:'',memberId:'',segment:'A',profile:'NEW' });
-  const [proof, setProof] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
@@ -83,7 +212,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.createDeposit({ ...form, amount: parseFloat(form.amount), proof: proof || undefined });
+      await transactionAPI.createDeposit({ ...form, amount: parseFloat(form.amount) });
       showToast('Deposit request submitted — awaiting admin review');
       onSubmitted?.();
     } catch {
@@ -103,7 +232,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
         <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
       </div>
-      <ProofUpload value={proof} onChange={setProof}/>
+      <p style={{ fontSize:12,color:T.textMuted,margin:'4px 0 16px' }}>After you submit, the admin will send payment details. You then pay and upload your slip from the Action button.</p>
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
     </div>
   );
@@ -113,19 +242,22 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
 export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ onSubmitted }) => {
   const { showToast } = useToast();
   const [form, setForm] = useState({ amount:'',memberId:'',accountHolder:'',accountNumber:'',ifsc:'',bankName:'' });
-  const [proof, setProof] = useState<string | null>(null);
+  const [available, setAvailable] = useState(0);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
+  useEffect(() => { transactionAPI.summary().then(s => setAvailable(s.available)).catch(()=>{}); }, []);
+
   const submit = async () => {
     if(!form.amount||!form.accountHolder||!form.accountNumber){ showToast('Fill all required fields','error'); return; }
+    if(parseFloat(form.amount) > available){ showToast('Total available balance insufficient — try again','error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.createWithdrawal({ ...form, amount: parseFloat(form.amount), proof: proof || undefined });
+      await transactionAPI.createWithdrawal({ ...form, amount: parseFloat(form.amount) });
       showToast('Withdrawal request submitted');
       onSubmitted?.();
-    } catch {
-      showToast('Failed to submit withdrawal','error');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to submit withdrawal','error');
     } finally {
       setLoading(false);
     }
@@ -133,6 +265,9 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
 
   return (
     <div>
+      <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 14px',marginBottom:14,fontSize:12,color:T.blue,fontWeight:700 }}>
+        Available balance: {fmt(available)}
+      </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Input label="Amount (INR ₹)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="0.00" required icon="₹"/>
         <Input label="Member ID" value={form.memberId} onChange={e=>set('memberId',e.target.value)} placeholder="Alphanumeric" required/>
@@ -141,7 +276,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         <Input label="IFSC Code" value={form.ifsc} onChange={e=>set('ifsc',e.target.value)} placeholder="e.g. HDFC0001234" required/>
         <Input label="Bank Name" value={form.bankName} onChange={e=>set('bankName',e.target.value)} placeholder="e.g. HDFC Bank" required/>
       </div>
-      <ProofUpload value={proof} onChange={setProof}/>
+      <p style={{ fontSize:12,color:T.textMuted,margin:'4px 0 16px' }}>After you submit, the admin will send payment details. You then pay and upload your slip from the Action button.</p>
       <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!form.amount||!form.accountHolder}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
@@ -200,9 +335,11 @@ const ManagementPage: React.FC<{
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [openMember, setOpenMember] = useState<string | null>(null);
+  const [slipTx, setSlipTx] = useState<Transaction | null>(null);
 
   const reload = () => transactionAPI.getMine().then(setTxns).catch(()=>setTxns([]));
   useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  usePoll(() => { if (!showForm && !slipTx) reload(); });
 
   const mine = txns.filter(t => t.type.startsWith(prefix));
 
@@ -245,7 +382,7 @@ const ManagementPage: React.FC<{
                 {groups.length === 0 && <tr><td colSpan={4} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No {noun.toLowerCase()} requests yet</td></tr>}
                 {groups.map((g,i)=>(
                   <tr key={g.key} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>setOpenMember(g.key)}>
-                    <td style={{ padding:'11px 14px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{g.key}</code></td>
+                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{g.key}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.items.length}</td>
                     <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.items.reduce((a,t)=>a+t.amount,0))}</td>
                     <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={(e?:any)=>{ e?.stopPropagation?.(); setOpenMember(g.key); }}>View History</Btn></td>
@@ -275,8 +412,12 @@ const ManagementPage: React.FC<{
               <p style={{ margin:0,fontSize:22,fontWeight:800,color:T.success }}>{fmt(active.items.reduce((a,t)=>a+t.amount,0))}</p>
             </div>
           </div>
-          <TxTable txns={active.items}/>
+          <TxTable txns={active.items} actionMode="merchant" viewerRole="MERCHANT" onAction={(t)=>setSlipTx(t)}/>
         </Modal>
+      )}
+
+      {slipTx && (
+        <MerchantSlipModal tx={slipTx} onClose={()=>setSlipTx(null)} onSubmitted={()=>{ setSlipTx(null); reload(); }}/>
       )}
     </div>
   );
@@ -292,27 +433,141 @@ export const SettlementManagement: React.FC<{ user: User }> = ({ user }) =>
   <ManagementPage user={user} title="Settlement Management" prefix="SETTLEMENT" requestLabel="Request Settlement" noun="Settlement" FormComp={SettlementForm}/>;
 
 // ─── Balance Page ─────────────────────────────────────────────────────────────
-export const BalancePage: React.FC<{ user: User }> = ({ user }) => (
-  <div style={{ maxWidth:600 }}>
-    <Card style={{ padding:26 }}>
-      <div style={{ background:T.grad3,borderRadius:16,padding:28,marginBottom:22,color:'#fff' }}>
-        <p style={{ fontSize:11,color:'rgba(255,255,255,0.55)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Current Balance</p>
-        <p style={{ fontSize:40,fontWeight:800,margin:'0 0 16px' }}>{fmt(user.balance||0)}</p>
-        <div style={{ display:'flex',gap:24,flexWrap:'wrap' }}>
-          {[['Pay-In',user.payIn||'DEP'],['Pay-Out',user.payOut||'WIT'],['Currency','INR']].map(([k,v])=>(
-            <div key={k}><p style={{ fontSize:10,color:'rgba(255,255,255,0.45)',margin:0 }}>{k}</p><p style={{ fontWeight:700,margin:0,fontSize:14 }}>{v}</p></div>
-          ))}
+export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
+  const [s, setS] = useState<BalanceSummary | null>(null);
+  const reload = () => transactionAPI.summary().then(setS).catch(()=>{});
+  useEffect(() => { reload(); }, []);
+  usePoll(reload);
+
+  const totalDeposit = s?.totalDeposit ?? 0;
+  const payInFees = s?.payInFees ?? 0;
+  const totalSettled = s?.totalSettled ?? 0;
+  const totalWithdrawn = s?.totalWithdrawn ?? 0;
+  const payOutFees = s?.payOutFees ?? 0;
+  const netAvailableBalance = totalDeposit - payInFees - totalSettled; // before withdrawals
+  const available = s?.available ?? 0;                                 // spendable (after withdrawals)
+
+  const rows: Array<[string, number, string, boolean]> = [
+    ['Total Deposit Amount', totalDeposit, T.success, false],
+    ['Pay-In Fees', payInFees, T.danger, false],
+    ['Total Settled Amount', totalSettled, T.warning, false],
+    ['Total Net Available Balance', netAvailableBalance, T.textMain, true],
+    ['Total Withdrawn', totalWithdrawn, T.danger, false],
+    ['Pay-Out Fees', payOutFees, T.danger, false],
+    ['Net Available Withdrawal Amount', available, T.blue, true],
+    ['Net Available Settlement Amount', available, T.success, true],
+  ];
+
+  return (
+    <div style={{ maxWidth:600 }}>
+      <Card style={{ padding:26 }}>
+        <div style={{ background:T.grad3,borderRadius:16,padding:28,marginBottom:22,color:'#fff' }}>
+          <p style={{ fontSize:11,color:'rgba(255,255,255,0.55)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Net Available Balance</p>
+          <p style={{ fontSize:40,fontWeight:800,margin:'0 0 16px' }}>{fmt(available)}</p>
+          <div style={{ display:'flex',gap:24,flexWrap:'wrap' }}>
+            {[['Pay-In Fee',`${user.payInFee ?? 0}%`],['Pay-Out Fee',`${user.payOutFee ?? 0}%`],['Currency','INR']].map(([k,v])=>(
+              <div key={k}><p style={{ fontSize:10,color:'rgba(255,255,255,0.45)',margin:0 }}>{k}</p><p style={{ fontWeight:700,margin:0,fontSize:14 }}>{v}</p></div>
+            ))}
+          </div>
         </div>
+        {rows.map(([k,v,c,strong])=>(
+          <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'11px 0',borderBottom:`1px solid ${T.borderLight}` }}>
+            <span style={{ fontSize:13,color:strong?T.textMain:T.textMuted,fontWeight:strong?800:400 }}>{k}</span>
+            <span style={{ fontSize:14,fontWeight:800,color:c }}>{fmt(v)}</span>
+          </div>
+        ))}
+        <p style={{ fontSize:11,color:T.textMuted,margin:'14px 0 0' }}>Computed from completed transactions. Fees are applied at your configured rates.</p>
+      </Card>
+    </div>
+  );
+};
+
+// ─── Cancel Request Page (DEO / Supervisor) ────────────────────────────────────
+export const CancelRequestPage: React.FC<{ user: User }> = () => {
+  const { showToast } = useToast();
+  const [txns, setTxns] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const reload = () => transactionAPI.getMine().then(setTxns).catch(()=>setTxns([]));
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  usePoll(() => { if (!busy) reload(); });
+
+  // Only requests still in flight can be cancelled.
+  const cancellable = txns.filter(t => t.status === 'ACCOUNT_REQUESTED' || t.status === 'ACCOUNT_SUBMITTED');
+
+  const cancel = async (t: Transaction) => {
+    if (!window.confirm(`Cancel request ${t.ref}?`)) return;
+    setBusy(t.id);
+    try { await transactionAPI.cancel(t.id); await reload(); showToast(`${t.ref} cancelled`); }
+    catch { showToast('Failed to cancel request','error'); }
+    finally { setBusy(null); }
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom:18 }}>
+        <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>Cancel Request</h2>
+        <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Cancel pending deposit, withdrawal or settlement requests</p>
       </div>
-      {[['Total Deposits (MTD)',fmt(825000),T.success],['Total Withdrawals (MTD)',fmt(340000),T.danger],['Pending Settlements',fmt(150000),T.warning],['Net Flow',fmt(335000),T.blue]].map(([k,v,c])=>(
-        <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'11px 0',borderBottom:`1px solid ${T.borderLight}` }}>
-          <span style={{ fontSize:13,color:T.textMuted }}>{k}</span>
-          <span style={{ fontSize:14,fontWeight:800,color:c }}>{v}</span>
+      <Card>
+        {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : (
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+              <thead>
+                <tr style={{ background:T.canvas }}>
+                  {['Reference Number','Type','Amount','Member ID','Status','Action'].map(h=>(
+                    <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {cancellable.length === 0 && <tr><td colSpan={6} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No cancellable requests</td></tr>}
+                {cancellable.map((t,i)=>(
+                  <tr key={t.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
+                    <td style={{ padding:'11px 14px' }}><code style={{ fontSize:11,background:T.canvas,padding:'2px 6px',borderRadius:4,fontWeight:700 }}>{t.ref}</code></td>
+                    <td style={{ padding:'11px 14px' }}>{typeLabel(t.type)}</td>
+                    <td style={{ padding:'11px 14px',fontWeight:800 }}>{fmt(t.amount)}</td>
+                    <td style={{ padding:'11px 14px',color:T.textMain }}>{t.memberId||'—'}</td>
+                    <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT"/></td>
+                    <td style={{ padding:'11px 14px' }}>
+                      <Btn size="sm" variant="danger" disabled={busy===t.id} onClick={()=>cancel(t)}>{busy===t.id?'Cancelling...':'⊘ Cancel'}</Btn>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+};
+
+// ─── All Templates View (Manager — read-only consolidated list) ─────────────────
+export const TemplatesPage: React.FC<{ user: User }> = () => {
+  const [txns, setTxns] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const reload = () => transactionAPI.getMine().then(setTxns).catch(()=>setTxns([]));
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  usePoll(reload);
+
+  return (
+    <div>
+      <div style={{ marginBottom:18 }}>
+        <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>All Templates View</h2>
+        <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Read-only overview of all deposit, withdrawal and settlement requests</p>
+      </div>
+      <Card>
+        <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
+          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>All Requests ({txns.length})</h3>
         </div>
-      ))}
-    </Card>
-  </div>
-);
+        {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : <TxTable txns={txns} viewerRole="MERCHANT"/>}
+      </Card>
+    </div>
+  );
+};
 
 // ─── Risk Page ────────────────────────────────────────────────────────────────
 export const RiskPage: React.FC<{ user: User }> = ({ user }) => (
@@ -345,7 +600,7 @@ export const RiskPage: React.FC<{ user: User }> = ({ user }) => (
 
 // ─── Transaction History ──────────────────────────────────────────────────────
 const MERCHANT_TYPES = ['DEPOSIT_REQUEST','WITHDRAWAL_REQUEST','SETTLEMENT_REQUEST','DEPOSIT','WITHDRAWAL','SETTLEMENT'];
-const MERCHANT_STATUSES = ['ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','ADMIN_APPROVED','REJECTED'];
+const MERCHANT_STATUSES = ['ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED','COMPLETED','CANCELLED'];
 
 export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   const [txns, setTxns] = useState<Transaction[]>([]);
@@ -354,10 +609,12 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   const [status, setStatus] = useState('ALL');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const reload = () => {
     const fn = user.role === 'MERCHANT' ? transactionAPI.getMine : transactionAPI.getAll;
-    fn().then(setTxns).catch(()=>setTxns([])).finally(()=>setLoading(false));
-  }, [user.role]);
+    return fn().then(setTxns).catch(()=>setTxns([]));
+  };
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role]);
+  usePoll(reload);
 
   const filtered = txns.filter(t => {
     const ms = !search || t.ref.toLowerCase().includes(search.toLowerCase()) || t.merchant.toLowerCase().includes(search.toLowerCase());
@@ -382,7 +639,7 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
           </select>
         </div>
       </div>
-      {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : <TxTable txns={filtered}/>}
+      {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : <TxTable txns={filtered} viewerRole={user.role}/>}
       <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
         <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {txns.length}</p>
       </div>

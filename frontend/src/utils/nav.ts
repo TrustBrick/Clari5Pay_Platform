@@ -1,4 +1,4 @@
-import type { NavItem, UserRole } from '../types';
+import type { NavItem, User, UserRole } from '../types';
 
 export const NAV: Record<UserRole, NavItem[]> = {
   MERCHANT: [
@@ -6,7 +6,9 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'deposit', icon: '↓', label: 'Deposit Management' },
     { key: 'withdrawal', icon: '↑', label: 'Withdrawal Management' },
     { key: 'settlement', icon: '⇄', label: 'Settlement Management' },
+    { key: 'cancel', icon: '⊘', label: 'Cancel Request' },
     { key: 'transactions', icon: '≡', label: 'Transactions' },
+    { key: 'templates', icon: '▦', label: 'All Templates View' },
     { key: 'balance', icon: '◎', label: 'Balance Enquiry' },
     { key: 'risk', icon: '⚑', label: 'Risk Analysis' },
     { key: 'support', icon: '💬', label: 'Customer Support' },
@@ -22,6 +24,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
   SUPER_ADMIN: [
     { key: 'sa-dashboard', icon: '⬡', label: 'Platform Overview' },
     { key: 'sa-admins', icon: '🛡', label: 'Admin Management' },
+    { key: 'sa-logs', icon: '🧾', label: 'System Logs' },
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
   // Support agents use the separate Customer Support portal.
@@ -35,7 +38,9 @@ export const PAGE_TITLES: Record<string, string> = {
   deposit: 'Deposit Management',
   withdrawal: 'Withdrawal Management',
   settlement: 'Settlement Management',
+  cancel: 'Cancel Request',
   transactions: 'Transactions',
+  templates: 'All Templates View',
   balance: 'Balance Enquiry',
   risk: 'Risk Analysis',
   support: 'Customer Support',
@@ -46,4 +51,28 @@ export const PAGE_TITLES: Record<string, string> = {
   'admin-accounts': 'Account Management',
   'sa-dashboard': 'Platform Overview',
   'sa-admins': 'Admin Management',
+  'sa-logs': 'System Logs',
+};
+
+// Sidebar pages permitted per merchant role (drives the dynamic sidebar).
+// Maintain Profile + Profile collapse to a single Profile link.
+export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
+  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'profile'],
+  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'profile'],
+  MANAGER: ['dashboard', 'templates', 'profile'],
+};
+
+/**
+ * Resolve the sidebar items for a user. Merchants with a known role see only
+ * the pages permitted for that role; everyone else (incl. role-less merchants)
+ * gets the full nav for their role.
+ */
+export const navForUser = (user: User): NavItem[] => {
+  const base = NAV[user.role] || [];
+  if (user.role !== 'MERCHANT') return base;
+  const role = user.merchantRole ? String(user.merchantRole).toUpperCase() : '';
+  const allowed = MERCHANT_ROLE_NAV[role];
+  if (!allowed) return base;
+  const byKey = new Map(base.map((i) => [i.key, i]));
+  return allowed.map((k) => byKey.get(k)).filter((i): i is NavItem => Boolean(i));
 };

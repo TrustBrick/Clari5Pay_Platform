@@ -185,17 +185,21 @@ npm run dev
 ## 🔄 Request Workflow
 
 ```
-Merchant submits a request (DEPOSIT/WITHDRAWAL/SETTLEMENT_REQUEST, status ACCOUNT_REQUESTED)
-   — optionally attaches a proof document/image
+Merchant submits a request (DEPOSIT/WITHDRAWAL/SETTLEMENT_REQUEST)   → ACCOUNT_REQUESTED
         ↓
-Admin clicks "Check" → reviews merchant proof, uploads its own document + reference number
+Admin sends bank details / UPI ID (manual entry or image) → "Account Submitted" → ACCOUNT_SUBMITTED
         ↓
-Status becomes ACCOUNT_SUBMITTED
+Merchant pays and submits proof (image OR reference number, ≥1 required) → SLIP_SUBMITTED
+        ↓
+Admin reviews the slip → "Done" → COMPLETED
 ```
 
-> Merchants are created by **Admins** (not the Super Admin). The Super Admin manages
-> Admins and monitors how many merchants each Admin created. Each managed bank account
-> lives in `account_master`; `account_transaction` links accounts to merchant transactions.
+> Merchants no longer upload proof up-front; they submit a payment slip only after the
+> admin sends payment details. Merchants are created by **Admins** (not the Super Admin),
+> who also assign each merchant a **role** (Data Entry Operator / Supervisor / Manager)
+> that dynamically gates the merchant's sidebar. The Super Admin manages Admins and
+> monitors how many merchants each Admin created. Each managed bank account lives in
+> `account_master`; `account_transaction` links accounts to merchant transactions.
 
 ---
 
@@ -229,7 +233,10 @@ Configure `ANTHROPIC_API_KEY` in `backend/.env` if you want to use the endpoint.
 | POST | `/api/transactions/deposit` | Submit deposit |
 | POST | `/api/transactions/withdrawal` | Submit withdrawal |
 | POST | `/api/transactions/settlement` | Submit settlement |
-| POST | `/api/transactions/{id}/check` | Admin check → ACCOUNT_SUBMITTED (proof + ref) |
+| POST | `/api/transactions/{id}/account-submit` | Admin sends bank/UPI details → ACCOUNT_SUBMITTED |
+| POST | `/api/transactions/{id}/slip` | Merchant submits payment slip (image/ref) → SLIP_SUBMITTED |
+| POST | `/api/transactions/{id}/done` | Admin reviews slip → COMPLETED |
+| POST | `/api/transactions/{id}/cancel` | Merchant cancels own pending request → CANCELLED |
 | POST | `/api/transactions/{id}/approve` | Admin approve (legacy) |
 | POST | `/api/transactions/{id}/reject` | Admin reject (legacy) |
 | POST | `/api/transactions/{id}/complete` | SA complete (legacy) |
@@ -239,13 +246,14 @@ Configure `ANTHROPIC_API_KEY` in `backend/.env` if you want to use the endpoint.
 | GET | `/api/users/admins/{id}/merchants` | Merchants created by an admin (SA only) |
 | POST | `/api/users/merchants` | Create merchant (Admin only) |
 | POST | `/api/users/admins` | Create admin (SA only) |
-| DELETE | `/api/users/admins/{id}` | Delete admin (SA only) |
-| DELETE | `/api/users/merchants/{id}` | Delete merchant (Admin+) |
-| PATCH | `/api/users/{id}/toggle` | Toggle active status |
+| PATCH | `/api/users/{id}/toggle` | Toggle active status (admins & merchants) |
 | PATCH | `/api/users/me` | Update own email/password (persisted immediately) |
 | GET | `/api/accounts` | List bank accounts (search by `?q=` merchant) |
 | POST | `/api/accounts` | Create bank account (Admin+) |
 | GET | `/api/accounts/{ref}` | Account details |
+| GET | `/api/notifications` | Current user's notifications (newest first) |
+| POST | `/api/notifications/read` | Mark all own notifications as read |
+| DELETE | `/api/notifications` | Clear (delete) all own notifications |
 | WS | `/api/support/ws?token=` | Real-time support chat |
 | GET | `/api/support/conversations` | All merchant conversations (Support) |
 | GET | `/api/support/messages/{merchantId}` | Conversation history |

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, LoginRequest, LoginResponse, SupportMessage, Transaction, User } from '../types';
+import type { Account, BalanceSummary, LoginRequest, LoginResponse, Notification, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 export const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -48,6 +48,10 @@ export const transactionAPI = {
     const res = await api.get<Transaction[]>('/api/transactions/mine');
     return res.data;
   },
+  summary: async () => {
+    const res = await api.get<BalanceSummary>('/api/transactions/summary');
+    return res.data;
+  },
   createDeposit: async (data: Record<string, unknown>) => {
     const res = await api.post<Transaction>('/api/transactions/deposit', data);
     return res.data;
@@ -76,8 +80,23 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/sa-reject`);
     return res.data;
   },
-  check: async (id: string, data: { adminRef: string; adminProof?: string }) => {
-    const res = await api.post<Transaction>(`/api/transactions/${id}/check`, data);
+  submitAccount: async (
+    id: string,
+    data: { adminRef?: string; adminProof?: string; adminBankDetails?: string; adminUpiId?: string },
+  ) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/account-submit`, data);
+    return res.data;
+  },
+  submitSlip: async (id: string, data: { merchantProof?: string; merchantRef?: string }) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/slip`, data);
+    return res.data;
+  },
+  markDone: async (id: string, data?: { adminProof?: string }) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/done`, data ?? {});
+    return res.data;
+  },
+  cancel: async (id: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/cancel`);
     return res.data;
   },
 };
@@ -93,6 +112,10 @@ export const accountAPI = {
   },
   create: async (data: Record<string, unknown>) => {
     const res = await api.post<Account>('/api/accounts', data);
+    return res.data;
+  },
+  toggle: async (ref: string) => {
+    const res = await api.patch<Account>(`/api/accounts/${ref}/toggle`);
     return res.data;
   },
 };
@@ -144,14 +167,6 @@ export const userAPI = {
     const res = await api.post<User>('/api/users/merchants', data);
     return res.data;
   },
-  deleteAdmin: async (id: number) => {
-    const res = await api.delete(`/api/users/admins/${id}`);
-    return res.data;
-  },
-  deleteMerchant: async (id: number) => {
-    const res = await api.delete(`/api/users/merchants/${id}`);
-    return res.data;
-  },
   getAdminMerchants: async (adminId: number) => {
     const res = await api.get<User[]>(`/api/users/admins/${adminId}/merchants`);
     return res.data;
@@ -166,6 +181,28 @@ export const userAPI = {
   },
   updateProfile: async (data: { email?: string; new_password?: string; current_password?: string }) => {
     const res = await api.patch<User>('/api/users/me', data);
+    return res.data;
+  },
+};
+
+export const notificationAPI = {
+  list: async () => {
+    const res = await api.get<Notification[]>('/api/notifications');
+    return res.data;
+  },
+  markAllRead: async () => {
+    const res = await api.post('/api/notifications/read');
+    return res.data;
+  },
+  clear: async () => {
+    const res = await api.delete('/api/notifications');
+    return res.data;
+  },
+};
+
+export const systemLogAPI = {
+  list: async () => {
+    const res = await api.get<SystemLogEntry[]>('/api/system-logs');
     return res.data;
   },
 };

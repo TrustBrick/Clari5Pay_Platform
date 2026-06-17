@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { NAV } from '../utils/nav';
+import { navForUser } from '../utils/nav';
 import { Logo } from './UI';
 import type { User } from '../types';
 
@@ -14,7 +14,7 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, onClose }) => {
-  const nav = NAV[user.role] || [];
+  const nav = navForUser(user);
 
   return (
     <>

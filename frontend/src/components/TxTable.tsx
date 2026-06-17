@@ -4,13 +4,31 @@ import { fmt, typeLabel } from '../utils/helpers';
 import { Badge, Btn } from './UI';
 import type { Transaction } from '../types';
 
-type ActionMode = 'check' | 'view' | 'none';
+type ActionMode = 'admin' | 'merchant' | 'view' | 'none';
 
 interface TxTableProps {
   txns: Transaction[];
   onAction?: (t: Transaction, action: string) => void;
   actionMode?: ActionMode;
+  viewerRole?: string;
 }
+
+// Pick the per-row action button based on mode + transaction type + status.
+const rowAction = (mode: ActionMode, status: string, type: string): { label: string; action: string; variant: 'primary' | 'ghost' } | null => {
+  const isDeposit = type.startsWith('DEPOSIT');
+  if (mode === 'admin') {
+    if (isDeposit && status === 'ACCOUNT_REQUESTED') return { label: '🏦 Choose Account', action: 'manage', variant: 'primary' };
+    if (isDeposit && status === 'SLIP_SUBMITTED') return { label: '✓ Mark Deposited', action: 'manage', variant: 'primary' };
+    if (!isDeposit && status === 'ACCOUNT_REQUESTED') return { label: '💳 Pay & Complete', action: 'manage', variant: 'primary' };
+    return { label: '👁 View', action: 'view', variant: 'ghost' };
+  }
+  if (mode === 'merchant') {
+    if (isDeposit && status === 'ACCOUNT_SUBMITTED') return { label: '⇪ Pay / Submit Proof', action: 'slip', variant: 'primary' };
+    return { label: '👁 View', action: 'view', variant: 'ghost' };
+  }
+  if (mode === 'view') return { label: '👁 View', action: 'view', variant: 'ghost' };
+  return null;
+};
 
 const typeColor = (type: string): { color: string; bg: string } => {
   if (type.startsWith('DEPOSIT')) return { color: T.success, bg: T.successBg };
@@ -18,7 +36,7 @@ const typeColor = (type: string): { color: string; bg: string } => {
   return { color: T.info, bg: T.infoBg };
 };
 
-const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none' }) => (
+const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole }) => (
   <div style={{ overflowX: 'auto' }}>
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
       <thead>
@@ -47,15 +65,14 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none' }
               </td>
               <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(t.amount)}</td>
               <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{t.date} <span style={{ fontSize:10 }}>{t.time}</span></td>
-              <td style={{ padding:'11px 14px' }}><Badge status={t.status}/></td>
+              <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole={viewerRole}/></td>
               <td style={{ padding:'11px 14px' }}>
-                {onAction && actionMode === 'check' && (
-                  <Btn size="sm" onClick={() => onAction(t, 'check')}>✓ Check</Btn>
-                )}
-                {onAction && actionMode === 'view' && (
-                  <Btn size="sm" variant="ghost" onClick={() => onAction(t, 'view')}>👁 View</Btn>
-                )}
-                {actionMode === 'none' && <span style={{ color:T.textLight }}>—</span>}
+                {(() => {
+                  if (!onAction || actionMode === 'none') return <span style={{ color:T.textLight }}>—</span>;
+                  const a = rowAction(actionMode, t.status, t.type);
+                  if (!a) return <span style={{ color:T.textLight }}>—</span>;
+                  return <Btn size="sm" variant={a.variant} onClick={() => onAction(t, a.action)}>{a.label}</Btn>;
+                })()}
               </td>
             </tr>
           );

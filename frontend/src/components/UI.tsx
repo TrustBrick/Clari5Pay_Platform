@@ -1,6 +1,6 @@
 import React, { CSSProperties } from 'react';
 import { T } from '../utils/theme';
-import { statusStyle } from '../utils/helpers';
+import { statusStyle, statusLabel } from '../utils/helpers';
 import type { TxStatus, ChartDataPoint } from '../types';
 
 // ─── Logo ────────────────────────────────────────────────────────────────────
@@ -47,12 +47,12 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg' }> = ({ size = 'md' }) =
 };
 
 // ─── Badge ───────────────────────────────────────────────────────────────────
-export const Badge: React.FC<{ status: TxStatus }> = ({ status }) => {
+export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: string }> = ({ status, type, viewerRole }) => {
   const s = statusStyle(status);
   return (
     <span style={{ display:'inline-flex',alignItems:'center',gap:4,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:'nowrap' }}>
       <span style={{ width:6,height:6,borderRadius:'50%',background:s.color,display:'inline-block' }}/>
-      {status.replace(/_/g,' ')}
+      {statusLabel(status, type, viewerRole)}
     </span>
   );
 };
@@ -146,7 +146,7 @@ export const Sel: React.FC<{
 
 // ─── MiniBar Chart ───────────────────────────────────────────────────────────
 export const MiniBar: React.FC<{ data: ChartDataPoint[] }> = ({ data }) => {
-  const max = Math.max(...data.flatMap(d=>[d.deposit,d.withdrawal]));
+  const max = Math.max(1, ...data.flatMap(d=>[d.deposit,d.withdrawal]));
   return (
     <div style={{ display:'flex',alignItems:'flex-end',gap:6,height:90,padding:'0 4px' }}>
       {data.map((d,i)=>(
@@ -156,6 +156,24 @@ export const MiniBar: React.FC<{ data: ChartDataPoint[] }> = ({ data }) => {
             <div style={{ flex:1,background:T.danger,borderRadius:'4px 4px 0 0',height:`${(d.withdrawal/max)*100}%`,opacity:0.6 }}/>
           </div>
           <span style={{ fontSize:9,color:T.textMuted,fontWeight:600 }}>{d.day}</span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ─── StatusChart (real-time status breakdown) ─────────────────────────────────
+export const StatusChart: React.FC<{ data: Array<{ label: string; value: number; color: string }> }> = ({ data }) => {
+  const max = Math.max(1, ...data.map(d => d.value));
+  return (
+    <div style={{ display:'flex',alignItems:'flex-end',gap:14,height:140,padding:'4px 4px 0' }}>
+      {data.map(d => (
+        <div key={d.label} style={{ flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:6 }}>
+          <span style={{ fontSize:14,fontWeight:800,color:d.color }}>{d.value}</span>
+          <div style={{ width:'100%',height:88,display:'flex',alignItems:'flex-end' }}>
+            <div style={{ width:'100%',background:d.color,borderRadius:'6px 6px 0 0',height:`${(d.value/max)*100}%`,minHeight:d.value>0?6:2,opacity:d.value>0?0.9:0.25,transition:'height 0.4s ease' }}/>
+          </div>
+          <span style={{ fontSize:9,color:T.textMuted,fontWeight:600,textAlign:'center',lineHeight:1.2 }}>{d.label}</span>
         </div>
       ))}
     </div>

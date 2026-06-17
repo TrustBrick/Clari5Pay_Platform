@@ -10,6 +10,7 @@ export interface User {
   phone?: string;
   active: boolean;
   created: string;
+  createdAt?: string | null;
   createdBy?: number | null;
   // Merchant-only fields
   payIn?: string;
@@ -20,9 +21,12 @@ export interface User {
   balance?: number;
   risk?: 'LOW' | 'MEDIUM' | 'HIGH';
   profile?: string;
+  merchantRole?: MerchantRole | string | null;
   // Super Admin monitoring
   merchantCount?: number;
 }
+
+export type MerchantRole = 'DEO' | 'SUPERVISOR' | 'MANAGER';
 
 export type TxStatus =
   | 'PENDING'
@@ -33,7 +37,8 @@ export type TxStatus =
   | 'SA_REJECTED'
   | 'CANCELLED'
   | 'ACCOUNT_REQUESTED'
-  | 'ACCOUNT_SUBMITTED';
+  | 'ACCOUNT_SUBMITTED'
+  | 'SLIP_SUBMITTED';
 
 export type TxType =
   | 'DEPOSIT'
@@ -57,9 +62,15 @@ export interface Transaction {
   member?: string;
   memberId?: string;
   bank?: string;
+  accountHolder?: string | null;
+  accountNumber?: string | null;
+  ifsc?: string | null;
   merchantProof?: string | null;
+  merchantRef?: string | null;
   adminProof?: string | null;
   adminRef?: string | null;
+  adminBankDetails?: string | null;
+  adminUpiId?: string | null;
   refPrefix?: string;
 }
 
@@ -98,10 +109,31 @@ export interface NavItem {
 }
 
 export interface Notification {
+  id: number;
   icon: string;
-  color: string;
-  msg: string;
-  time: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface BalanceSummary {
+  available: number;
+  totalDeposit: number;
+  payInFees: number;
+  totalSettled: number;
+  totalWithdrawn: number;
+  payOutFees: number;
+  depositCount: number;
+  withdrawalCount: number;
+}
+
+export interface SystemLogEntry {
+  id: number;
+  actorId: number | null;
+  actor: string;
+  action: string;
+  detail: string;
+  createdAt: string;
 }
 
 export interface ChartDataPoint {

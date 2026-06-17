@@ -8,10 +8,11 @@ import LoginPage from './pages/LoginPage';
 import {
   MerchantDashboard, DepositManagement, WithdrawalManagement, SettlementManagement,
   TransactionHistory, BalancePage, RiskPage, MerchantSupportChat, ProfilePage,
+  CancelRequestPage, TemplatesPage,
 } from './pages/MerchantPages';
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
-  SaDashboard, SaAdminsPage,
+  SaDashboard, SaAdminsPage, SystemLogsPage,
 } from './pages/AdminPages';
 
 const App: React.FC = () => {
@@ -37,7 +38,9 @@ const App: React.FC = () => {
       deposit: <DepositManagement {...props} />,
       withdrawal: <WithdrawalManagement {...props} />,
       settlement: <SettlementManagement {...props} />,
+      cancel: <CancelRequestPage {...props} />,
       transactions: <TransactionHistory {...props} />,
+      templates: <TemplatesPage {...props} />,
       balance: <BalancePage {...props} />,
       risk: <RiskPage {...props} />,
       support: <MerchantSupportChat {...props} />,
@@ -48,6 +51,7 @@ const App: React.FC = () => {
       'admin-accounts': <AdminAccountsPage />,
       'sa-dashboard': <SaDashboard />,
       'sa-admins': <SaAdminsPage />,
+      'sa-logs': <SystemLogsPage />,
     };
     return map[page] || map[user.role === 'MERCHANT' ? 'dashboard' : user.role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard'];
   };

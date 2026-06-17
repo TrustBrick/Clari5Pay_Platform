@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.db.session import get_db
-from app.models.models import User, UserRole
+from app.models.models import User, UserRole, Notification
 from app.core.security import get_password_hash, verify_password
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
 from app.schemas.schemas import ChangePasswordRequest, ProfileUpdateRequest
+from app.api.routes.system_logs import log_event
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -14,10 +15,12 @@ def _u(u: User) -> dict:
     return {
         "id": u.id, "username": u.username, "email": u.email, "name": u.name,
         "phone": u.phone, "role": u.role, "active": u.active, "created": str(u.created),
+        "createdAt": (u.created_at.isoformat() + "Z") if u.created_at else None,
         "createdBy": u.created_by,
         "payIn": u.pay_in, "payOut": u.pay_out, "settlement": u.settlement,
         "payInFee": u.pay_in_fee, "payOutFee": u.pay_out_fee,
         "balance": u.balance, "risk": u.risk, "profile": u.profile,
+        "merchantRole": u.merchant_role,
     }
 
 
@@ -97,9 +100,13 @@ async def create_merchant(
         balance=0.0,
         risk=data.get("risk", "LOW"),
         profile=data.get("profile", "Maker"),
+        merchant_role=data.get("merchantRole"),
     )
     db.add(user)
     await db.flush()
+    db.add(Notification(user_id=user.id, message="Your merchant account was created", icon="🏪"))
+    db.add(Notification(user_id=admin.id, message=f"Merchant \"{user.name}\" created", icon="🏪"))
+    await log_event(db, "MERCHANT_CREATED", f"Merchant \"{user.name}\" (role {user.merchant_role or '—'}) created", actor=admin)
     await db.refresh(user)
     return _u(user)
 
@@ -108,7 +115,7 @@ async def create_merchant(
 async def create_admin(
     data: dict,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_super_admin),
+    sa: User = Depends(get_current_super_admin),
 ):
     existing = await db.execute(select(User).where(User.username == data["username"]))
     if existing.scalar_one_or_none():
@@ -125,45 +132,18 @@ async def create_admin(
     )
     db.add(user)
     await db.flush()
+    db.add(Notification(user_id=user.id, message="Your admin account was created", icon="🛡"))
+    db.add(Notification(user_id=sa.id, message=f"Admin \"{user.name}\" created", icon="🛡"))
+    await log_event(db, "ADMIN_CREATED", f"Admin \"{user.name}\" created", actor=sa)
     await db.refresh(user)
     return _u(user)
-
-
-@router.delete("/admins/{admin_id}")
-async def delete_admin(
-    admin_id: int,
-    db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_super_admin),
-):
-    result = await db.execute(select(User).where(User.id == admin_id, User.role == UserRole.ADMIN))
-    admin = result.scalar_one_or_none()
-    if not admin:
-        raise HTTPException(status_code=404, detail="Admin not found")
-    await db.delete(admin)
-    await db.flush()
-    return {"message": "Admin deleted"}
-
-
-@router.delete("/merchants/{merchant_id}")
-async def delete_merchant(
-    merchant_id: int,
-    db: AsyncSession = Depends(get_db),
-    admin: User = Depends(get_current_admin),
-):
-    result = await db.execute(select(User).where(User.id == merchant_id, User.role == UserRole.MERCHANT))
-    merchant = result.scalar_one_or_none()
-    if not merchant:
-        raise HTTPException(status_code=404, detail="Merchant not found")
-    await db.delete(merchant)
-    await db.flush()
-    return {"message": "Merchant deleted"}
 
 
 @router.patch("/{user_id}/toggle")
 async def toggle_user(
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_admin),
+    actor: User = Depends(get_current_admin),
 ):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -171,6 +151,11 @@ async def toggle_user(
         raise HTTPException(status_code=404, detail="User not found")
     user.active = not user.active
     await db.flush()
+    state = "activated" if user.active else "deactivated"
+    db.add(Notification(user_id=user.id, message=f"Your account was {state}", icon="🔔"))
+    if actor.id != user.id:
+        db.add(Notification(user_id=actor.id, message=f"{user.name} {state}", icon="🔔"))
+    await log_event(db, "USER_TOGGLED", f"{user.role.value} \"{user.name}\" {state}", actor=actor)
     await db.refresh(user)
     return _u(user)
 

@@ -20,6 +20,7 @@ class UserBase(BaseModel):
     balance: Optional[float] = None
     risk: Optional[RiskLevel] = None
     profile: Optional[str] = None
+    merchant_role: Optional[str] = None
 
 
 class UserCreate(UserBase):
@@ -29,6 +30,7 @@ class UserCreate(UserBase):
 class UserOut(UserBase):
     id: int
     created: date
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -76,8 +78,11 @@ class TransactionOut(BaseModel):
     memberId: Optional[str] = None
     bank: Optional[str] = None
     merchantProof: Optional[str] = None
+    merchantRef: Optional[str] = None
     adminProof: Optional[str] = None
     adminRef: Optional[str] = None
+    adminBankDetails: Optional[str] = None
+    adminUpiId: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -109,9 +114,20 @@ class SettlementCreate(BaseModel):
     proof: Optional[str] = None
 
 
-class CheckRequest(BaseModel):
-    adminRef: str
+class AccountSubmitRequest(BaseModel):
+    adminRef: Optional[str] = None
     adminProof: Optional[str] = None
+    adminBankDetails: Optional[str] = None
+    adminUpiId: Optional[str] = None
+
+
+class SlipRequest(BaseModel):
+    merchantProof: Optional[str] = None
+    merchantRef: Optional[str] = None
+
+
+class CompleteRequest(BaseModel):
+    adminProof: Optional[str] = None  # payment receipt image for withdrawals/settlements
 
 
 # ─── Account Schemas ──────────────────────────────────────────────────────────

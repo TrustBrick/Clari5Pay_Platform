@@ -42,6 +42,7 @@ class TxStatus(str, enum.Enum):
     # New workflow statuses
     ACCOUNT_REQUESTED = "ACCOUNT_REQUESTED"
     ACCOUNT_SUBMITTED = "ACCOUNT_SUBMITTED"
+    SLIP_SUBMITTED = "SLIP_SUBMITTED"
 
 
 class AccountType(str, enum.Enum):
@@ -66,9 +67,14 @@ class User(Base):
     phone: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
+    # Full creation timestamp (date + time) — shown in the SA "merchants by admin" popup
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
     # Which admin created this merchant (null for admins / super admin)
     created_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Merchant access role (DEO / SUPERVISOR / MANAGER) — drives the sidebar.
+    merchant_role: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     # Merchant-specific
     pay_in: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
@@ -110,10 +116,13 @@ class Transaction(Base):
     account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
-    # Proof / verification (Admin "Check" workflow)
-    merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # merchant-uploaded image (data URL)
-    admin_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # admin-uploaded image (data URL)
+    # Proof / verification workflow
+    merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # merchant payment slip image (data URL)
+    merchant_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # merchant payment reference number
+    admin_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # admin-uploaded bank-details image (data URL)
     admin_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # admin reference number
+    admin_bank_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # admin manually-entered bank details
+    admin_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)   # admin UPI ID (when merchant chose UPI)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -151,6 +160,30 @@ class AccountTransaction(Base):
     transaction_reference_number: Mapped[Optional[str]] = mapped_column(String(32), index=True, nullable=True)
     transaction_date: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     transaction_time: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class SystemLog(Base):
+    """Audit log of key actions across the platform (viewable by the Super Admin)."""
+    __tablename__ = "system_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    actor_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    actor_name: Mapped[str] = mapped_column(String(128), default="system", nullable=False)
+    action: Mapped[str] = mapped_column(String(48), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Notification(Base):
+    """A per-user notification capturing an action in the system."""
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    icon: Mapped[str] = mapped_column(String(8), default="🔔", nullable=False)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class SupportMessage(Base):

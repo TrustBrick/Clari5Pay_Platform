@@ -6,9 +6,11 @@ import asyncio
 from datetime import date, datetime
 from sqlalchemy import select
 from app.db.session import engine, AsyncSessionLocal, Base
+from app.db.migrate import ensure_schema
 from app.models.models import (
     User, Transaction, UserRole, RiskLevel, TxType, TxStatus,
     AccountMaster, AccountTransaction, AccountType, SupportMessage, SupportSender,
+    Notification,
 )
 from app.core.security import get_password_hash
 
@@ -17,6 +19,8 @@ async def seed():
     # Create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Reconcile new columns / enum values on already-seeded databases.
+    await ensure_schema(engine)
 
     async with AsyncSessionLocal() as db:
         # Check if already seeded
@@ -61,28 +65,32 @@ async def seed():
                 username="merchant1", hashed_password=get_password_hash("pass123"),
                 role=UserRole.MERCHANT, email="nexus@clari5pay.io",
                 name="Nexus Fintech Ltd.", phone="+91 90000 12345", active=True, created=date(2025, 6, 1),
+                created_at=datetime(2025, 6, 1, 10, 15, 0),
                 created_by=admin1.id,
                 pay_in="DEP", pay_out="WIT", settlement="SET",
                 pay_in_fee=1.5, pay_out_fee=1.2, balance=485000,
                 risk=RiskLevel.LOW, profile="Maker",
+                # merchant_role left null → full sidebar (demos Balance/Risk/Support).
             ),
             User(
                 username="merchant2", hashed_password=get_password_hash("pass123"),
                 role=UserRole.MERCHANT, email="bright@clari5pay.io",
                 name="BrightPay Inc.", phone="+1 415 555 0199", active=True, created=date(2025, 7, 15),
+                created_at=datetime(2025, 7, 15, 14, 30, 0),
                 created_by=admin2.id,
                 pay_in="BDP", pay_out="BWI", settlement="BST",
                 pay_in_fee=1.8, pay_out_fee=1.4, balance=212000,
-                risk=RiskLevel.MEDIUM, profile="Checker",
+                risk=RiskLevel.MEDIUM, profile="Checker", merchant_role="SUPERVISOR",
             ),
             User(
                 username="merchant3", hashed_password=get_password_hash("pass123"),
                 role=UserRole.MERCHANT, email="zenpay@clari5pay.io",
                 name="ZenPay Solutions", phone="+91 90000 67890", active=True, created=date(2025, 8, 2),
+                created_at=datetime(2025, 8, 2, 9, 0, 0),
                 created_by=admin1.id,
                 pay_in="ZDP", pay_out="ZWI", settlement="ZST",
                 pay_in_fee=1.6, pay_out_fee=1.3, balance=98000,
-                risk=RiskLevel.LOW, profile="Maker",
+                risk=RiskLevel.LOW, profile="Maker", merchant_role="MANAGER",
             ),
         ]
         for m in merchants:
@@ -116,7 +124,27 @@ async def seed():
                 deposit_type="IMPS", member_name="Suresh Patel", member_id="MBR20240051"),
             Transaction(ref="DEP0000003", type=TxType.DEPOSIT_REQUEST, amount=60000, status=TxStatus.ACCOUNT_SUBMITTED,
                 merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 7), tx_time="12:00:00",
-                deposit_type="UPI", member_name="Raj Kumar", member_id="MBR20240001", admin_ref="ADMREF-1003"),
+                deposit_type="UPI", member_name="Raj Kumar", member_id="MBR20240001", admin_ref="ADMREF-1003",
+                admin_upi_id="clari5pay@hdfcbank"),
+            # ── Completed deposits + settlement for merchant1 (drives Balance Enquiry) ──
+            Transaction(ref="DEP0000004", type=TxType.DEPOSIT_REQUEST, amount=300000, status=TxStatus.COMPLETED,
+                merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 5), tx_time="10:00:00",
+                deposit_type="NEFT", member_name="Raj Kumar", member_id="MBR20240001",
+                admin_ref="ADMREF-2001", merchant_ref="UTR556677"),
+            Transaction(ref="DEP0000005", type=TxType.DEPOSIT_REQUEST, amount=200000, status=TxStatus.COMPLETED,
+                merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 6), tx_time="11:30:00",
+                deposit_type="IMPS", member_name="Anita Singh", member_id="MBR20240002",
+                admin_ref="ADMREF-2002", merchant_ref="UTR889900"),
+            Transaction(ref="SET0000001", type=TxType.SETTLEMENT_REQUEST, amount=100000, status=TxStatus.COMPLETED,
+                merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 6), tx_time="16:00:00",
+                member_id="MBR20240001", admin_ref="ADMREF-2003"),
+            # ── Slip submitted by merchant1 (awaiting admin "Done") ──
+            Transaction(ref="WIT0000003", type=TxType.WITHDRAWAL_REQUEST, amount=40000, status=TxStatus.SLIP_SUBMITTED,
+                merchant_id=m1.id, merchant_name=m1.name, tx_date=date(2026, 6, 13), tx_time="09:45:00",
+                member_id="MBR20240002", bank_name="HDFC Bank", account_holder="Nexus Fintech Ltd.",
+                account_number="50100123456789", ifsc="HDFC0001234",
+                admin_bank_details="A/C 50100999888777 · HDFC Bank · IFSC HDFC0000123", admin_ref="ADMREF-2004",
+                merchant_ref="PAYREF-7788"),
         ]
         for t in txns:
             db.add(t)
@@ -171,6 +199,18 @@ async def seed():
         ]
         for msg in msgs:
             db.add(msg)
+
+        # ── Sample notifications ──
+        superadmin = (await db.execute(select(User).where(User.username == "superadmin"))).scalar_one()
+        notifs = [
+            Notification(user_id=admin1.id, message="BWI0000001: payment slip submitted by BrightPay Inc.", icon="🧾"),
+            Notification(user_id=admin1.id, message="Deposit DEP0000002 requested by Nexus Fintech Ltd.", icon="↓"),
+            Notification(user_id=m1.id, message="DEP0000004: completed", icon="✓", read=True),
+            Notification(user_id=m1.id, message="WIT0000003: account details sent to Nexus Fintech Ltd.", icon="🏦"),
+            Notification(user_id=superadmin.id, message="Admin \"Priya Mehta\" is active", icon="🛡", read=True),
+        ]
+        for n in notifs:
+            db.add(n)
 
         await db.commit()
         print("✅ Database seeded successfully!")
