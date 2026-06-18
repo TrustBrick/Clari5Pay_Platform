@@ -8,28 +8,45 @@ import LoginPage from './pages/LoginPage';
 import {
   MerchantDashboard, DepositManagement, WithdrawalManagement, SettlementManagement,
   TransactionHistory, BalancePage, RiskPage, MerchantSupportChat, ProfilePage,
-  CancelRequestPage, TemplatesPage,
+  CancelRequestPage, TemplatesPage, NewsPage,
 } from './pages/MerchantPages';
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
-  SaDashboard, SaAdminsPage, SystemLogsPage,
+  SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage,
 } from './pages/AdminPages';
+
+const defaultPageFor = (role?: string) =>
+  role === 'MERCHANT' ? 'dashboard' : role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard';
+
+// Is `page` a valid destination for this role? (prevents showing another role's page)
+const pageAllowed = (role: string, page: string) => {
+  if (!page) return false;
+  if (page === 'profile') return true;
+  if (role === 'SUPER_ADMIN') return page.startsWith('sa-');
+  if (role === 'ADMIN') return page.startsWith('admin-');
+  return !page.startsWith('sa-') && !page.startsWith('admin-'); // MERCHANT
+};
 
 const App: React.FC = () => {
   const { user, logout } = useAuth();
   const [page, setPage] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Default page per role
+  // Reset to the role's dashboard whenever the logged-in user changes (login / account switch).
+  const prevUserId = React.useRef<number | null>(null);
   React.useEffect(() => {
-    if (user && !page) {
-      if (user.role === 'MERCHANT') setPage('dashboard');
-      else if (user.role === 'ADMIN') setPage('admin-dashboard');
-      else setPage('sa-dashboard');
+    if (!user) { prevUserId.current = null; return; }
+    if (user.id !== prevUserId.current) {
+      prevUserId.current = user.id;
+      setPage(defaultPageFor(user.role));
     }
   }, [user]);
 
   if (!user) return <LoginPage />;
+
+  // Effective page: fall back to the role default if the current page isn't valid for this role
+  // (e.g. a stale page left over from a previous session/role).
+  const activePage = pageAllowed(user.role, page) ? page : defaultPageFor(user.role);
 
   const renderPage = () => {
     const props = { user };
@@ -43,6 +60,7 @@ const App: React.FC = () => {
       templates: <TemplatesPage {...props} />,
       balance: <BalancePage {...props} />,
       risk: <RiskPage {...props} />,
+      news: <NewsPage {...props} />,
       support: <MerchantSupportChat {...props} />,
       profile: <ProfilePage {...props} />,
       'admin-dashboard': <AdminDashboard {...props} />,
@@ -52,8 +70,9 @@ const App: React.FC = () => {
       'sa-dashboard': <SaDashboard />,
       'sa-admins': <SaAdminsPage />,
       'sa-logs': <SystemLogsPage />,
+      'sa-audit': <AuditLogsPage />,
     };
-    return map[page] || map[user.role === 'MERCHANT' ? 'dashboard' : user.role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard'];
+    return map[activePage] || map[defaultPageFor(user.role)];
   };
 
   return (
@@ -80,7 +99,7 @@ const App: React.FC = () => {
 
       <Sidebar
         user={user}
-        active={page}
+        active={activePage}
         onNav={(key) => { setPage(key); setSidebarOpen(false); }}
         onLogout={logout}
         open={sidebarOpen}
@@ -89,7 +108,7 @@ const App: React.FC = () => {
 
       <Header
         user={user}
-        title={PAGE_TITLES[page] || 'Dashboard'}
+        title={PAGE_TITLES[activePage] || 'Dashboard'}
         onMenuClick={() => setSidebarOpen(o => !o)}
       />
 

@@ -2,7 +2,7 @@ import { T } from './theme';
 import type { TxStatus } from '../types';
 
 export const fmt = (n: number) =>
-  `₹${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+  `₹${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export const statusStyle = (s: TxStatus) => {
   const map: Record<string, { color: string; bg: string }> = {
@@ -36,6 +36,39 @@ export const statusLabel = (status: string, type?: string, viewerRole?: string):
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
 };
+
+// Password complexity policy — mirrors the backend (app/core/security.py).
+// Min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special character.
+export const PASSWORD_POLICY_TEXT =
+  'At least 8 characters with an uppercase letter, a lowercase letter, a number and a special character.';
+
+export const passwordPolicyError = (pw: string): string | null => {
+  if (!pw || pw.length < 8) return 'Password must be at least 8 characters long.';
+  if (!/[A-Z]/.test(pw)) return 'Password must contain at least one uppercase letter.';
+  if (!/[a-z]/.test(pw)) return 'Password must contain at least one lowercase letter.';
+  if (!/\d/.test(pw)) return 'Password must contain at least one number.';
+  if (!/[^A-Za-z0-9]/.test(pw)) return 'Password must contain at least one special character.';
+  return null;
+};
+
+// Merchant access-role labels (shared across header, profile, admin tables, forms).
+export const MERCHANT_ROLE_LABELS: Record<string, string> = {
+  DEO: 'Data Operator',
+  DEPOSIT_OPERATOR: 'Deposit Operator',
+  WITHDRAWAL_OPERATOR: 'Withdrawal Operator',
+  SUPERVISOR: 'Supervisor',
+  MANAGER: 'Manager',
+};
+export const merchantRoleLabel = (r?: string | null) =>
+  r ? (MERCHANT_ROLE_LABELS[String(r).toUpperCase()] || r) : '';
+
+export const MERCHANT_ROLE_OPTIONS = [
+  { value: 'DEO', label: 'Data Operator' },
+  { value: 'DEPOSIT_OPERATOR', label: 'Deposit Operator' },
+  { value: 'WITHDRAWAL_OPERATOR', label: 'Withdrawal Operator' },
+  { value: 'SUPERVISOR', label: 'Supervisor' },
+  { value: 'MANAGER', label: 'Manager' },
+];
 
 // Human-readable label for transaction types (handles the *_REQUEST variants).
 export const typeLabel = (t: string) =>

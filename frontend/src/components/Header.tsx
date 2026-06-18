@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
-import { timeAgo } from '../utils/helpers';
+import { timeAgo, merchantRoleLabel } from '../utils/helpers';
 import { notificationAPI } from '../services/api';
 import type { Notification, User } from '../types';
 
@@ -126,10 +126,14 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick }) => {
         </div>
 
         <div style={{ display:'flex',alignItems:'center',gap:8,padding:'4px 8px',borderRadius:10,background:T.canvas }}>
-          <div style={{ width:30,height:30,borderRadius:'50%',background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:'#fff' }}>{user.name.charAt(0)}</div>
+          {user.avatar
+            ? <img src={user.avatar} alt={user.name} style={{ width:30,height:30,borderRadius:'50%',objectFit:'cover',border:`1px solid ${T.border}` }}/>
+            : <div style={{ width:30,height:30,borderRadius:'50%',background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:'#fff' }}>{user.name.charAt(0)}</div>}
           <div style={{ display:'flex',flexDirection:'column' }}>
             <p style={{ fontSize:11,fontWeight:700,color:T.textMain,margin:0 }}>{user.name.split(' ')[0]}</p>
-            <p style={{ fontSize:9,color:T.textMuted,margin:0 }}>{user.role.replace('_',' ')}</p>
+            <p style={{ fontSize:9,color:T.textMuted,margin:0 }}>
+              {user.role === 'MERCHANT' && user.merchantRole ? merchantRoleLabel(user.merchantRole) : user.role.replace('_',' ')}
+            </p>
           </div>
         </div>
       </div>

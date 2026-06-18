@@ -1,34 +1,153 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { Logo, Btn, Input } from '../components/UI';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { authAPI } from '../services/api';
+import { passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
+import type { OtpChallenge } from '../types';
 
 const LoginPage: React.FC = () => {
-  const { login, isLoading } = useAuth();
+  const { login, verifyOtp, resendOtp, isLoading } = useAuth();
   const { showToast } = useToast();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  // Forgot-password flow: email → otp → newpw → done.
   const [forgot, setForgot] = useState(false);
-  const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotStep, setForgotStep] = useState<'username' | 'otp' | 'newpw' | 'done'>('username');
+  const [forgotUsername, setForgotUsername] = useState('');
+  const [resetToken, setResetToken] = useState('');
+  const [confirmedToken, setConfirmedToken] = useState('');
+  const [resetCode, setResetCode] = useState('');
+  const [resetMasked, setResetMasked] = useState('');
+  const [resetDevOtp, setResetDevOtp] = useState<string | undefined>(undefined);
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [forgotBusy, setForgotBusy] = useState(false);
   const [show, setShow] = useState(false);
+  // OTP step
+  const [otp, setOtp] = useState<OtpChallenge | null>(null);
+  const [code, setCode] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  // OTP on/off toggle (testing aid)
+  const [otpEnabled, setOtpEnabled] = useState(true);
+
+  useEffect(() => { authAPI.otpStatus().then(s => setOtpEnabled(s.enabled)).catch(()=>{}); }, []);
+
+  const toggleOtp = async () => {
+    const next = !otpEnabled;
+    setOtpEnabled(next); // optimistic
+    try {
+      await authAPI.setOtpEnabled(next);
+      showToast(`Login OTP ${next ? 'enabled' : 'disabled'}`);
+    } catch {
+      setOtpEnabled(!next);
+      showToast('Could not change OTP setting', 'error');
+    }
+  };
 
   const handleLogin = async () => {
     setError('');
     try {
-      await login(username, password);
-    } catch {
-      setError('Invalid credentials. Check demo credentials below.');
+      const challenge = await login(username, password);
+      if (challenge.otpRequired) {
+        setOtp(challenge);
+        setCode('');
+      }
+      // otpRequired === false → session already established; App redirects to dashboard.
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Login failed. Please try again.');
     }
   };
 
-  const DEMOS = [
-    ['superadmin', 'Super Admin', '👑'],
-    ['admin1', 'Admin', '🛡'],
-    ['merchant1', 'Merchant', '🏪'],
-  ];
+  const handleVerify = async () => {
+    if (!otp) return;
+    setError('');
+    setVerifying(true);
+    try {
+      await verifyOtp(otp.otpToken, code.trim());
+      // success → AuthContext sets the user; App redirects to the dashboard.
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Invalid OTP. Please try again.');
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (!otp) return;
+    setError('');
+    try {
+      const challenge = await resendOtp(otp.otpToken);
+      setOtp(challenge);
+      setCode('');
+      showToast('A new OTP has been sent');
+    } catch {
+      showToast('Could not resend OTP', 'error');
+    }
+  };
+
+  const backToLogin = () => { setOtp(null); setCode(''); setError(''); setPassword(''); };
+
+  const openForgot = () => {
+    setForgot(true); setForgotStep('username'); setError('');
+    setForgotUsername(''); setResetToken(''); setConfirmedToken(''); setResetCode('');
+    setResetMasked(''); setResetDevOtp(undefined); setNewPw(''); setConfirmPw('');
+  };
+  const closeForgot = () => { setForgot(false); setError(''); };
+
+  const sendResetOtp = async () => {
+    setError(''); setForgotBusy(true);
+    try {
+      const r = await authAPI.forgotPassword(forgotUsername.trim());
+      setResetToken(r.resetToken);
+      setResetMasked(r.email);
+      setResetDevOtp(r.devOtp);
+      setResetCode('');
+      setForgotStep('otp');
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Could not send the reset code. Please try again.');
+    } finally { setForgotBusy(false); }
+  };
+
+  const verifyResetCode = async () => {
+    setError(''); setForgotBusy(true);
+    try {
+      const r = await authAPI.verifyResetOtp(resetToken, resetCode.trim());
+      setConfirmedToken(r.confirmedToken);
+      setNewPw(''); setConfirmPw('');
+      setForgotStep('newpw');
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Invalid OTP. Please try again.');
+    } finally { setForgotBusy(false); }
+  };
+
+  const resendResetOtp = async () => {
+    setError('');
+    try {
+      const r = await authAPI.forgotPassword(forgotUsername.trim());
+      setResetToken(r.resetToken);
+      setResetDevOtp(r.devOtp);
+      setResetCode('');
+      showToast('A new OTP has been sent');
+    } catch { showToast('Could not resend OTP', 'error'); }
+  };
+
+  const submitNewPassword = async () => {
+    setError('');
+    if (newPw !== confirmPw) { setError('Passwords do not match.'); return; }
+    const policy = passwordPolicyError(newPw);
+    if (policy) { setError(policy); return; }
+    setForgotBusy(true);
+    try {
+      await authAPI.resetPassword(confirmedToken, newPw);
+      setForgotStep('done');
+      showToast('Password updated — please sign in');
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Could not update the password. Please try again.');
+    } finally { setForgotBusy(false); }
+  };
 
   return (
     <div style={{ minHeight:'100vh',display:'flex',background:T.dark,fontFamily:'inherit',position:'relative',overflow:'hidden' }}>
@@ -65,7 +184,37 @@ const LoginPage: React.FC = () => {
 
       {/* Right Panel */}
       <div style={{ width:'100%',maxWidth:480,background:'rgba(255,255,255,0.97)',backdropFilter:'blur(20px)',display:'flex',flexDirection:'column',justifyContent:'center',padding:'40px 40px',boxShadow:'-20px 0 80px rgba(0,0,0,0.3)',position:'relative',zIndex:1 }} className="login-right">
-        {!forgot ? (
+        {otp ? (
+          <>
+            <div style={{ marginBottom:28 }}>
+              <div style={{ display:'flex',justifyContent:'center',marginBottom:20 }} className="login-logo-mobile"><Logo size="sm"/></div>
+              <h2 style={{ fontSize:22,fontWeight:800,color:T.textMain,margin:'0 0 6px' }}>Verify it's you</h2>
+              <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>Enter the 6-digit code sent to <b style={{ color:T.textMain }}>{otp.email}</b></p>
+            </div>
+
+            {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}>⚠ {error}</div>}
+
+            {otp.devOtp && (
+              <div style={{ background:T.infoBg,border:`1px solid ${T.blue}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.blue }}>
+                🧪 Dev mode (no email server): your code is <b style={{ letterSpacing:'0.1em' }}>{otp.devOtp}</b>
+              </div>
+            )}
+
+            <Input label="One-Time Password" value={code}
+              onChange={e=>setCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
+              placeholder="6-digit code" icon="🔑" required/>
+
+            <Btn size="lg" full onClick={handleVerify} disabled={verifying||code.length<6}>
+              {verifying?'Verifying...':'Verify & Sign In →'}
+            </Btn>
+
+            <div style={{ display:'flex',justifyContent:'space-between',marginTop:18 }}>
+              <span onClick={backToLogin} style={{ fontSize:13,color:T.textMuted,cursor:'pointer',fontWeight:700 }}>← Back</span>
+              <span onClick={handleResend} style={{ fontSize:13,color:T.blue,cursor:'pointer',fontWeight:700 }}>Resend OTP</span>
+            </div>
+            <p style={{ fontSize:11,color:T.textMuted,marginTop:16,textAlign:'center' }}>The code expires in 15 minutes.</p>
+          </>
+        ) : !forgot ? (
           <>
             <div style={{ marginBottom:32 }}>
               <div style={{ display:'flex',justifyContent:'center',marginBottom:20 }} className="login-logo-mobile"><Logo size="sm"/></div>
@@ -82,49 +231,94 @@ const LoginPage: React.FC = () => {
             </div>
 
             <div style={{ display:'flex',justifyContent:'flex-end',marginBottom:20,marginTop:-8 }}>
-              <span onClick={()=>setForgot(true)} style={{ fontSize:12,color:T.blue,cursor:'pointer',fontWeight:700 }}>Forgot password?</span>
+              <span onClick={openForgot} style={{ fontSize:12,color:T.blue,cursor:'pointer',fontWeight:700 }}>Forgot password?</span>
             </div>
 
             <Btn size="lg" full onClick={handleLogin} disabled={isLoading||!username||!password}>
               {isLoading?'Authenticating...':'Sign In →'}
             </Btn>
 
-            <div style={{ marginTop:28,padding:16,background:T.canvas,borderRadius:12,border:`1px solid ${T.border}` }}>
-              <p style={{ fontWeight:800,color:T.textMain,marginBottom:10,fontSize:12,textTransform:'uppercase',letterSpacing:'0.05em' }}>Demo Accounts (password: pass123)</p>
-              {DEMOS.map(([u,l,ic])=>(
-                <div key={u} onClick={()=>{setUsername(u);setPassword('pass123');}}
-                  style={{ cursor:'pointer',padding:'7px 10px',borderRadius:8,display:'flex',alignItems:'center',gap:8,marginBottom:4,transition:'background 0.15s' }}
-                  onMouseEnter={e=>(e.currentTarget as HTMLDivElement).style.background=T.infoBg}
-                  onMouseLeave={e=>(e.currentTarget as HTMLDivElement).style.background='transparent'}>
-                  <span>{ic}</span>
-                  <code style={{ color:T.blue,fontWeight:700,fontSize:12 }}>{u}</code>
-                  <span style={{ color:T.textMuted,fontSize:12,marginLeft:'auto' }}>{l}</span>
-                </div>
-              ))}
+            {/* OTP on/off toggle (testing aid) */}
+            <div style={{ marginTop:18,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:T.canvas,borderRadius:10,border:`1px solid ${T.border}` }}>
+              <div>
+                <p style={{ margin:0,fontSize:12,fontWeight:700,color:T.textMain }}>Login OTP</p>
+                <p style={{ margin:0,fontSize:11,color:T.textMuted }}>{otpEnabled ? 'On — verify with email code' : 'Off — password only'}</p>
+              </div>
+              <div onClick={toggleOtp} role="switch" aria-checked={otpEnabled}
+                style={{ width:46,height:26,borderRadius:13,background:otpEnabled?T.success:T.border,position:'relative',cursor:'pointer',transition:'background 0.2s',flexShrink:0 }}>
+                <div style={{ position:'absolute',top:3,left:otpEnabled?23:3,width:20,height:20,borderRadius:'50%',background:'#fff',boxShadow:'0 1px 3px rgba(0,0,0,0.3)',transition:'left 0.2s' }}/>
+              </div>
             </div>
+
           </>
         ) : (
           <>
-            <div style={{ textAlign:'center',marginBottom:28 }}>
+            <div style={{ textAlign:'center',marginBottom:24 }}>
               <div style={{ fontSize:40,marginBottom:12 }}>🔐</div>
               <h2 style={{ fontSize:20,fontWeight:800,color:T.textMain,margin:'0 0 6px' }}>Reset Password</h2>
-              <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>Enter your email for a one-time password</p>
+              <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>
+                {forgotStep==='username' && 'Enter your username to receive a verification code'}
+                {forgotStep==='otp' && <>Enter the 6-digit code sent to <b style={{ color:T.textMain }}>{resetMasked}</b> for <b style={{ color:T.textMain }}>{forgotUsername}</b></>}
+                {forgotStep==='newpw' && <>Choose a new password for <b style={{ color:T.textMain }}>{forgotUsername}</b></>}
+                {forgotStep==='done' && <>Password updated for <b style={{ color:T.textMain }}>{forgotUsername}</b></>}
+              </p>
             </div>
-            {!forgotSent ? (
+
+            {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}>⚠ {error}</div>}
+
+            {forgotStep==='username' && (
               <>
-                <Input label="Email Address" type="email" value={forgotEmail} onChange={e=>setForgotEmail(e.target.value)} placeholder="you@company.com" icon="✉" required/>
-                <Btn size="lg" full onClick={()=>setForgotSent(true)} disabled={!forgotEmail}>Send OTP</Btn>
+                <Input label="Username" value={forgotUsername} onChange={e=>setForgotUsername(e.target.value)} placeholder="Your username" icon="👤" required/>
+                <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 14px' }}>A one-time code will be sent to the email registered for this account.</p>
+                <Btn size="lg" full onClick={sendResetOtp} disabled={forgotBusy||!forgotUsername}>{forgotBusy?'Sending...':'Send OTP'}</Btn>
               </>
-            ) : (
-              <div style={{ textAlign:'center',padding:20 }}>
+            )}
+
+            {forgotStep==='otp' && (
+              <>
+                {resetDevOtp && (
+                  <div style={{ background:T.infoBg,border:`1px solid ${T.blue}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.blue }}>
+                    🧪 Dev mode: your code is <b style={{ letterSpacing:'0.1em' }}>{resetDevOtp}</b>
+                  </div>
+                )}
+                <Input label="One-Time Password" value={resetCode}
+                  onChange={e=>setResetCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
+                  placeholder="6-digit code" icon="🔑" required/>
+                <Btn size="lg" full onClick={verifyResetCode} disabled={forgotBusy||resetCode.length<6}>{forgotBusy?'Verifying...':'Verify Code →'}</Btn>
+                <div style={{ display:'flex',justifyContent:'flex-end',marginTop:16 }}>
+                  <span onClick={resendResetOtp} style={{ fontSize:13,color:T.blue,cursor:'pointer',fontWeight:700 }}>Resend OTP</span>
+                </div>
+                <p style={{ fontSize:11,color:T.textMuted,marginTop:14,textAlign:'center' }}>The code expires in 15 minutes.</p>
+              </>
+            )}
+
+            {forgotStep==='newpw' && (
+              <>
+                <div style={{ position:'relative' }}>
+                  <Input label="New Password" type={show?'text':'password'} value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Enter new password" icon="🔒" required/>
+                  <span onClick={()=>setShow(!show)} style={{ position:'absolute',right:12,bottom:22,cursor:'pointer',fontSize:16,color:T.textMuted }}>{show?'🙈':'👁'}</span>
+                </div>
+                <Input label="Confirm Password" type={show?'text':'password'} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Re-enter new password" icon="🔒" required/>
+                {confirmPw && newPw !== confirmPw && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
+                <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 14px' }}>{PASSWORD_POLICY_TEXT}</p>
+                <Btn size="lg" full onClick={submitNewPassword} disabled={forgotBusy||!newPw||!confirmPw}>{forgotBusy?'Updating...':'Update Password'}</Btn>
+              </>
+            )}
+
+            {forgotStep==='done' && (
+              <div style={{ textAlign:'center',padding:'8px 0 4px' }}>
                 <div style={{ width:56,height:56,borderRadius:'50%',background:T.successBg,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,margin:'0 auto 12px' }}>✓</div>
-                <p style={{ color:T.success,fontWeight:700 }}>OTP sent to {forgotEmail}</p>
-                <p style={{ fontSize:12,color:T.textMuted }}>Valid for 5 minutes</p>
+                <p style={{ color:T.success,fontWeight:700,margin:'0 0 4px' }}>Password updated successfully</p>
+                <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Sign in with your new password.</p>
+                <Btn size="lg" full style={{ marginTop:18 }} onClick={closeForgot}>← Back to Sign In</Btn>
               </div>
             )}
-            <div style={{ textAlign:'center',marginTop:20 }}>
-              <span onClick={()=>{setForgot(false);setForgotSent(false);}} style={{ fontSize:13,color:T.blue,cursor:'pointer',fontWeight:700 }}>← Back to Sign In</span>
-            </div>
+
+            {forgotStep!=='done' && (
+              <div style={{ textAlign:'center',marginTop:20 }}>
+                <span onClick={closeForgot} style={{ fontSize:13,color:T.blue,cursor:'pointer',fontWeight:700 }}>← Back to Sign In</span>
+              </div>
+            )}
           </>
         )}
       </div>

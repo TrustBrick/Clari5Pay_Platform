@@ -1,13 +1,76 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, Modal, Badge } from '../components/UI';
+import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel } from '../utils/helpers';
+import { upiQrDataUrl } from '../utils/qr';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge } from '../components/UI';
 import TxTable from '../components/TxTable';
-import { transactionAPI, supportAPI, supportWsUrl, userAPI } from '../services/api';
+import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
-import type { Transaction, User, SupportMessage, BalanceSummary } from '../types';
+import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount } from '../types';
+
+// ─── Reusable merchant bank-account picker (select saved or add new) ───────────
+type BankForm = { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName: string };
+const emptyBank: BankForm = { accountHolder: '', accountNumber: '', ifsc: '', branch: '', bankName: '' };
+
+const BankAccountFields: React.FC<{
+  bank: BankForm; onBank: (b: BankForm) => void; saveNew: boolean; onSaveNew: (v: boolean) => void;
+}> = ({ bank, onBank, saveNew, onSaveNew }) => {
+  const [saved, setSaved] = useState<MerchantBankAccount[]>([]);
+  const [sel, setSel] = useState<string>('NEW');
+
+  useEffect(() => {
+    bankAccountAPI.listMine().then(list => {
+      setSaved(list);
+      if (list.length) {
+        const a = list[0];
+        setSel(String(a.id));
+        onBank({ accountHolder:a.accountHolder, accountNumber:a.accountNumber, ifsc:a.ifsc, branch:a.branch, bankName:a.bankName || '' });
+        onSaveNew(false);
+      }
+    }).catch(()=>{});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const choose = (v: string) => {
+    setSel(v);
+    if (v === 'NEW') { onBank(emptyBank); onSaveNew(true); }
+    else {
+      const a = saved.find(x => String(x.id) === v);
+      if (a) { onBank({ accountHolder:a.accountHolder, accountNumber:a.accountNumber, ifsc:a.ifsc, branch:a.branch, bankName:a.bankName || '' }); onSaveNew(false); }
+    }
+  };
+  const set = (k: keyof BankForm, v: string) => onBank({ ...bank, [k]: v });
+
+  return (
+    <div>
+      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>Bank Account</p>
+      {saved.length > 0 && (
+        <Sel label="Select Bank Account" value={sel} onChange={e=>choose(e.target.value)}
+          options={[...saved.map(a => ({ value:String(a.id), label:`${a.accountHolder} — ${a.accountNumber}` })), { value:'NEW', label:'➕ Add new account' }]} />
+      )}
+      {sel === 'NEW' && (
+        <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+          <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
+          <Input label="Account Number" value={bank.accountNumber} onChange={e=>set('accountNumber',e.target.value)} required/>
+          <Input label="IFSC Code" value={bank.ifsc} onChange={e=>set('ifsc',e.target.value.toUpperCase())} required/>
+          <Input label="Branch Name" value={bank.branch} onChange={e=>set('branch',e.target.value)} required/>
+          <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)}/>
+        </div>
+      )}
+      {sel !== 'NEW' && (
+        <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:14 }}>
+          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Holder</span><b>{bank.accountHolder}</b></div>
+          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Number</span><b>{bank.accountNumber}</b></div>
+          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>IFSC</span><b>{bank.ifsc}</b></div>
+          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Branch</span><b>{bank.branch}</b></div>
+        </div>
+      )}
+      {saveNew && <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>This account will be saved for future requests.</p>}
+    </div>
+  );
+};
 
 // ─── Proof upload field (shared by request forms) ──────────────────────────────
 const ProofUpload: React.FC<{ value: string | null; onChange: (v: string | null) => void }> = ({ value, onChange }) => {
@@ -41,6 +104,45 @@ export const MerchantSlipModal: React.FC<{
   const [proof, setProof] = useState<string | null>(null);
   const [ref, setRef] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // ── UPI / QR payment display (amount baked into the QR; 15-minute validity) ──
+  const isUpiQr = tx.type.startsWith('DEPOSIT') && ['UPI', 'QR'].includes((tx.depositType || '').toUpperCase());
+  const isUpiType = (tx.depositType || '').toUpperCase() === 'UPI';
+  const [qrExpiresAt, setQrExpiresAt] = useState<string | null | undefined>(tx.qrExpiresAt);
+  const [qrImg, setQrImg] = useState<string | null>(null);
+  const [nowTs, setNowTs] = useState(Date.now());
+  const [regenerating, setRegenerating] = useState(false);
+  const qrExpired = !!qrExpiresAt && nowTs >= new Date(qrExpiresAt).getTime();
+  const qrSecondsLeft = qrExpiresAt ? Math.max(0, Math.floor((new Date(qrExpiresAt).getTime() - nowTs) / 1000)) : 0;
+  const mmss = `${String(Math.floor(qrSecondsLeft / 60)).padStart(2, '0')}:${String(qrSecondsLeft % 60).padStart(2, '0')}`;
+
+  useEffect(() => {
+    if (!isUpiQr || !qrExpiresAt) return;
+    const id = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isUpiQr, qrExpiresAt]);
+
+  useEffect(() => {
+    let alive = true;
+    if (isUpiQr && tx.adminUpiId && !qrExpired) {
+      upiQrDataUrl(tx.adminUpiId, tx.merchant, tx.amount, tx.ref).then(d => { if (alive) setQrImg(d); }).catch(() => {});
+    } else {
+      setQrImg(null);
+    }
+    return () => { alive = false; };
+  }, [isUpiQr, tx.adminUpiId, tx.amount, tx.merchant, tx.ref, qrExpired]);
+
+  const regenerateQr = async () => {
+    setRegenerating(true);
+    try {
+      const updated = await transactionAPI.regenerateQr(tx.id);
+      setQrExpiresAt(updated.qrExpiresAt);
+      setNowTs(Date.now());
+      showToast('New QR code generated — valid 15 minutes');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to regenerate QR code', 'error');
+    } finally { setRegenerating(false); }
+  };
 
   const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -83,7 +185,6 @@ export const MerchantSlipModal: React.FC<{
         `Amount: ${fmt(tx.amount)}`,
         tx.adminBankDetails,
         tx.adminUpiId ? `UPI ID: ${tx.adminUpiId}` : '',
-        tx.adminRef ? `Reference: ${tx.adminRef}` : '',
       ].filter(Boolean).join('\n');
       downloadText(lines, `account-details-${tx.ref}.txt`);
     }
@@ -96,14 +197,44 @@ export const MerchantSlipModal: React.FC<{
         <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
           <SlipRow k="Amount" v={fmt(tx.amount)} />
           <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" />} />
-          {tx.adminUpiId && <SlipRow k="UPI ID" v={tx.adminUpiId} />}
-          {tx.adminBankDetails && <SlipRow k="Bank Details" v={tx.adminBankDetails} />}
-          {tx.adminRef && <SlipRow k="Reference" v={tx.adminRef} />}
-          {!tx.adminUpiId && !tx.adminBankDetails && !tx.adminRef && !tx.adminProof &&
+          {/* UPI: show the UPI ID. QR: show only the QR (below). Bank details are hidden for both. */}
+          {tx.adminUpiId && isUpiType && <SlipRow k="UPI ID" v={tx.adminUpiId} />}
+          {!isUpiQr && tx.adminBankDetails && (
+            <div style={{ marginTop:8 }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Bank Details</p>
+              <p style={{ fontSize:13,color:T.textMain,margin:0,whiteSpace:'pre-line',lineHeight:1.6 }}>{tx.adminBankDetails}</p>
+            </div>
+          )}
+          {!tx.adminUpiId && !tx.adminBankDetails && !tx.adminProof &&
             <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting details from admin.</p>}
         </div>
-        {tx.adminProof && <img src={tx.adminProof} alt="Admin details" style={{ width:'100%',maxHeight:200,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
-        {hasAdminDetails && (
+
+        {/* UPI / QR payment code (amount baked in; 15-minute validity) */}
+        {isUpiQr && tx.adminUpiId && (
+          <div style={{ marginTop:12,textAlign:'center' }}>
+            {!qrExpired ? (
+              <>
+                <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Scan to pay {fmt(tx.amount)}</p>
+                {qrImg
+                  ? <img src={qrImg} alt="UPI QR code" style={{ width:200,height:200,borderRadius:12,border:`1px solid ${T.border}`,background:'#fff',padding:8 }} />
+                  : <div style={{ width:200,height:200,margin:'0 auto',display:'flex',alignItems:'center',justifyContent:'center',color:T.textMuted,fontSize:12 }}>Generating QR…</div>}
+                <p style={{ fontSize:12,color:qrSecondsLeft<=60?T.danger:T.textMuted,fontWeight:700,margin:'10px 0 0' }}>
+                  ⏱ Expires in {mmss}
+                </p>
+                <p style={{ fontSize:11,color:T.textMuted,margin:'2px 0 0' }}>The amount is already included — just scan and pay.</p>
+              </>
+            ) : (
+              <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:12,padding:'18px 16px' }}>
+                <div style={{ fontSize:28,marginBottom:6 }}>⏱</div>
+                <p style={{ fontSize:13,color:T.danger,fontWeight:700,margin:'0 0 12px' }}>This QR code has expired. Please generate a new QR code to continue.</p>
+                <Btn onClick={regenerateQr} disabled={regenerating}>{regenerating ? 'Generating…' : '↻ Generate New QR Code'}</Btn>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tx.adminProof && <img src={tx.adminProof} alt="Admin details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+        {hasAdminDetails && !isUpiQr && (
           <Btn size="sm" variant="ghost" style={{ marginTop:10 }} onClick={downloadDetails}>
             ⬇ Download {tx.type.startsWith('DEPOSIT') ? 'Account Details' : 'Receipt'}
           </Btn>
@@ -158,30 +289,66 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
   // Dashboard shows only in-flight requests (Account Requested / Submitted / Pending).
   const inFlight = txns.filter(t => t.status === 'ACCOUNT_REQUESTED' || t.status === 'ACCOUNT_SUBMITTED' || t.status === 'SLIP_SUBMITTED');
 
-  // Real-time status breakdown from this merchant's own records.
-  const cnt = (s: string) => txns.filter(t => t.status === s).length;
-  const statusData = [
-    { label: 'Account Requested', value: cnt('ACCOUNT_REQUESTED'), color: T.warning },
-    { label: 'Account Submitted', value: cnt('ACCOUNT_SUBMITTED'), color: T.info },
-    { label: 'Slip Submitted', value: cnt('SLIP_SUBMITTED'), color: T.blue },
-    { label: 'Completed', value: cnt('COMPLETED'), color: T.success },
+  // Real-time graphs from this merchant's own records.
+  const settlementCount = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
+  const depTx = txns.filter(t => t.type.startsWith('DEPOSIT'));
+  const wdTx = txns.filter(t => t.type.startsWith('WITHDRAWAL'));
+  const byStatus = (arr: Transaction[], s: string) => arr.filter(t => t.status === s).length;
+  const depositGraph = [
+    { label: 'Requested', value: byStatus(depTx, 'ACCOUNT_REQUESTED'), color: T.warning },
+    { label: 'Submitted', value: byStatus(depTx, 'ACCOUNT_SUBMITTED'), color: T.info },
+    { label: 'Slip', value: byStatus(depTx, 'SLIP_SUBMITTED'), color: T.blue },
+    { label: 'Deposited', value: byStatus(depTx, 'COMPLETED'), color: T.success },
   ];
+  const withdrawalGraph = [
+    { label: 'Submitted', value: byStatus(wdTx, 'ACCOUNT_REQUESTED'), color: T.warning },
+    { label: 'Completed', value: byStatus(wdTx, 'COMPLETED'), color: T.success },
+  ];
+
+  // Role-scoped dashboard cards (operators/supervisor never see Available Balance).
+  const role = String(user.merchantRole || '').toUpperCase();
+  const pendingCard = <StatCard icon="⧗" label="Pending Requests" value={inFlight.length} sub="In progress" color={T.warning}/>;
+  let cards: React.ReactNode;
+  if (role === 'DEPOSIT_OPERATOR') {
+    cards = <><StatCard icon="↓" label="No. of Deposits" value={summary?.depositCount ?? 0} color={T.blue}/>{pendingCard}</>;
+  } else if (role === 'WITHDRAWAL_OPERATOR') {
+    cards = <><StatCard icon="↑" label="No. of Withdrawals" value={summary?.withdrawalCount ?? 0} color={T.danger}/>{pendingCard}</>;
+  } else if (role === 'SUPERVISOR') {
+    cards = <><StatCard icon="⇄" label="No. of Settlements" value={settlementCount} color={T.info}/>{pendingCard}</>;
+  } else {
+    cards = <>
+      <StatCard icon="💰" label="Available Balance" value={fmt(summary?.available ?? 0)} sub="Updated now" color={T.success}/>
+      <StatCard icon="↓" label="No. of Deposits" value={summary?.depositCount ?? 0} color={T.blue}/>
+      <StatCard icon="↑" label="No. of Withdrawals" value={summary?.withdrawalCount ?? 0} color={T.danger}/>
+      {pendingCard}
+    </>;
+  }
 
   return (
     <div>
       <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:16,marginBottom:22 }}>
-        <StatCard icon="💰" label="Available Balance" value={fmt(summary?.available ?? 0)} sub="Updated now" color={T.success}/>
-        <StatCard icon="↓" label="No. of Deposits" value={summary?.depositCount ?? 0} color={T.blue}/>
-        <StatCard icon="↑" label="No. of Withdrawals" value={summary?.withdrawalCount ?? 0} color={T.danger}/>
-        <StatCard icon="⧗" label="Pending Requests" value={inFlight.length} sub="In progress" color={T.warning}/>
+        {cards}
+      </div>
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:22 }}>
+        <Card style={{ padding:22 }}>
+          <div style={{ marginBottom:14 }}>
+            <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Deposits by Status</h3>
+            <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Live counts from your deposits</p>
+          </div>
+          <StatusChart data={depositGraph}/>
+        </Card>
+        <Card style={{ padding:22 }}>
+          <div style={{ marginBottom:14 }}>
+            <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Withdrawals</h3>
+            <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Submitted vs completed</p>
+          </div>
+          <StatusChart data={withdrawalGraph}/>
+        </Card>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'2fr 1fr',gap:16,marginBottom:22 }}>
         <Card style={{ padding:22 }}>
-          <div style={{ marginBottom:14 }}>
-            <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Requests by Status</h3>
-            <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Live counts from your transactions</p>
-          </div>
-          <StatusChart data={statusData}/>
+          <div style={{ padding:'2px 0 14px' }}><h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Pending Requests</h3></div>
+          {loading ? <LoadingScreen label="Loading requests…"/> : <TxTable txns={inFlight.slice(0,6)} viewerRole="MERCHANT"/>}
         </Card>
         <Card style={{ padding:22 }}>
           <h3 style={{ margin:'0 0 14px',fontSize:14,fontWeight:800 }}>Account Info</h3>
@@ -193,10 +360,6 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
           ))}
         </Card>
       </div>
-      <Card>
-        <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}><h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Pending Requests</h3></div>
-        {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : <TxTable txns={inFlight.slice(0,6)} viewerRole="MERCHANT"/>}
-      </Card>
     </div>
   );
 };
@@ -204,19 +367,28 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
 // ─── Deposit form (used inside the Request modal) ──────────────────────────────
 export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ onSubmitted }) => {
   const { showToast } = useToast();
-  const [form, setForm] = useState({ amount:'',depositType:'UPI',memberName:'',memberId:'',segment:'A',profile:'NEW' });
+  const [form, setForm] = useState({ amount:'',depositType:'UPI',memberName:'',memberId:'',segment:'A',profile:'NEW',utr:'',notes:'' });
+  const [bank, setBank] = useState<BankForm>(emptyBank);
+  const [saveNew, setSaveNew] = useState(true);
+  const [riskAnalysis, setRiskAnalysis] = useState(false);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
   const submit = async () => {
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
+    if(parseFloat(form.amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
+    if(!bank.accountHolder||!bank.accountNumber){ showToast('Select or add a bank account','error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.createDeposit({ ...form, amount: parseFloat(form.amount) });
+      await transactionAPI.createDeposit({
+        ...form, amount: parseFloat(form.amount), riskAnalysis,
+        accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
+        saveBankAccount: saveNew,
+      });
       showToast('Deposit request submitted — awaiting admin review');
       onSubmitted?.();
-    } catch {
-      showToast('Failed to submit deposit request','error');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to submit deposit request','error');
     } finally {
       setLoading(false);
     }
@@ -226,13 +398,22 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     <div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={['UPI','QR','IMPS','NEFT','RTGS','CASH'].map(v=>({value:v,label:v}))} required/>
-        <Input label="Amount (INR ₹)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="0.00" required icon="₹"/>
+        <Input label="Amount (INR ₹)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Min 1" required icon="₹"/>
         <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" required/>
         <Input label="Member ID" value={form.memberId} onChange={e=>set('memberId',e.target.value)} placeholder="e.g. MBR20240001" required/>
         <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
         <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
+        <Input label="UTR Number" value={form.utr} onChange={e=>set('utr',e.target.value)} placeholder="Bank UTR (optional)"/>
       </div>
-      <p style={{ fontSize:12,color:T.textMuted,margin:'4px 0 16px' }}>After you submit, the admin will send payment details. You then pay and upload your slip from the Action button.</p>
+      <BankAccountFields bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+      <div style={{ marginBottom:14 }}>
+        <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Admin (optional)</label>
+        <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder="Any message for the admin reviewing this request"
+          style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:60 }}/>
+      </div>
+      <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,marginBottom:16,cursor:'pointer' }}>
+        <input type="checkbox" checked={riskAnalysis} onChange={e=>setRiskAnalysis(e.target.checked)}/> Perform Risk Analysis
+      </label>
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
     </div>
   );
@@ -241,7 +422,9 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
 // ─── Withdrawal form ───────────────────────────────────────────────────────────
 export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ onSubmitted }) => {
   const { showToast } = useToast();
-  const [form, setForm] = useState({ amount:'',memberId:'',accountHolder:'',accountNumber:'',ifsc:'',bankName:'' });
+  const [form, setForm] = useState({ amount:'',memberId:'',utr:'' });
+  const [bank, setBank] = useState<BankForm>(emptyBank);
+  const [saveNew, setSaveNew] = useState(true);
   const [available, setAvailable] = useState(0);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
@@ -249,11 +432,16 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   useEffect(() => { transactionAPI.summary().then(s => setAvailable(s.available)).catch(()=>{}); }, []);
 
   const submit = async () => {
-    if(!form.amount||!form.accountHolder||!form.accountNumber){ showToast('Fill all required fields','error'); return; }
+    if(!form.amount||!bank.accountHolder||!bank.accountNumber){ showToast('Fill all required fields','error'); return; }
+    if(parseFloat(form.amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
     if(parseFloat(form.amount) > available){ showToast('Total available balance insufficient — try again','error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.createWithdrawal({ ...form, amount: parseFloat(form.amount) });
+      await transactionAPI.createWithdrawal({
+        amount: parseFloat(form.amount), memberId: form.memberId, utr: form.utr,
+        accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
+        saveBankAccount: saveNew,
+      });
       showToast('Withdrawal request submitted');
       onSubmitted?.();
     } catch (e: any) {
@@ -269,15 +457,12 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         Available balance: {fmt(available)}
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Input label="Amount (INR ₹)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="0.00" required icon="₹"/>
+        <Input label="Amount (INR ₹)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Min 1" required icon="₹"/>
         <Input label="Member ID" value={form.memberId} onChange={e=>set('memberId',e.target.value)} placeholder="Alphanumeric" required/>
-        <Input label="Account Holder" value={form.accountHolder} onChange={e=>set('accountHolder',e.target.value)} placeholder="As per bank" required/>
-        <Input label="Account Number" value={form.accountNumber} onChange={e=>set('accountNumber',e.target.value)} placeholder="Account number" required/>
-        <Input label="IFSC Code" value={form.ifsc} onChange={e=>set('ifsc',e.target.value)} placeholder="e.g. HDFC0001234" required/>
-        <Input label="Bank Name" value={form.bankName} onChange={e=>set('bankName',e.target.value)} placeholder="e.g. HDFC Bank" required/>
+        <Input label="UTR Number" value={form.utr} onChange={e=>set('utr',e.target.value)} placeholder="Bank UTR (optional)"/>
       </div>
-      <p style={{ fontSize:12,color:T.textMuted,margin:'4px 0 16px' }}>After you submit, the admin will send payment details. You then pay and upload your slip from the Action button.</p>
-      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!form.amount||!form.accountHolder}>
+      <BankAccountFields bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!form.amount||!bank.accountHolder}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
     </div>
@@ -373,17 +558,18 @@ const ManagementPage: React.FC<{
             <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
               <thead>
                 <tr style={{ background:T.canvas }}>
-                  {['Member ID',`Total ${noun} Requests`,'Total Amount','Action'].map(h=>(
+                  {['Member ID',`Total ${noun} Requests`,'Status','Total Amount','Action'].map(h=>(
                     <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {groups.length === 0 && <tr><td colSpan={4} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No {noun.toLowerCase()} requests yet</td></tr>}
+                {groups.length === 0 && <tr><td colSpan={5} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No {noun.toLowerCase()} requests yet</td></tr>}
                 {groups.map((g,i)=>(
                   <tr key={g.key} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>setOpenMember(g.key)}>
                     <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{g.key}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.items.length}</td>
+                    <td style={{ padding:'11px 14px' }}><Badge status={g.items[0].status} type={g.items[0].type} viewerRole="MERCHANT"/></td>
                     <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.items.reduce((a,t)=>a+t.amount,0))}</td>
                     <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={(e?:any)=>{ e?.stopPropagation?.(); setOpenMember(g.key); }}>View History</Btn></td>
                   </tr>
@@ -424,10 +610,10 @@ const ManagementPage: React.FC<{
 };
 
 export const DepositManagement: React.FC<{ user: User }> = ({ user }) =>
-  <ManagementPage user={user} title="Deposit Management" prefix="DEPOSIT" requestLabel="Request Deposit" noun="Deposit" FormComp={DepositForm}/>;
+  <ManagementPage user={user} title="Deposit Management" prefix="DEPOSIT" requestLabel="Deposit Request" noun="Deposit" FormComp={DepositForm}/>;
 
 export const WithdrawalManagement: React.FC<{ user: User }> = ({ user }) =>
-  <ManagementPage user={user} title="Withdrawal Management" prefix="WITHDRAWAL" requestLabel="Request Withdrawal" noun="Withdrawal" FormComp={WithdrawalForm}/>;
+  <ManagementPage user={user} title="Withdrawal Management" prefix="WITHDRAWAL" requestLabel="Withdrawal Request" noun="Withdrawal" FormComp={WithdrawalForm}/>;
 
 export const SettlementManagement: React.FC<{ user: User }> = ({ user }) =>
   <ManagementPage user={user} title="Settlement Management" prefix="SETTLEMENT" requestLabel="Request Settlement" noun="Settlement" FormComp={SettlementForm}/>;
@@ -525,7 +711,7 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
                 {cancellable.length === 0 && <tr><td colSpan={6} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No cancellable requests</td></tr>}
                 {cancellable.map((t,i)=>(
                   <tr key={t.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
-                    <td style={{ padding:'11px 14px' }}><code style={{ fontSize:11,background:T.canvas,padding:'2px 6px',borderRadius:4,fontWeight:700 }}>{t.ref}</code></td>
+                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{t.ref}</td>
                     <td style={{ padding:'11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800 }}>{fmt(t.amount)}</td>
                     <td style={{ padding:'11px 14px',color:T.textMain }}>{t.memberId||'—'}</td>
@@ -608,13 +794,14 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   const [type, setType] = useState('ALL');
   const [status, setStatus] = useState('ALL');
   const [loading, setLoading] = useState(true);
+  const [slipTx, setSlipTx] = useState<Transaction | null>(null);
 
   const reload = () => {
     const fn = user.role === 'MERCHANT' ? transactionAPI.getMine : transactionAPI.getAll;
     return fn().then(setTxns).catch(()=>setTxns([]));
   };
   useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role]);
-  usePoll(reload);
+  usePoll(() => { if (!slipTx) reload(); });
 
   const filtered = txns.filter(t => {
     const ms = !search || t.ref.toLowerCase().includes(search.toLowerCase()) || t.merchant.toLowerCase().includes(search.toLowerCase());
@@ -622,6 +809,7 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   });
 
   return (
+    <>
     <Card>
       <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
         <h3 style={{ margin:'0 0 12px',fontSize:14,fontWeight:800 }}>Transaction Ledger</h3>
@@ -639,11 +827,17 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
           </select>
         </div>
       </div>
-      {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : <TxTable txns={filtered} viewerRole={user.role}/>}
+      {loading
+        ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div>
+        : <TxTable txns={filtered} viewerRole={user.role} actionMode={user.role==='MERCHANT'?'merchant':'view'} onAction={(t)=>setSlipTx(t)}/>}
       <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
         <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {txns.length}</p>
       </div>
     </Card>
+    {slipTx && (
+      <MerchantSlipModal tx={slipTx} onClose={()=>setSlipTx(null)} onSubmitted={()=>{ setSlipTx(null); reload(); }}/>
+    )}
+    </>
   );
 };
 
@@ -733,19 +927,31 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
   const { updateUser } = useAuth();
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState({ email:user.email, current:'', next:'', confirm:'' });
+  const [avatar, setAvatar] = useState<string | null>(user.avatar || null);
   const [saving, setSaving] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+
+  const onAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > 2 * 1024 * 1024) { showToast('Image must be under 2 MB', 'error'); return; }
+    setAvatar(await fileToDataUrl(f));
+  };
+
+  const openEdit = () => { setForm({ email:user.email, current:'', next:'', confirm:'' }); setAvatar(user.avatar || null); setEdit(true); };
 
   const save = async () => {
     if(form.next && form.next !== form.confirm){ showToast('Passwords do not match','error'); return; }
     setSaving(true);
     try {
+      const avatarChanged = avatar !== (user.avatar || null);
       const updated = await userAPI.updateProfile({
         email: form.email !== user.email ? form.email : undefined,
         new_password: form.next || undefined,
         current_password: form.current || undefined,
+        avatar: avatarChanged ? (avatar || '') : undefined,
       });
-      updateUser({ email: updated.email });
+      updateUser({ email: updated.email, avatar: updated.avatar });
       showToast('Profile updated successfully');
       setEdit(false);
       setForm(f => ({ ...f, current:'', next:'', confirm:'' }));
@@ -764,17 +970,19 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
     ['Member Since', user.created],
   ];
   if (user.role === 'MERCHANT') {
-    details.push(['Pay-In Code', user.payIn||'—'],['Pay-Out Code', user.payOut||'—'],['Settlement Code', user.settlement||'—'],['Profile Type', user.profile||'—']);
+    details.push(['Access Role', merchantRoleLabel(user.merchantRole) || '—'],['Pay-In Code', user.payIn||'—'],['Pay-Out Code', user.payOut||'—'],['Settlement Code', user.settlement||'—'],['Profile Type', user.profile||'—']);
   }
 
   return (
     <div style={{ maxWidth:560,margin:'0 auto',position:'relative' }}>
       <Card style={{ padding:'30px 28px' }}>
         <div style={{ position:'absolute',top:18,right:18 }}>
-          <Btn size="sm" variant="ghost" onClick={()=>setEdit(true)}>✎ Edit</Btn>
+          <Btn size="sm" variant="ghost" onClick={openEdit}>✎ Edit</Btn>
         </div>
         <div style={{ display:'flex',flexDirection:'column',alignItems:'center',textAlign:'center',marginBottom:24 }}>
-          <div style={{ width:78,height:78,borderRadius:'50%',background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:32,fontWeight:800,color:'#fff',marginBottom:14 }}>{user.name.charAt(0)}</div>
+          {user.avatar
+            ? <img src={user.avatar} alt={user.name} style={{ width:78,height:78,borderRadius:'50%',objectFit:'cover',border:`2px solid ${T.border}`,marginBottom:14 }}/>
+            : <div style={{ width:78,height:78,borderRadius:'50%',background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:32,fontWeight:800,color:'#fff',marginBottom:14 }}>{user.name.charAt(0)}</div>}
           <p style={{ margin:0,fontWeight:800,fontSize:20,color:T.textMain }}>{user.name}</p>
           <p style={{ margin:'2px 0 0',fontSize:13,color:T.textMuted }}>{user.email}</p>
           <span style={{ marginTop:8,padding:'3px 12px',borderRadius:20,fontSize:11,fontWeight:700,background:T.infoBg,color:T.blue }}>{user.role.replace('_',' ')}</span>
@@ -791,18 +999,82 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
 
       {edit && (
         <Modal title="Edit Profile" onClose={()=>setEdit(false)}>
+          {/* Profile picture */}
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Profile Picture</p>
+          <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:16 }}>
+            {avatar
+              ? <img src={avatar} alt="avatar" style={{ width:64,height:64,borderRadius:'50%',objectFit:'cover',border:`1px solid ${T.border}` }}/>
+              : <div style={{ width:64,height:64,borderRadius:'50%',background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:26,fontWeight:800,color:'#fff' }}>{user.name.charAt(0)}</div>}
+            <div style={{ display:'flex',flexDirection:'column',gap:6 }}>
+              <label style={{ cursor:'pointer' }}>
+                <span style={{ display:'inline-block',padding:'6px 12px',borderRadius:8,border:`1.5px solid ${T.blue}`,color:T.blue,fontSize:12,fontWeight:700 }}>Upload Office Image</span>
+                <input type="file" accept="image/*" onChange={onAvatar} style={{ display:'none' }}/>
+              </label>
+              {avatar && <span onClick={()=>setAvatar(null)} style={{ fontSize:11,color:T.danger,cursor:'pointer',fontWeight:700 }}>Remove</span>}
+            </div>
+          </div>
           <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="you@company.com"/>
           <div style={{ borderTop:`1px solid ${T.border}`,margin:'4px 0 14px',paddingTop:14 }}>
             <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Change Password</p>
             <Input label="Current Password" type="password" value={form.current} onChange={e=>set('current',e.target.value)} placeholder="Required to change password"/>
             <Input label="New Password" type="password" value={form.next} onChange={e=>set('next',e.target.value)} placeholder="Leave blank to keep current"/>
             <Input label="Confirm New Password" type="password" value={form.confirm} onChange={e=>set('confirm',e.target.value)} placeholder="Re-enter new password"/>
+            {form.next && <p style={{ fontSize:11,color:T.textMuted,margin:'-6px 0 0' }}>At least 8 characters with an uppercase letter, a lowercase letter, a number and a special character.</p>}
           </div>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={save} disabled={saving}>{saving?'Saving...':'Save Changes'}</Btn>
             <Btn variant="secondary" onClick={()=>setEdit(false)}>Cancel</Btn>
           </div>
         </Modal>
+      )}
+    </div>
+  );
+};
+
+// ─── News & Updates (merchant blog feed) ───────────────────────────────────────
+// Placeholder content for now — wire to a real source when news data is available.
+const NEWS_POSTS: Array<{ id:number; tag:string; color:string; title:string; date:string; body:string }> = [
+  { id:1, tag:'Announcement', color:T.blue, title:'Welcome to the Clari5Pay News Center', date:'Updates & announcements',
+    body:'This is your space for platform announcements, product updates and important notices. Check back here regularly to stay informed.' },
+  { id:2, tag:'New Feature', color:T.success, title:'UPI & QR deposits now show a scannable QR code', date:'Recently added',
+    body:'When you choose UPI or QR for a deposit, you now get a QR code with the exact amount built in — just scan and pay. Codes stay valid for 15 minutes.' },
+  { id:3, tag:'Security', color:T.warning, title:'Reset your password with an email OTP', date:'Security update',
+    body:'Forgot your password? Use “Forgot password?” on the sign-in screen to verify with a one-time code sent to your registered email, then set a new password.' },
+];
+
+export const NewsPage: React.FC<{ user: User }> = () => {
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { const id = setTimeout(()=>setLoading(false), 250); return ()=>clearTimeout(id); }, []);
+
+  if (loading) return <LoadingScreen label="Loading news…"/>;
+
+  return (
+    <div style={{ maxWidth:820 }}>
+      <div style={{ marginBottom:18 }}>
+        <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>News &amp; Updates</h2>
+        <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Platform announcements and product updates for merchants</p>
+      </div>
+
+      {NEWS_POSTS.length === 0 ? (
+        <Card style={{ padding:40,textAlign:'center' }}>
+          <div style={{ fontSize:40,marginBottom:10 }}>📰</div>
+          <p style={{ fontWeight:800,color:T.textMain,margin:'0 0 4px' }}>No news yet</p>
+          <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Announcements and updates will appear here.</p>
+        </Card>
+      ) : (
+        <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
+          {NEWS_POSTS.map(p => (
+            <Card key={p.id} style={{ padding:20 }}>
+              <div style={{ display:'flex',alignItems:'center',gap:10,marginBottom:8 }}>
+                <span style={{ padding:'2px 10px',borderRadius:20,fontSize:11,fontWeight:700,background:`${p.color}18`,color:p.color }}>{p.tag}</span>
+                <span style={{ fontSize:11,color:T.textMuted }}>{p.date}</span>
+              </div>
+              <h3 style={{ margin:'0 0 6px',fontSize:15,fontWeight:800,color:T.textMain }}>{p.title}</h3>
+              <p style={{ margin:0,fontSize:13,color:T.textMuted,lineHeight:1.6 }}>{p.body}</p>
+            </Card>
+          ))}
+          <p style={{ textAlign:'center',fontSize:11,color:T.textMuted,margin:'4px 0' }}>You're all caught up.</p>
+        </div>
       )}
     </div>
   );

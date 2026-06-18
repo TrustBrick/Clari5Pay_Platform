@@ -11,6 +11,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'templates', icon: '▦', label: 'All Templates View' },
     { key: 'balance', icon: '◎', label: 'Balance Enquiry' },
     { key: 'risk', icon: '⚑', label: 'Risk Analysis' },
+    { key: 'news', icon: '📰', label: 'News' },
     { key: 'support', icon: '💬', label: 'Customer Support' },
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
@@ -25,6 +26,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'sa-dashboard', icon: '⬡', label: 'Platform Overview' },
     { key: 'sa-admins', icon: '🛡', label: 'Admin Management' },
     { key: 'sa-logs', icon: '🧾', label: 'System Logs' },
+    { key: 'sa-audit', icon: '📋', label: 'Audit Logs' },
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
   // Support agents use the separate Customer Support portal.
@@ -43,6 +45,7 @@ export const PAGE_TITLES: Record<string, string> = {
   templates: 'All Templates View',
   balance: 'Balance Enquiry',
   risk: 'Risk Analysis',
+  news: 'News & Updates',
   support: 'Customer Support',
   profile: 'Profile',
   'admin-dashboard': 'Dashboard',
@@ -52,14 +55,18 @@ export const PAGE_TITLES: Record<string, string> = {
   'sa-dashboard': 'Platform Overview',
   'sa-admins': 'Admin Management',
   'sa-logs': 'System Logs',
+  'sa-audit': 'Audit Logs',
 };
 
 // Sidebar pages permitted per merchant role (drives the dynamic sidebar).
 // Maintain Profile + Profile collapse to a single Profile link.
+// Customer Support is available to every merchant role (default for all merchants).
 export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
-  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'profile'],
-  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'profile'],
-  MANAGER: ['dashboard', 'templates', 'profile'],
+  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'news', 'support', 'profile'],
+  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'news', 'support', 'profile'],
+  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'news', 'support', 'profile'],
+  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'news', 'support', 'profile'],
+  MANAGER: ['dashboard', 'templates', 'news', 'support', 'profile'],
 };
 
 /**

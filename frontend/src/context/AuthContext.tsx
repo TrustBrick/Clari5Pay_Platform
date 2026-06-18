@@ -1,11 +1,13 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
-import type { User } from '../types';
-import { authAPI } from '../services/api';
+import type { OtpChallenge, User } from '../types';
+import { authAPI, setAuthToken } from '../services/api';
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<OtpChallenge>;
+  verifyOtp: (otpToken: string, code: string) => Promise<void>;
+  resendOtp: (otpToken: string) => Promise<OtpChallenge>;
   logout: () => void;
   updateUser: (patch: Partial<User>) => void;
   isLoading: boolean;
@@ -23,22 +25,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
   const [isLoading, setIsLoading] = useState(false);
 
-  const login = useCallback(async (username: string, password: string) => {
+  const applySession = useCallback((accessToken: string, u: User) => {
+    localStorage.setItem('clari5pay_user', JSON.stringify(u));
+    localStorage.setItem('clari5pay_token', accessToken);
+    setAuthToken(accessToken);
+    setUser(u);
+    setToken(accessToken);
+  }, []);
+
+  // Step 1: validate credentials. When OTP is ON → returns a challenge (no session yet).
+  // When OTP is OFF → backend returns a token directly, so we establish the session here.
+  const login = useCallback(async (username: string, password: string): Promise<OtpChallenge> => {
     setIsLoading(true);
     try {
       const res = await authAPI.login({ username, password });
-      setUser(res.user);
-      setToken(res.access_token);
-      localStorage.setItem('clari5pay_user', JSON.stringify(res.user));
-      localStorage.setItem('clari5pay_token', res.access_token);
+      if ('access_token' in res) {
+        applySession(res.access_token, res.user);
+        return { otpRequired: false, otpToken: '', email: '' };
+      }
+      return res;
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [applySession]);
+
+  // Step 2: verify the OTP → establish the session (token attached before the dashboard mounts).
+  const verifyOtp = useCallback(async (otpToken: string, code: string) => {
+    setIsLoading(true);
+    try {
+      const res = await authAPI.verifyOtp(otpToken, code);
+      applySession(res.access_token, res.user);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [applySession]);
+
+  const resendOtp = useCallback((otpToken: string) => authAPI.resendOtp(otpToken), []);
 
   const logout = useCallback(() => {
     setUser(null);
     setToken(null);
+    setAuthToken(null);
     localStorage.removeItem('clari5pay_user');
     localStorage.removeItem('clari5pay_token');
   }, []);
@@ -53,7 +80,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, updateUser, isLoading }}>
+    <AuthContext.Provider value={{ user, token, login, verifyOtp, resendOtp, logout, updateUser, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

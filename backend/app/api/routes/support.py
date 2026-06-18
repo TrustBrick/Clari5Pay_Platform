@@ -10,6 +10,7 @@ from app.models.models import SupportMessage, SupportSender, User, UserRole
 from app.core.security import decode_token
 from app.core.deps import get_current_user
 from app.schemas.schemas import SupportMessageCreate
+from app.api.routes.transactions import compute_balance
 
 router = APIRouter(prefix="/api/support", tags=["support"])
 
@@ -284,8 +285,9 @@ async def merchant_details(
     ).scalar_one_or_none()
     if not m:
         raise HTTPException(status_code=404, detail="Merchant not found")
+    summary = await compute_balance(db, m)  # live, business-shared available balance
     return {
         "id": m.id, "name": m.name, "username": m.username, "email": m.email,
-        "phone": m.phone, "balance": m.balance, "risk": m.risk, "profile": m.profile,
+        "phone": m.phone, "balance": round(summary["available"], 2), "risk": m.risk, "profile": m.profile,
         "payIn": m.pay_in, "payOut": m.pay_out, "active": m.active, "created": str(m.created),
     }

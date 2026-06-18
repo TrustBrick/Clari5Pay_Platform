@@ -1,4 +1,4 @@
-import React, { CSSProperties } from 'react';
+import React, { CSSProperties, useState } from 'react';
 import { T } from '../utils/theme';
 import { statusStyle, statusLabel } from '../utils/helpers';
 import type { TxStatus, ChartDataPoint } from '../types';
@@ -192,3 +192,32 @@ export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:(
     </div>
   </div>
 );
+
+// ─── LoadingScreen (logo + spinner, shown while a page fetches its data) ───────
+export const LoadingScreen: React.FC<{ label?: string }> = ({ label = 'Loading…' }) => (
+  <div style={{ display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:'60vh',gap:18 }}>
+    <Logo size="md"/>
+    <div style={{ width:34,height:34,border:`3px solid ${T.border}`,borderTopColor:T.blue,borderRadius:'50%',animation:'c5spin 0.8s linear infinite' }}/>
+    <p style={{ color:T.textMuted,fontSize:13,fontWeight:600 }}>{label}</p>
+    <style>{`@keyframes c5spin{to{transform:rotate(360deg)}}`}</style>
+  </div>
+);
+
+// ─── ReasonModal (prompts for a required free-text reason) ─────────────────────
+export const ReasonModal: React.FC<{
+  title: string; label?: string; confirmLabel?: string; busy?: boolean;
+  onSubmit: (reason: string) => void; onClose: () => void;
+}> = ({ title, label = 'Reason', confirmLabel = 'Confirm', busy, onSubmit, onClose }) => {
+  const [reason, setReason] = useState('');
+  return (
+    <Modal title={title} onClose={onClose}>
+      <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}<span style={{ color:T.danger }}> *</span></label>
+      <textarea value={reason} onChange={e=>setReason(e.target.value)} placeholder="Enter a reason..." autoFocus
+        style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:80,marginBottom:14 }}/>
+      <div style={{ display:'flex',gap:10 }}>
+        <Btn onClick={()=>onSubmit(reason.trim())} disabled={busy||!reason.trim()}>{busy?'Saving...':confirmLabel}</Btn>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+      </div>
+    </Modal>
+  );
+};

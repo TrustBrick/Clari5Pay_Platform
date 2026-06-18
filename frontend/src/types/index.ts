@@ -8,7 +8,11 @@ export interface User {
   email: string;
   name: string;
   phone?: string;
+  avatar?: string | null;
   active: boolean;
+  locked?: boolean;
+  lockedUntil?: string | null;
+  failedAttempts?: number;
   created: string;
   createdAt?: string | null;
   createdBy?: number | null;
@@ -26,7 +30,31 @@ export interface User {
   merchantCount?: number;
 }
 
-export type MerchantRole = 'DEO' | 'SUPERVISOR' | 'MANAGER';
+export type MerchantRole = 'DEO' | 'DEPOSIT_OPERATOR' | 'WITHDRAWAL_OPERATOR' | 'SUPERVISOR' | 'MANAGER';
+
+export interface AuditLogEntry {
+  id: number;
+  userId: number | null;
+  username: string;
+  role: string | null;
+  action: string;
+  entityType: string | null;
+  entityId: string | null;
+  oldValue: string | null;
+  newValue: string | null;
+  reason: string | null;
+  ip: string | null;
+  createdAt: string;
+}
+
+export interface MerchantBankAccount {
+  id: number;
+  accountHolder: string;
+  accountNumber: string;
+  ifsc: string;
+  branch: string;
+  bankName?: string | null;
+}
 
 export type TxStatus =
   | 'PENDING'
@@ -71,6 +99,11 @@ export interface Transaction {
   adminRef?: string | null;
   adminBankDetails?: string | null;
   adminUpiId?: string | null;
+  qrExpiresAt?: string | null;
+  utr?: string | null;
+  notes?: string | null;
+  riskAnalysis?: boolean;
+  rejectReason?: string | null;
   refPrefix?: string;
 }
 
@@ -164,6 +197,13 @@ export interface LoginResponse {
   access_token: string;
   token_type: string;
   user: User;
+}
+
+export interface OtpChallenge {
+  otpRequired: boolean;
+  otpToken: string;
+  email: string;   // masked
+  devOtp?: string; // present only in local dev (no SMTP configured)
 }
 
 export interface ApiError {

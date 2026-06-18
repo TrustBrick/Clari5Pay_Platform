@@ -1,18 +1,45 @@
-from datetime import date
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import date, datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
-    AccountSubmitRequest, SlipRequest, CompleteRequest,
+    AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest,
 )
-from app.api.routes.system_logs import log_event
+from app.api.routes.system_logs import log_event, record_audit
+
+
+def _require_amount(amount: float) -> None:
+    if amount is None or amount < 1:
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0.")
+
+
+async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, ifsc, branch, bank) -> None:
+    """Persist a merchant bank account for future reuse (deduped by account number)."""
+    if not (holder and number):
+        return
+    existing = (await db.execute(
+        select(MerchantBankAccount).where(
+            MerchantBankAccount.merchant_id == merchant.id,
+            MerchantBankAccount.account_number == number,
+        )
+    )).scalar_one_or_none()
+    if existing:
+        return
+    db.add(MerchantBankAccount(
+        merchant_id=merchant.id, account_holder=holder, account_number=number,
+        ifsc=ifsc or "", branch=branch or "", bank_name=bank,
+    ))
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
+
+# A generated UPI/QR payment code stays valid for this long before it must be regenerated.
+QR_VALIDITY_MINUTES = 15
+# Deposit types that are paid via UPI/QR (display UPI ID / QR only — never bank details).
+UPI_QR_TYPES = {"UPI", "QR"}
 
 
 def _make_ref(prefix: str, tx_id: int) -> str:
@@ -90,6 +117,11 @@ def _t(t: Transaction) -> dict:
         "adminRef": t.admin_ref,
         "adminBankDetails": t.admin_bank_details,
         "adminUpiId": t.admin_upi_id,
+        "qrExpiresAt": (t.qr_expires_at.isoformat() + "Z") if t.qr_expires_at else None,
+        "utr": t.utr,
+        "notes": t.notes,
+        "riskAnalysis": t.risk_analysis,
+        "rejectReason": t.reject_reason,
     }
 
 
@@ -134,6 +166,7 @@ async def create_deposit(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _require_amount(data.amount)
     tx = Transaction(
         ref="TEMP",
         type=TxType.DEPOSIT_REQUEST,
@@ -148,14 +181,24 @@ async def create_deposit(
         member_id=data.memberId,
         segment=data.segment,
         merchant_proof=data.proof,
+        account_holder=data.accountHolder,
+        account_number=data.accountNumber,
+        ifsc=data.ifsc,
+        bank_name=data.bankName,
+        utr=data.utr,
+        notes=data.notes,
+        risk_analysis=data.riskAnalysis,
     )
     db.add(tx)
     await db.flush()
     prefix = current_user.pay_in or "DEP"
     tx.ref = _make_ref(prefix, tx.id)
+    if data.saveBankAccount:
+        await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName)
     await db.flush()
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
     await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)
+    await record_audit(db, "DEPOSIT_REQUESTED", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=str(tx.amount))
     await db.refresh(tx)
     return _t(tx)
 
@@ -166,6 +209,7 @@ async def create_withdrawal(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _require_amount(data.amount)
     # Block withdrawals that exceed the (business-shared) available balance.
     summary = await compute_balance(db, current_user)
     if data.amount > summary["available"] + 1e-6:
@@ -188,14 +232,19 @@ async def create_withdrawal(
         account_number=data.accountNumber,
         ifsc=data.ifsc,
         merchant_proof=data.proof,
+        utr=data.utr,
+        notes=data.notes,
     )
     db.add(tx)
     await db.flush()
     prefix = current_user.pay_out or "WIT"
     tx.ref = _make_ref(prefix, tx.id)
+    if data.saveBankAccount:
+        await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName)
     await db.flush()
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
     await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount})", actor=current_user)
+    await record_audit(db, "WITHDRAWAL_REQUESTED", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount))
     await db.refresh(tx)
     return _t(tx)
 
@@ -206,6 +255,7 @@ async def create_settlement(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _require_amount(data.amount)
     tx = Transaction(
         ref="TEMP",
         type=TxType.SETTLEMENT_REQUEST,
@@ -225,6 +275,7 @@ async def create_settlement(
     await db.flush()
     await notify_tx(db, tx, f"Settlement {tx.ref} requested by {tx.merchant_name}", "⇄")
     await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} requested settlement {tx.ref} ({tx.amount})", actor=current_user)
+    await record_audit(db, "SETTLEMENT_REQUESTED", actor=current_user, entity_type="settlement", entity_id=tx.ref, new=str(tx.amount))
     await db.refresh(tx)
     return _t(tx)
 
@@ -264,10 +315,16 @@ async def account_submit(
     tx.admin_upi_id = data.adminUpiId
     if data.adminProof:
         tx.admin_proof = data.adminProof
+    # UPI/QR deposits: the QR (rendered from the UPI ID + amount) is valid for 15 minutes.
+    is_upi_qr = tx.type.value.startswith("DEPOSIT") and (tx.deposit_type or "").upper() in UPI_QR_TYPES
+    if is_upi_qr and data.adminUpiId:
+        tx.qr_expires_at = datetime.utcnow() + timedelta(minutes=QR_VALIDITY_MINUTES)
+        tx.admin_bank_details = None  # never expose bank details for UPI/QR payments
     tx.status = TxStatus.ACCOUNT_SUBMITTED
     await db.flush()
     await notify_tx(db, tx, f"{tx.ref}: account details sent to {tx.merchant_name}", "🏦")
     await log_event(db, "ACCOUNT_SUBMITTED", f"{tx.ref}: account details sent to {tx.merchant_name}", actor=actor)
+    await record_audit(db, "ACCOUNT_SUBMITTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="ACCOUNT_SUBMITTED")
     await db.refresh(tx)
     return _t(tx)
 
@@ -293,6 +350,7 @@ async def submit_slip(
     await db.flush()
     await notify_tx(db, tx, f"{tx.ref}: payment slip submitted by {tx.merchant_name}", "🧾")
     await log_event(db, "SLIP_SUBMITTED", f"{tx.ref}: slip submitted by {tx.merchant_name}", actor=current_user)
+    await record_audit(db, "SLIP_SUBMITTED", actor=current_user, entity_type=tx.type.value, entity_id=tx.ref, new="SLIP_SUBMITTED")
     await db.refresh(tx)
     return _t(tx)
 
@@ -314,6 +372,7 @@ async def mark_done(
     label = "deposited" if tx.type.value.startswith("DEPOSIT") else "completed"
     await notify_tx(db, tx, f"{tx.ref}: {label}", "✓")
     await log_event(db, "COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
+    await record_audit(db, "COMPLETED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="COMPLETED")
     await db.refresh(tx)
     return _t(tx)
 
@@ -334,6 +393,27 @@ async def cancel_transaction(
     return _t(tx)
 
 
+@router.post("/{tx_id}/regenerate-qr")
+async def regenerate_qr(
+    tx_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Merchant re-arms an expired UPI/QR deposit code with a fresh 15-minute validity window."""
+    tx = await _get_own_tx(tx_id, db, current_user)
+    is_upi_qr = tx.type.value.startswith("DEPOSIT") and (tx.deposit_type or "").upper() in UPI_QR_TYPES
+    if not (is_upi_qr and tx.admin_upi_id):
+        raise HTTPException(status_code=400, detail="No UPI/QR code to regenerate for this request.")
+    if tx.status != TxStatus.ACCOUNT_SUBMITTED:
+        raise HTTPException(status_code=400, detail="This request is no longer awaiting payment.")
+    tx.qr_expires_at = datetime.utcnow() + timedelta(minutes=QR_VALIDITY_MINUTES)
+    await db.flush()
+    await log_event(db, "QR_REGENERATED", f"{tx.ref}: QR code regenerated by {tx.merchant_name}", actor=current_user)
+    await record_audit(db, "QR_REGENERATED", actor=current_user, entity_type=tx.type.value, entity_id=tx.ref)
+    await db.refresh(tx)
+    return _t(tx)
+
+
 # ─── Legacy approval workflow (kept for backward compatibility) ────────────────
 @router.post("/{tx_id}/approve")
 async def approve_transaction(
@@ -350,12 +430,22 @@ async def approve_transaction(
 @router.post("/{tx_id}/reject")
 async def reject_transaction(
     tx_id: str,
+    data: RejectRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_admin),
+    actor: User = Depends(get_current_admin),
 ):
+    """Admin rejects a request with a required reason; merchant is notified."""
+    if not data.reason or not data.reason.strip():
+        raise HTTPException(status_code=400, detail="A rejection reason is required")
     tx = await _get_tx(tx_id, db)
     tx.status = TxStatus.REJECTED
+    tx.reject_reason = data.reason.strip()
     await db.flush()
+    db.add(Notification(user_id=tx.merchant_id, message=f"{tx.ref} rejected — {tx.reject_reason}", icon="✕"))
+    await log_event(db, "REJECTED", f"{tx.ref} rejected by {actor.name} — reason: {tx.reject_reason}", actor=actor)
+    await record_audit(db, "REJECTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
+                       new="REJECTED", reason=tx.reject_reason)
+    await db.refresh(tx)
     return _t(tx)
 
 

@@ -1,12 +1,20 @@
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.db.session import get_db
 from app.models.models import User, UserRole, Notification
 from app.core.security import get_password_hash, verify_password
+from app.core.passwords import assert_password_allowed, set_password
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
-from app.schemas.schemas import ChangePasswordRequest, ProfileUpdateRequest
-from app.api.routes.system_logs import log_event
+from app.schemas.schemas import (
+    ChangePasswordRequest, ProfileUpdateRequest, ReasonRequest, AdminResetPasswordRequest,
+)
+from app.api.routes.system_logs import log_event, record_audit
+
+
+def _ip(request: Request) -> str | None:
+    return request.client.host if request and request.client else None
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -14,9 +22,12 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 def _u(u: User) -> dict:
     return {
         "id": u.id, "username": u.username, "email": u.email, "name": u.name,
-        "phone": u.phone, "role": u.role, "active": u.active, "created": str(u.created),
+        "phone": u.phone, "avatar": u.avatar, "role": u.role, "active": u.active, "created": str(u.created),
         "createdAt": (u.created_at.isoformat() + "Z") if u.created_at else None,
         "createdBy": u.created_by,
+        "locked": bool(u.locked_until and u.locked_until > datetime.utcnow()),
+        "lockedUntil": (u.locked_until.isoformat() + "Z") if u.locked_until else None,
+        "failedAttempts": u.failed_attempts or 0,
         "payIn": u.pay_in, "payOut": u.pay_out, "settlement": u.settlement,
         "payInFee": u.pay_in_fee, "payOutFee": u.pay_out_fee,
         "balance": u.balance, "risk": u.risk, "profile": u.profile,
@@ -72,6 +83,7 @@ async def get_admin_merchants(
 @router.post("/merchants")
 async def create_merchant(
     data: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(get_current_admin),
 ):
@@ -107,6 +119,8 @@ async def create_merchant(
     db.add(Notification(user_id=user.id, message="Your merchant account was created", icon="🏪"))
     db.add(Notification(user_id=admin.id, message=f"Merchant \"{user.name}\" created", icon="🏪"))
     await log_event(db, "MERCHANT_CREATED", f"Merchant \"{user.name}\" (role {user.merchant_role or '—'}) created", actor=admin)
+    await record_audit(db, "MERCHANT_CREATED", actor=admin, entity_type="merchant", entity_id=user.id,
+                       new=f"{user.name} ({user.username})", ip=_ip(request))
     await db.refresh(user)
     return _u(user)
 
@@ -114,9 +128,13 @@ async def create_merchant(
 @router.post("/admins")
 async def create_admin(
     data: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     sa: User = Depends(get_current_super_admin),
 ):
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required to create an admin")
     existing = await db.execute(select(User).where(User.username == data["username"]))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username already taken")
@@ -134,7 +152,9 @@ async def create_admin(
     await db.flush()
     db.add(Notification(user_id=user.id, message="Your admin account was created", icon="🛡"))
     db.add(Notification(user_id=sa.id, message=f"Admin \"{user.name}\" created", icon="🛡"))
-    await log_event(db, "ADMIN_CREATED", f"Admin \"{user.name}\" created", actor=sa)
+    await log_event(db, "ADMIN_CREATED", f"Admin \"{user.name}\" created by {sa.name} ({sa.role.value}) — reason: {reason}", actor=sa)
+    await record_audit(db, "ADMIN_CREATED", actor=sa, entity_type="admin", entity_id=user.id,
+                       new=f"{user.name} ({user.username})", reason=reason, ip=_ip(request))
     await db.refresh(user)
     return _u(user)
 
@@ -142,6 +162,8 @@ async def create_admin(
 @router.patch("/{user_id}/toggle")
 async def toggle_user(
     user_id: int,
+    request: Request,
+    data: ReasonRequest | None = None,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
@@ -149,15 +171,70 @@ async def toggle_user(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    reason = (data.reason if data else None) or ""
+    if not reason.strip():
+        raise HTTPException(status_code=400, detail="A reason is required")
+    was_active = user.active
     user.active = not user.active
     await db.flush()
     state = "activated" if user.active else "deactivated"
-    db.add(Notification(user_id=user.id, message=f"Your account was {state}", icon="🔔"))
+    db.add(Notification(user_id=user.id, message=f"Your account was {state} — {reason}", icon="🔔"))
     if actor.id != user.id:
         db.add(Notification(user_id=actor.id, message=f"{user.name} {state}", icon="🔔"))
-    await log_event(db, "USER_TOGGLED", f"{user.role.value} \"{user.name}\" {state}", actor=actor)
+    await log_event(db, "USER_TOGGLED", f"{user.role.value} \"{user.name}\" {state} by {actor.name} — reason: {reason}", actor=actor)
+    await record_audit(db, "USER_TOGGLED", actor=actor, entity_type=user.role.value.lower(), entity_id=user.id,
+                       old=f"active={was_active}", new=f"active={user.active}", reason=reason, ip=_ip(request))
     await db.refresh(user)
     return _u(user)
+
+
+@router.patch("/{user_id}/unlock")
+async def unlock_user(
+    user_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Manually clear a locked account (failed attempts + lockout)."""
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.failed_attempts = 0
+    user.locked_until = None
+    await db.flush()
+    db.add(Notification(user_id=user.id, message="Your account was unlocked by an administrator", icon="🔓"))
+    await log_event(db, "ACCOUNT_UNLOCKED", f"{user.role.value} \"{user.name}\" unlocked by {actor.name}", actor=actor)
+    await record_audit(db, "ACCOUNT_UNLOCKED", actor=actor, entity_type=user.role.value.lower(), entity_id=user.id,
+                       ip=_ip(request))
+    await db.refresh(user)
+    return _u(user)
+
+
+@router.post("/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: int,
+    data: AdminResetPasswordRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    sa: User = Depends(get_current_super_admin),
+):
+    """Super Admin directly resets another user's password (e.g. an Admin who can't receive OTPs)."""
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="Cannot reset a Super Admin password here")
+    await assert_password_allowed(db, user, data.new_password)
+    await set_password(db, user, data.new_password)
+    # Resetting also clears any lockout so the new credentials work immediately.
+    user.failed_attempts = 0
+    user.locked_until = None
+    await db.flush()
+    db.add(Notification(user_id=user.id, message="Your password was reset by the Super Admin", icon="🔑"))
+    await log_event(db, "PASSWORD_RESET", f"{sa.name} reset {user.role.value} \"{user.name}\"'s password", actor=sa)
+    await record_audit(db, "PASSWORD_RESET", actor=sa, entity_type=user.role.value.lower(), entity_id=user.id,
+                       ip=_ip(request))
+    return {"message": f"Password reset for {user.name}. They can now sign in with the new password."}
 
 
 @router.post("/change-password")
@@ -168,8 +245,10 @@ async def change_password(
 ):
     if not verify_password(data.current_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    current_user.hashed_password = get_password_hash(data.new_password)
-    await db.flush()
+    await assert_password_allowed(db, current_user, data.new_password)
+    await set_password(db, current_user, data.new_password)
+    await log_event(db, "PASSWORD_CHANGED", f"{current_user.name} changed their password", actor=current_user)
+    await record_audit(db, "PASSWORD_CHANGED", actor=current_user, entity_type="user", entity_id=current_user.id)
     return {"message": "Password updated successfully"}
 
 
@@ -186,7 +265,10 @@ async def update_profile(
             data.current_password, current_user.hashed_password
         ):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
-        current_user.hashed_password = get_password_hash(data.new_password)
+        await assert_password_allowed(db, current_user, data.new_password)
+        await set_password(db, current_user, data.new_password)
+        await log_event(db, "PASSWORD_CHANGED", f"{current_user.name} changed their password", actor=current_user)
+        await record_audit(db, "PASSWORD_CHANGED", actor=current_user, entity_type="user", entity_id=current_user.id)
 
     if data.email and data.email != current_user.email:
         existing = await db.execute(
@@ -195,6 +277,10 @@ async def update_profile(
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Email already in use")
         current_user.email = data.email
+
+    if data.avatar is not None:
+        # Empty string clears the picture; a data URL sets it.
+        current_user.avatar = data.avatar or None
 
     await db.flush()
     await db.refresh(current_user)

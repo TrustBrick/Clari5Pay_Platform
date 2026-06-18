@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime } from '../utils/helpers';
+import { fmt, typeLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, MERCHANT_ROLE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, Modal } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal } from '../components/UI';
 import TxTable from '../components/TxTable';
 import { usePoll } from '../utils/usePoll';
-import { transactionAPI, userAPI, accountAPI, systemLogAPI } from '../services/api';
-import type { SystemLogEntry } from '../types';
+import { transactionAPI, userAPI, accountAPI, systemLogAPI, auditLogAPI } from '../services/api';
+import type { SystemLogEntry, AuditLogEntry } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account } from '../types';
 
@@ -17,8 +17,7 @@ const REQUEST_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMIT
 const ACTIVE_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'PENDING', 'ADMIN_APPROVED'];
 const isActive = (s: string) => ACTIVE_STATUSES.includes(s);
 
-const ROLE_LABELS: Record<string, string> = { DEO: 'Data Operator', SUPERVISOR: 'Supervisor', MANAGER: 'Manager' };
-const roleLabel = (r?: string | null) => (r ? ROLE_LABELS[String(r).toUpperCase()] || r : '—');
+const roleLabel = (r?: string | null) => merchantRoleLabel(r) || '—';
 
 const Row = ({ k, v }: { k: string; v: React.ReactNode }) => (
   <div style={{ display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
@@ -36,20 +35,38 @@ const RequestModal: React.FC<{
 }> = ({ tx, canAct, onClose, onDone }) => {
   const { showToast } = useToast();
   const isDeposit = tx.type.startsWith('DEPOSIT');
+  // UPI / QR deposits are settled via a UPI ID (the QR is rendered for the merchant with the amount baked in).
+  const isUpiQr = isDeposit && ['UPI', 'QR'].includes((tx.depositType || '').toUpperCase());
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountRef, setAccountRef] = useState('');
+  const [upiId, setUpiId] = useState('');
   const [receipt, setReceipt] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejecting, setRejecting] = useState(false);
 
   // Admin steps:
   const chooseStep = canAct && isDeposit && tx.status === 'ACCOUNT_REQUESTED'; // pick account → auto PNG
   const depositDoneStep = canAct && isDeposit && tx.status === 'SLIP_SUBMITTED'; // review slip → Deposited
   const payStep = canAct && !isDeposit && tx.status === 'ACCOUNT_REQUESTED'; // pay merchant → upload receipt → Completed
+  const active = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED'].includes(tx.status);
+  const canReject = canAct && active;
   const title = chooseStep ? 'Choose Account' : depositDoneStep ? 'Review Payment Slip' : payStep ? 'Pay & Complete' : 'Request Details';
 
+  const doReject = async () => {
+    if (!rejectReason.trim()) { showToast('Enter a rejection reason', 'error'); return; }
+    setSaving(true);
+    try {
+      await transactionAPI.reject(tx.id, rejectReason.trim());
+      showToast(`${tx.ref} rejected`);
+      onDone?.(); onClose();
+    } catch { showToast('Failed to reject', 'error'); }
+    finally { setSaving(false); }
+  };
+
   useEffect(() => {
-    if (chooseStep) accountAPI.list().then(a => setAccounts(a.filter(x => (x.status || '').toUpperCase() === 'ACTIVE'))).catch(()=>{});
-  }, [chooseStep]);
+    if (chooseStep && !isUpiQr) accountAPI.list().then(a => setAccounts(a.filter(x => (x.status || '').toUpperCase() === 'ACTIVE'))).catch(()=>{});
+  }, [chooseStep, isUpiQr]);
 
   const onReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -62,11 +79,30 @@ const RequestModal: React.FC<{
     setSaving(true);
     try {
       const png = accountToPng(acc);
-      const summary = `${acc.accountName} | ${acc.bankName} | A/C ${acc.accountNumber} | IFSC ${acc.ifscCode}`;
+      const summary = [
+        `Account Name: ${acc.accountName}`,
+        `Bank: ${acc.bankName}`,
+        `A/C: ${acc.accountNumber}`,
+        `IFSC: ${acc.ifscCode}`,
+        `Branch: ${acc.branch}`,
+      ].join('\n');
       await transactionAPI.submitAccount(tx.id, { adminProof: png, adminBankDetails: summary, adminRef: acc.referenceNumber });
       showToast(`${tx.ref} — account details sent`);
       onDone?.(); onClose();
     } catch { showToast('Failed to send account', 'error'); }
+    finally { setSaving(false); }
+  };
+
+  const sendUpi = async () => {
+    const vpa = upiId.trim();
+    if (!vpa || !vpa.includes('@')) { showToast('Enter a valid UPI ID (e.g. name@bank)', 'error'); return; }
+    setSaving(true);
+    try {
+      // The QR (with the amount embedded) is rendered for the merchant; bank details are never sent.
+      await transactionAPI.submitAccount(tx.id, { adminUpiId: vpa, adminRef: tx.ref });
+      showToast(`${tx.ref} — UPI/QR sent (valid 15 min)`);
+      onDone?.(); onClose();
+    } catch { showToast('Failed to send UPI/QR', 'error'); }
     finally { setSaving(false); }
   };
 
@@ -92,19 +128,28 @@ const RequestModal: React.FC<{
           {tx.memberId && <Row k="Member ID" v={tx.memberId} />}
           {tx.member && <Row k="Member Name" v={tx.member} />}
           {tx.depositType && <Row k="Deposit Type" v={tx.depositType} />}
+          {tx.utr && <Row k="UTR Number" v={tx.utr} />}
+          {tx.riskAnalysis && <Row k="Risk Analysis" v="Requested" />}
           <Row k="Date" v={`${tx.date} ${tx.time}`} />
+          {tx.notes && (
+            <div style={{ marginTop:10,background:T.warningBg,borderRadius:10,padding:'8px 12px' }}>
+              <p style={{ fontSize:10,fontWeight:800,color:T.warning,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Merchant Note</p>
+              <p style={{ fontSize:12,color:T.textMain,margin:0 }}>{tx.notes}</p>
+            </div>
+          )}
         </div>
         <div>
           {isDeposit ? (
             <>
               <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Account Sent</p>
-              {(tx.adminBankDetails || tx.adminRef) ? (
+              {(tx.adminBankDetails || tx.adminUpiId || tx.adminRef) ? (
                 <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12 }}>
-                  {tx.adminBankDetails && <Row k="Account" v={tx.adminBankDetails} />}
-                  {tx.adminRef && <Row k="Reference" v={tx.adminRef} />}
+                  {tx.adminUpiId && <Row k="UPI ID" v={tx.adminUpiId} />}
+                  {tx.adminUpiId && <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>{(tx.depositType||'').toUpperCase()} — QR for {fmt(tx.amount)} sent (valid 15 min). Bank details are not shared for UPI/QR.</p>}
+                  {tx.adminBankDetails && <p style={{ margin:0,whiteSpace:'pre-line',lineHeight:1.6,color:T.textMain,fontWeight:600 }}>{tx.adminBankDetails}</p>}
                 </div>
               ) : <div style={{ padding:24,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>Not sent yet</div>}
-              {tx.adminProof && <img src={tx.adminProof} alt="Account details" style={{ width:'100%',maxHeight:160,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+              {tx.adminProof && <img src={tx.adminProof} alt="Account details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
             </>
           ) : (
             <>
@@ -128,11 +173,31 @@ const RequestModal: React.FC<{
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Merchant Payment Slip</p>
           {tx.merchantRef && <Row k="Reference Number" v={tx.merchantRef} />}
-          {tx.merchantProof && <img src={tx.merchantProof} alt="Payment slip" style={{ width:'100%',maxHeight:220,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+          {tx.merchantProof && <img src={tx.merchantProof} alt="Payment slip" style={{ display:'block',maxHeight:260,maxWidth:240,width:'auto',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+          {(tx.merchantProof || tx.merchantRef) && (
+            <Btn size="sm" variant="ghost" style={{ marginTop:10 }}
+              onClick={() => tx.merchantProof
+                ? downloadDataUrl(tx.merchantProof, `payment-slip-${tx.ref}.png`)
+                : downloadText(`Payment slip — ${tx.ref}\nReference: ${tx.merchantRef}`, `payment-slip-${tx.ref}.txt`)}>
+              ⬇ Download Payment Slip
+            </Btn>
+          )}
         </div>
       )}
 
-      {chooseStep && (
+      {chooseStep && isUpiQr && (
+        <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>{tx.depositType?.toUpperCase()} payment — send UPI ID</p>
+          <Input label="UPI ID (VPA)" value={upiId} onChange={e=>setUpiId(e.target.value)} placeholder="e.g. clari5pay@hdfcbank" icon="₹" required/>
+          <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>The merchant gets a QR with the exact amount ({fmt(tx.amount)}) baked in. The code is valid for 15 minutes. Bank account details are not shared for UPI/QR payments.</p>
+          <div style={{ display:'flex',gap:10 }}>
+            <Btn onClick={sendUpi} disabled={saving||!upiId.trim()}>{saving ? 'Sending...' : '₹ Send UPI / QR'}</Btn>
+            <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+          </div>
+        </div>
+      )}
+
+      {chooseStep && !isUpiQr && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Select an account to send ({accounts.length} active)</p>
           <Sel label="Account" value={accountRef} onChange={e=>setAccountRef(e.target.value)}
@@ -167,6 +232,24 @@ const RequestModal: React.FC<{
           </div>
         </div>
       )}
+
+      {canReject && (
+        <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
+          {!rejecting ? (
+            <Btn size="sm" variant="danger" onClick={()=>setRejecting(true)}>✕ Reject Request</Btn>
+          ) : (
+            <div>
+              <label style={{ display:'block',fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6 }}>Rejection Reason</label>
+              <textarea value={rejectReason} onChange={e=>setRejectReason(e.target.value)} placeholder="Why is this request being rejected? (sent to the merchant)" autoFocus
+                style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:60,marginBottom:10 }}/>
+              <div style={{ display:'flex',gap:10 }}>
+                <Btn variant="danger" onClick={doReject} disabled={saving||!rejectReason.trim()}>{saving?'Rejecting...':'Confirm Reject'}</Btn>
+                <Btn variant="secondary" onClick={()=>{ setRejecting(false); setRejectReason(''); }}>Cancel</Btn>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </Modal>
   );
 };
@@ -192,27 +275,65 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   const completed = txns.filter(t => t.status === 'COMPLETED');
   const filtered = pending.filter(t => type === 'ALL' || t.type === type);
 
-  // Real-time status breakdown (counts straight from the DB records).
+  // Real-time figures (straight from DB records).
+  const completedTx = txns.filter(t => t.status === 'COMPLETED');
+  const feeMap: Record<number, { pin: number; pout: number }> = Object.fromEntries(
+    merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
+  );
+  const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
+  const grossAmount = sumType(completedTx, 'DEPOSIT') - sumType(completedTx, 'WITHDRAWAL');
+  const netAmount = completedTx.reduce((a, t) => {
+    const f = feeMap[t.merchantId];
+    if (!f) return a;
+    if (t.type.startsWith('DEPOSIT')) return a + t.amount * f.pin;
+    if (t.type.startsWith('WITHDRAWAL')) return a + t.amount * f.pout;
+    return a;
+  }, 0);
+  const depReqs = txns.filter(t => t.type.startsWith('DEPOSIT')).length;
+  const wdReqs = txns.filter(t => t.type.startsWith('WITHDRAWAL')).length;
+  const setReqs = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
+
   const statusData = [
     { label: 'Account Requested', value: txns.filter(t => t.status === 'ACCOUNT_REQUESTED').length, color: T.warning },
     { label: 'Account Submitted', value: txns.filter(t => t.status === 'ACCOUNT_SUBMITTED').length, color: T.info },
     { label: 'Slip Submitted', value: txns.filter(t => t.status === 'SLIP_SUBMITTED').length, color: T.blue },
     { label: 'Completed', value: completed.length, color: T.success },
   ];
+  const typeData = [
+    { label: 'Deposits', value: depReqs, color: T.blue },
+    { label: 'Withdrawals', value: wdReqs, color: T.danger },
+    { label: 'Settlements', value: setReqs, color: T.info },
+  ];
+
+  if (loading) return <LoadingScreen label="Loading dashboard…"/>;
 
   return (
     <div>
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:14,marginBottom:20 }}>
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:14,marginBottom:14 }}>
         <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
-        <StatCard icon="≡" label="Total Requests" value={txns.length} color={T.info}/>
+        <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits − Withdrawals" color={T.success}/>
+        <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Commission earned" color={T.green}/>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
         <StatCard icon="⧗" label="Pending" value={pending.length} color={T.warning}/>
       </div>
-      <Card style={{ padding:22,marginBottom:20 }}>
-        <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800 }}>Requests by Status</h3>
-        <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>Live counts from current transactions</p>
-        <StatusChart data={statusData}/>
-      </Card>
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:14,marginBottom:20 }}>
+        <StatCard icon="↓" label="Total Deposit Requests" value={depReqs} color={T.blue}/>
+        <StatCard icon="↑" label="Total Withdrawal Requests" value={wdReqs} color={T.danger}/>
+        <StatCard icon="⇄" label="Total Settlement Requests" value={setReqs} color={T.info}/>
+        <StatCard icon="≡" label="Total Requests" value={txns.length} color={T.info}/>
+      </div>
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:20 }}>
+        <Card style={{ padding:22 }}>
+          <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800 }}>Requests by Status</h3>
+          <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>Live counts from current transactions</p>
+          <StatusChart data={statusData}/>
+        </Card>
+        <Card style={{ padding:22 }}>
+          <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800 }}>Requests by Type</h3>
+          <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>Deposits / withdrawals / settlements</p>
+          <StatusChart data={typeData}/>
+        </Card>
+      </div>
       <Card>
         <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap' }}>
           <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Pending Requests ({pending.length})</h3>
@@ -286,11 +407,31 @@ export const AdminMerchantsPage: React.FC = () => {
   const empty = { name:'',username:'',email:'',countryCode:'+91',phone:'',password:'',confirmPassword:'',payIn:'',payOut:'',settlement:'',payInFee:'1.5',payOutFee:'1.2',profile:'Maker',merchantRole:'DEO',risk:'LOW' };
   const [form, setForm] = useState(empty);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  const [toggleM, setToggleM] = useState<User | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const doToggle = async (reason: string) => {
+    if (!toggleM) return;
+    setBusy(true);
+    try { await userAPI.toggleStatus(toggleM.id, reason); await reload(); showToast(`${toggleM.name} ${toggleM.active?'deactivated':'activated'}`); setToggleM(null); }
+    catch { showToast('Failed to update merchant','error'); }
+    finally { setBusy(false); }
+  };
   const passwordMismatch = !!form.confirmPassword && form.password !== form.confirmPassword;
 
-  const reload = () => userAPI.getMerchants().then(setMerchants).catch(()=>{});
+  const [txns, setTxns] = useState<Transaction[]>([]);
+  const reload = () => Promise.all([userAPI.getMerchants(), transactionAPI.getAll()])
+    .then(([m, t]) => { setMerchants(m); setTxns(t); }).catch(()=>{});
   useEffect(() => { reload(); }, []);
-  usePoll(() => { if (!showCreate) reload(); });
+  usePoll(() => { if (!showCreate && !toggleM) reload(); });
+
+  // Real available balance per merchant business (matches backend compute_balance).
+  const availFor = (m: User) => {
+    const biz = txns.filter(t => t.merchant === m.name && t.status === 'COMPLETED');
+    const sum = (pfx: string) => biz.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
+    const dep = sum('DEPOSIT'), wd = sum('WITHDRAWAL'), settled = sum('SETTLEMENT');
+    return dep - dep * ((m.payInFee || 0) / 100) - settled - wd - wd * ((m.payOutFee || 0) / 100);
+  };
 
   const createMerchant = async () => {
     if(!form.name||!form.username||!form.email||!form.phone||!form.password||!form.payIn||!form.payOut||!form.settlement){ showToast('Fill all required fields','error'); return; }
@@ -340,14 +481,14 @@ export const AdminMerchantsPage: React.FC = () => {
               <Input label="Confirm Password" type="password" value={form.confirmPassword} onChange={e=>set('confirmPassword',e.target.value)} placeholder="Re-enter password" required/>
               {passwordMismatch && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
             </div>
-            <Sel label="Role Selection" value={form.merchantRole} onChange={e=>set('merchantRole',e.target.value)} required options={[{value:'DEO',label:'Data Entry Operator'},{value:'SUPERVISOR',label:'Supervisor'},{value:'MANAGER',label:'Manager'}]}/>
+            <Sel label="Role Selection" value={form.merchantRole} onChange={e=>set('merchantRole',e.target.value)} required options={MERCHANT_ROLE_OPTIONS}/>
             <Sel label="Profile Type" value={form.profile} onChange={e=>set('profile',e.target.value)} options={['Admin','User','Maker','Checker'].map(v=>({value:v,label:v}))}/>
             <Input label="Pay-In Code" value={form.payIn} onChange={e=>set('payIn',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. DEP (max 3 chars)" required/>
             <Input label="Pay-Out Code" value={form.payOut} onChange={e=>set('payOut',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. WIT" required/>
             <Input label="Settlement Code" value={form.settlement} onChange={e=>set('settlement',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. SET" required/>
             <Input label="Pay-In Fee (%)" type="number" value={form.payInFee} onChange={e=>set('payInFee',e.target.value)} required/>
             <Input label="Pay-Out Fee (%)" type="number" value={form.payOutFee} onChange={e=>set('payOutFee',e.target.value)} required/>
-            <Sel label="Risk Level" value={form.risk} onChange={e=>set('risk',e.target.value)} options={['LOW','MEDIUM','HIGH'].map(v=>({value:v,label:v}))}/>
+            <Sel label="Risk Level" value={form.risk} onChange={e=>set('risk',e.target.value)} options={['LOW','MEDIUM','HIGH','CRITICAL'].map(v=>({value:v,label:v}))}/>
           </div>
           <div style={{ background:T.infoBg,border:`1px solid ${T.blue}20`,borderRadius:10,padding:12,margin:'4px 0 16px',fontSize:12,color:T.blue }}>
             ℹ Integration settings are configured and managed by Admins — merchants do not have access.
@@ -369,10 +510,10 @@ export const AdminMerchantsPage: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {merchants.map((m,i)=>(
-                <tr key={m.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
-                  <td style={{ padding:'11px 14px',fontWeight:800 }}>{m.name}</td>
-                  <td style={{ padding:'11px 14px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11 }}>{m.username}</code></td>
+              {merchants.map((m)=>(
+                <tr key={m.id} style={{ background:T.surface,borderBottom:`1px solid ${T.borderLight}` }}>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{m.name}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMain }}>{m.username}</td>
                   <td style={{ padding:'11px 14px' }}><span style={{ background:T.infoBg,color:T.blue,padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{roleLabel(m.merchantRole)}</span></td>
                   <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11 }}>{m.email}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11,whiteSpace:'nowrap' }}>{m.phone||'—'}</td>
@@ -381,10 +522,10 @@ export const AdminMerchantsPage: React.FC = () => {
                       {[m.payIn,m.payOut,m.settlement].filter(Boolean).map(c=><code key={c} style={{ background:T.infoBg,color:T.blue,padding:'1px 5px',borderRadius:4,fontSize:10,fontWeight:700 }}>{c}</code>)}
                     </div>
                   </td>
-                  <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(m.balance||0)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(availFor(m))}</td>
                   <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:m.active?T.successBg:T.dangerBg,color:m.active?T.success:T.danger }}>{m.active?'Active':'Inactive'}</span></td>
                   <td style={{ padding:'11px 14px' }}>
-                    <Btn size="sm" variant={m.active?'danger':'success'} onClick={async()=>{ try{ await userAPI.toggleStatus(m.id); await reload(); showToast(`${m.name} ${m.active?'deactivated':'activated'}`); }catch{} }}>{m.active?'Deactivate':'Activate'}</Btn>
+                    <Btn size="sm" variant={m.active?'danger':'success'} onClick={()=>setToggleM(m)}>{m.active?'Deactivate':'Activate'}</Btn>
                   </td>
                 </tr>
               ))}
@@ -392,6 +533,14 @@ export const AdminMerchantsPage: React.FC = () => {
           </table>
         </div>
       </Card>
+      {toggleM && (
+        <ReasonModal
+          title={`${toggleM.active ? 'Deactivate' : 'Activate'} Merchant — ${toggleM.name}`}
+          label={toggleM.active ? 'Reason for Deactivation' : 'Reason for Activation'}
+          confirmLabel={toggleM.active ? 'Deactivate' : 'Activate'}
+          busy={busy} onSubmit={doToggle} onClose={()=>setToggleM(null)}
+        />
+      )}
     </div>
   );
 };
@@ -407,13 +556,19 @@ export const AdminAccountsPage: React.FC = () => {
   const [form, setForm] = useState(empty);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
+  const [toggleAcc, setToggleAcc] = useState<Account | null>(null);
+  const [busy, setBusy] = useState(false);
+
   const reload = () => accountAPI.list().then(setAccounts).catch(()=>{});
   useEffect(() => { reload(); }, []);
-  usePoll(() => { if (!detail && !showCreate) reload(); });
+  usePoll(() => { if (!detail && !showCreate && !toggleAcc) reload(); });
 
-  const toggleStatus = async (a: Account) => {
-    try { await accountAPI.toggle(a.referenceNumber); await reload(); showToast(`${a.referenceNumber} set ${a.status==='ACTIVE'?'INACTIVE':'ACTIVE'}`); }
+  const doToggle = async (reason: string) => {
+    if (!toggleAcc) return;
+    setBusy(true);
+    try { await accountAPI.toggle(toggleAcc.referenceNumber, reason); await reload(); showToast(`${toggleAcc.referenceNumber} updated`); setToggleAcc(null); }
     catch { showToast('Failed to update account','error'); }
+    finally { setBusy(false); }
   };
 
   const filtered = accounts.filter(a => !search || a.merchantName.toLowerCase().includes(search.toLowerCase()));
@@ -460,7 +615,7 @@ export const AdminAccountsPage: React.FC = () => {
                 <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                   <td style={{ padding:'11px 14px',fontWeight:700 }}>{a.merchantName}</td>
                   <td style={{ padding:'11px 14px' }}>
-                    <Btn size="sm" variant={a.status==='ACTIVE'?'success':'danger'} onClick={()=>toggleStatus(a)}>{a.status==='ACTIVE'?'● ACTIVE':'○ INACTIVE'}</Btn>
+                    <Btn size="sm" variant={a.status==='ACTIVE'?'success':'danger'} onClick={()=>setToggleAcc(a)}>{a.status==='ACTIVE'?'● ACTIVE':'○ INACTIVE'}</Btn>
                   </td>
                   <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={()=>setDetail(a)}>View Details</Btn></td>
                 </tr>
@@ -498,6 +653,14 @@ export const AdminAccountsPage: React.FC = () => {
           </div>
         </Modal>
       )}
+      {toggleAcc && (
+        <ReasonModal
+          title={`${toggleAcc.status==='ACTIVE' ? 'Deactivate' : 'Activate'} Account — ${toggleAcc.referenceNumber}`}
+          label={toggleAcc.status==='ACTIVE' ? 'Reason for Deactivation' : 'Reason for Activation'}
+          confirmLabel={toggleAcc.status==='ACTIVE' ? 'Deactivate' : 'Activate'}
+          busy={busy} onSubmit={doToggle} onClose={()=>setToggleAcc(null)}
+        />
+      )}
     </div>
   );
 };
@@ -526,14 +689,33 @@ export const SaDashboard: React.FC = () => {
     return { day: d.toLocaleDateString('en-IN', { weekday: 'short' }), deposit: onDay('DEPOSIT'), withdrawal: onDay('WITHDRAWAL') };
   });
 
+  // Platform-wide gross & commission (net), from completed deposit/withdrawal records across all merchants.
+  const completedTx = txns.filter(t => t.status === 'COMPLETED');
+  const feeMap: Record<number, { pin: number; pout: number }> = Object.fromEntries(
+    merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
+  );
+  const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
+  const grossAmount = sumType(completedTx, 'DEPOSIT') - sumType(completedTx, 'WITHDRAWAL');
+  const netAmount = completedTx.reduce((a, t) => {
+    const f = feeMap[t.merchantId];
+    if (!f) return a;
+    if (t.type.startsWith('DEPOSIT')) return a + t.amount * f.pin;
+    if (t.type.startsWith('WITHDRAWAL')) return a + t.amount * f.pout;
+    return a;
+  }, 0);
+
   return (
     <div>
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:14,marginBottom:20 }}>
+      {/* 3 per row → counts on top, money on the bottom row */}
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:20 }} className="sa-stat-grid">
         <StatCard icon="🛡" label="Total Admins" value={admins.length} color={T.blue}/>
         <StatCard icon="🏪" label="Total Merchants" value={merchants.length} color={T.success}/>
         <StatCard icon="✅" label="Active Admins" value={admins.filter(a=>a.active).length} color={T.info}/>
-        <StatCard icon="💹" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
+        <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits − Withdrawals" color={T.success}/>
+        <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Commission earned" color={T.green}/>
+        <StatCard icon="📊" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
       </div>
+      <style>{`@media(max-width:760px){.sa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}}@media(max-width:460px){.sa-stat-grid{grid-template-columns:1fr!important;}}`}</style>
       <Card style={{ padding:22,marginBottom:20 }}>
         <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800 }}>Platform Volume</h3>
         <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>All merchants — completed deposits & withdrawals, last 7 days</p>
@@ -576,39 +758,71 @@ export const SaAdminsPage: React.FC = () => {
   const { showToast } = useToast();
   const [admins, setAdmins] = useState<User[]>([]);
   const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ name:'',username:'',email:'',countryCode:'+91',phone:'',password:'',confirmPassword:'' });
+  const [form, setForm] = useState({ name:'',username:'',email:'',countryCode:'+91',phone:'',password:'',confirmPassword:'',reason:'' });
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
   const passwordMismatch = !!form.confirmPassword && form.password !== form.confirmPassword;
-  const [drill, setDrill] = useState<User | null>(null);
-  const [drillMerchants, setDrillMerchants] = useState<User[]>([]);
+  const [overview, setOverview] = useState<User | null>(null);
+  const [overviewMerchants, setOverviewMerchants] = useState<User[]>([]);
+  const [toggleA, setToggleA] = useState<User | null>(null);
+  const [resetA, setResetA] = useState<User | null>(null);
+  const [resetPw, setResetPw] = useState({ next:'', confirm:'' });
+  const [search, setSearch] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const reload = () => userAPI.getAdmins().then(setAdmins).catch(()=>{});
   useEffect(() => { reload(); }, []);
-  usePoll(() => { if (!drill && !showCreate) reload(); });
+  usePoll(() => { if (!overview && !showCreate && !toggleA && !resetA) reload(); });
 
-  const openDrill = async (a: User) => {
-    setDrill(a);
-    try { setDrillMerchants(await userAPI.getAdminMerchants(a.id)); }
-    catch { setDrillMerchants([]); }
+  const openOverview = async (a: User) => {
+    setOverview(a);
+    try { setOverviewMerchants(await userAPI.getAdminMerchants(a.id)); }
+    catch { setOverviewMerchants([]); }
   };
+
+  const doUnlock = async (a: User) => {
+    try { await userAPI.unlock(a.id); await reload(); showToast(`${a.name} unlocked`); }
+    catch { showToast('Failed to unlock admin','error'); }
+  };
+
+  const doReset = async () => {
+    if (!resetA) return;
+    if (resetPw.next !== resetPw.confirm) { showToast('Passwords do not match','error'); return; }
+    const policy = passwordPolicyError(resetPw.next);
+    if (policy) { showToast(policy,'error'); return; }
+    setBusy(true);
+    try {
+      await userAPI.resetPassword(resetA.id, resetPw.next);
+      showToast(`Password reset for ${resetA.name}`);
+      setResetA(null); setResetPw({ next:'', confirm:'' });
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to reset password','error');
+    } finally { setBusy(false); }
+  };
+
+  const filteredAdmins = admins.filter(a => !search ||
+    [a.name, a.username, a.email, a.phone].some(v => (v||'').toLowerCase().includes(search.toLowerCase())));
 
   const create = async () => {
     if(!form.name||!form.username||!form.email||!form.password){ showToast('Fill all fields','error'); return; }
     if(form.password !== form.confirmPassword){ showToast('Passwords do not match','error'); return; }
+    if(!form.reason.trim()){ showToast('A reason is required to create an admin','error'); return; }
     try {
-      await userAPI.createAdmin({ name:form.name, username:form.username, email:form.email, phone:form.phone?`${form.countryCode} ${form.phone}`:undefined, password:form.password, role:'ADMIN' });
+      await userAPI.createAdmin({ name:form.name, username:form.username, email:form.email, phone:form.phone?`${form.countryCode} ${form.phone}`:undefined, password:form.password, reason:form.reason.trim(), role:'ADMIN' });
       await reload();
       setShowCreate(false);
-      setForm({ name:'',username:'',email:'',countryCode:'+91',phone:'',password:'',confirmPassword:'' });
+      setForm({ name:'',username:'',email:'',countryCode:'+91',phone:'',password:'',confirmPassword:'',reason:'' });
       showToast(`Admin "${form.name}" created`);
-    } catch {
-      showToast('Failed to create admin','error');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to create admin','error');
     }
   };
 
-  const toggleAdmin = async (a: User) => {
-    try { await userAPI.toggleStatus(a.id); await reload(); showToast(`${a.name} ${a.active?'deactivated':'activated'}`); }
+  const doToggleAdmin = async (reason: string) => {
+    if (!toggleA) return;
+    setBusy(true);
+    try { await userAPI.toggleStatus(toggleA.id, reason); await reload(); showToast(`${toggleA.name} ${toggleA.active?'deactivated':'activated'}`); setToggleA(null); }
     catch { showToast('Failed to update admin','error'); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -616,7 +830,7 @@ export const SaAdminsPage: React.FC = () => {
       <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18 }}>
         <div>
           <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>Admin Management</h2>
-          <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>{admins.length} admin{admins.length===1?'':'s'} · Click an admin to view their merchants</p>
+          <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>{admins.length} admin{admins.length===1?'':'s'} · Overview, reset password, activate/deactivate</p>
         </div>
         <Btn onClick={()=>setShowCreate(true)}>+ Create Admin</Btn>
       </div>
@@ -639,44 +853,95 @@ export const SaAdminsPage: React.FC = () => {
           <Input label="Password" type="password" value={form.password} onChange={e=>set('password',e.target.value)} required placeholder="Set login password" hint="Admin will use this to login"/>
           <Input label="Confirm Password" type="password" value={form.confirmPassword} onChange={e=>set('confirmPassword',e.target.value)} required placeholder="Re-enter password"/>
           {passwordMismatch && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
+          <div style={{ marginBottom:16 }}>
+            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Reason<span style={{ color:T.danger }}> *</span></label>
+            <textarea value={form.reason} onChange={e=>set('reason',e.target.value)} placeholder="Why is this admin being created?"
+              style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:60 }}/>
+          </div>
           <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={create} disabled={passwordMismatch}>Create Admin</Btn>
+            <Btn onClick={create} disabled={passwordMismatch||!form.reason.trim()}>Create Admin</Btn>
             <Btn variant="secondary" onClick={()=>setShowCreate(false)}>Cancel</Btn>
           </div>
         </Modal>
       )}
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:14 }}>
-        {admins.map(a=>(
-          <Card key={a.id} style={{ padding:20 }}>
-            <div style={{ display:'flex',gap:12,alignItems:'center',marginBottom:14 }}>
-              <div style={{ width:44,height:44,borderRadius:'50%',background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,fontWeight:800,color:'#fff' }}>{a.name.charAt(0)}</div>
-              <div style={{ flex:1,overflow:'hidden' }}>
-                <p style={{ margin:0,fontWeight:800,fontSize:14,color:T.textMain }}>{a.name}</p>
-                <p style={{ margin:0,fontSize:11,color:T.textMuted }}>{a.email}</p>
-                <code style={{ fontSize:10,color:T.blue,background:T.infoBg,padding:'1px 5px',borderRadius:4 }}>{a.username}</code>
-              </div>
-              <span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:a.active?T.successBg:T.dangerBg,color:a.active?T.success:T.danger,flexShrink:0 }}>{a.active?'Active':'Inactive'}</span>
-            </div>
-            <div style={{ display:'flex',justifyContent:'space-between',padding:'8px 0',borderTop:`1px solid ${T.borderLight}`,borderBottom:`1px solid ${T.borderLight}`,marginBottom:12 }}>
-              <span style={{ fontSize:12,color:T.textMuted }}>Phone</span>
-              <span style={{ fontSize:12,fontWeight:700 }}>{a.phone||'—'}</span>
-            </div>
-            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14 }}>
-              <span style={{ fontSize:12,color:T.textMuted }}>Merchants Created</span>
-              <span style={{ fontSize:20,fontWeight:800,color:T.blue }}>{a.merchantCount ?? 0}</span>
-            </div>
-            <div style={{ display:'flex',gap:8 }}>
-              <Btn size="sm" style={{ flex:1,justifyContent:'center' }} onClick={()=>openDrill(a)}>View Merchants</Btn>
-              <Btn size="sm" variant={a.active?'danger':'success'} onClick={()=>toggleAdmin(a)}>{a.active?'Deactivate':'Activate'}</Btn>
-            </div>
-          </Card>
-        ))}
-      </div>
+      <Card>
+        <div style={{ padding:'14px 20px',borderBottom:`1px solid ${T.border}` }}>
+          <div style={{ position:'relative',maxWidth:340 }}>
+            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name, username, email or phone..."
+              style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
+          </div>
+        </div>
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+            <thead>
+              <tr style={{ background:T.canvas }}>
+                {['Admin Name','Username','Email','Phone','Status','Merchants','Created','Actions'].map(h=>(
+                  <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}`,whiteSpace:'nowrap' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredAdmins.length === 0 && <tr><td colSpan={8} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No admins found</td></tr>}
+              {filteredAdmins.map((a,i)=>(
+                <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff',borderBottom:`1px solid ${T.borderLight}` }}>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{a.name}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMain }}>{a.username}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.email}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{a.phone||'—'}</td>
+                  <td style={{ padding:'11px 14px' }}>
+                    <div style={{ display:'flex',flexDirection:'column',gap:3,alignItems:'flex-start' }}>
+                      <span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:a.active?T.successBg:T.dangerBg,color:a.active?T.success:T.danger }}>{a.active?'Active':'Inactive'}</span>
+                      {a.locked && <span style={{ padding:'2px 8px',borderRadius:12,fontSize:10,fontWeight:700,background:T.warningBg,color:T.warning }}>🔒 Locked</span>}
+                    </div>
+                  </td>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue,textAlign:'center' }}>{a.merchantCount ?? 0}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{formatDateTime(a.createdAt || a.created)}</td>
+                  <td style={{ padding:'11px 14px' }}>
+                    <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
+                      <Btn size="sm" variant="ghost" onClick={()=>openOverview(a)}>Overview</Btn>
+                      <Btn size="sm" variant="secondary" onClick={()=>{ setResetA(a); setResetPw({ next:'', confirm:'' }); }}>Reset Password</Btn>
+                      {a.locked && <Btn size="sm" variant="success" onClick={()=>doUnlock(a)}>Unlock</Btn>}
+                      <Btn size="sm" variant={a.active?'danger':'success'} onClick={()=>setToggleA(a)}>{a.active?'Deactivate':'Activate'}</Btn>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
-      {drill && (
-        <Modal title={`Merchants created by ${drill.name}`} onClose={()=>{setDrill(null);setDrillMerchants([]);}} wide>
-          {drillMerchants.length === 0
-            ? <div style={{ padding:24,textAlign:'center',color:T.textMuted }}>No merchants created by this admin.</div>
+      {overview && (
+        <Modal title={`Admin Overview — ${overview.name}`} onClose={()=>{setOverview(null);setOverviewMerchants([]);}} wide>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 24px',marginBottom:16 }}>
+            <div>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Admin Details</p>
+              <Row k="Full Name" v={overview.name} />
+              <Row k="Username" v={overview.username} />
+              <Row k="Email" v={overview.email} />
+              <Row k="Phone" v={overview.phone || '—'} />
+              <Row k="Status" v={<span style={{ color:overview.active?T.success:T.danger,fontWeight:800 }}>{overview.active?'Active':'Inactive'}{overview.locked?' · 🔒 Locked':''}</span>} />
+              <Row k="Created" v={formatDateTime(overview.createdAt || overview.created)} />
+            </div>
+            <div>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Activity Summary</p>
+              <div style={{ display:'flex',gap:12,flexWrap:'wrap',marginBottom:12 }}>
+                <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 16px' }}>
+                  <p style={{ margin:0,fontSize:10,color:T.textMuted,fontWeight:700,textTransform:'uppercase' }}>Merchants Created</p>
+                  <p style={{ margin:0,fontSize:24,fontWeight:800,color:T.blue }}>{overview.merchantCount ?? overviewMerchants.length}</p>
+                </div>
+                <div style={{ background:overview.active?T.successBg:T.dangerBg,borderRadius:10,padding:'10px 16px' }}>
+                  <p style={{ margin:0,fontSize:10,color:T.textMuted,fontWeight:700,textTransform:'uppercase' }}>Account State</p>
+                  <p style={{ margin:0,fontSize:18,fontWeight:800,color:overview.active?T.success:T.danger }}>{overview.active?'Active':'Inactive'}</p>
+                </div>
+              </div>
+              {overview.failedAttempts ? <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Failed login attempts: <b>{overview.failedAttempts}</b></p> : null}
+            </div>
+          </div>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'8px 0 8px' }}>Merchant Information ({overviewMerchants.length})</p>
+          {overviewMerchants.length === 0
+            ? <div style={{ padding:20,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>No merchants created by this admin.</div>
             : (
               <div style={{ overflowX:'auto' }}>
                 <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
@@ -688,10 +953,10 @@ export const SaAdminsPage: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {drillMerchants.map((m,i)=>(
+                    {overviewMerchants.map((m,i)=>(
                       <tr key={m.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                         <td style={{ padding:'11px 14px',fontWeight:700 }}>{m.name}</td>
-                        <td style={{ padding:'11px 14px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11 }}>{m.username}</code></td>
+                        <td style={{ padding:'11px 14px',color:T.textMain }}>{m.username}</td>
                         <td style={{ padding:'11px 14px',color:T.textMuted }}>{m.phone||'—'}</td>
                         <td style={{ padding:'11px 14px',color:T.textMuted }}>{m.email}</td>
                         <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{formatDateTime(m.createdAt || m.created)}</td>
@@ -702,6 +967,28 @@ export const SaAdminsPage: React.FC = () => {
               </div>
             )}
         </Modal>
+      )}
+
+      {resetA && (
+        <Modal title={`Reset Password — ${resetA.name}`} onClose={()=>setResetA(null)}>
+          <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 14px' }}>Set a new password for <b style={{ color:T.textMain }}>{resetA.username}</b>. Use this when the admin can't receive OTPs. They can sign in immediately with the new password.</p>
+          <Input label="New Password" type="password" value={resetPw.next} onChange={e=>setResetPw(p=>({...p,next:e.target.value}))} placeholder="Enter new password" required/>
+          <Input label="Confirm Password" type="password" value={resetPw.confirm} onChange={e=>setResetPw(p=>({...p,confirm:e.target.value}))} placeholder="Re-enter new password" required/>
+          {resetPw.confirm && resetPw.next !== resetPw.confirm && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
+          <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 14px' }}>{PASSWORD_POLICY_TEXT}</p>
+          <div style={{ display:'flex',gap:10 }}>
+            <Btn onClick={doReset} disabled={busy||!resetPw.next||!resetPw.confirm}>{busy?'Resetting...':'Reset Password'}</Btn>
+            <Btn variant="secondary" onClick={()=>setResetA(null)}>Cancel</Btn>
+          </div>
+        </Modal>
+      )}
+      {toggleA && (
+        <ReasonModal
+          title={`${toggleA.active ? 'Deactivate' : 'Activate'} Admin — ${toggleA.name}`}
+          label={toggleA.active ? 'Reason for Deactivation' : 'Reason for Activation'}
+          confirmLabel={toggleA.active ? 'Deactivate' : 'Activate'}
+          busy={busy} onSubmit={doToggleAdmin} onClose={()=>setToggleA(null)}
+        />
       )}
     </div>
   );
@@ -754,6 +1041,71 @@ export const SystemLogsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',fontWeight:700 }}>{l.actor}</td>
                   <td style={{ padding:'11px 14px' }}><code style={{ background:T.infoBg,color:T.blue,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{l.action}</code></td>
                   <td style={{ padding:'11px 14px',color:T.textMain }}>{l.detail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}` }}>
+          <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {logs.length}</p>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+// ─── Audit Logs (Super Admin) ──────────────────────────────────────────────────
+export const AuditLogsPage: React.FC = () => {
+  const [logs, setLogs] = useState<AuditLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState('');
+
+  const reload = () => auditLogAPI.list().then(setLogs).catch(()=>setLogs([]));
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  usePoll(reload);
+
+  const filtered = logs.filter(l => !q ||
+    l.username.toLowerCase().includes(q.toLowerCase()) ||
+    l.action.toLowerCase().includes(q.toLowerCase()) ||
+    (l.entityId || '').toLowerCase().includes(q.toLowerCase()) ||
+    (l.reason || '').toLowerCase().includes(q.toLowerCase()));
+
+  return (
+    <div>
+      <div style={{ marginBottom:18 }}>
+        <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>Audit Logs</h2>
+        <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Detailed audit trail with actor, role, reason, old/new value and IP</p>
+      </div>
+      <Card>
+        <div style={{ padding:'14px 20px',borderBottom:`1px solid ${T.border}` }}>
+          <div style={{ position:'relative',maxWidth:340 }}>
+            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search user, action, entity or reason..."
+              style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
+          </div>
+        </div>
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+            <thead>
+              <tr style={{ background:T.canvas }}>
+                {['Time','User','Role','Action','Entity','Old → New','Reason','IP'].map(h=>(
+                  <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={8} style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</td></tr>}
+              {!loading && filtered.length === 0 && <tr><td colSpan={8} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No audit records found</td></tr>}
+              {filtered.map((l,i)=>(
+                <tr key={l.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{formatDateTime(l.createdAt)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:700 }}>{l.username}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted }}>{(l.role||'').replace('_',' ')}</td>
+                  <td style={{ padding:'11px 14px' }}><code style={{ background:T.infoBg,color:T.blue,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{l.action}</code></td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted }}>{l.entityType ? `${l.entityType}${l.entityId ? ' '+l.entityId : ''}` : '—'}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11 }}>{(l.oldValue || l.newValue) ? `${l.oldValue ?? '—'} → ${l.newValue ?? '—'}` : '—'}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMain }}>{l.reason || '—'}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11 }}>{l.ip || '—'}</td>
                 </tr>
               ))}
             </tbody>

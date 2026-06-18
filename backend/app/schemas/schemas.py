@@ -49,6 +49,7 @@ class ProfileUpdateRequest(BaseModel):
     email: Optional[str] = None
     new_password: Optional[str] = None
     current_password: Optional[str] = None
+    avatar: Optional[str] = None
 
 
 # ─── Auth Schemas ─────────────────────────────────────────────────────────────
@@ -60,6 +61,37 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     user_id: Optional[int] = None
+
+
+class OtpVerifyRequest(BaseModel):
+    otpToken: str
+    code: str
+
+
+class OtpResendRequest(BaseModel):
+    otpToken: str
+
+
+class OtpConfigRequest(BaseModel):
+    enabled: bool
+
+
+class ForgotPasswordRequest(BaseModel):
+    username: str
+
+
+class VerifyResetOtpRequest(BaseModel):
+    resetToken: str
+    code: str
+
+
+class ResetPasswordRequest(BaseModel):
+    confirmedToken: str
+    newPassword: str
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str
 
 
 # ─── Transaction Schemas ──────────────────────────────────────────────────────
@@ -96,6 +128,16 @@ class DepositCreate(BaseModel):
     segment: str = "A"
     profile: str = "NEW"
     proof: Optional[str] = None
+    # Selected/added merchant bank account sent to admin with the request
+    accountHolder: Optional[str] = None
+    accountNumber: Optional[str] = None
+    ifsc: Optional[str] = None
+    bankName: Optional[str] = None
+    branch: Optional[str] = None
+    utr: Optional[str] = None
+    notes: Optional[str] = None
+    riskAnalysis: bool = False
+    saveBankAccount: bool = False
 
 
 class WithdrawalCreate(BaseModel):
@@ -105,7 +147,11 @@ class WithdrawalCreate(BaseModel):
     accountNumber: str
     ifsc: str
     bankName: str
+    branch: Optional[str] = None
     proof: Optional[str] = None
+    utr: Optional[str] = None
+    notes: Optional[str] = None
+    saveBankAccount: bool = False
 
 
 class SettlementCreate(BaseModel):
@@ -128,6 +174,22 @@ class SlipRequest(BaseModel):
 
 class CompleteRequest(BaseModel):
     adminProof: Optional[str] = None  # payment receipt image for withdrawals/settlements
+
+
+class ReasonRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class RejectRequest(BaseModel):
+    reason: str
+
+
+class BankAccountCreate(BaseModel):
+    accountHolder: str
+    accountNumber: str
+    ifsc: str
+    branch: str
+    bankName: Optional[str] = None
 
 
 # ─── Account Schemas ──────────────────────────────────────────────────────────

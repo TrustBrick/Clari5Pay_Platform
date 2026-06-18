@@ -41,23 +41,24 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
       <thead>
         <tr style={{ background: T.canvas }}>
-          {['Reference Number', 'Merchant Name', 'Type', 'Amount', 'Date', 'Status', 'Action'].map(h => (
+          {['Reference Number', 'Merchant Name', 'Member ID', 'Type', 'Amount', 'Date', 'Status', 'Action'].map(h => (
             <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
           ))}
         </tr>
       </thead>
       <tbody>
         {txns.length === 0 && (
-          <tr><td colSpan={7} style={{ padding:32,textAlign:'center',color:T.textMuted,fontSize:13 }}>No transactions found</td></tr>
+          <tr><td colSpan={8} style={{ padding:32,textAlign:'center',color:T.textMuted,fontSize:13 }}>No transactions found</td></tr>
         )}
         {txns.map((t, i) => {
           const tc = typeColor(t.type);
           return (
             <tr key={t.id} style={{ background: i % 2 === 0 ? T.surface : '#f8faff' }}>
               <td style={{ padding:'11px 14px' }}>
-                <code style={{ fontSize:11,background:T.canvas,padding:'2px 6px',borderRadius:4,fontWeight:700 }}>{t.ref}</code>
+                <span style={{ fontWeight:700,color:T.textMain }}>{t.ref}</span>
               </td>
               <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:700 }}>{t.merchant}</td>
+              <td style={{ padding:'11px 14px',color:T.textMuted }}>{t.memberId || '—'}</td>
               <td style={{ padding:'11px 14px' }}>
                 <span style={{ padding:'2px 8px',borderRadius:6,fontSize:11,fontWeight:700,background:tc.bg,color:tc.color,whiteSpace:'nowrap' }}>
                   {typeLabel(t.type)}

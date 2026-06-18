@@ -20,6 +20,7 @@ class RiskLevel(str, enum.Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
 
 
 class TxType(str, enum.Enum):
@@ -65,7 +66,12 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    # Profile picture (data URL) — uploaded by the user, shown in the header & profile.
+    avatar: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Brute-force protection: failed login attempts and lockout expiry.
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     # Full creation timestamp (date + time) — shown in the SA "merchants by admin" popup
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
@@ -73,8 +79,8 @@ class User(Base):
     # Which admin created this merchant (null for admins / super admin)
     created_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
 
-    # Merchant access role (DEO / SUPERVISOR / MANAGER) — drives the sidebar.
-    merchant_role: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # Merchant access role (DEO / DEPOSIT_OPERATOR / WITHDRAWAL_OPERATOR / SUPERVISOR / MANAGER).
+    merchant_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     # Merchant-specific
     pay_in: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
@@ -116,6 +122,12 @@ class Transaction(Base):
     account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
+    # UTR / notes / risk
+    utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)            # bank UTR number
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)                # merchant free-text note to admin
+    risk_analysis: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # whether risk analysis was requested
+    reject_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # admin rejection reason
+
     # Proof / verification workflow
     merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # merchant payment slip image (data URL)
     merchant_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # merchant payment reference number
@@ -123,6 +135,8 @@ class Transaction(Base):
     admin_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # admin reference number
     admin_bank_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # admin manually-entered bank details
     admin_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)   # admin UPI ID (when merchant chose UPI)
+    # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
+    qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -171,6 +185,70 @@ class SystemLog(Base):
     actor_name: Mapped[str] = mapped_column(String(128), default="system", nullable=False)
     action: Mapped[str] = mapped_column(String(48), nullable=False)
     detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AuditLog(Base):
+    """Detailed audit trail (action, actor, old/new value, reason, IP)."""
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    username: Mapped[str] = mapped_column(String(100), default="system", nullable=False)
+    role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    entity_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    old_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    new_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AppSetting(Base):
+    """Simple key/value runtime settings (e.g. whether login OTP is enabled)."""
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class LoginOtp(Base):
+    """A one-time code emailed to the user — used for both login and password reset."""
+    __tablename__ = "login_otps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    otp: Mapped[str] = mapped_column(String(6), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(16), default="login", nullable=False)  # "login" | "reset"
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)   # successfully used
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)   # used or invalidated (single-use)
+
+
+class PasswordHistory(Base):
+    """Previous password hashes for a user, to prevent reuse of the last N passwords."""
+    __tablename__ = "password_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MerchantBankAccount(Base):
+    """A merchant's saved bank account, reusable across deposit/withdrawal requests."""
+    __tablename__ = "merchant_bank_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    merchant_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    account_holder: Mapped[str] = mapped_column(String(128), nullable=False)
+    account_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    ifsc: Mapped[str] = mapped_column(String(16), nullable=False)
+    branch: Mapped[str] = mapped_column(String(128), nullable=False)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 

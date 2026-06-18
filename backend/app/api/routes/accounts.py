@@ -1,12 +1,12 @@
 from datetime import date, datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import AccountMaster, AccountTransaction, Transaction, User
 from app.core.deps import get_current_admin
-from app.schemas.schemas import AccountCreate
-from app.api.routes.system_logs import log_event
+from app.schemas.schemas import AccountCreate, ReasonRequest
+from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -145,18 +145,27 @@ async def create_account(
 @router.patch("/{reference_number}/toggle")
 async def toggle_account(
     reference_number: str,
+    request: Request,
+    data: ReasonRequest | None = None,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """Flip an account's status between ACTIVE and INACTIVE."""
+    """Flip an account's status between ACTIVE and INACTIVE (reason required)."""
     acc = (
         await db.execute(select(AccountMaster).where(AccountMaster.reference_number == reference_number))
     ).scalar_one_or_none()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    reason = (data.reason if data else None) or ""
+    if not reason.strip():
+        raise HTTPException(status_code=400, detail="A reason is required")
+    was = acc.status
     acc.status = "INACTIVE" if (acc.status or "").upper() == "ACTIVE" else "ACTIVE"
     await db.flush()
-    await log_event(db, "ACCOUNT_TOGGLED", f"Account {acc.reference_number} set {acc.status}", actor=actor)
+    ip = request.client.host if request and request.client else None
+    await log_event(db, "ACCOUNT_TOGGLED", f"Account {acc.reference_number} set {acc.status} by {actor.name} — reason: {reason}", actor=actor)
+    await record_audit(db, "ACCOUNT_TOGGLED", actor=actor, entity_type="account", entity_id=acc.reference_number,
+                       old=was, new=acc.status, reason=reason, ip=ip)
     await db.refresh(acc)
     name_map = await _merchant_name_map(db)
     return _a(acc, name_map.get(acc.reference_number))
