@@ -1,21 +1,4 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: clari5pay_db
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: clari5pay
-    ports:
-      - "5433:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   redis:
     image: redis:7-alpine
     container_name: clari5pay_redis
@@ -35,7 +18,11 @@ services:
       dockerfile: Dockerfile
     container_name: clari5pay_api
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/clari5pay
+      # Database lives in AWS RDS (username + password). For LOCAL runs, edit
+      # backend/.env instead — this block is only used when you run via Docker.
+      DATABASE_URL: postgresql+asyncpg://postgres:PASTE_YOUR_RDS_MASTER_PASSWORD@database-1-instance-1.c76auiocst4e.eu-north-1.rds.amazonaws.com:5432/postgres
+      DB_SSL: "true"
+      USE_IAM_AUTH: "false"
       REDIS_URL: redis://redis:6379
       SECRET_KEY: changeme-super-secret-jwt-key-32chars
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -43,8 +30,6 @@ services:
     ports:
       - "8001:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
@@ -75,5 +60,4 @@ services:
       - backend
 
 volumes:
-  pgdata:
   redisdata:

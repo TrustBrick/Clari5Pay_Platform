@@ -10,6 +10,16 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     FRONTEND_ORIGIN: str = "http://localhost:3000"
 
+    # ── AWS RDS connection (used when DB_HOST is set) ──
+    DB_SSL: bool = False                 # set true for RDS (encrypts the connection)
+    USE_IAM_AUTH: bool = False           # true = IAM token auth (advanced; needs AWS keys)
+    DB_HOST: str = ""                    # RDS endpoint; blank = use DATABASE_URL (local)
+    DB_PORT: int = 5432
+    DB_NAME: str = "postgres"
+    DB_USER: str = "postgres"
+    DB_PASSWORD: str = ""                # RDS master password (raw value, no escaping)
+    AWS_REGION: str = "eu-north-1"
+
     # ── Login / password-reset OTP ──
     OTP_EXPIRE_MINUTES: int = 15
     # SMTP — when SMTP_HOST is set, OTPs are emailed for real (production).
