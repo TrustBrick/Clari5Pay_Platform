@@ -25,7 +25,12 @@ _NEW_COLUMNS = [
     ("transactions", "risk_analysis", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("transactions", "reject_reason", "TEXT"),
     ("transactions", "qr_expires_at", "TIMESTAMP"),
+    ("transactions", "admin_utr", "VARCHAR(64)"),
+    ("transactions", "payout_mode", "VARCHAR(24)"),
+    ("transactions", "payout_details", "TEXT"),
     ("login_otps", "purpose", "VARCHAR(16) DEFAULT 'login' NOT NULL"),
+    ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
+    ("audit_logs", "location", "VARCHAR(128)"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type

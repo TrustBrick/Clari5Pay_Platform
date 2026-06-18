@@ -44,11 +44,13 @@ export interface AuditLogEntry {
   newValue: string | null;
   reason: string | null;
   ip: string | null;
+  location?: string | null;
   createdAt: string;
 }
 
 export interface MerchantBankAccount {
   id: number;
+  memberId?: string | null;
   accountHolder: string;
   accountNumber: string;
   ifsc: string;
@@ -99,6 +101,9 @@ export interface Transaction {
   adminRef?: string | null;
   adminBankDetails?: string | null;
   adminUpiId?: string | null;
+  adminUtr?: string | null;
+  payoutMode?: string | null;
+  payoutDetails?: Record<string, string> | null;
   qrExpiresAt?: string | null;
   utr?: string | null;
   notes?: string | null;

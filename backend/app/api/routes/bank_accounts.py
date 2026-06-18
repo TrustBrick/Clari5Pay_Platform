@@ -12,6 +12,7 @@ router = APIRouter(prefix="/api/merchant-bank-accounts", tags=["merchant-bank-ac
 def _b(a: MerchantBankAccount) -> dict:
     return {
         "id": a.id,
+        "memberId": a.member_id,
         "accountHolder": a.account_holder,
         "accountNumber": a.account_number,
         "ifsc": a.ifsc,
@@ -22,17 +23,25 @@ def _b(a: MerchantBankAccount) -> dict:
 
 @router.get("")
 async def list_my_bank_accounts(
+    memberId: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """A merchant's saved bank accounts (shared across the same business name)."""
-    if current_user.role != UserRole.MERCHANT:
+    """A merchant's saved bank accounts, scoped to a Member ID.
+
+    Accounts are shared across the same business name, but each Member ID sees only
+    its own saved accounts. Without ``memberId`` nothing is returned (a member must
+    be chosen first), so one member never sees another member's bank details.
+    """
+    if current_user.role != UserRole.MERCHANT or not memberId:
         return []
     ids = (await db.execute(
         select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
     )).scalars().all()
     rows = (await db.execute(
-        select(MerchantBankAccount).where(MerchantBankAccount.merchant_id.in_(ids)).order_by(MerchantBankAccount.id.desc())
+        select(MerchantBankAccount)
+        .where(MerchantBankAccount.merchant_id.in_(ids), MerchantBankAccount.member_id == memberId)
+        .order_by(MerchantBankAccount.id.desc())
     )).scalars().all() if ids else []
     return [_b(a) for a in rows]
 
@@ -48,6 +57,7 @@ async def add_bank_account(
     existing = (await db.execute(
         select(MerchantBankAccount).where(
             MerchantBankAccount.merchant_id == current_user.id,
+            MerchantBankAccount.member_id == data.memberId,
             MerchantBankAccount.account_number == data.accountNumber,
         )
     )).scalar_one_or_none()
@@ -55,6 +65,7 @@ async def add_bank_account(
         return _b(existing)
     acc = MerchantBankAccount(
         merchant_id=current_user.id,
+        member_id=data.memberId,
         account_holder=data.accountHolder,
         account_number=data.accountNumber,
         ifsc=data.ifsc,

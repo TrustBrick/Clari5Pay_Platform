@@ -143,10 +143,13 @@ class DepositCreate(BaseModel):
 class WithdrawalCreate(BaseModel):
     amount: float
     memberId: str
-    accountHolder: str
-    accountNumber: str
-    ifsc: str
-    bankName: str
+    # Payout mode + its mode-specific fields (BANK / UPI / CASH / CRYPTO).
+    payoutMode: Optional[str] = None
+    payoutDetails: Optional[dict] = None
+    accountHolder: Optional[str] = None
+    accountNumber: Optional[str] = None
+    ifsc: Optional[str] = None
+    bankName: Optional[str] = None
     branch: Optional[str] = None
     proof: Optional[str] = None
     utr: Optional[str] = None
@@ -174,6 +177,7 @@ class SlipRequest(BaseModel):
 
 class CompleteRequest(BaseModel):
     adminProof: Optional[str] = None  # payment receipt image for withdrawals/settlements
+    adminUtr: Optional[str] = None    # agent's payment UTR number
 
 
 class ReasonRequest(BaseModel):
@@ -190,6 +194,7 @@ class BankAccountCreate(BaseModel):
     ifsc: str
     branch: str
     bankName: Optional[str] = None
+    memberId: Optional[str] = None
 
 
 # ─── Account Schemas ──────────────────────────────────────────────────────────

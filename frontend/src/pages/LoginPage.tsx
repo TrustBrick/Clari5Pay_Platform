@@ -32,8 +32,17 @@ const LoginPage: React.FC = () => {
   const [verifying, setVerifying] = useState(false);
   // OTP on/off toggle (testing aid)
   const [otpEnabled, setOtpEnabled] = useState(true);
+  // Resend OTP becomes available only after a 60-second cooldown.
+  const [resendIn, setResendIn] = useState(0);
+  const armResend = () => setResendIn(60);
 
   useEffect(() => { authAPI.otpStatus().then(s => setOtpEnabled(s.enabled)).catch(()=>{}); }, []);
+
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const id = setInterval(() => setResendIn(s => (s <= 1 ? 0 : s - 1)), 1000);
+    return () => clearInterval(id);
+  }, [resendIn]);
 
   const toggleOtp = async () => {
     const next = !otpEnabled;
@@ -54,6 +63,7 @@ const LoginPage: React.FC = () => {
       if (challenge.otpRequired) {
         setOtp(challenge);
         setCode('');
+        armResend();
       }
       // otpRequired === false → session already established; App redirects to dashboard.
     } catch (e: any) {
@@ -76,12 +86,13 @@ const LoginPage: React.FC = () => {
   };
 
   const handleResend = async () => {
-    if (!otp) return;
+    if (!otp || resendIn > 0) return;
     setError('');
     try {
       const challenge = await resendOtp(otp.otpToken);
       setOtp(challenge);
       setCode('');
+      armResend();
       showToast('A new OTP has been sent');
     } catch {
       showToast('Could not resend OTP', 'error');
@@ -106,6 +117,7 @@ const LoginPage: React.FC = () => {
       setResetDevOtp(r.devOtp);
       setResetCode('');
       setForgotStep('otp');
+      armResend();
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Could not send the reset code. Please try again.');
     } finally { setForgotBusy(false); }
@@ -124,12 +136,14 @@ const LoginPage: React.FC = () => {
   };
 
   const resendResetOtp = async () => {
+    if (resendIn > 0) return;
     setError('');
     try {
       const r = await authAPI.forgotPassword(forgotUsername.trim());
       setResetToken(r.resetToken);
       setResetDevOtp(r.devOtp);
       setResetCode('');
+      armResend();
       showToast('A new OTP has been sent');
     } catch { showToast('Could not resend OTP', 'error'); }
   };
@@ -210,7 +224,7 @@ const LoginPage: React.FC = () => {
 
             <div style={{ display:'flex',justifyContent:'space-between',marginTop:18 }}>
               <span onClick={backToLogin} style={{ fontSize:13,color:T.textMuted,cursor:'pointer',fontWeight:700 }}>← Back</span>
-              <span onClick={handleResend} style={{ fontSize:13,color:T.blue,cursor:'pointer',fontWeight:700 }}>Resend OTP</span>
+              <span onClick={handleResend} style={{ fontSize:13,color:resendIn>0?T.textLight:T.blue,cursor:resendIn>0?'default':'pointer',fontWeight:700 }}>{resendIn>0?`Resend in ${resendIn}s`:'Resend OTP'}</span>
             </div>
             <p style={{ fontSize:11,color:T.textMuted,marginTop:16,textAlign:'center' }}>The code expires in 15 minutes.</p>
           </>
@@ -286,7 +300,7 @@ const LoginPage: React.FC = () => {
                   placeholder="6-digit code" icon="🔑" required/>
                 <Btn size="lg" full onClick={verifyResetCode} disabled={forgotBusy||resetCode.length<6}>{forgotBusy?'Verifying...':'Verify Code →'}</Btn>
                 <div style={{ display:'flex',justifyContent:'flex-end',marginTop:16 }}>
-                  <span onClick={resendResetOtp} style={{ fontSize:13,color:T.blue,cursor:'pointer',fontWeight:700 }}>Resend OTP</span>
+                  <span onClick={resendResetOtp} style={{ fontSize:13,color:resendIn>0?T.textLight:T.blue,cursor:resendIn>0?'default':'pointer',fontWeight:700 }}>{resendIn>0?`Resend in ${resendIn}s`:'Resend OTP'}</span>
                 </div>
                 <p style={{ fontSize:11,color:T.textMuted,marginTop:14,textAlign:'center' }}>The code expires in 15 minutes.</p>
               </>

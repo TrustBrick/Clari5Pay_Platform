@@ -1,9 +1,10 @@
+import json
 from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
@@ -17,20 +18,21 @@ def _require_amount(amount: float) -> None:
         raise HTTPException(status_code=400, detail="Amount must be greater than 0.")
 
 
-async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, ifsc, branch, bank) -> None:
-    """Persist a merchant bank account for future reuse (deduped by account number)."""
+async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, ifsc, branch, bank, member_id=None) -> None:
+    """Persist a merchant bank account for future reuse, scoped to a Member ID (deduped per member+account)."""
     if not (holder and number):
         return
     existing = (await db.execute(
         select(MerchantBankAccount).where(
             MerchantBankAccount.merchant_id == merchant.id,
+            MerchantBankAccount.member_id == member_id,
             MerchantBankAccount.account_number == number,
         )
     )).scalar_one_or_none()
     if existing:
         return
     db.add(MerchantBankAccount(
-        merchant_id=merchant.id, account_holder=holder, account_number=number,
+        merchant_id=merchant.id, member_id=member_id, account_holder=holder, account_number=number,
         ifsc=ifsc or "", branch=branch or "", bank_name=bank,
     ))
 
@@ -117,6 +119,9 @@ def _t(t: Transaction) -> dict:
         "adminRef": t.admin_ref,
         "adminBankDetails": t.admin_bank_details,
         "adminUpiId": t.admin_upi_id,
+        "adminUtr": t.admin_utr,
+        "payoutMode": t.payout_mode,
+        "payoutDetails": json.loads(t.payout_details) if t.payout_details else None,
         "qrExpiresAt": (t.qr_expires_at.isoformat() + "Z") if t.qr_expires_at else None,
         "utr": t.utr,
         "notes": t.notes,
@@ -194,7 +199,7 @@ async def create_deposit(
     prefix = current_user.pay_in or "DEP"
     tx.ref = _make_ref(prefix, tx.id)
     if data.saveBankAccount:
-        await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName)
+        await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName, member_id=data.memberId)
     await db.flush()
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
     await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)
@@ -234,13 +239,15 @@ async def create_withdrawal(
         merchant_proof=data.proof,
         utr=data.utr,
         notes=data.notes,
+        payout_mode=(data.payoutMode or "BANK").upper(),
+        payout_details=json.dumps(data.payoutDetails) if data.payoutDetails else None,
     )
     db.add(tx)
     await db.flush()
     prefix = current_user.pay_out or "WIT"
     tx.ref = _make_ref(prefix, tx.id)
     if data.saveBankAccount:
-        await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName)
+        await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName, member_id=data.memberId)
     await db.flush()
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
     await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount})", actor=current_user)
@@ -320,6 +327,13 @@ async def account_submit(
     if is_upi_qr and data.adminUpiId:
         tx.qr_expires_at = datetime.utcnow() + timedelta(minutes=QR_VALIDITY_MINUTES)
         tx.admin_bank_details = None  # never expose bank details for UPI/QR payments
+    # Remember which managed account was assigned to this Member ID so repeat deposits reuse it.
+    elif data.adminRef and data.adminBankDetails and tx.member_id and data.adminRef.startswith("ACC"):
+        db.add(AccountTransaction(
+            reference_number=data.adminRef, member_id=tx.member_id,
+            transaction_reference_number=tx.ref, transaction_date=date.today(),
+            transaction_time=datetime.now().strftime("%H:%M:%S"),
+        ))
     tx.status = TxStatus.ACCOUNT_SUBMITTED
     await db.flush()
     await notify_tx(db, tx, f"{tx.ref}: account details sent to {tx.merchant_name}", "🏦")
@@ -367,6 +381,8 @@ async def mark_done(
     tx = await _get_tx(tx_id, db)
     if data and data.adminProof:
         tx.admin_proof = data.adminProof
+    if data and data.adminUtr:
+        tx.admin_utr = data.adminUtr
     tx.status = TxStatus.COMPLETED
     await db.flush()
     label = "deposited" if tx.type.value.startswith("DEPOSIT") else "completed"

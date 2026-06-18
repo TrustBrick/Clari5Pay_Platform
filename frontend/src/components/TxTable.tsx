@@ -41,7 +41,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
       <thead>
         <tr style={{ background: T.canvas }}>
-          {['Reference Number', 'Merchant Name', 'Member ID', 'Type', 'Amount', 'Date', 'Status', 'Action'].map(h => (
+          {['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Member ID', 'Type', 'Amount', 'Date', 'Status', 'Action'].map(h => (
             <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
           ))}
         </tr>

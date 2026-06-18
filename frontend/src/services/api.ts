@@ -132,7 +132,7 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/slip`, data);
     return res.data;
   },
-  markDone: async (id: string, data?: { adminProof?: string }) => {
+  markDone: async (id: string, data?: { adminProof?: string; adminUtr?: string }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/done`, data ?? {});
     return res.data;
   },
@@ -155,6 +155,10 @@ export const accountAPI = {
     const res = await api.get<Account>(`/api/accounts/${ref}`);
     return res.data;
   },
+  lastForMember: async (memberId: string) => {
+    const res = await api.get<{ referenceNumber: string | null }>(`/api/accounts/for-member/${encodeURIComponent(memberId)}`);
+    return res.data;
+  },
   create: async (data: Record<string, unknown>) => {
     const res = await api.post<Account>('/api/accounts', data);
     return res.data;
@@ -166,11 +170,12 @@ export const accountAPI = {
 };
 
 export const bankAccountAPI = {
-  listMine: async () => {
-    const res = await api.get<MerchantBankAccount[]>('/api/merchant-bank-accounts');
+  // Scoped to a Member ID — each member only sees its own saved accounts.
+  listMine: async (memberId?: string) => {
+    const res = await api.get<MerchantBankAccount[]>('/api/merchant-bank-accounts', { params: memberId ? { memberId } : undefined });
     return res.data;
   },
-  add: async (data: { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName?: string }) => {
+  add: async (data: { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName?: string; memberId?: string }) => {
     const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts', data);
     return res.data;
   },

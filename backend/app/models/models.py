@@ -135,6 +135,9 @@ class Transaction(Base):
     admin_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # admin reference number
     admin_bank_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # admin manually-entered bank details
     admin_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)   # admin UPI ID (when merchant chose UPI)
+    admin_utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)       # agent's payment UTR (withdrawal/settlement payout)
+    payout_mode: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)     # withdrawal: BANK / UPI / CASH / CRYPTO
+    payout_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # withdrawal: mode-specific fields as JSON
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -203,6 +206,7 @@ class AuditLog(Base):
     new_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)  # city/region/country resolved from the IP
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -244,6 +248,8 @@ class MerchantBankAccount(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     merchant_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    # Saved bank accounts are scoped to a Member ID — each member has its own set.
+    member_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
     account_holder: Mapped[str] = mapped_column(String(128), nullable=False)
     account_number: Mapped[str] = mapped_column(String(32), nullable=False)
     ifsc: Mapped[str] = mapped_column(String(16), nullable=False)

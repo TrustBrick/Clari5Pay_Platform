@@ -65,6 +65,31 @@ async def list_accounts(
     return out
 
 
+@router.get("/for-member/{member_id}")
+async def last_account_for_member(
+    member_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """The bank account most recently assigned to this Member ID (active only).
+
+    Drives reuse: a repeat deposit for the same Member ID defaults to the same account.
+    """
+    link = (await db.execute(
+        select(AccountTransaction)
+        .where(AccountTransaction.member_id == member_id)
+        .order_by(AccountTransaction.id.desc())
+    )).scalars().first()
+    if not link:
+        return {"referenceNumber": None}
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == link.reference_number)
+    )).scalar_one_or_none()
+    if not acc or (acc.status or "").upper() != "ACTIVE":
+        return {"referenceNumber": None}
+    return {"referenceNumber": acc.reference_number}
+
+
 @router.get("/{reference_number}")
 async def get_account(
     reference_number: str,

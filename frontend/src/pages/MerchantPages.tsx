@@ -15,23 +15,28 @@ type BankForm = { accountHolder: string; accountNumber: string; ifsc: string; br
 const emptyBank: BankForm = { accountHolder: '', accountNumber: '', ifsc: '', branch: '', bankName: '' };
 
 const BankAccountFields: React.FC<{
+  memberId: string;
   bank: BankForm; onBank: (b: BankForm) => void; saveNew: boolean; onSaveNew: (v: boolean) => void;
-}> = ({ bank, onBank, saveNew, onSaveNew }) => {
+}> = ({ memberId, bank, onBank, saveNew, onSaveNew }) => {
   const [saved, setSaved] = useState<MerchantBankAccount[]>([]);
   const [sel, setSel] = useState<string>('NEW');
 
+  // Saved accounts are specific to the entered Member ID — refetch whenever it changes.
   useEffect(() => {
-    bankAccountAPI.listMine().then(list => {
+    if (!memberId.trim()) { setSaved([]); setSel('NEW'); onBank(emptyBank); onSaveNew(true); return; }
+    bankAccountAPI.listMine(memberId.trim()).then(list => {
       setSaved(list);
       if (list.length) {
         const a = list[0];
         setSel(String(a.id));
         onBank({ accountHolder:a.accountHolder, accountNumber:a.accountNumber, ifsc:a.ifsc, branch:a.branch, bankName:a.bankName || '' });
         onSaveNew(false);
+      } else {
+        setSel('NEW'); onBank(emptyBank); onSaveNew(true);
       }
     }).catch(()=>{});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [memberId]);
 
   const choose = (v: string) => {
     setSel(v);
@@ -43,9 +48,17 @@ const BankAccountFields: React.FC<{
   };
   const set = (k: keyof BankForm, v: string) => onBank({ ...bank, [k]: v });
 
+  if (!memberId.trim()) {
+    return (
+      <div style={{ background:T.warningBg,borderRadius:10,padding:'10px 14px',margin:'4px 0 14px',fontSize:12,color:T.warning,fontWeight:600 }}>
+        Enter a Member ID above to add or select its bank account.
+      </div>
+    );
+  }
+
   return (
     <div>
-      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>Bank Account</p>
+      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>Bank Account for {memberId}</p>
       {saved.length > 0 && (
         <Sel label="Select Bank Account" value={sel} onChange={e=>choose(e.target.value)}
           options={[...saved.map(a => ({ value:String(a.id), label:`${a.accountHolder} — ${a.accountNumber}` })), { value:'NEW', label:'➕ Add new account' }]} />
@@ -149,13 +162,26 @@ export const MerchantSlipModal: React.FC<{
     if (f) setProof(await fileToDataUrl(f));
   };
 
-  const canSubmit = !!proof || !!ref.trim();
+  const copy = async (text: string, what: string) => {
+    try { await navigator.clipboard.writeText(text); showToast(`${what} copied`); }
+    catch { showToast('Copy failed', 'error'); }
+  };
+  const shareUpi = async () => {
+    const text = `Pay ${fmt(tx.amount)} to UPI ID ${tx.adminUpiId} — Ref ${tx.ref}`;
+    const nav = navigator as Navigator & { share?: (d: { title?: string; text?: string }) => Promise<void> };
+    if (nav.share) { try { await nav.share({ title: 'Clari5Pay payment', text }); return; } catch { /* cancelled */ } }
+    await copy(text, 'Payment details');
+  };
+
+  // Both the UTR number and the payment proof are mandatory when submitting a slip.
+  const canSubmit = !!proof && !!ref.trim();
   // Slip submission only applies to deposits awaiting the merchant's payment proof.
   const canSubmitSlip = tx.type.startsWith('DEPOSIT') && tx.status === 'ACCOUNT_SUBMITTED';
-  const adminLabel = tx.type.startsWith('DEPOSIT') ? 'Payment Details from Admin' : 'Payment Receipt from Admin';
+  const adminLabel = tx.type.startsWith('DEPOSIT') ? 'Payment Details from Agent' : 'Payment Receipt from Agent';
 
   const submit = async () => {
-    if (!canSubmit) { showToast('Upload an image or enter a reference number', 'error'); return; }
+    if (!ref.trim()) { showToast('Enter the UTR number', 'error'); return; }
+    if (!proof) { showToast('Upload the payment proof', 'error'); return; }
     setLoading(true);
     try {
       await transactionAPI.submitSlip(tx.id, { merchantProof: proof || undefined, merchantRef: ref.trim() || undefined });
@@ -169,11 +195,9 @@ export const MerchantSlipModal: React.FC<{
     }
   };
 
-  const helper = proof
-    ? 'Image attached — reference number is now optional.'
-    : ref.trim()
-      ? 'Reference entered — image upload is now optional.'
-      : 'Upload an image or enter a reference number (at least one is required).';
+  const helper = canSubmit
+    ? 'UTR number and proof attached — ready to submit.'
+    : 'Both the UTR number and a payment proof image are required.';
 
   const hasAdminDetails = !!(tx.adminProof || tx.adminBankDetails);
   const downloadDetails = () => {
@@ -197,8 +221,17 @@ export const MerchantSlipModal: React.FC<{
         <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
           <SlipRow k="Amount" v={fmt(tx.amount)} />
           <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" />} />
-          {/* UPI: show the UPI ID. QR: show only the QR (below). Bank details are hidden for both. */}
-          {tx.adminUpiId && isUpiType && <SlipRow k="UPI ID" v={tx.adminUpiId} />}
+          {tx.adminUtr && <SlipRow k="UTR Number" v={tx.adminUtr} />}
+          {/* UPI: show the UPI ID (copyable). QR: show only the QR (below). Bank details are hidden for both. */}
+          {tx.adminUpiId && isUpiType && (
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
+              <span style={{ fontSize:12,color:T.textMuted }}>UPI ID</span>
+              <span style={{ display:'flex',alignItems:'center',gap:8 }}>
+                <b style={{ fontSize:12,color:T.textMain }}>{tx.adminUpiId}</b>
+                <Btn size="sm" variant="ghost" onClick={()=>copy(tx.adminUpiId || '', 'UPI ID')}>⧉ Copy</Btn>
+              </span>
+            </div>
+          )}
           {!isUpiQr && tx.adminBankDetails && (
             <div style={{ marginTop:8 }}>
               <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Bank Details</p>
@@ -206,7 +239,7 @@ export const MerchantSlipModal: React.FC<{
             </div>
           )}
           {!tx.adminUpiId && !tx.adminBankDetails && !tx.adminProof &&
-            <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting details from admin.</p>}
+            <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting updates from Agent.</p>}
         </div>
 
         {/* UPI / QR payment code (amount baked in; 15-minute validity) */}
@@ -222,6 +255,12 @@ export const MerchantSlipModal: React.FC<{
                   ⏱ Expires in {mmss}
                 </p>
                 <p style={{ fontSize:11,color:T.textMuted,margin:'2px 0 0' }}>The amount is already included — just scan and pay.</p>
+                <div style={{ display:'flex',gap:8,justifyContent:'center',flexWrap:'wrap',marginTop:12 }}>
+                  {tx.adminUpiId && <Btn size="sm" variant="ghost" onClick={()=>copy(tx.adminUpiId || '', 'UPI ID')}>⧉ Copy UPI ID</Btn>}
+                  <Btn size="sm" variant="ghost" onClick={()=>copy(tx.ref, 'Reference number')}>⧉ Copy Ref ({tx.ref})</Btn>
+                  {qrImg && <Btn size="sm" variant="ghost" onClick={()=>downloadDataUrl(qrImg, `qr-${tx.ref}.png`)}>⬇ Save QR</Btn>}
+                  <Btn size="sm" variant="ghost" onClick={shareUpi}>↗ Share</Btn>
+                </div>
               </>
             ) : (
               <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:12,padding:'18px 16px' }}>
@@ -253,9 +292,9 @@ export const MerchantSlipModal: React.FC<{
       {canSubmitSlip ? (
         <div style={{ borderTop:`1px solid ${T.border}`,paddingTop:14 }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Submit Your Payment Proof</p>
-          <Input label="Reference Number" value={ref} onChange={e=>setRef(e.target.value)} placeholder="Payment / UTR reference" />
+          <Input label="UTR Number" value={ref} onChange={e=>setRef(e.target.value)} placeholder="Bank UTR / payment reference" required />
           <div style={{ marginBottom:10 }}>
-            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Upload Slip Image</label>
+            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Upload Slip Image<span style={{ color:T.danger }}> *</span></label>
             <input type="file" accept="image/*,.pdf" onChange={onFile} style={{ fontSize:12 }} />
             {proof && <img src={proof} alt="slip" style={{ display:'block',marginTop:8,maxHeight:160,maxWidth:'100%',objectFit:'contain',borderRadius:8,border:`1px solid ${T.border}` }} />}
           </div>
@@ -345,19 +384,10 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
           <StatusChart data={withdrawalGraph}/>
         </Card>
       </div>
-      <div style={{ display:'grid',gridTemplateColumns:'2fr 1fr',gap:16,marginBottom:22 }}>
+      <div style={{ marginBottom:22 }}>
         <Card style={{ padding:22 }}>
           <div style={{ padding:'2px 0 14px' }}><h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Pending Requests</h3></div>
           {loading ? <LoadingScreen label="Loading requests…"/> : <TxTable txns={inFlight.slice(0,6)} viewerRole="MERCHANT"/>}
-        </Card>
-        <Card style={{ padding:22 }}>
-          <h3 style={{ margin:'0 0 14px',fontSize:14,fontWeight:800 }}>Account Info</h3>
-          {[['Pay-In Code',user.payIn||'DEP'],['Pay-Out Code',user.payOut||'WIT'],['Fee Rate',`${user.payInFee||1.5}%`],['Profile',user.profile||'Maker'],['Risk Level','']].map(([k,v])=>(
-            <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:`1px solid ${T.borderLight}` }}>
-              <span style={{ fontSize:12,color:T.textMuted }}>{k}</span>
-              {k==='Risk Level'?<RiskBadge risk={user.risk||'LOW'}/>:<span style={{ fontSize:12,fontWeight:700,color:T.textMain }}>{v}</span>}
-            </div>
-          ))}
         </Card>
       </div>
     </div>
@@ -367,25 +397,29 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
 // ─── Deposit form (used inside the Request modal) ──────────────────────────────
 export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ onSubmitted }) => {
   const { showToast } = useToast();
-  const [form, setForm] = useState({ amount:'',depositType:'UPI',memberName:'',memberId:'',segment:'A',profile:'NEW',utr:'',notes:'' });
+  const [form, setForm] = useState({ amount:'',depositType:'UPI',memberName:'',memberId:'',segment:'A',profile:'NEW',notes:'' });
   const [bank, setBank] = useState<BankForm>(emptyBank);
   const [saveNew, setSaveNew] = useState(true);
   const [riskAnalysis, setRiskAnalysis] = useState(false);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  // UPI / QR deposits are paid via the agent's UPI ID — no bank account is needed here.
+  const isUpiQr = ['UPI','QR'].includes(form.depositType);
 
   const submit = async () => {
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
     if(parseFloat(form.amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
-    if(!bank.accountHolder||!bank.accountNumber){ showToast('Select or add a bank account','error'); return; }
+    if(!isUpiQr && (!bank.accountHolder||!bank.accountNumber)){ showToast('Select or add a bank account','error'); return; }
     setLoading(true);
     try {
       await transactionAPI.createDeposit({
         ...form, amount: parseFloat(form.amount), riskAnalysis,
-        accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
-        saveBankAccount: saveNew,
+        ...(isUpiQr ? {} : {
+          accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
+          saveBankAccount: saveNew,
+        }),
       });
-      showToast('Deposit request submitted — awaiting admin review');
+      showToast('Deposit request submitted — awaiting agent review');
       onSubmitted?.();
     } catch (e: any) {
       showToast(e?.response?.data?.detail || 'Failed to submit deposit request','error');
@@ -398,17 +432,20 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     <div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={['UPI','QR','IMPS','NEFT','RTGS','CASH'].map(v=>({value:v,label:v}))} required/>
-        <Input label="Amount (INR ₹)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Min 1" required icon="₹"/>
+        <Input label="Amount (INR)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Min 1" required/>
         <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" required/>
         <Input label="Member ID" value={form.memberId} onChange={e=>set('memberId',e.target.value)} placeholder="e.g. MBR20240001" required/>
         <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
         <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
-        <Input label="UTR Number" value={form.utr} onChange={e=>set('utr',e.target.value)} placeholder="Bank UTR (optional)"/>
       </div>
-      <BankAccountFields bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+      {isUpiQr
+        ? <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 14px',margin:'4px 0 14px',fontSize:12,color:T.blue }}>
+            {form.depositType} payment — the agent will share a {form.depositType === 'QR' ? 'QR code' : 'UPI ID & QR'} with the amount included. No bank account needed.
+          </div>
+        : <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>}
       <div style={{ marginBottom:14 }}>
-        <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Admin (optional)</label>
-        <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder="Any message for the admin reviewing this request"
+        <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Agent (optional)</label>
+        <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder="Any message for the agent reviewing this request"
           style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:60 }}/>
       </div>
       <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,marginBottom:16,cursor:'pointer' }}>
@@ -419,29 +456,45 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   );
 };
 
-// ─── Withdrawal form ───────────────────────────────────────────────────────────
+// ─── Withdrawal form (payout-mode driven) ──────────────────────────────────────
+const PAYOUT_MODES = [
+  { value:'BANK', label:'Bank Transfer' },
+  { value:'UPI', label:'UPI' },
+  { value:'CASH', label:'Cash' },
+  { value:'CRYPTO', label:'Crypto (USDT)' },
+];
+// Mode-specific input fields the merchant fills. The agent uploads the proof/UTR/Hash afterward.
+const MODE_FIELDS: Record<string, { key:string; label:string; digits?: boolean; upper?: boolean }[]> = {
+  BANK: [{key:'accountHolder',label:'Account Holder'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
+  UPI: [{key:'upiId',label:'UPI ID'}],
+  CASH: [{key:'village',label:'Village'},{key:'city',label:'City'},{key:'mobile',label:'Mobile Number',digits:true},{key:'tollFree',label:'Toll-Free Number',digits:true}],
+  CRYPTO: [{key:'walletAddress',label:'Wallet Address'},{key:'network',label:'Network (e.g. TRC20)'}],
+};
+
 export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ onSubmitted }) => {
   const { showToast } = useToast();
-  const [form, setForm] = useState({ amount:'',memberId:'',utr:'' });
-  const [bank, setBank] = useState<BankForm>(emptyBank);
-  const [saveNew, setSaveNew] = useState(true);
+  const [amount, setAmount] = useState('');
+  const [memberId, setMemberId] = useState('');
+  const [mode, setMode] = useState('BANK');
+  const [details, setDetails] = useState<Record<string,string>>({});
   const [available, setAvailable] = useState(0);
   const [loading, setLoading] = useState(false);
-  const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  const setD = (k: string, v: string) => setDetails(d => ({...d,[k]:v}));
 
   useEffect(() => { transactionAPI.summary().then(s => setAvailable(s.available)).catch(()=>{}); }, []);
 
+  const fields = MODE_FIELDS[mode];
   const submit = async () => {
-    if(!form.amount||!bank.accountHolder||!bank.accountNumber){ showToast('Fill all required fields','error'); return; }
-    if(parseFloat(form.amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
-    if(parseFloat(form.amount) > available){ showToast('Total available balance insufficient — try again','error'); return; }
+    if(!amount||!memberId){ showToast('Enter amount and Member ID','error'); return; }
+    if(parseFloat(amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
+    if(parseFloat(amount) > available){ showToast('Total available balance insufficient — try again','error'); return; }
+    const missing = fields.filter(f => !(details[f.key]||'').trim());
+    if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.createWithdrawal({
-        amount: parseFloat(form.amount), memberId: form.memberId, utr: form.utr,
-        accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
-        saveBankAccount: saveNew,
-      });
+      const payload: Record<string, unknown> = { amount: parseFloat(amount), memberId, payoutMode: mode, payoutDetails: details };
+      if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
+      await transactionAPI.createWithdrawal(payload);
       showToast('Withdrawal request submitted');
       onSubmitted?.();
     } catch (e: any) {
@@ -457,12 +510,26 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         Available balance: {fmt(available)}
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Input label="Amount (INR ₹)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Min 1" required icon="₹"/>
-        <Input label="Member ID" value={form.memberId} onChange={e=>set('memberId',e.target.value)} placeholder="Alphanumeric" required/>
-        <Input label="UTR Number" value={form.utr} onChange={e=>set('utr',e.target.value)} placeholder="Bank UTR (optional)"/>
+        <Input label="Amount (INR)" type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="Min 1" required/>
+        <Input label="Member ID" value={memberId} onChange={e=>setMemberId(e.target.value)} placeholder="Alphanumeric" required/>
+        <Sel label="Payout Mode" value={mode} onChange={e=>{ setMode(e.target.value); setDetails({}); }} options={PAYOUT_MODES} required/>
       </div>
-      <BankAccountFields bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
-      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!form.amount||!bank.accountHolder}>
+      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>{PAYOUT_MODES.find(m=>m.value===mode)?.label} Details</p>
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+        {fields.map(f => (
+          <Input key={f.key} label={f.label} value={details[f.key]||''} required
+            onChange={e=>{
+              let v = e.target.value;
+              if (f.upper) v = v.toUpperCase();
+              if (f.digits) v = v.replace(/[^\d]/g,'').slice(0,10);
+              setD(f.key, v);
+            }}/>
+        ))}
+      </div>
+      <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 14px',fontSize:11,color:T.textMuted }}>
+        After payment, the agent uploads the proof — {mode==='CRYPTO' ? 'Transaction Hash (Hash ID)' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}.
+      </div>
+      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!amount||!memberId}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
     </div>
@@ -470,12 +537,15 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
 };
 
 // ─── Settlement form ───────────────────────────────────────────────────────────
-export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ user, onSubmitted }) => {
+export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ onSubmitted }) => {
   const { showToast } = useToast();
   const [form, setForm] = useState({ amount:'', memberId:'' });
   const [proof, setProof] = useState<string | null>(null);
+  const [available, setAvailable] = useState(0);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+
+  useEffect(() => { transactionAPI.summary().then(s => setAvailable(s.available)).catch(()=>{}); }, []);
 
   const submit = async () => {
     if(!form.amount){ showToast('Enter an amount','error'); return; }
@@ -495,10 +565,10 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     <div>
       <div style={{ background:T.grad3,borderRadius:14,padding:20,marginBottom:18,textAlign:'center' }}>
         <p style={{ fontSize:11,color:'rgba(255,255,255,0.6)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Available Balance</p>
-        <p style={{ fontSize:30,fontWeight:800,color:'#fff',margin:0 }}>{fmt(user.balance||0)}</p>
+        <p style={{ fontSize:30,fontWeight:800,color:'#fff',margin:0 }}>{fmt(available)}</p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Input label="Settlement Amount (INR ₹)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Enter amount" icon="₹" required/>
+        <Input label="Settlement Amount (INR)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Enter amount" required/>
         <Input label="Member ID" value={form.memberId} onChange={e=>set('memberId',e.target.value)} placeholder="e.g. MBR20240001"/>
       </div>
       <ProofUpload value={proof} onChange={setProof}/>
@@ -587,7 +657,7 @@ const ManagementPage: React.FC<{
       )}
 
       {active && (
-        <Modal title={`Member ${active.key} — ${noun} History`} onClose={()=>setOpenMember(null)} wide>
+        <Modal title={`Member ${active.key} — ${noun} History`} onClose={()=>setOpenMember(null)} xl>
           <div style={{ display:'flex',gap:14,marginBottom:14,flexWrap:'wrap' }}>
             <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 16px' }}>
               <p style={{ margin:0,fontSize:10,color:T.textMuted,fontWeight:700,textTransform:'uppercase' }}>Total {noun} Requests</p>
@@ -616,7 +686,7 @@ export const WithdrawalManagement: React.FC<{ user: User }> = ({ user }) =>
   <ManagementPage user={user} title="Withdrawal Management" prefix="WITHDRAWAL" requestLabel="Withdrawal Request" noun="Withdrawal" FormComp={WithdrawalForm}/>;
 
 export const SettlementManagement: React.FC<{ user: User }> = ({ user }) =>
-  <ManagementPage user={user} title="Settlement Management" prefix="SETTLEMENT" requestLabel="Request Settlement" noun="Settlement" FormComp={SettlementForm}/>;
+  <ManagementPage user={user} title="Settlement Management" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm}/>;
 
 // ─── Balance Page ─────────────────────────────────────────────────────────────
 export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
