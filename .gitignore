@@ -31,3 +31,4 @@ docker-compose.override.yml
 
 # Local-only docs (not for the repo)
 QUERIES.md
+TEST_DATA.md

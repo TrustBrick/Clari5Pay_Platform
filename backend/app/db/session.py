@@ -14,10 +14,40 @@ def _ssl_context():
     return ctx
 
 
+def _connect_args():
+    """asyncpg connect args tuned for a high-latency (e.g. cross-region RDS) link:
+    short connect timeout, a command timeout so a stalled query can't hang a worker,
+    and JIT off (RDS Postgres enables JIT by default, which adds planning latency to
+    the small OLTP queries this app runs)."""
+    args = {
+        "timeout": 10,                       # connection-establishment timeout (s)
+        "command_timeout": 30,               # per-statement timeout (s)
+        "server_settings": {"jit": "off"},
+    }
+    if settings.DB_SSL:
+        args["ssl"] = _ssl_context()
+    return args
+
+
+# Engine kwargs shared by both auth modes. pool_reset_on_return=None drops the
+# redundant ROLLBACK round-trip on connection return (get_db already commits/rolls
+# back) — worth ~1 network round-trip per request on a remote DB. A large
+# pool_recycle keeps connections warm so we rarely pay the (multi-round-trip) TLS
+# cold-connect; pool_pre_ping still reconnects transparently if one did drop.
+_POOL_KW = dict(
+    echo=False,
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    pool_recycle=3600,
+    pool_reset_on_return=None,
+)
+
+
 def _build_engine():
     # ── SIMPLE: username + password (local Docker OR AWS RDS) ──
     if not settings.USE_IAM_AUTH:
-        connect_args = {"ssl": _ssl_context()} if settings.DB_SSL else {}
+        connect_args = _connect_args()
         if settings.DB_HOST:
             # Build the URL safely from parts so special characters in the
             # password (e.g. @ : / #) don't need any escaping.
@@ -31,12 +61,7 @@ def _build_engine():
             )
         else:
             url = settings.DATABASE_URL
-        return create_async_engine(
-            url,
-            echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20,
-            pool_recycle=1800,  # refresh idle connections before RDS drops them
-            connect_args=connect_args,
-        )
+        return create_async_engine(url, connect_args=connect_args, **_POOL_KW)
 
     # ── ADVANCED: AWS RDS IAM auth (no password; fresh 15-min token per connection) ──
     import boto3
@@ -45,11 +70,9 @@ def _build_engine():
         f"{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
     )
     rds = boto3.client("rds", region_name=settings.AWS_REGION)
-    eng = create_async_engine(
-        url, echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20,
-        pool_recycle=1800,
-        connect_args={"ssl": _ssl_context()},
-    )
+    iam_args = _connect_args()
+    iam_args.setdefault("ssl", _ssl_context())  # IAM auth always requires TLS
+    eng = create_async_engine(url, connect_args=iam_args, **_POOL_KW)
 
     @event.listens_for(eng.sync_engine, "do_connect")
     def _inject_iam_token(dialect, conn_rec, cargs, cparams):

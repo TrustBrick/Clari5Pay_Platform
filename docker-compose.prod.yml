@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Production stack for a single EC2 (run it ALONE — not merged with the dev compose):
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Reads secrets from a `.env` file in this directory (see .env.production.example).
+# Architecture: the browser hits this host on :80 → nginx serves the SPA and
+# reverse-proxies /api (+ the chat WebSocket) to the backend → backend → RDS.
+# The backend and Redis are NOT published to the host; only :80 is public.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: clari5pay_redis
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clari5pay_api
+    restart: unless-stopped
+    # Production server: no --reload; honour X-Forwarded-For from nginx so the
+    # real client IP reaches the audit/geo logging.
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    env_file:
+      - .env                       # DB_HOST, DB_PASSWORD, SECRET_KEY, SMTP_*, etc.
+    environment:
+      DB_SSL: "true"               # RDS requires TLS
+      USE_IAM_AUTH: "false"
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"                     # internal only (reached via the nginx /api proxy)
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Empty = same-origin. The browser calls /api on THIS host; nginx proxies
+        # it to the backend. No CORS, no hardcoded server address → no rebuild if
+        # the EC2 IP or domain changes.
+        VITE_API_BASE_URL: ""
+    container_name: clari5pay_ui
+    restart: unless-stopped
+    ports:
+      - "80:3000"                  # public HTTP
+    depends_on:
+      - backend
+
+volumes:
+  redisdata:

@@ -1,7 +1,9 @@
 import axios from 'axios';
 import type { Account, AuditLogEntry, BalanceSummary, LoginRequest, LoginResponse, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
-export const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// Empty string is a valid value meaning "same origin" (production behind nginx),
+// so use ?? — only fall back to the dev default when the var is truly unset.
+export const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 const api = axios.create({ baseURL: BASE_URL });
 
@@ -220,8 +222,12 @@ export const supportAPI = {
 /** Build a WebSocket URL for the support chat using the stored auth token. */
 export const supportWsUrl = () => {
   const token = localStorage.getItem('clari5pay_token') || '';
-  const base = BASE_URL.replace(/^http/, 'ws');
-  return `${base}/api/support/ws?token=${encodeURIComponent(token)}`;
+  const q = `?token=${encodeURIComponent(token)}`;
+  // Explicit base (dev) → derive ws:// from it. Empty base (prod, same-origin) →
+  // build from the current page so it works on any host/domain (and uses wss on https).
+  if (BASE_URL) return `${BASE_URL.replace(/^http/, 'ws')}/api/support/ws${q}`;
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/api/support/ws${q}`;
 };
 
 export const userAPI = {
