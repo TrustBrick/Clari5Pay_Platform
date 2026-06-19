@@ -20,6 +20,15 @@ export const buildUpiUri = (
   return `upi://pay?${params.toString()}`;
 };
 
+/** Render arbitrary text (e.g. full account/payment details) to a QR PNG data URL. */
+export const textQrDataUrl = async (text: string): Promise<string> =>
+  QRCode.toDataURL(text, {
+    width: 240,
+    margin: 1,
+    errorCorrectionLevel: 'M',
+    color: { dark: '#0a2540', light: '#ffffff' },
+  });
+
 /** Render a UPI payment QR (with the amount baked in) to a PNG data URL. */
 export const upiQrDataUrl = async (
   vpa: string,

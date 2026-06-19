@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AuditLogEntry, BalanceSummary, LoginRequest, LoginResponse, MerchantBankAccount, Notification, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AuditLogEntry, BalanceSummary, LoginRequest, LoginResponse, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 export const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -89,6 +89,11 @@ export const transactionAPI = {
     const res = await api.get<Transaction[]>('/api/transactions/mine');
     return res.data;
   },
+  // Full single transaction incl. proof/receipt images (lists omit those for speed).
+  getDetail: async (id: string) => {
+    const res = await api.get<Transaction>(`/api/transactions/${id}/detail`);
+    return res.data;
+  },
   summary: async () => {
     const res = await api.get<BalanceSummary>('/api/transactions/summary');
     return res.data;
@@ -142,6 +147,14 @@ export const transactionAPI = {
   },
   regenerateQr: async (id: string) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/regenerate-qr`);
+    return res.data;
+  },
+  recheck: async (id: string, reason?: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/recheck`, { reason });
+    return res.data;
+  },
+  flagRisk: async (id: string, reason?: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/flag-risk`, { reason });
     return res.data;
   },
 };
@@ -279,6 +292,29 @@ export const systemLogAPI = {
 export const auditLogAPI = {
   list: async () => {
     const res = await api.get<AuditLogEntry[]>('/api/audit-logs');
+    return res.data;
+  },
+};
+
+export const newsAPI = {
+  list: async () => {
+    const res = await api.get<NewsPost[]>('/api/news');
+    return res.data;
+  },
+  sections: async () => {
+    const res = await api.get<string[]>('/api/news/sections');
+    return res.data;
+  },
+  create: async (data: { section: string; title: string; body: string; image?: string | null; published: boolean }) => {
+    const res = await api.post<NewsPost>('/api/news', data);
+    return res.data;
+  },
+  update: async (id: number, data: { section: string; title: string; body: string; image?: string | null; published: boolean }) => {
+    const res = await api.patch<NewsPost>(`/api/news/${id}`, data);
+    return res.data;
+  },
+  remove: async (id: number) => {
+    const res = await api.delete(`/api/news/${id}`);
     return res.data;
   },
 };

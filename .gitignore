@@ -27,3 +27,7 @@ Thumbs.db
 # Docker
 *.log
 docker-compose.yml
+docker-compose.override.yml
+
+# Local-only docs (not for the repo)
+QUERIES.md

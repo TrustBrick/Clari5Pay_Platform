@@ -12,7 +12,7 @@ import {
 } from './pages/MerchantPages';
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
-  SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage,
+  SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage, SaNewsPage,
 } from './pages/AdminPages';
 
 const defaultPageFor = (role?: string) =>
@@ -69,6 +69,7 @@ const App: React.FC = () => {
       'admin-accounts': <AdminAccountsPage />,
       'sa-dashboard': <SaDashboard />,
       'sa-admins': <SaAdminsPage />,
+      'sa-news': <SaNewsPage />,
       'sa-logs': <SystemLogsPage />,
       'sa-audit': <AuditLogsPage />,
     };

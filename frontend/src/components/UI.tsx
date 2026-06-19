@@ -4,18 +4,20 @@ import { statusStyle, statusLabel } from '../utils/helpers';
 import type { TxStatus, ChartDataPoint } from '../types';
 
 // ─── Logo ────────────────────────────────────────────────────────────────────
-export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg' }> = ({ size = 'md' }) => {
+export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ size = 'md', dark = false }) => {
   const scale = size === 'sm' ? 0.38 : size === 'lg' ? 0.7 : 0.5;
+  // On dark backgrounds the navy "pay" + grey tagline are invisible — switch them to light.
+  const clari = dark ? '#4d9fff' : '#0052cc';
+  const pay = dark ? '#ffffff' : '#0a2540';
+  const tag = dark ? 'rgba(255,255,255,0.6)' : '#4a5568';
+  // Inline styles (not shared CSS classes) so multiple logos on one page don't clash.
+  const F = "'Montserrat','Segoe UI',Arial,sans-serif";
+  const sClari = { fontFamily: F, fontWeight: 700, fill: clari, fontSize: '56px', letterSpacing: '-1px' } as const;
+  const s5 = { fontFamily: F, fontWeight: 700, fill: '#26d00c', fontSize: '62px' } as const;
+  const sPay = { fontFamily: F, fontWeight: 700, fill: pay, fontSize: '56px', letterSpacing: '-1px' } as const;
+  const sTag = { fontFamily: "'Segoe UI',Arial,sans-serif", fontWeight: 500, fill: tag, fontSize: '13.5px', letterSpacing: '0.5px' } as const;
   return (
     <svg viewBox="0 0 650 220" style={{ width: 650 * scale, height: 220 * scale, maxWidth: '100%' }}>
-      <defs>
-        <style>{`
-          .lc{font-family:'Montserrat','Segoe UI',Arial,sans-serif;font-weight:700;fill:#0052cc;font-size:56px;letter-spacing:-1px}
-          .l5{font-family:'Montserrat','Segoe UI',Arial,sans-serif;font-weight:700;fill:#26d00c;font-size:62px}
-          .lp{font-family:'Montserrat','Segoe UI',Arial,sans-serif;font-weight:700;fill:#0a2540;font-size:56px;letter-spacing:-1px}
-          .lt{font-family:'Segoe UI',Arial,sans-serif;font-weight:500;fill:#4a5568;font-size:13.5px;letter-spacing:0.5px}
-        `}</style>
-      </defs>
       <g transform="translate(10,5)">
         <path d="M 55 125 C 35 105 38 65 62 48 C 50 68 48 105 76 132 Z" fill="#0052cc" opacity="0.85"/>
         <path d="M 145 125 C 165 105 162 65 138 48 C 150 68 152 105 124 132 Z" fill="#26d00c" opacity="0.85"/>
@@ -32,14 +34,14 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg' }> = ({ size = 'md' }) =
       </g>
       <g transform="translate(195,122)">
         <text x="0" y="0">
-          <tspan className="lc">clari</tspan>
-          <tspan className="l5">5</tspan>
-          <tspan className="lp">pay</tspan>
+          <tspan style={sClari}>clari</tspan>
+          <tspan style={s5}>5</tspan>
+          <tspan style={sPay}>pay</tspan>
         </text>
       </g>
       <g transform="translate(195,155)">
         <line x1="0" y1="-5" x2="25" y2="-5" stroke="#0052cc" strokeWidth="2" strokeLinecap="round"/>
-        <text x="35" y="0" className="lt">Secure Payments. Trusted Always.</text>
+        <text x="35" y="0" style={sTag}>Secure Payments. Trusted Always.</text>
         <line x1="285" y1="-5" x2="310" y2="-5" stroke="#26d00c" strokeWidth="2" strokeLinecap="round"/>
       </g>
     </svg>
@@ -75,20 +77,25 @@ export const Card: React.FC<{ children: React.ReactNode; style?: CSSProperties; 
 export const StatCard: React.FC<{
   icon: string; label: string; value: string | number; sub?: string;
   color?: string; trend?: number; gradient?: string;
-}> = ({ icon, label, value, sub, color=T.blue, trend, gradient }) => (
-  <Card style={{ padding:'20px 22px',position:'relative',overflow:'hidden' }}>
+}> = ({ icon, label, value, sub, color=T.blue, trend, gradient }) => {
+  // Shrink the value font for long strings (e.g. "INR 1,79,000.00") so it stays on one line.
+  const len = String(value).length;
+  const valueSize = len > 13 ? 17 : len > 10 ? 20 : 24;
+  return (
+  <Card style={{ padding:'18px 18px',position:'relative',overflow:'hidden' }}>
     <div style={{ position:'absolute',top:-20,right:-20,width:100,height:100,borderRadius:'50%',background:`${color}10`,pointerEvents:'none' }}/>
-    <div style={{ display:'flex',alignItems:'flex-start',justifyContent:'space-between',position:'relative' }}>
-      <div>
-        <p style={{ fontSize:11,color:T.textMuted,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6 }}>{label}</p>
-        <p style={{ fontSize:24,fontWeight:800,color:T.textMain,lineHeight:1.2 }}>{value}</p>
+    <div style={{ display:'flex',alignItems:'flex-start',justifyContent:'space-between',position:'relative',gap:10 }}>
+      <div style={{ minWidth:0,flex:1 }}>
+        <p style={{ fontSize:11,color:T.textMuted,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6,lineHeight:1.3 }}>{label}</p>
+        <p style={{ fontSize:valueSize,fontWeight:800,color:T.textMain,lineHeight:1.2,whiteSpace:'nowrap' }}>{value}</p>
         {sub && <p style={{ fontSize:11,color:T.textMuted,marginTop:4 }}>{sub}</p>}
         {trend!==undefined && <p style={{ fontSize:11,marginTop:6,color:trend>=0?T.success:T.danger,fontWeight:700 }}>{trend>=0?'▲':'▼'} {Math.abs(trend)}% vs last week</p>}
       </div>
-      <div style={{ width:44,height:44,borderRadius:14,background:gradient||`${color}18`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0 }}>{icon}</div>
+      <div style={{ width:40,height:40,borderRadius:12,background:gradient||`${color}18`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flexShrink:0 }}>{icon}</div>
     </div>
   </Card>
-);
+  );
+};
 
 // ─── Btn ──────────────────────────────────────────────────────────────────────
 type BtnVariant = 'primary'|'secondary'|'danger'|'success'|'ghost'|'green'|'dark';
@@ -113,19 +120,24 @@ export const Btn: React.FC<{
 // ─── Input ───────────────────────────────────────────────────────────────────
 export const Input: React.FC<{
   label?: string; type?: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  placeholder?: string; required?: boolean; hint?: string; icon?: string; style?: CSSProperties;
-}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={} }) => (
+  placeholder?: string; required?: boolean; hint?: string; icon?: string; style?: CSSProperties; list?: string;
+}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list }) => (
   <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <div style={{ position:'relative' }}>
       {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',fontSize:16,color:T.textMuted }}>{icon}</span>}
-      <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required}
+      <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list}
         style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
         onFocus={e=>{e.target.style.borderColor=T.blue;e.target.style.boxShadow=`0 0 0 3px ${T.blue}18`;}}
         onBlur={e=>{e.target.style.borderColor=T.border;e.target.style.boxShadow='none';}}/>
     </div>
     {hint && <p style={{ fontSize:11,color:T.textMuted,marginTop:4 }}>{hint}</p>}
   </div>
+);
+
+// Shared <datalist> of Indian bank names — render once, reference via Input list="bank-names".
+export const BankNamesDatalist: React.FC<{ names: string[] }> = ({ names }) => (
+  <datalist id="bank-names">{names.map(n => <option key={n} value={n} />)}</datalist>
 );
 
 // ─── Sel ─────────────────────────────────────────────────────────────────────

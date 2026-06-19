@@ -108,6 +108,7 @@ export interface Transaction {
   utr?: string | null;
   notes?: string | null;
   riskAnalysis?: boolean;
+  highRisk?: boolean;
   rejectReason?: string | null;
   refPrefix?: string;
 }
@@ -213,4 +214,16 @@ export interface OtpChallenge {
 
 export interface ApiError {
   detail: string;
+}
+
+export interface NewsPost {
+  id: number;
+  section: string;
+  title: string;
+  body: string;
+  image?: string | null;
+  author: string;
+  published: boolean;
+  createdAt: string;
+  updatedAt?: string | null;
 }

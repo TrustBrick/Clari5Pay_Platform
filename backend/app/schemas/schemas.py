@@ -94,6 +94,15 @@ class AdminResetPasswordRequest(BaseModel):
     new_password: str
 
 
+# ─── News Schemas ─────────────────────────────────────────────────────────────
+class NewsIn(BaseModel):
+    section: str = "Announcements"
+    title: str
+    body: str = ""
+    image: Optional[str] = None
+    published: bool = True
+
+
 # ─── Transaction Schemas ──────────────────────────────────────────────────────
 class TransactionOut(BaseModel):
     id: str

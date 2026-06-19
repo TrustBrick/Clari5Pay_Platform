@@ -20,26 +20,40 @@ def _role_str(actor: Optional[User]) -> Optional[str]:
     return actor.role.value if hasattr(actor.role, "value") else str(actor.role)
 
 
+# Per-IP geolocation cache so we never call the external API twice for the same IP
+# (a public IP is resolved once per process; everything after is instant).
+_GEO_CACHE: dict[str, Optional[str]] = {}
+
+# Only resolve location for security/session events — not for every audited action,
+# so routine writes (deposits, etc.) never wait on an external API.
+GEO_ACTIONS = {"LOGIN", "FAILED_LOGIN", "OTP_VERIFIED", "ACCOUNT_LOCKED", "PASSWORD_RESET"}
+
+
 async def geolocate(ip: Optional[str]) -> Optional[str]:
-    """Resolve an IP to 'City, Region, Country' via ip-api.com. Private/loopback IPs
-    return 'Local network' (no external call). Best-effort — returns None on failure."""
+    """Resolve an IP to 'City, Region, Country' via ip-api.com (cached, short timeout).
+    Private/loopback IPs return 'Local network' (no external call). Best-effort."""
     if not ip:
         return None
+    if ip in _GEO_CACHE:
+        return _GEO_CACHE[ip]
     try:
         addr = ipaddress.ip_address(ip)
         if addr.is_private or addr.is_loopback or addr.is_reserved:
-            return "Local network"
+            _GEO_CACHE[ip] = "Local network"
+            return _GEO_CACHE[ip]
     except ValueError:
         return None
+    result: Optional[str] = None
     try:
-        async with httpx.AsyncClient(timeout=3) as client:
+        async with httpx.AsyncClient(timeout=1.5) as client:
             r = await client.get(f"http://ip-api.com/json/{ip}", params={"fields": "status,city,regionName,country"})
             d = r.json()
             if d.get("status") == "success":
-                return ", ".join(p for p in [d.get("city"), d.get("regionName"), d.get("country")] if p) or None
-    except Exception as exc:  # pragma: no cover - network errors
+                result = ", ".join(p for p in [d.get("city"), d.get("regionName"), d.get("country")] if p) or None
+    except Exception as exc:  # pragma: no cover - network errors / timeout
         logger.warning("geolocate(%s) failed: %s", ip, exc)
-    return None
+    _GEO_CACHE[ip] = result  # cache successes and failures alike to avoid repeated slow calls
+    return result
 
 
 async def log_event(db: AsyncSession, action: str, detail: str, actor: Optional[User] = None) -> None:
@@ -76,7 +90,7 @@ async def record_audit(
         new_value=new,
         reason=reason,
         ip_address=ip,
-        location=await geolocate(ip),
+        location=(await geolocate(ip)) if action_type in GEO_ACTIONS else None,
     ))
 
 

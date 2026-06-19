@@ -25,6 +25,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
   SUPER_ADMIN: [
     { key: 'sa-dashboard', icon: '⬡', label: 'Platform Overview' },
     { key: 'sa-admins', icon: '🛡', label: 'Admin Management' },
+    { key: 'sa-news', icon: '📰', label: 'News Management' },
     { key: 'sa-logs', icon: '🧾', label: 'System Logs' },
     { key: 'sa-audit', icon: '📋', label: 'Audit Logs' },
     { key: 'profile', icon: '◉', label: 'Profile' },
@@ -54,6 +55,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'admin-accounts': 'Account Management',
   'sa-dashboard': 'Platform Overview',
   'sa-admins': 'Admin Management',
+  'sa-news': 'News Management',
   'sa-logs': 'System Logs',
   'sa-audit': 'Audit Logs',
 };

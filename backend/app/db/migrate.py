@@ -23,6 +23,7 @@ _NEW_COLUMNS = [
     ("transactions", "utr", "VARCHAR(64)"),
     ("transactions", "notes", "TEXT"),
     ("transactions", "risk_analysis", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    ("transactions", "high_risk", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("transactions", "reject_reason", "TEXT"),
     ("transactions", "qr_expires_at", "TIMESTAMP"),
     ("transactions", "admin_utr", "VARCHAR(64)"),

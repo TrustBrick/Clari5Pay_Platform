@@ -8,7 +8,7 @@ from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Not
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
-    AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest,
+    AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
 
@@ -95,7 +95,9 @@ async def notify_tx(db: AsyncSession, tx: Transaction, message: str, icon: str =
         db.add(Notification(user_id=uid, message=message, icon=icon))
 
 
-def _t(t: Transaction) -> dict:
+def _t(t: Transaction, full: bool = True) -> dict:
+    # In list mode (full=False) the heavy base64 image fields are omitted to keep
+    # responses small/fast; they're fetched on demand via GET /transactions/{id}.
     return {
         "id": f"TXN{str(t.id).zfill(3)}",
         "ref": t.ref,
@@ -113,9 +115,9 @@ def _t(t: Transaction) -> dict:
         "accountHolder": t.account_holder,
         "accountNumber": t.account_number,
         "ifsc": t.ifsc,
-        "merchantProof": t.merchant_proof,
+        "merchantProof": t.merchant_proof if full else None,
         "merchantRef": t.merchant_ref,
-        "adminProof": t.admin_proof,
+        "adminProof": t.admin_proof if full else None,
         "adminRef": t.admin_ref,
         "adminBankDetails": t.admin_bank_details,
         "adminUpiId": t.admin_upi_id,
@@ -126,6 +128,7 @@ def _t(t: Transaction) -> dict:
         "utr": t.utr,
         "notes": t.notes,
         "riskAnalysis": t.risk_analysis,
+        "highRisk": t.high_risk,
         "rejectReason": t.reject_reason,
     }
 
@@ -136,7 +139,7 @@ async def get_all_transactions(
     _: User = Depends(get_current_admin),
 ):
     result = await db.execute(select(Transaction).order_by(Transaction.created_at.desc()))
-    return [_t(t) for t in result.scalars().all()]
+    return [_t(t, full=False) for t in result.scalars().all()]
 
 
 @router.get("/mine")
@@ -151,7 +154,20 @@ async def get_my_transactions(
         .where(Transaction.merchant_id == current_user.id)
         .order_by(Transaction.created_at.desc())
     )
-    return [_t(t) for t in result.scalars().all()]
+    return [_t(t, full=False) for t in result.scalars().all()]
+
+
+@router.get("/{tx_id}/detail")
+async def get_transaction_detail(
+    tx_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Full transaction incl. heavy image fields — fetched only when a single tx is opened."""
+    tx = await _get_tx(tx_id, db)
+    if current_user.role == UserRole.MERCHANT and tx.merchant_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your transaction")
+    return _t(tx, full=True)
 
 
 @router.get("/summary")
@@ -389,6 +405,55 @@ async def mark_done(
     await notify_tx(db, tx, f"{tx.ref}: {label}", "✓")
     await log_event(db, "COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
     await record_audit(db, "COMPLETED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="COMPLETED")
+    await db.refresh(tx)
+    return _t(tx)
+
+
+@router.post("/{tx_id}/recheck")
+async def recheck_payment(
+    tx_id: str,
+    data: ReasonRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Agent rechecks a deposit slip: if the payment can't be confirmed, send it back to the
+    merchant to re-upload the correct proof (status -> Account Submitted, old proof cleared)."""
+    tx = await _get_tx(tx_id, db)
+    if not tx.type.value.startswith("DEPOSIT"):
+        raise HTTPException(status_code=400, detail="Recheck applies to deposits only.")
+    reason = (data.reason if data else None) or "Payment could not be verified — please re-upload the correct proof."
+    tx.merchant_proof = None
+    tx.merchant_ref = None
+    tx.status = TxStatus.ACCOUNT_SUBMITTED
+    await db.flush()
+    db.add(Notification(user_id=tx.merchant_id, message=f"{tx.ref}: re-upload payment proof — {reason}", icon="↻"))
+    await log_event(db, "RECHECK", f"{tx.ref}: re-upload requested by {actor.name} — {reason}", actor=actor)
+    await record_audit(db, "RECHECK", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, reason=reason)
+    await db.refresh(tx)
+    return _t(tx)
+
+
+@router.post("/{tx_id}/flag-risk")
+async def flag_high_risk(
+    tx_id: str,
+    data: ReasonRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Payment still not received after re-upload: flag the member HIGH RISK and reject the request.
+    The high-risk flag is shown to the merchant for that Member ID."""
+    tx = await _get_tx(tx_id, db)
+    reason = (data.reason if data else None) or "Payment not received in our bank."
+    tx.high_risk = True
+    tx.status = TxStatus.REJECTED
+    tx.reject_reason = reason
+    await db.flush()
+    db.add(Notification(
+        user_id=tx.merchant_id,
+        message=f"⚠ Member {tx.member_id or tx.ref} flagged HIGH RISK — {reason}", icon="⚠",
+    ))
+    await log_event(db, "HIGH_RISK", f"{tx.ref} (member {tx.member_id}) flagged high risk by {actor.name} — {reason}", actor=actor)
+    await record_audit(db, "HIGH_RISK", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="HIGH_RISK", reason=reason)
     await db.refresh(tx)
     return _t(tx)
 

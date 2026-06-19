@@ -1,10 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.db.session import engine, Base
 from app.db.migrate import ensure_schema
-from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts
+from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news
 
 
 @asynccontextmanager
@@ -24,6 +25,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Compress responses (large JSON lists shrink a lot over the wire).
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,6 +50,7 @@ app.include_router(support.router)
 app.include_router(notifications.router)
 app.include_router(system_logs.router)
 app.include_router(system_logs.audit_router)
+app.include_router(news.router)
 app.include_router(ai.router)
 
 

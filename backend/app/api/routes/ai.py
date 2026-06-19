@@ -18,7 +18,7 @@ You help users — merchants, admins, and super admins — understand:
 - Balance enquiries, settlements, and withdrawals
 - Platform features: integrations (WhatsApp, Telegram, Email), profile management
 
-Always be helpful, precise, and professional. When discussing amounts, use Indian Rupee (₹) formatting.
+Always be helpful, precise, and professional. When discussing amounts, use Indian Rupee (INR) formatting.
 Keep responses concise and actionable. If asked about specific transaction data you don't have access to, 
 acknowledge that and guide the user to check the relevant section of the platform.
 
@@ -29,7 +29,7 @@ Platform roles:
 """
 
 
-@router.post("", response_model=AIChatResponse)
+@router.post("/chat", response_model=AIChatResponse)
 async def ai_chat(
     request: AIChatRequest,
     current_user: User = Depends(get_current_user),
@@ -46,7 +46,7 @@ async def ai_chat(
     ]
 
     # Inject user context into first message if needed
-    user_context = f"\n\n[User context: {current_user.name}, Role: {current_user.role}, Balance: ₹{current_user.balance or 0:,.2f}]"
+    user_context = f"\n\n[User context: {current_user.name}, Role: {current_user.role}, Balance: INR {current_user.balance or 0:,.2f}]"
     if messages and messages[0]["role"] == "user":
         messages[0] = {
             "role": "user",

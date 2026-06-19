@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, MERCHANT_ROLE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
+import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
 import { usePoll } from '../utils/usePoll';
-import { transactionAPI, userAPI, accountAPI, systemLogAPI, auditLogAPI } from '../services/api';
-import type { SystemLogEntry, AuditLogEntry } from '../types';
+import { transactionAPI, userAPI, accountAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
+import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account } from '../types';
 
@@ -58,6 +59,12 @@ const RequestModal: React.FC<{
   const [saving, setSaving] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
+  const [riskConfirm, setRiskConfirm] = useState(false);
+  // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
+  const [imgs, setImgs] = useState<{ adminProof?: string | null; merchantProof?: string | null }>({ adminProof: tx.adminProof, merchantProof: tx.merchantProof });
+  useEffect(() => {
+    transactionAPI.getDetail(tx.id).then(d => setImgs({ adminProof: d.adminProof, merchantProof: d.merchantProof })).catch(()=>{});
+  }, [tx.id]);
 
   // Admin steps:
   const chooseStep = canAct && isDeposit && tx.status === 'ACCOUNT_REQUESTED'; // pick account → auto PNG
@@ -75,6 +82,28 @@ const RequestModal: React.FC<{
       showToast(`${tx.ref} rejected`);
       onDone?.(); onClose();
     } catch { showToast('Failed to reject', 'error'); }
+    finally { setSaving(false); }
+  };
+
+  // Wrong/unverifiable slip → send the deposit back so the merchant re-uploads the correct proof.
+  const recheck = async () => {
+    setSaving(true);
+    try {
+      await transactionAPI.recheck(tx.id);
+      showToast(`${tx.ref}: sent back to merchant for re-upload`);
+      onDone?.(); onClose();
+    } catch { showToast('Failed to request re-upload', 'error'); }
+    finally { setSaving(false); }
+  };
+
+  // Payment still not received after re-upload → flag the member HIGH RISK (and reject).
+  const flagRisk = async () => {
+    setSaving(true);
+    try {
+      await transactionAPI.flagRisk(tx.id);
+      showToast(`Member ${tx.memberId || tx.ref} flagged HIGH RISK`);
+      onDone?.(); onClose();
+    } catch { showToast('Failed to flag high risk', 'error'); }
     finally { setSaving(false); }
   };
 
@@ -177,7 +206,7 @@ const RequestModal: React.FC<{
                   {tx.adminBankDetails && <p style={{ margin:0,whiteSpace:'pre-line',lineHeight:1.6,color:T.textMain,fontWeight:600 }}>{tx.adminBankDetails}</p>}
                 </div>
               ) : <div style={{ padding:24,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>Not sent yet</div>}
-              {tx.adminProof && <img src={tx.adminProof} alt="Account details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+              {imgs.adminProof && <img src={imgs.adminProof} alt="Account details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
             </>
           ) : (
             <>
@@ -194,23 +223,23 @@ const RequestModal: React.FC<{
                       {!tx.accountHolder && !tx.accountNumber && !tx.bank && <p style={{ margin:0,color:T.textMuted }}>No payout details provided.</p>}
                     </>}
               </div>
-              {tx.adminProof && <><p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'12px 0 8px' }}>Payment Receipt</p>
-                <img src={tx.adminProof} alt="Receipt" style={{ width:'100%',maxHeight:160,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,background:T.canvas }} /></>}
+              {imgs.adminProof && <><p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'12px 0 8px' }}>Payment Receipt</p>
+                <img src={imgs.adminProof} alt="Receipt" style={{ width:'100%',maxHeight:160,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,background:T.canvas }} /></>}
             </>
           )}
         </div>
       </div>
 
       {/* Merchant payment slip (deposit) */}
-      {isDeposit && (tx.merchantProof || tx.merchantRef) && (
+      {isDeposit && (imgs.merchantProof || tx.merchantRef) && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Merchant Payment Slip</p>
           {tx.merchantRef && <Row k="Reference Number" v={tx.merchantRef} />}
-          {tx.merchantProof && <img src={tx.merchantProof} alt="Payment slip" style={{ display:'block',maxHeight:260,maxWidth:240,width:'auto',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
-          {(tx.merchantProof || tx.merchantRef) && (
+          {imgs.merchantProof && <img src={imgs.merchantProof} alt="Payment slip" style={{ display:'block',maxHeight:260,maxWidth:240,width:'auto',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+          {(imgs.merchantProof || tx.merchantRef) && (
             <Btn size="sm" variant="ghost" style={{ marginTop:10 }}
-              onClick={() => tx.merchantProof
-                ? downloadDataUrl(tx.merchantProof, `payment-slip-${tx.ref}.png`)
+              onClick={() => imgs.merchantProof
+                ? downloadDataUrl(imgs.merchantProof, `payment-slip-${tx.ref}.png`)
                 : downloadText(`Payment slip — ${tx.ref}\nReference: ${tx.merchantRef}`, `payment-slip-${tx.ref}.txt`)}>
               ⬇ Download Payment Slip
             </Btn>
@@ -253,6 +282,18 @@ const RequestModal: React.FC<{
             <Btn onClick={()=>complete(false)} disabled={saving}>{saving ? 'Saving...' : '✓ Mark Deposited'}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
+          <div style={{ display:'flex',gap:10,flexWrap:'wrap',marginTop:12,paddingTop:12,borderTop:`1px dashed ${T.border}` }}>
+            <Btn size="sm" variant="secondary" onClick={recheck} disabled={saving}>↻ Recheck Payment — request re-upload</Btn>
+            {!riskConfirm ? (
+              <Btn size="sm" variant="danger" onClick={()=>setRiskConfirm(true)} disabled={saving}>⚠ Mark High Risk</Btn>
+            ) : (
+              <>
+                <Btn size="sm" variant="danger" onClick={flagRisk} disabled={saving}>{saving ? '...' : 'Confirm High Risk'}</Btn>
+                <Btn size="sm" variant="ghost" onClick={()=>setRiskConfirm(false)}>Cancel</Btn>
+              </>
+            )}
+          </div>
+          <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>Wrong slip? Send it back for re-upload. If payment is still not received after re-upload, mark the member <b>High Risk</b>.</p>
         </div>
       )}
 
@@ -354,20 +395,24 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
 
   return (
     <div>
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:14,marginBottom:14 }}>
+      <div className="ad-stat-money" style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:14 }}>
         <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
         <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits − Withdrawals" color={T.success}/>
         <StatCard icon="🧾" label="Commission Amount" value={fmt(commissionAmount)} sub="Pay-in + pay-out fees" color={T.info}/>
         <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Gross − Commission" color={T.green}/>
+      </div>
+      <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(6,minmax(0,1fr))',gap:12,marginBottom:20 }}>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
         <StatCard icon="⧗" label="Pending" value={pending.length} color={T.warning}/>
-      </div>
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:14,marginBottom:20 }}>
         <StatCard icon="↓" label="No. of Deposit Requests" value={depReqs} color={T.blue}/>
         <StatCard icon="↑" label="No. of Withdrawal Requests" value={wdReqs} color={T.danger}/>
         <StatCard icon="⇄" label="No. of Settlement Requests" value={setReqs} color={T.info}/>
         <StatCard icon="≡" label="Total Requests" value={txns.length} color={T.info}/>
       </div>
+      <style>{`
+        @media(max-width:1180px){.ad-stat-money{grid-template-columns:repeat(2,minmax(0,1fr))!important;}.ad-stat-counts{grid-template-columns:repeat(3,minmax(0,1fr))!important;}}
+        @media(max-width:560px){.ad-stat-money,.ad-stat-counts{grid-template-columns:repeat(2,minmax(0,1fr))!important;}}
+      `}</style>
       <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginBottom:20 }}>
         <Card style={{ padding:22 }}>
           <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.blue }}>Deposits</h3>
@@ -473,19 +518,9 @@ export const AdminMerchantsPage: React.FC = () => {
   };
   const passwordMismatch = !!form.confirmPassword && form.password !== form.confirmPassword;
 
-  const [txns, setTxns] = useState<Transaction[]>([]);
-  const reload = () => Promise.all([userAPI.getMerchants(), transactionAPI.getAll()])
-    .then(([m, t]) => { setMerchants(m); setTxns(t); }).catch(()=>{});
+  const reload = () => userAPI.getMerchants().then(setMerchants).catch(()=>{});
   useEffect(() => { reload(); }, []);
   usePoll(() => { if (!showCreate && !toggleM) reload(); });
-
-  // Real available balance per merchant business (matches backend compute_balance).
-  const availFor = (m: User) => {
-    const biz = txns.filter(t => t.merchant === m.name && t.status === 'COMPLETED');
-    const sum = (pfx: string) => biz.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
-    const dep = sum('DEPOSIT'), wd = sum('WITHDRAWAL'), settled = sum('SETTLEMENT');
-    return dep - dep * ((m.payInFee || 0) / 100) - settled - wd - wd * ((m.payOutFee || 0) / 100);
-  };
 
   const createMerchant = async () => {
     if(!form.name||!form.username||!form.email||!form.phone||!form.password||!form.payIn||!form.payOut||!form.settlement){ showToast('Fill all required fields','error'); return; }
@@ -558,7 +593,7 @@ export const AdminMerchantsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Business','Username','Role','Email','Phone','Codes','Balance','Status','Action'].map(h=>(
+                {['Business','Username','Role','Email','Phone','Codes','Status','Action'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -576,7 +611,6 @@ export const AdminMerchantsPage: React.FC = () => {
                       {[m.payIn,m.payOut,m.settlement].filter(Boolean).map(c=><code key={c} style={{ background:T.infoBg,color:T.blue,padding:'1px 5px',borderRadius:4,fontSize:10,fontWeight:700 }}>{c}</code>)}
                     </div>
                   </td>
-                  <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(availFor(m))}</td>
                   <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:m.active?T.successBg:T.dangerBg,color:m.active?T.success:T.danger }}>{m.active?'Active':'Inactive'}</span></td>
                   <td style={{ padding:'11px 14px' }}>
                     <Btn size="sm" variant={m.active?'danger':'success'} onClick={()=>setToggleM(m)}>{m.active?'Deactivate':'Activate'}</Btn>
@@ -694,10 +728,12 @@ export const AdminAccountsPage: React.FC = () => {
       {showCreate && (
         <Modal title="Add Bank Account" onClose={()=>setShowCreate(false)} wide>
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+            <BankNamesDatalist names={BANK_NAMES}/>
             <Input label="Account Name" value={form.account_name} onChange={e=>set('account_name',e.target.value)} required/>
             <Input label="Account Number" value={form.account_number} onChange={e=>set('account_number',e.target.value)} required/>
-            <Input label="IFSC Code" value={form.ifsc_code} onChange={e=>set('ifsc_code',e.target.value.toUpperCase())} required/>
-            <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} required/>
+            <Input label="IFSC Code" value={form.ifsc_code} required hint="Auto-fills bank & branch"
+              onChange={async e=>{ const up=e.target.value.toUpperCase(); set('ifsc_code',up); if(isValidIfsc(up)){ const info=await lookupIfsc(up); if(info) setForm(f=>({...f,ifsc_code:up,bank_name:info.bank,branch:info.branch})); } }}/>
+            <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} list="bank-names" required/>
             <Input label="Branch" value={form.branch} onChange={e=>set('branch',e.target.value)} required/>
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
@@ -1169,6 +1205,123 @@ export const AuditLogsPage: React.FC = () => {
         </div>
         <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {logs.length}</p>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+// ─── News Management (Super Admin) ─────────────────────────────────────────────
+const NEWS_SECTIONS = ['Announcements', 'Product Updates', 'Offers', 'Alerts'];
+
+export const SaNewsPage: React.FC = () => {
+  const { showToast } = useToast();
+  const [posts, setPosts] = useState<NewsPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<NewsPost | null>(null);
+  const [creating, setCreating] = useState(false);
+  const empty = { section:'Announcements', title:'', body:'', image:null as string|null, published:true };
+  const [form, setForm] = useState(empty);
+  const [busy, setBusy] = useState(false);
+
+  const reload = () => newsAPI.list().then(setPosts).catch(()=>setPosts([]));
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  usePoll(() => { if (!creating && !editing) reload(); });
+
+  const openCreate = () => { setForm(empty); setEditing(null); setCreating(true); };
+  const openEdit = (p: NewsPost) => { setForm({ section:p.section, title:p.title, body:p.body, image:p.image||null, published:p.published }); setEditing(p); setCreating(true); };
+
+  const onImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > 2*1024*1024) { showToast('Image must be under 2 MB','error'); return; }
+    const url = await fileToDataUrl(f);
+    setForm(s => ({ ...s, image: url }));
+  };
+
+  const save = async () => {
+    if (!form.title.trim()) { showToast('Enter a title','error'); return; }
+    setBusy(true);
+    try {
+      const payload = { section:form.section, title:form.title.trim(), body:form.body, image:form.image, published:form.published };
+      if (editing) await newsAPI.update(editing.id, payload); else await newsAPI.create(payload);
+      showToast(editing ? 'News updated' : 'News posted');
+      setCreating(false); setEditing(null);
+      await reload();
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to save news','error'); }
+    finally { setBusy(false); }
+  };
+
+  const remove = async (p: NewsPost) => {
+    if (!window.confirm(`Delete "${p.title}"?`)) return;
+    try { await newsAPI.remove(p.id); await reload(); showToast('News deleted'); }
+    catch { showToast('Failed to delete','error'); }
+  };
+
+  return (
+    <div>
+      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18 }}>
+        <div>
+          <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>News Management</h2>
+          <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Post announcements with images — shown to all merchants & admins</p>
+        </div>
+        <Btn onClick={openCreate}>+ Post News</Btn>
+      </div>
+
+      {creating && (
+        <Modal title={editing ? 'Edit News' : 'Post News'} onClose={()=>{ setCreating(false); setEditing(null); }} wide>
+          <Sel label="Section" value={form.section} onChange={e=>setForm(s=>({...s,section:e.target.value}))} options={NEWS_SECTIONS.map(v=>({value:v,label:v}))}/>
+          <Input label="Title" value={form.title} onChange={e=>setForm(s=>({...s,title:e.target.value}))} required/>
+          <div style={{ marginBottom:16 }}>
+            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Body</label>
+            <textarea value={form.body} onChange={e=>setForm(s=>({...s,body:e.target.value}))} placeholder="Write the announcement…"
+              style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:120 }}/>
+          </div>
+          <div style={{ marginBottom:16 }}>
+            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Image (optional)</label>
+            <input type="file" accept="image/*" onChange={onImage} style={{ fontSize:12 }}/>
+            {form.image && <div style={{ marginTop:8 }}><img src={form.image} alt="" style={{ maxHeight:160,maxWidth:'100%',objectFit:'contain',borderRadius:8,border:`1px solid ${T.border}` }}/><br/><span onClick={()=>setForm(s=>({...s,image:null}))} style={{ fontSize:11,color:T.danger,cursor:'pointer',fontWeight:700 }}>Remove image</span></div>}
+          </div>
+          <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,marginBottom:16,cursor:'pointer' }}>
+            <input type="checkbox" checked={form.published} onChange={e=>setForm(s=>({...s,published:e.target.checked}))}/> Published (visible to merchants)
+          </label>
+          <div style={{ display:'flex',gap:10 }}>
+            <Btn onClick={save} disabled={busy||!form.title.trim()}>{busy?'Saving...':(editing?'Save Changes':'Post News')}</Btn>
+            <Btn variant="secondary" onClick={()=>{ setCreating(false); setEditing(null); }}>Cancel</Btn>
+          </div>
+        </Modal>
+      )}
+
+      <Card>
+        <div style={{ overflowX:'auto' }}>
+          <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+            <thead>
+              <tr style={{ background:T.canvas }}>
+                {['Section','Title','Status','Author','Posted','Actions'].map(h=>(
+                  <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}`,whiteSpace:'nowrap' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={6} style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</td></tr>}
+              {!loading && posts.length === 0 && <tr><td colSpan={6} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No news yet — post the first announcement.</td></tr>}
+              {posts.map((p,i)=>(
+                <tr key={p.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
+                  <td style={{ padding:'11px 14px' }}><span style={{ background:T.infoBg,color:T.blue,padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{p.section}</span></td>
+                  <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{p.title}</td>
+                  <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:p.published?T.successBg:T.warningBg,color:p.published?T.success:T.warning }}>{p.published?'Published':'Draft'}</span></td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted }}>{p.author}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{formatDateTime(p.createdAt)}</td>
+                  <td style={{ padding:'11px 14px' }}>
+                    <div style={{ display:'flex',gap:6 }}>
+                      <Btn size="sm" variant="ghost" onClick={()=>openEdit(p)}>Edit</Btn>
+                      <Btn size="sm" variant="danger" onClick={()=>remove(p)}>Delete</Btn>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </Card>
     </div>

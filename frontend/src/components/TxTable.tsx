@@ -36,19 +36,24 @@ const typeColor = (type: string): { color: string; bg: string } => {
   return { color: T.info, bg: T.infoBg };
 };
 
-const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole }) => (
+const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole }) => {
+  // No action handler (e.g. the dashboard preview) → drop the Action column entirely.
+  const showAction = !!onAction && actionMode !== 'none';
+  const headers = ['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Member ID', 'Type', 'Amount', 'Date', 'Status'];
+  if (showAction) headers.push('Action');
+  return (
   <div style={{ overflowX: 'auto' }}>
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
       <thead>
         <tr style={{ background: T.canvas }}>
-          {['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Member ID', 'Type', 'Amount', 'Date', 'Status', 'Action'].map(h => (
+          {headers.map(h => (
             <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
           ))}
         </tr>
       </thead>
       <tbody>
         {txns.length === 0 && (
-          <tr><td colSpan={8} style={{ padding:32,textAlign:'center',color:T.textMuted,fontSize:13 }}>No transactions found</td></tr>
+          <tr><td colSpan={headers.length} style={{ padding:32,textAlign:'center',color:T.textMuted,fontSize:13 }}>No transactions found</td></tr>
         )}
         {txns.map((t, i) => {
           const tc = typeColor(t.type);
@@ -66,21 +71,28 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
               </td>
               <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(t.amount)}</td>
               <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{t.date} <span style={{ fontSize:10 }}>{t.time}</span></td>
-              <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole={viewerRole}/></td>
               <td style={{ padding:'11px 14px' }}>
-                {(() => {
-                  if (!onAction || actionMode === 'none') return <span style={{ color:T.textLight }}>—</span>;
-                  const a = rowAction(actionMode, t.status, t.type);
-                  if (!a) return <span style={{ color:T.textLight }}>—</span>;
-                  return <Btn size="sm" variant={a.variant} onClick={() => onAction(t, a.action)}>{a.label}</Btn>;
-                })()}
+                <Badge status={t.status} type={t.type} viewerRole={viewerRole}/>
+                {t.highRisk && (
+                  <span style={{ display:'inline-block',marginLeft:6,padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,background:'#fdecea',color:'#b71c1c',whiteSpace:'nowrap',letterSpacing:'0.04em' }}>⚠ HIGH RISK</span>
+                )}
               </td>
+              {showAction && (
+                <td style={{ padding:'11px 14px' }}>
+                  {(() => {
+                    const a = rowAction(actionMode, t.status, t.type);
+                    if (!a) return <span style={{ color:T.textLight }}>—</span>;
+                    return <Btn size="sm" variant={a.variant} onClick={() => onAction!(t, a.action)}>{a.label}</Btn>;
+                  })()}
+                </td>
+              )}
             </tr>
           );
         })}
       </tbody>
     </table>
   </div>
-);
+  );
+};
 
 export default TxTable;

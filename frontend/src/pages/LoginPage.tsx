@@ -184,7 +184,7 @@ const LoginPage: React.FC = () => {
       {/* Left Panel */}
       <div className="login-left" style={{ flex:1,display:'flex',flexDirection:'column',justifyContent:'center',alignItems:'center',padding:48,position:'relative' }}>
         <div style={{ maxWidth:480,width:'100%' }}>
-          <div style={{ marginBottom:48 }}><Logo size="lg"/></div>
+          <div style={{ marginBottom:48 }}><Logo size="lg" dark/></div>
           <h2 style={{ color:'#fff',fontSize:28,fontWeight:800,margin:'0 0 12px',lineHeight:1.3 }}>Enterprise Payment<br/>Infrastructure</h2>
           <p style={{ color:'rgba(255,255,255,0.55)',fontSize:15,lineHeight:1.7,marginBottom:40 }}>A unified platform for merchants, admins, and platform teams to manage payments with full audit trails and real-time risk intelligence.</p>
           {[{icon:'🛡',t:'Bank-grade security',d:'End-to-end encrypted transactions'},{icon:'⚡',t:'Real-time processing',d:'Instant settlement and approvals'},{icon:'📊',t:'Full audit trail',d:'Every action logged and traceable'},{icon:'🤖',t:'AI-Powered Assistant',d:'Claude AI for smart payment insights'}].map(f=>(

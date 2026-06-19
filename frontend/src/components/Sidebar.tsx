@@ -33,7 +33,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
         <div style={{ padding:'20px 18px 14px',borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ display:'flex',justifyContent:'center',marginBottom:8 }}>
             <div style={{ transform:'scale(0.6)',transformOrigin:'center',marginTop:-28,marginBottom:-28 }}>
-              <Logo size="sm"/>
+              <Logo size="sm" dark/>
             </div>
           </div>
           <div style={{ textAlign:'center',marginTop:4 }}>
@@ -92,7 +92,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
             onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background='rgba(220,38,38,0.12)'; (e.currentTarget as HTMLDivElement).style.color=T.danger; }}
             onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background='transparent'; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.45)'; }}
           >
-            <span>⎋</span> Sign Out
+            <img src="https://img.icons8.com/?size=100&id=67651&format=png&color=ffffff" alt="" width={24} height={24} style={{ opacity:1,flexShrink:0 }}/> Sign Out
           </div>
         </div>
       </aside>

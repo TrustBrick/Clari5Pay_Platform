@@ -126,6 +126,7 @@ class Transaction(Base):
     utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)            # bank UTR number
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)                # merchant free-text note to admin
     risk_analysis: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # whether risk analysis was requested
+    high_risk: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)   # agent-flagged high risk (payment not received)
     reject_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # admin rejection reason
 
     # Proof / verification workflow
@@ -268,6 +269,21 @@ class Notification(Base):
     icon: Mapped[str] = mapped_column(String(8), default="🔔", nullable=False)
     read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class News(Base):
+    """A news/announcement post created by an authorized editor, shown to merchants & admins."""
+    __tablename__ = "news"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    section: Mapped[str] = mapped_column(String(32), default="Announcements", nullable=False)  # one of 4 sections
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # optional image (data URL)
+    author_name: Mapped[str] = mapped_column(String(128), default="Admin", nullable=False)
+    published: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class SupportMessage(Base):

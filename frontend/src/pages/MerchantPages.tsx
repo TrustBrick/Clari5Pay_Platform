@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel } from '../utils/helpers';
-import { upiQrDataUrl } from '../utils/qr';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge } from '../components/UI';
+import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDateTime } from '../utils/helpers';
+import { upiQrDataUrl, textQrDataUrl } from '../utils/qr';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist } from '../components/UI';
 import TxTable from '../components/TxTable';
-import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI } from '../services/api';
+import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
-import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount } from '../types';
+import { lookupIfsc, isValidIfsc, bankBadge, BANK_NAMES } from '../utils/ifsc';
+import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost } from '../types';
 
 // ─── Reusable merchant bank-account picker (select saved or add new) ───────────
 type BankForm = { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName: string };
@@ -48,6 +49,16 @@ const BankAccountFields: React.FC<{
   };
   const set = (k: keyof BankForm, v: string) => onBank({ ...bank, [k]: v });
 
+  // Typing an IFSC auto-fills the bank name + branch (Razorpay API; falls back to manual on failure).
+  const onIfsc = async (raw: string) => {
+    const up = raw.toUpperCase();
+    onBank({ ...bank, ifsc: up });
+    if (isValidIfsc(up)) {
+      const info = await lookupIfsc(up);
+      if (info) onBank({ ...bank, ifsc: up, bankName: info.bank, branch: info.branch });
+    }
+  };
+
   if (!memberId.trim()) {
     return (
       <div style={{ background:T.warningBg,borderRadius:10,padding:'10px 14px',margin:'4px 0 14px',fontSize:12,color:T.warning,fontWeight:600 }}>
@@ -65,11 +76,19 @@ const BankAccountFields: React.FC<{
       )}
       {sel === 'NEW' && (
         <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+          <BankNamesDatalist names={BANK_NAMES}/>
           <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
           <Input label="Account Number" value={bank.accountNumber} onChange={e=>set('accountNumber',e.target.value)} required/>
-          <Input label="IFSC Code" value={bank.ifsc} onChange={e=>set('ifsc',e.target.value.toUpperCase())} required/>
+          <Input label="IFSC Code" value={bank.ifsc} onChange={e=>onIfsc(e.target.value)} required hint="Auto-fills bank & branch"/>
           <Input label="Branch Name" value={bank.branch} onChange={e=>set('branch',e.target.value)} required/>
-          <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)}/>
+          <div style={{ marginBottom:16 }}>
+            <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)} list="bank-names" style={{ marginBottom:6 }}/>
+            {bank.bankName && (() => { const b = bankBadge(bank.bankName); return (
+              <span style={{ display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:T.textMuted }}>
+                <span style={{ width:18,height:18,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
+                {bank.bankName}
+              </span>); })()}
+          </div>
         </div>
       )}
       {sel !== 'NEW' && (
@@ -117,17 +136,31 @@ export const MerchantSlipModal: React.FC<{
   const [proof, setProof] = useState<string | null>(null);
   const [ref, setRef] = useState('');
   const [loading, setLoading] = useState(false);
+  // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
+  const [imgs, setImgs] = useState<{ adminProof?: string | null; merchantProof?: string | null }>({ adminProof: tx.adminProof, merchantProof: tx.merchantProof });
+  useEffect(() => {
+    transactionAPI.getDetail(tx.id).then(d => setImgs({ adminProof: d.adminProof, merchantProof: d.merchantProof })).catch(()=>{});
+  }, [tx.id]);
 
   // ── UPI / QR payment display (amount baked into the QR; 15-minute validity) ──
   const isUpiQr = tx.type.startsWith('DEPOSIT') && ['UPI', 'QR'].includes((tx.depositType || '').toUpperCase());
   const isUpiType = (tx.depositType || '').toUpperCase() === 'UPI';
   const [qrExpiresAt, setQrExpiresAt] = useState<string | null | undefined>(tx.qrExpiresAt);
   const [qrImg, setQrImg] = useState<string | null>(null);
+  const [detailsQr, setDetailsQr] = useState<string | null>(null);
   const [nowTs, setNowTs] = useState(Date.now());
   const [regenerating, setRegenerating] = useState(false);
   const qrExpired = !!qrExpiresAt && nowTs >= new Date(qrExpiresAt).getTime();
   const qrSecondsLeft = qrExpiresAt ? Math.max(0, Math.floor((new Date(qrExpiresAt).getTime() - nowTs) / 1000)) : 0;
   const mmss = `${String(Math.floor(qrSecondsLeft / 60)).padStart(2, '0')}:${String(qrSecondsLeft % 60).padStart(2, '0')}`;
+
+  // Full account/payment details as shareable text (used for copy-all and the share QR).
+  const detailsText = [
+    `Clari5Pay — Payment Details (${tx.ref})`,
+    `Amount: ${fmt(tx.amount)}`,
+    tx.adminBankDetails || '',
+    tx.adminUpiId ? `UPI ID: ${tx.adminUpiId}` : '',
+  ].filter(Boolean).join('\n');
 
   useEffect(() => {
     if (!isUpiQr || !qrExpiresAt) return;
@@ -144,6 +177,17 @@ export const MerchantSlipModal: React.FC<{
     }
     return () => { alive = false; };
   }, [isUpiQr, tx.adminUpiId, tx.amount, tx.merchant, tx.ref, qrExpired]);
+
+  // QR encoding the full account details (for the non-UPI/QR "share all details" action).
+  useEffect(() => {
+    let alive = true;
+    if (!isUpiQr && (tx.adminBankDetails || tx.adminUpiId)) {
+      textQrDataUrl(detailsText).then(d => { if (alive) setDetailsQr(d); }).catch(() => {});
+    } else {
+      setDetailsQr(null);
+    }
+    return () => { alive = false; };
+  }, [isUpiQr, detailsText, tx.adminBankDetails, tx.adminUpiId]);
 
   const regenerateQr = async () => {
     setRegenerating(true);
@@ -172,6 +216,25 @@ export const MerchantSlipModal: React.FC<{
     if (nav.share) { try { await nav.share({ title: 'Clari5Pay payment', text }); return; } catch { /* cancelled */ } }
     await copy(text, 'Payment details');
   };
+  // Share ALL account details — attaches the details QR image when the platform supports it.
+  const shareAll = async () => {
+    const nav = navigator as Navigator & {
+      share?: (d: { title?: string; text?: string; files?: File[] }) => Promise<void>;
+      canShare?: (d: { files?: File[] }) => boolean;
+    };
+    if (detailsQr && nav.share && nav.canShare) {
+      try {
+        const blob = await (await fetch(detailsQr)).blob();
+        const file = new File([blob], `payment-details-${tx.ref}.png`, { type: 'image/png' });
+        if (nav.canShare({ files: [file] })) {
+          await nav.share({ files: [file], title: 'Clari5Pay payment details', text: detailsText });
+          return;
+        }
+      } catch { /* fall through to text share */ }
+    }
+    if (nav.share) { try { await nav.share({ title: 'Clari5Pay payment details', text: detailsText }); return; } catch { /* cancelled */ } }
+    await copy(detailsText, 'All details');
+  };
 
   // Both the UTR number and the payment proof are mandatory when submitting a slip.
   const canSubmit = !!proof && !!ref.trim();
@@ -199,10 +262,10 @@ export const MerchantSlipModal: React.FC<{
     ? 'UTR number and proof attached — ready to submit.'
     : 'Both the UTR number and a payment proof image are required.';
 
-  const hasAdminDetails = !!(tx.adminProof || tx.adminBankDetails);
+  const hasAdminDetails = !!(imgs.adminProof || tx.adminBankDetails);
   const downloadDetails = () => {
-    if (tx.adminProof) {
-      downloadDataUrl(tx.adminProof, `account-details-${tx.ref}.png`);
+    if (imgs.adminProof) {
+      downloadDataUrl(imgs.adminProof, `account-details-${tx.ref}.png`);
     } else if (tx.adminBankDetails) {
       const lines = [
         `Clari5Pay — Payment Details for ${tx.ref}`,
@@ -216,6 +279,15 @@ export const MerchantSlipModal: React.FC<{
 
   return (
     <Modal title={`${canSubmitSlip ? 'Pay & Submit Proof' : 'Request Details'} — ${tx.ref}`} onClose={onClose}>
+      {tx.highRisk && (
+        <div style={{ display:'flex',gap:10,alignItems:'flex-start',background:'#fdecea',border:'1px solid #f5b5ae',borderRadius:10,padding:'12px 14px',marginBottom:16 }}>
+          <span style={{ fontSize:20,lineHeight:1 }}>⚠</span>
+          <div>
+            <p style={{ margin:0,fontSize:13,fontWeight:800,color:'#b71c1c' }}>High Risk — Member {tx.memberId || tx.ref}</p>
+            <p style={{ margin:'2px 0 0',fontSize:12,color:'#7f1d1d' }}>{tx.rejectReason || 'Payment was not received in our bank for this member. Please contact support.'}</p>
+          </div>
+        </div>
+      )}
       <div style={{ marginBottom:16 }}>
         <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>{adminLabel}</p>
         <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
@@ -238,7 +310,7 @@ export const MerchantSlipModal: React.FC<{
               <p style={{ fontSize:13,color:T.textMain,margin:0,whiteSpace:'pre-line',lineHeight:1.6 }}>{tx.adminBankDetails}</p>
             </div>
           )}
-          {!tx.adminUpiId && !tx.adminBankDetails && !tx.adminProof &&
+          {!tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof &&
             <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting updates from Agent.</p>}
         </div>
 
@@ -272,20 +344,36 @@ export const MerchantSlipModal: React.FC<{
           </div>
         )}
 
-        {tx.adminProof && <img src={tx.adminProof} alt="Admin details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+        {imgs.adminProof && <img src={imgs.adminProof} alt="Admin details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
         {hasAdminDetails && !isUpiQr && (
-          <Btn size="sm" variant="ghost" style={{ marginTop:10 }} onClick={downloadDetails}>
-            ⬇ Download {tx.type.startsWith('DEPOSIT') ? 'Account Details' : 'Receipt'}
-          </Btn>
+          <div style={{ marginTop:10 }}>
+            {detailsQr && (
+              <div style={{ textAlign:'center', marginBottom:10 }}>
+                <img src={detailsQr} alt="Payment details QR" style={{ width:160,height:160,borderRadius:12,border:`1px solid ${T.border}`,background:'#fff',padding:8 }} />
+                <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>Scan to get the account details</p>
+              </div>
+            )}
+            <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
+              {(tx.adminBankDetails || tx.adminUpiId) && (
+                <>
+                  <Btn size="sm" variant="ghost" onClick={()=>copy(detailsText, 'All details')}>⧉ Copy All Details</Btn>
+                  <Btn size="sm" variant="ghost" onClick={shareAll}>↗ Share{detailsQr ? ' (with QR)' : ''}</Btn>
+                </>
+              )}
+              <Btn size="sm" variant="ghost" onClick={downloadDetails}>
+                ⬇ Download {tx.type.startsWith('DEPOSIT') ? 'Account Details' : 'Receipt'}
+              </Btn>
+            </div>
+          </div>
         )}
       </div>
 
       {/* Already-submitted slip (read-only) */}
-      {!canSubmitSlip && (tx.merchantProof || tx.merchantRef) && (
+      {!canSubmitSlip && (imgs.merchantProof || tx.merchantRef) && (
         <div style={{ borderTop:`1px solid ${T.border}`,paddingTop:14,marginBottom:4 }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Your Submitted Proof</p>
           {tx.merchantRef && <SlipRow k="Reference" v={tx.merchantRef} />}
-          {tx.merchantProof && <img src={tx.merchantProof} alt="slip" style={{ display:'block',marginTop:8,maxHeight:180,maxWidth:'100%',objectFit:'contain',borderRadius:8,border:`1px solid ${T.border}` }} />}
+          {imgs.merchantProof && <img src={imgs.merchantProof} alt="slip" style={{ display:'block',marginTop:8,maxHeight:180,maxWidth:'100%',objectFit:'contain',borderRadius:8,border:`1px solid ${T.border}` }} />}
         </div>
       )}
 
@@ -344,16 +432,17 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
     { label: 'Completed', value: byStatus(wdTx, 'COMPLETED'), color: T.success },
   ];
 
-  // Role-scoped dashboard cards (operators/supervisor never see Available Balance).
+  // Role-scoped dashboard cards.
   const role = String(user.merchantRole || '').toUpperCase();
   const pendingCard = <StatCard icon="⧗" label="Pending Requests" value={inFlight.length} sub="In progress" color={T.warning}/>;
+  const balanceCard = <StatCard icon="💰" label="Available Balance" value={fmt(summary?.available ?? 0)} sub="Updated now" color={T.success}/>;
   let cards: React.ReactNode;
   if (role === 'DEPOSIT_OPERATOR') {
     cards = <><StatCard icon="↓" label="No. of Deposits" value={summary?.depositCount ?? 0} color={T.blue}/>{pendingCard}</>;
   } else if (role === 'WITHDRAWAL_OPERATOR') {
-    cards = <><StatCard icon="↑" label="No. of Withdrawals" value={summary?.withdrawalCount ?? 0} color={T.danger}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="↑" label="No. of Withdrawals" value={summary?.withdrawalCount ?? 0} color={T.danger}/>{pendingCard}</>;
   } else if (role === 'SUPERVISOR') {
-    cards = <><StatCard icon="⇄" label="No. of Settlements" value={settlementCount} color={T.info}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="⇄" label="No. of Settlements" value={settlementCount} color={T.info}/>{pendingCard}</>;
   } else {
     cards = <>
       <StatCard icon="💰" label="Available Balance" value={fmt(summary?.available ?? 0)} sub="Updated now" color={T.success}/>
@@ -464,10 +553,10 @@ const PAYOUT_MODES = [
   { value:'CRYPTO', label:'Crypto (USDT)' },
 ];
 // Mode-specific input fields the merchant fills. The agent uploads the proof/UTR/Hash afterward.
-const MODE_FIELDS: Record<string, { key:string; label:string; digits?: boolean; upper?: boolean }[]> = {
+const MODE_FIELDS: Record<string, { key:string; label:string; digits?: boolean; upper?: boolean; max?: number }[]> = {
   BANK: [{key:'accountHolder',label:'Account Holder'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
   UPI: [{key:'upiId',label:'UPI ID'}],
-  CASH: [{key:'village',label:'Village'},{key:'city',label:'City'},{key:'mobile',label:'Mobile Number',digits:true},{key:'tollFree',label:'Toll-Free Number',digits:true}],
+  CASH: [{key:'village',label:'Village'},{key:'city',label:'City'},{key:'mobile',label:'Mobile Number',digits:true},{key:'pinCode',label:'PIN Code',digits:true,max:6}],
   CRYPTO: [{key:'walletAddress',label:'Wallet Address'},{key:'network',label:'Network (e.g. TRC20)'}],
 };
 
@@ -518,14 +607,24 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         {fields.map(f => (
           <Input key={f.key} label={f.label} value={details[f.key]||''} required
-            onChange={e=>{
+            hint={f.key==='ifsc' ? 'Auto-fills bank & branch' : undefined}
+            onChange={async e=>{
               let v = e.target.value;
               if (f.upper) v = v.toUpperCase();
-              if (f.digits) v = v.replace(/[^\d]/g,'').slice(0,10);
-              setD(f.key, v);
+              if (f.digits) v = v.replace(/[^\d]/g,'').slice(0, f.max || 10);
+              setDetails(d => ({...d,[f.key]:v}));
+              if (f.key==='ifsc' && isValidIfsc(v)) {
+                const info = await lookupIfsc(v);
+                if (info) setDetails(d => ({...d, ifsc:v, bank:info.bank, branch:info.branch}));
+              }
             }}/>
         ))}
       </div>
+      {mode==='BANK' && details.bank && (() => { const b = bankBadge(details.bank); return (
+        <div style={{ display:'flex',alignItems:'center',gap:8,margin:'0 0 12px',fontSize:12,color:T.textMain }}>
+          <span style={{ width:20,height:20,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
+          <b>{details.bank}</b>{details.branch ? <span style={{ color:T.textMuted }}>· {details.branch}</span> : null}
+        </div>); })()}
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 14px',fontSize:11,color:T.textMuted }}>
         After payment, the agent uploads the proof — {mode==='CRYPTO' ? 'Transaction Hash (Hash ID)' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}.
       </div>
@@ -1101,20 +1200,16 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
   );
 };
 
-// ─── News & Updates (merchant blog feed) ───────────────────────────────────────
-// Placeholder content for now — wire to a real source when news data is available.
-const NEWS_POSTS: Array<{ id:number; tag:string; color:string; title:string; date:string; body:string }> = [
-  { id:1, tag:'Announcement', color:T.blue, title:'Welcome to the Clari5Pay News Center', date:'Updates & announcements',
-    body:'This is your space for platform announcements, product updates and important notices. Check back here regularly to stay informed.' },
-  { id:2, tag:'New Feature', color:T.success, title:'UPI & QR deposits now show a scannable QR code', date:'Recently added',
-    body:'When you choose UPI or QR for a deposit, you now get a QR code with the exact amount built in — just scan and pay. Codes stay valid for 15 minutes.' },
-  { id:3, tag:'Security', color:T.warning, title:'Reset your password with an email OTP', date:'Security update',
-    body:'Forgot your password? Use “Forgot password?” on the sign-in screen to verify with a one-time code sent to your registered email, then set a new password.' },
-];
+// ─── News & Updates (merchant feed — live from the News API) ────────────────────
+export const SECTION_COLOR: Record<string, string> = {
+  'Announcements': T.blue, 'Product Updates': T.success, 'Offers': T.warning, 'Alerts': T.danger,
+};
 
 export const NewsPage: React.FC<{ user: User }> = () => {
+  const [posts, setPosts] = useState<NewsPost[]>([]);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { const id = setTimeout(()=>setLoading(false), 250); return ()=>clearTimeout(id); }, []);
+  useEffect(() => { newsAPI.list().then(setPosts).catch(()=>setPosts([])).finally(()=>setLoading(false)); }, []);
+  usePoll(() => { newsAPI.list().then(setPosts).catch(()=>{}); });
 
   if (loading) return <LoadingScreen label="Loading news…"/>;
 
@@ -1122,10 +1217,10 @@ export const NewsPage: React.FC<{ user: User }> = () => {
     <div style={{ maxWidth:820 }}>
       <div style={{ marginBottom:18 }}>
         <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>News &amp; Updates</h2>
-        <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Platform announcements and product updates for merchants</p>
+        <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Platform announcements and product updates</p>
       </div>
 
-      {NEWS_POSTS.length === 0 ? (
+      {posts.length === 0 ? (
         <Card style={{ padding:40,textAlign:'center' }}>
           <div style={{ fontSize:40,marginBottom:10 }}>📰</div>
           <p style={{ fontWeight:800,color:T.textMain,margin:'0 0 4px' }}>No news yet</p>
@@ -1133,16 +1228,17 @@ export const NewsPage: React.FC<{ user: User }> = () => {
         </Card>
       ) : (
         <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
-          {NEWS_POSTS.map(p => (
+          {posts.map(p => { const c = SECTION_COLOR[p.section] || T.blue; return (
             <Card key={p.id} style={{ padding:20 }}>
               <div style={{ display:'flex',alignItems:'center',gap:10,marginBottom:8 }}>
-                <span style={{ padding:'2px 10px',borderRadius:20,fontSize:11,fontWeight:700,background:`${p.color}18`,color:p.color }}>{p.tag}</span>
-                <span style={{ fontSize:11,color:T.textMuted }}>{p.date}</span>
+                <span style={{ padding:'2px 10px',borderRadius:20,fontSize:11,fontWeight:700,background:`${c}18`,color:c }}>{p.section}</span>
+                <span style={{ fontSize:11,color:T.textMuted }}>{formatDateTime(p.createdAt)} · {p.author}</span>
               </div>
               <h3 style={{ margin:'0 0 6px',fontSize:15,fontWeight:800,color:T.textMain }}>{p.title}</h3>
-              <p style={{ margin:0,fontSize:13,color:T.textMuted,lineHeight:1.6 }}>{p.body}</p>
+              {p.image && <img src={p.image} alt="" style={{ display:'block',maxWidth:'100%',maxHeight:260,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,margin:'0 0 10px',background:T.canvas }} />}
+              <p style={{ margin:0,fontSize:13,color:T.textMuted,lineHeight:1.6,whiteSpace:'pre-line' }}>{p.body}</p>
             </Card>
-          ))}
+          ); })}
           <p style={{ textAlign:'center',fontSize:11,color:T.textMuted,margin:'4px 0' }}>You're all caught up.</p>
         </div>
       )}

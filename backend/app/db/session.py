@@ -34,6 +34,7 @@ def _build_engine():
         return create_async_engine(
             url,
             echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20,
+            pool_recycle=1800,  # refresh idle connections before RDS drops them
             connect_args=connect_args,
         )
 
@@ -46,6 +47,7 @@ def _build_engine():
     rds = boto3.client("rds", region_name=settings.AWS_REGION)
     eng = create_async_engine(
         url, echo=False, pool_pre_ping=True, pool_size=10, max_overflow=20,
+        pool_recycle=1800,
         connect_args={"ssl": _ssl_context()},
     )
 
