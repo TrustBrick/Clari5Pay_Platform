@@ -1,0 +1,8 @@
+# Automatic HTTPS (Let's Encrypt) for the Clari5Pay app.
+# Caddy fetches + renews the TLS cert on its own and redirects HTTP -> HTTPS.
+# It reverse-proxies to the frontend nginx container, which serves the SPA and
+# proxies /api (+ the chat WebSocket) to the backend. WebSockets pass through.
+app.clari5pay.com {
+	encode zstd gzip
+	reverse_proxy frontend:3000
+}

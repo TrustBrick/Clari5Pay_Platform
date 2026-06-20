@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# HTTPS overlay — puts Caddy (automatic Let's Encrypt TLS) in front of the app.
+#
+# Deploy it TOGETHER with the base prod file, and ONLY after app.clari5pay.com's
+# DNS A record points at this server (Caddy needs the domain to resolve here to
+# obtain a certificate):
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.https.yml up -d
+#
+# Caddy takes over ports 80/443; the frontend becomes internal-only (Caddy proxies
+# to it). Requires inbound 443 open in the EC2 security group.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  frontend:
+    # Caddy now owns 80/443 — drop the frontend's host port mapping (internal only).
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: clari5pay_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"          # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # persists the issued certificates
+      - caddy_config:/config
+    depends_on:
+      - frontend
+
+volumes:
+  caddy_data:
+  caddy_config:
