@@ -6,3 +6,9 @@ app.clari5pay.com {
 	encode zstd gzip
 	reverse_proxy frontend:3000
 }
+
+# Customer Support agent portal.
+support.clari5pay.com {
+	encode zstd gzip
+	reverse_proxy support:3002
+}

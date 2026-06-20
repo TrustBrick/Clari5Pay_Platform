@@ -1,4 +1,6 @@
-export const BASE_URL = (import.meta as any).env.VITE_API_BASE_URL || 'http://localhost:8000';
+// Empty string = same origin (production behind nginx/Caddy). Use ?? so only an
+// unset var falls back to the dev default.
+export const BASE_URL = (import.meta as any).env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 const TOKEN_KEY = 'clari5pay_support_token';
 const USER_KEY = 'clari5pay_support_user';
@@ -104,6 +106,10 @@ export async function sendMessage(content: string, merchantId: number): Promise<
 }
 
 export const wsUrl = () => {
-  const base = BASE_URL.replace(/^http/, 'ws');
-  return `${base}/api/support/ws?token=${encodeURIComponent(getToken() || '')}`;
+  const q = `?token=${encodeURIComponent(getToken() || '')}`;
+  // Explicit base (dev) → derive ws:// from it. Empty base (prod, same-origin) →
+  // build from the current page (uses wss on https).
+  if (BASE_URL) return `${BASE_URL.replace(/^http/, 'ws')}/api/support/ws${q}`;
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/api/support/ws${q}`;
 };

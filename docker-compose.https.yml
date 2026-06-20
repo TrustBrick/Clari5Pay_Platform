@@ -15,6 +15,18 @@ services:
     # Caddy now owns 80/443 — drop the frontend's host port mapping (internal only).
     ports: !reset []
 
+  # Customer Support agent portal (served at support.clari5pay.com via Caddy).
+  support:
+    build:
+      context: ./support-frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""    # same-origin; its nginx proxies /api to the backend
+    container_name: clari5pay_support
+    restart: unless-stopped
+    depends_on:
+      - backend
+
   caddy:
     image: caddy:2-alpine
     container_name: clari5pay_caddy
@@ -29,6 +41,7 @@ services:
       - caddy_config:/config
     depends_on:
       - frontend
+      - support
 
 volumes:
   caddy_data:

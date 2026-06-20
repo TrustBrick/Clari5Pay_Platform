@@ -3,7 +3,10 @@ WORKDIR /app
 COPY package.json .
 RUN npm install
 COPY . .
-ENV VITE_API_BASE_URL=http://localhost:8001
+# Build-time API base. "" (empty) = same-origin (browser calls /api on this host;
+# nginx proxies it to the backend) — used in production behind Caddy.
+ARG VITE_API_BASE_URL=http://localhost:8001
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN npm run build
 
 FROM nginx:alpine
