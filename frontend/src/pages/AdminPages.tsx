@@ -6,10 +6,10 @@ import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
 import { usePoll } from '../utils/usePoll';
-import { transactionAPI, userAPI, accountAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
+import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, MerchantBalance } from '../types';
+import type { Transaction, User, Account, AccountBalance, MerchantBalance, AdminUpi } from '../types';
 
 const REQUEST_TYPES = ['DEPOSIT', 'WITHDRAWAL', 'SETTLEMENT', 'DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
 const REQUEST_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'COMPLETED', 'CANCELLED'];
@@ -54,6 +54,7 @@ const RequestModal: React.FC<{
   const [accountRef, setAccountRef] = useState('');
   const [reusedRef, setReusedRef] = useState('');
   const [upiId, setUpiId] = useState('');
+  const [savedUpis, setSavedUpis] = useState<AdminUpi[]>([]);
   const [receipt, setReceipt] = useState<string | null>(null);
   const [payUtr, setPayUtr] = useState('');
   const [saving, setSaving] = useState(false);
@@ -123,6 +124,11 @@ const RequestModal: React.FC<{
       }
     }).catch(()=>{});
   }, [chooseStep, isUpiQr, tx.memberId]);
+
+  // Load saved admin UPI IDs for the "send UPI" dropdown.
+  useEffect(() => {
+    if (chooseStep && isUpiQr) adminUpiAPI.listActive().then(setSavedUpis).catch(()=>{});
+  }, [chooseStep, isUpiQr]);
 
   const onReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -250,7 +256,11 @@ const RequestModal: React.FC<{
       {chooseStep && isUpiQr && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>{tx.depositType?.toUpperCase()} payment — send UPI ID</p>
-          <Input label="UPI ID (VPA)" value={upiId} onChange={e=>setUpiId(e.target.value)} placeholder="e.g. clari5pay@hdfcbank" required/>
+          {savedUpis.length > 0 && (
+            <Sel label="Saved UPI IDs" value={savedUpis.some(u=>u.upiId===upiId)?upiId:''} onChange={e=>setUpiId(e.target.value)}
+              options={[{ value:'', label:'— Pick a saved UPI or type below —' }, ...savedUpis.map(u => ({ value:u.upiId, label:`${u.label} — ${u.upiId}` }))]} />
+          )}
+          <Input label="UPI ID (VPA)" value={upiId} onChange={e=>setUpiId(e.target.value)} placeholder="e.g. clari5pay@hdfcbank" required hint={savedUpis.length>0 ? 'Pick from saved above, or type a new one (manage them in Account Management → Admin UPI IDs)' : undefined}/>
           <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>The Receiver gets a QR with the exact amount ({fmt(tx.amount)}) baked in. The code is valid for 15 minutes. Bank account details are not shared for UPI/QR payments.</p>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={sendUpi} disabled={saving||!upiId.trim()}>{saving ? 'Sending...' : 'Send UPI / QR'}</Btn>
@@ -656,10 +666,26 @@ export const AdminAccountsPage: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [balances, setBalances] = useState<AccountBalance[]>([]);
   const [acctMerchants, setAcctMerchants] = useState<AccountBalance | null>(null);
+  // Admin UPI IDs (separate from bank accounts).
+  const [upis, setUpis] = useState<AdminUpi[]>([]);
+  const [showAddUpi, setShowAddUpi] = useState(false);
+  const [upiForm, setUpiForm] = useState({ label:'', upiId:'' });
 
   const reload = () => {
     accountAPI.list().then(setAccounts).catch(()=>{});
     accountAPI.balances().then(setBalances).catch(()=>{});
+    adminUpiAPI.list().then(setUpis).catch(()=>{});
+  };
+
+  const addUpi = async () => {
+    if (!upiForm.upiId.includes('@')) { showToast('Enter a valid UPI ID (name@bank)','error'); return; }
+    try {
+      await adminUpiAPI.create({ label: upiForm.label || undefined, upiId: upiForm.upiId.trim() });
+      setUpiForm({ label:'', upiId:'' }); setShowAddUpi(false); await reload(); showToast('UPI ID saved');
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to save UPI','error'); }
+  };
+  const toggleUpi = async (u: AdminUpi) => {
+    try { await adminUpiAPI.toggle(u.id); await reload(); } catch { showToast('Failed to update UPI','error'); }
   };
   useEffect(() => { reload(); }, []);
   usePoll(() => { if (!detail && !showCreate && !toggleAcc) reload(); });
@@ -740,6 +766,48 @@ export const AdminAccountsPage: React.FC = () => {
           </table>
         </div>
       </Card>
+
+      {/* Admin UPI IDs — separate from bank accounts; reused when the agent sends a UPI deposit. */}
+      <div style={{ marginTop:22 }}>
+        <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,gap:8,flexWrap:'wrap' }}>
+          <div>
+            <h2 style={{ margin:'0 0 2px',fontSize:16,fontWeight:800 }}>Admin UPI IDs</h2>
+            <p style={{ margin:0,fontSize:12,color:T.textMuted }}>Saved UPI IDs for receiving deposits — pick one instead of re-typing on each UPI/QR request.</p>
+          </div>
+          <Btn onClick={()=>setShowAddUpi(v=>!v)}>{showAddUpi ? 'Cancel' : '+ Add UPI'}</Btn>
+        </div>
+        <Card>
+          {showAddUpi && (
+            <div style={{ display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end',padding:'14px 18px',borderBottom:`1px solid ${T.border}`,background:T.canvas }}>
+              <div style={{ flex:'1 1 200px' }}><Input label="Name / Label" value={upiForm.label} onChange={e=>setUpiForm(f=>({...f,label:e.target.value}))} placeholder="e.g. Clari5Pay HDFC"/></div>
+              <div style={{ flex:'1 1 220px' }}><Input label="UPI ID (VPA)" value={upiForm.upiId} onChange={e=>setUpiForm(f=>({...f,upiId:e.target.value}))} placeholder="e.g. clari5pay@hdfcbank" required/></div>
+              <Btn onClick={addUpi} disabled={!upiForm.upiId.includes('@')}>Save UPI</Btn>
+            </div>
+          )}
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+              <thead>
+                <tr style={{ background:T.canvas }}>
+                  {['UPI ID','Name / Label','Status','Action'].map(h=>(
+                    <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {upis.length === 0 && <tr><td colSpan={4} style={{ padding:28,textAlign:'center',color:T.textMuted }}>No UPI IDs saved yet — add one to reuse it on UPI/QR deposits.</td></tr>}
+                {upis.map((u,i)=>(
+                  <tr key={u.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
+                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{u.upiId}</td>
+                    <td style={{ padding:'11px 14px',color:T.textMuted }}>{u.label}</td>
+                    <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:u.status==='ACTIVE'?T.successBg:T.dangerBg,color:u.status==='ACTIVE'?T.success:T.danger }}>{u.status}</span></td>
+                    <td style={{ padding:'11px 14px' }}><Btn size="sm" variant={u.status==='ACTIVE'?'danger':'success'} onClick={()=>toggleUpi(u)}>{u.status==='ACTIVE'?'Deactivate':'Activate'}</Btn></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
 
       {/* Per-account balances: deposits routed to each account, with each merchant's AB / RB / MAB */}
       <div style={{ marginTop:22 }}>

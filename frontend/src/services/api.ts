@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, AuditLogEntry, BalanceSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -188,6 +188,25 @@ export const accountAPI = {
   },
   toggle: async (ref: string, reason: string) => {
     const res = await api.patch<Account>(`/api/accounts/${ref}/toggle`, { reason });
+    return res.data;
+  },
+};
+
+export const adminUpiAPI = {
+  list: async () => {
+    const res = await api.get<AdminUpi[]>('/api/admin-upis');
+    return res.data;
+  },
+  listActive: async () => {
+    const res = await api.get<AdminUpi[]>('/api/admin-upis/active');
+    return res.data;
+  },
+  create: async (data: { label?: string; upiId: string }) => {
+    const res = await api.post<AdminUpi>('/api/admin-upis', data);
+    return res.data;
+  },
+  toggle: async (id: number, reason?: string) => {
+    const res = await api.patch<AdminUpi>(`/api/admin-upis/${id}/toggle`, { reason });
     return res.data;
   },
 };

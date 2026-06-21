@@ -183,6 +183,20 @@ class AccountTransaction(Base):
     transaction_time: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
+class AdminUpi(Base):
+    """A UPI ID managed by Admins for receiving merchant deposits — the UPI counterpart of
+    AccountMaster (bank accounts). Kept separate so the agent can pick a saved UPI instead of
+    re-typing it on every UPI/QR deposit."""
+    __tablename__ = "admin_upis"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    label: Mapped[str] = mapped_column(String(128), nullable=False)        # holder / nickname
+    upi_id: Mapped[str] = mapped_column(String(64), nullable=False)        # the VPA, e.g. name@bank
+    status: Mapped[str] = mapped_column(String(24), default="ACTIVE", nullable=False)
+    created_date: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
+    created_time: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+
+
 class SystemLog(Base):
     """Audit log of key actions across the platform (viewable by the Super Admin)."""
     __tablename__ = "system_logs"

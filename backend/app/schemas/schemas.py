@@ -206,6 +206,12 @@ class BankAccountCreate(BaseModel):
     memberId: Optional[str] = None
 
 
+# ─── Admin UPI Schemas ────────────────────────────────────────────────────────
+class AdminUpiCreate(BaseModel):
+    label: Optional[str] = None
+    upiId: str
+
+
 # ─── Account Schemas ──────────────────────────────────────────────────────────
 class AccountCreate(BaseModel):
     reference_number: Optional[str] = None

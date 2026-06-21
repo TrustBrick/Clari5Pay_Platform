@@ -162,6 +162,15 @@ export interface MerchantBalance {
   runningBalance: number;
 }
 
+export interface AdminUpi {
+  id: number;
+  label: string;
+  upiId: string;
+  status: string;
+  createdDate: string;
+  createdTime: string;
+}
+
 export interface SupportMessage {
   id: number;
   merchantId: number;
