@@ -67,25 +67,35 @@ async def account_balances(
     out = []
     for a in accounts:
         rows = []
+        total_dep, total_fee = 0.0, 0.0
         for name, deposited in dep.get(a.reference_number, {}).items():
             b = bal_by_name.get(name, {})
             rep = rep_by_name.get(name)
+            fee = deposited * ((rep.pay_in_fee or 0) / 100) if rep else 0.0
+            total_dep += deposited
+            total_fee += fee
             rows.append({
                 "merchantName": name,
                 "merchantCode": rep.merchant_code if rep else None,
                 "deposited": round(deposited, 2),
-                "available": round(b.get("available", 0.0), 2),     # AB
-                "runningBalance": round(b.get("runningBalance", 0.0), 2),  # RB
-                "mab": b.get("mab", 0.0),                           # MAB
+                "available": round(b.get("available", 0.0), 2),     # AB (merchant-level)
+                "runningBalance": round(b.get("runningBalance", 0.0), 2),  # RB (merchant-level)
+                "mab": b.get("mab", 0.0),                           # MAB (merchant-level)
             })
         rows.sort(key=lambda r: r["deposited"], reverse=True)
         out.append({
             "referenceNumber": a.reference_number,
             "accountName": a.account_name,
+            "accountHolder": a.account_name,      # AccountMaster has no separate holder field
             "accountNumber": a.account_number,
+            "ifscCode": a.ifsc_code,
+            "branch": a.branch,
             "bankName": a.bank_name,
             "status": a.status,
-            "totalDeposited": round(sum(r["deposited"] for r in rows), 2),
+            # Account-level money received into THIS admin bank account.
+            "totalDeposited": round(total_dep, 2),
+            "totalFees": round(total_fee, 2),
+            "available": round(total_dep - total_fee, 2),   # net received into this account
             "merchants": rows,
         })
     return out

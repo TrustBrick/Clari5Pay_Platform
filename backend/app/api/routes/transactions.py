@@ -221,6 +221,24 @@ async def my_summary(
     return await compute_balance(db, current_user)
 
 
+@router.get("/merchant-balances")
+async def merchant_balances(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Available Balance (AB) + Running Balance (RB) per merchant business — for the admin
+    Merchants page. Merchants sharing a business name share one balance pool."""
+    merchants = (await db.execute(select(User).where(User.role == UserRole.MERCHANT))).scalars().all()
+    rep: dict[str, User] = {}
+    for m in merchants:
+        rep.setdefault(m.name, m)
+    out = []
+    for name, user in rep.items():
+        s = await compute_balance(db, user)
+        out.append({"name": name, "available": round(s["available"], 2), "runningBalance": round(s["runningBalance"], 2)})
+    return out
+
+
 @router.post("/deposit")
 async def create_deposit(
     data: DepositCreate,

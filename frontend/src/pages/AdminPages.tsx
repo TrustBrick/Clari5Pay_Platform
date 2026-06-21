@@ -9,7 +9,7 @@ import { usePoll } from '../utils/usePoll';
 import { transactionAPI, userAPI, accountAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance } from '../types';
+import type { Transaction, User, Account, AccountBalance, MerchantBalance } from '../types';
 
 const REQUEST_TYPES = ['DEPOSIT', 'WITHDRAWAL', 'SETTLEMENT', 'DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
 const REQUEST_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'COMPLETED', 'CANCELLED'];
@@ -518,7 +518,12 @@ export const AdminMerchantsPage: React.FC = () => {
   };
   const passwordMismatch = !!form.confirmPassword && form.password !== form.confirmPassword;
 
-  const reload = () => userAPI.getMerchants().then(setMerchants).catch(()=>{});
+  const [mBal, setMBal] = useState<MerchantBalance[]>([]);
+  const balByName = Object.fromEntries(mBal.map(b => [b.name, b]));
+  const reload = () => {
+    userAPI.getMerchants().then(setMerchants).catch(()=>{});
+    transactionAPI.merchantBalances().then(setMBal).catch(()=>{});
+  };
   useEffect(() => { reload(); }, []);
   usePoll(() => { if (!showCreate && !toggleM) reload(); });
 
@@ -593,7 +598,7 @@ export const AdminMerchantsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Business','Merchant ID','Username','Role','Email','Phone','Codes','Status','Action'].map(h=>(
+                {['Business','Merchant ID','Username','Role','Email','Phone','Codes','Available Balance','Running Balance','Status','Action'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -612,6 +617,8 @@ export const AdminMerchantsPage: React.FC = () => {
                       {[m.payIn,m.payOut,m.settlement].filter(Boolean).map(c=><code key={c} style={{ background:T.infoBg,color:T.blue,padding:'1px 5px',borderRadius:4,fontSize:10,fontWeight:700 }}>{c}</code>)}
                     </div>
                   </td>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success,whiteSpace:'nowrap' }}>{fmt(balByName[m.name]?.available ?? 0)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:700,color:(balByName[m.name]?.runningBalance ?? 0)>0?T.danger:T.textMuted,whiteSpace:'nowrap' }}>{fmt(balByName[m.name]?.runningBalance ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:m.active?T.successBg:T.dangerBg,color:m.active?T.success:T.danger }}>{m.active?'Active':'Inactive'}</span></td>
                   <td style={{ padding:'11px 14px' }}>
                     <Btn size="sm" variant={m.active?'danger':'success'} onClick={()=>setToggleM(m)}>{m.active?'Deactivate':'Activate'}</Btn>
@@ -664,7 +671,8 @@ export const AdminAccountsPage: React.FC = () => {
     finally { setBusy(false); }
   };
 
-  const filtered = accounts.filter(a => !search || a.merchantName.toLowerCase().includes(search.toLowerCase()));
+  const filtered = accounts.filter(a => !search || (a.accountName || '').toLowerCase().includes(search.toLowerCase()));
+  const balMap = Object.fromEntries(balances.map(b => [b.referenceNumber, b]));
 
   const create = async () => {
     if(!form.account_name||!form.account_number||!form.ifsc_code||!form.bank_name||!form.branch){ showToast('Fill all fields','error'); return; }
@@ -689,7 +697,7 @@ export const AdminAccountsPage: React.FC = () => {
         <div style={{ padding:'14px 20px',borderBottom:`1px solid ${T.border}` }}>
           <div style={{ position:'relative',maxWidth:320 }}>
             <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by Merchant Name..."
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by Account Name..."
               style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
           </div>
         </div>
@@ -697,23 +705,31 @@ export const AdminAccountsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Merchant Name','Reference ID','Status','Account Details'].map(h=>(
+                {['Account Name','Reference ID','Account Number','IFSC Code','Branch','Deposits Received','Available','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={4} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
-              {filtered.map((a,i)=>(
+              {filtered.length === 0 && <tr><td colSpan={9} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
+              {filtered.map((a,i)=>{ const bal = balMap[a.referenceNumber]; return (
                 <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
-                  <td style={{ padding:'11px 14px',fontWeight:700 }}>{a.merchantName}</td>
+                  <td style={{ padding:'11px 14px' }}>
+                    <div style={{ fontWeight:700,color:T.textMain }}>{a.accountName}</div>
+                    <div style={{ fontSize:10,color:T.textMuted }}>{a.bankName}</div>
+                  </td>
                   <td style={{ padding:'11px 14px' }}><code style={{ background:T.infoBg,color:T.blue,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{a.referenceNumber}</code></td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.accountNumber}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.ifscCode}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.branch}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{fmt(bal?.totalDeposited ?? 0)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}>
                     <Btn size="sm" variant={a.status==='ACTIVE'?'success':'danger'} onClick={()=>setToggleAcc(a)}>{a.status==='ACTIVE'?'● ACTIVE':'○ INACTIVE'}</Btn>
                   </td>
-                  <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={()=>setDetail(a)}>View Details</Btn></td>
+                  <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={()=>setDetail(a)}>View</Btn></td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>

@@ -144,11 +144,22 @@ export interface AccountMerchantBalance {
 export interface AccountBalance {
   referenceNumber: string;
   accountName: string;
+  accountHolder: string;
   accountNumber: string;
+  ifscCode: string;
+  branch: string;
   bankName: string;
   status: string;
   totalDeposited: number;
+  totalFees: number;
+  available: number;        // net received into this admin account
   merchants: AccountMerchantBalance[];
+}
+
+export interface MerchantBalance {
+  name: string;
+  available: number;
+  runningBalance: number;
 }
 
 export interface SupportMessage {
