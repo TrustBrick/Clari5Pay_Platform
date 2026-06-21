@@ -567,16 +567,41 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [mode, setMode] = useState('BANK');
   const [details, setDetails] = useState<Record<string,string>>({});
   const [available, setAvailable] = useState(0);
+  const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
   const setD = (k: string, v: string) => setDetails(d => ({...d,[k]:v}));
 
-  useEffect(() => { transactionAPI.summary().then(s => setAvailable(s.available)).catch(()=>{}); }, []);
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); }).catch(()=>{}); }, []);
+
+  // Auto-fill the member's saved payout details (bank or UPI) so they're never re-typed.
+  useEffect(() => {
+    const mid = memberId.trim();
+    if (!mid) return;
+    let alive = true;
+    bankAccountAPI.listMine(mid).then(rows => {
+      if (!alive) return;
+      if (mode === 'BANK') {
+        const b = rows.find(r => r.accountNumber);
+        if (b) setDetails(d => ({ ...d,
+          accountHolder: d.accountHolder || b.accountHolder || '',
+          accountNumber: d.accountNumber || b.accountNumber || '',
+          ifsc: d.ifsc || b.ifsc || '',
+          bank: d.bank || b.bankName || '',
+          branch: d.branch || b.branch || '',
+        }));
+      } else if (mode === 'UPI') {
+        const u = rows.find(r => r.upiId);
+        if (u && u.upiId) setDetails(d => ({ ...d, upiId: d.upiId || u.upiId || '' }));
+      }
+    }).catch(()=>{});
+    return () => { alive = false; };
+  }, [memberId, mode]);
 
   const fields = MODE_FIELDS[mode];
   const submit = async () => {
     if(!amount||!memberId){ showToast('Enter amount and Member ID','error'); return; }
     if(parseFloat(amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
-    if(parseFloat(amount) > available){ showToast('Total available balance insufficient — try again','error'); return; }
+    if(parseFloat(amount) > available){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
     setLoading(true);
@@ -597,6 +622,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     <div>
       <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 14px',marginBottom:14,fontSize:12,color:T.blue,fontWeight:700 }}>
         Available balance: {fmt(available)}
+        {rb > 0 && <span style={{ color:T.textMuted,fontWeight:600 }}> · Reserved (pending): {fmt(rb)}</span>}
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Input label="Amount (INR)" type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="Min 1" required/>
@@ -641,20 +667,22 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [form, setForm] = useState({ amount:'', memberId:'' });
   const [proof, setProof] = useState<string | null>(null);
   const [available, setAvailable] = useState(0);
+  const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
-  useEffect(() => { transactionAPI.summary().then(s => setAvailable(s.available)).catch(()=>{}); }, []);
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); }).catch(()=>{}); }, []);
 
   const submit = async () => {
     if(!form.amount){ showToast('Enter an amount','error'); return; }
+    if(parseFloat(form.amount) > available){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
     setLoading(true);
     try {
       await transactionAPI.createSettlement({ amount: parseFloat(form.amount), memberId: form.memberId || undefined, proof: proof || undefined });
       showToast('Settlement request submitted');
       onSubmitted?.();
-    } catch {
-      showToast('Failed to submit settlement','error');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to submit settlement','error');
     } finally {
       setLoading(false);
     }
@@ -665,6 +693,9 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.grad3,borderRadius:14,padding:20,marginBottom:18,textAlign:'center' }}>
         <p style={{ fontSize:11,color:'rgba(255,255,255,0.6)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Available Balance</p>
         <p style={{ fontSize:30,fontWeight:800,color:'#fff',margin:0 }}>{fmt(available)}</p>
+        <p style={{ fontSize:11,color:'rgba(255,255,255,0.75)',margin:'8px 0 0' }}>
+          Maximum you can settle: <b>{fmt(available)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
+        </p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Input label="Settlement Amount (INR)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Enter amount" required/>
@@ -1139,6 +1170,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
     ['Member Since', user.created],
   ];
   if (user.role === 'MERCHANT') {
+    details.splice(1, 0, ['Merchant ID', user.merchantCode || '—']);
     details.push(['Access Role', merchantRoleLabel(user.merchantRole) || '—'],['Pay-In Code', user.payIn||'—'],['Pay-Out Code', user.payOut||'—'],['Settlement Code', user.settlement||'—'],['Profile Type', user.profile||'—']);
   }
 

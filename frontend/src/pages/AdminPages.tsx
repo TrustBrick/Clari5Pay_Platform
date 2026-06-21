@@ -9,7 +9,7 @@ import { usePoll } from '../utils/usePoll';
 import { transactionAPI, userAPI, accountAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account } from '../types';
+import type { Transaction, User, Account, AccountBalance } from '../types';
 
 const REQUEST_TYPES = ['DEPOSIT', 'WITHDRAWAL', 'SETTLEMENT', 'DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
 const REQUEST_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'COMPLETED', 'CANCELLED'];
@@ -593,7 +593,7 @@ export const AdminMerchantsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Business','Username','Role','Email','Phone','Codes','Status','Action'].map(h=>(
+                {['Business','Merchant ID','Username','Role','Email','Phone','Codes','Status','Action'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -602,6 +602,7 @@ export const AdminMerchantsPage: React.FC = () => {
               {merchants.map((m)=>(
                 <tr key={m.id} style={{ background:T.surface,borderBottom:`1px solid ${T.borderLight}` }}>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{m.name}</td>
+                  <td style={{ padding:'11px 14px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 7px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{m.merchantCode||'—'}</code></td>
                   <td style={{ padding:'11px 14px',color:T.textMain }}>{m.username}</td>
                   <td style={{ padding:'11px 14px' }}><span style={{ background:T.infoBg,color:T.blue,padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{roleLabel(m.merchantRole)}</span></td>
                   <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11 }}>{m.email}</td>
@@ -646,8 +647,12 @@ export const AdminAccountsPage: React.FC = () => {
 
   const [toggleAcc, setToggleAcc] = useState<Account | null>(null);
   const [busy, setBusy] = useState(false);
+  const [balances, setBalances] = useState<AccountBalance[]>([]);
 
-  const reload = () => accountAPI.list().then(setAccounts).catch(()=>{});
+  const reload = () => {
+    accountAPI.list().then(setAccounts).catch(()=>{});
+    accountAPI.balances().then(setBalances).catch(()=>{});
+  };
   useEffect(() => { reload(); }, []);
   usePoll(() => { if (!detail && !showCreate && !toggleAcc) reload(); });
 
@@ -713,6 +718,52 @@ export const AdminAccountsPage: React.FC = () => {
           </table>
         </div>
       </Card>
+
+      {/* Per-account balances: deposits routed to each account, with each merchant's AB / RB / MAB */}
+      <div style={{ marginTop:22 }}>
+        <h2 style={{ margin:'0 0 4px',fontSize:16,fontWeight:800 }}>Account Balances</h2>
+        <p style={{ margin:'0 0 14px',fontSize:12,color:T.textMuted }}>Available (AB), Running (RB) and Monthly-Average (MAB) balance per merchant, per account.</p>
+        {balances.filter(b => b.merchants.length).length === 0 && (
+          <Card><div style={{ padding:28,textAlign:'center',color:T.textMuted,fontSize:13 }}>No deposits routed to any account yet.</div></Card>
+        )}
+        {balances.filter(b => b.merchants.length).map(b => (
+          <Card key={b.referenceNumber} style={{ marginBottom:14 }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',padding:'14px 18px',borderBottom:`1px solid ${T.border}` }}>
+              <div>
+                <span style={{ fontWeight:800,fontSize:14,color:T.textMain }}>{b.accountName}</span>
+                <span style={{ marginLeft:8,fontSize:12,color:T.textMuted }}>{b.bankName} · A/C {b.accountNumber}</span>
+              </div>
+              <div style={{ display:'flex',gap:10,alignItems:'center' }}>
+                <code style={{ background:T.infoBg,color:T.blue,padding:'2px 7px',borderRadius:5,fontSize:11,fontWeight:700 }}>{b.referenceNumber}</code>
+                <span style={{ fontSize:12,color:T.textMuted }}>Total deposited: <b style={{ color:T.textMain }}>{fmt(b.totalDeposited)}</b></span>
+              </div>
+            </div>
+            <div style={{ overflowX:'auto' }}>
+              <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:T.canvas }}>
+                    {['Merchant','Merchant ID','Deposited (this a/c)','Available (AB)','Running (RB)','Monthly Avg (MAB)'].map(h=>(
+                      <th key={h} style={{ padding:'9px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {b.merchants.map((m,i)=>(
+                    <tr key={m.merchantName} style={{ background:i%2===0?T.surface:'#f8faff' }}>
+                      <td style={{ padding:'10px 14px',fontWeight:700,color:T.textMain }}>{m.merchantName}</td>
+                      <td style={{ padding:'10px 14px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{m.merchantCode||'—'}</code></td>
+                      <td style={{ padding:'10px 14px',color:T.textMuted }}>{fmt(m.deposited)}</td>
+                      <td style={{ padding:'10px 14px',fontWeight:800,color:T.success }}>{fmt(m.available)}</td>
+                      <td style={{ padding:'10px 14px',fontWeight:700,color:m.runningBalance>0?T.danger:T.textMuted }}>{fmt(m.runningBalance)}</td>
+                      <td style={{ padding:'10px 14px',fontWeight:700,color:T.blue }}>{fmt(m.mab)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        ))}
+      </div>
 
       {detail && (
         <Modal title="Account Details" onClose={()=>setDetail(null)}>

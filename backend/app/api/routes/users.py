@@ -32,7 +32,23 @@ def _u(u: User) -> dict:
         "payInFee": u.pay_in_fee, "payOutFee": u.pay_out_fee,
         "balance": u.balance, "risk": u.risk, "profile": u.profile,
         "merchantRole": u.merchant_role,
+        "merchantCode": u.merchant_code,
     }
+
+
+async def _next_merchant_code(db: AsyncSession) -> str:
+    """Next serial Merchant ID (bank-account style, MID000001…), continuing after the
+    highest code already assigned so codes never collide or get reused."""
+    codes = (await db.execute(
+        select(User.merchant_code).where(User.merchant_code.like("MID%"))
+    )).scalars().all()
+    maxn = 0
+    for c in codes:
+        try:
+            maxn = max(maxn, int(c[3:]))
+        except (TypeError, ValueError):
+            continue
+    return f"MID{maxn + 1:06d}"
 
 
 @router.get("/merchants")
@@ -104,6 +120,7 @@ async def create_merchant(
         role=UserRole.MERCHANT,
         active=True,
         created_by=admin.id,
+        merchant_code=await _next_merchant_code(db),
         pay_in=data.get("payIn"),
         pay_out=data.get("payOut"),
         settlement=data.get("settlement"),

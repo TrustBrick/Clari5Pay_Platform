@@ -117,6 +117,7 @@ def _user_to_out(u: User) -> dict:
         "risk": u.risk,
         "profile": u.profile,
         "merchantRole": u.merchant_role,
+        "merchantCode": u.merchant_code,
     }
 
 

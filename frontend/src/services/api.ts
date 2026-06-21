@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AuditLogEntry, BalanceSummary, LoginRequest, LoginResponse, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AuditLogEntry, BalanceSummary, LoginRequest, LoginResponse, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -168,6 +168,10 @@ export const accountAPI = {
   },
   get: async (ref: string) => {
     const res = await api.get<Account>(`/api/accounts/${ref}`);
+    return res.data;
+  },
+  balances: async () => {
+    const res = await api.get<AccountBalance[]>('/api/accounts/balances');
     return res.data;
   },
   lastForMember: async (memberId: string) => {

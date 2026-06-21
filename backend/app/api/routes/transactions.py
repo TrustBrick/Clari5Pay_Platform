@@ -36,12 +36,39 @@ async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, i
         ifsc=ifsc or "", branch=branch or "", bank_name=bank,
     ))
 
+
+async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> None:
+    """Persist a member's payout UPI so it auto-fills on their next withdrawal (deduped)."""
+    if not upi:
+        return
+    existing = (await db.execute(
+        select(MerchantBankAccount).where(
+            MerchantBankAccount.merchant_id == merchant.id,
+            MerchantBankAccount.member_id == member_id,
+            MerchantBankAccount.upi_id == upi,
+        )
+    )).scalar_one_or_none()
+    if existing:
+        return
+    db.add(MerchantBankAccount(merchant_id=merchant.id, member_id=member_id, upi_id=upi))
+
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
 # A generated UPI/QR payment code stays valid for this long before it must be regenerated.
 QR_VALIDITY_MINUTES = 15
 # Deposit types that are paid via UPI/QR (display UPI ID / QR only — never bank details).
 UPI_QR_TYPES = {"UPI", "QR"}
+
+# A request in any of these states is finished — it no longer reserves the running balance.
+# Everything else (ACCOUNT_REQUESTED / ACCOUNT_SUBMITTED / SLIP_SUBMITTED / PENDING /
+# ADMIN_APPROVED) is "in-flight" and counts toward RB.
+_TERMINAL_STATUSES = {
+    TxStatus.COMPLETED, TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED,
+}
+# Shown to the merchant when a withdrawal/settlement exceeds their available balance.
+INSUFFICIENT_BALANCE_MSG = (
+    "We cannot process this request. The requested amount exceeds your available balance."
+)
 
 
 def _make_ref(prefix: str, tx_id: int) -> str:
@@ -68,13 +95,26 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     total_settled = total("SETTLEMENT", TxStatus.COMPLETED)
     total_withdrawn = total("WITHDRAWAL", TxStatus.COMPLETED)
     pay_out_fees = total_withdrawn * pay_out_rate
-    available = total_deposit - pay_in_fees - total_settled - total_withdrawn - pay_out_fees
+    # Net of all settled/completed movements (before reserving in-flight requests).
+    gross_available = total_deposit - pay_in_fees - total_settled - total_withdrawn - pay_out_fees
+
+    # Running Balance (RB): in-flight (Pending) withdrawal + settlement amounts that are
+    # reserved the moment they're requested, until they complete or are rejected/cancelled.
+    pending = (t for t in txns if t.status not in _TERMINAL_STATUSES)
+    running_balance = sum(t.amount for t in pending
+                          if t.type.value.startswith("WITHDRAWAL") or t.type.value.startswith("SETTLEMENT"))
+
+    # Available Balance (AB): reserves the running balance and never goes negative.
+    available = max(0.0, gross_available - running_balance)
 
     deposit_count = sum(1 for t in txns if t.type.value.startswith("DEPOSIT"))
     withdrawal_count = sum(1 for t in txns if t.type.value.startswith("WITHDRAWAL"))
 
     return {
-        "available": available,
+        "available": available,              # AB — what can still be withdrawn/settled now
+        "runningBalance": running_balance,   # RB — reserved by pending requests
+        "grossAvailable": gross_available,   # before reserving pending
+        "maxSettleable": available,          # settlements carry no extra fee → equals AB
         "totalDeposit": total_deposit,
         "payInFees": pay_in_fees,
         "totalSettled": total_settled,
@@ -231,13 +271,11 @@ async def create_withdrawal(
     current_user: User = Depends(get_current_user),
 ):
     _require_amount(data.amount)
-    # Block withdrawals that exceed the (business-shared) available balance.
+    # Block withdrawals that exceed the Available Balance (which already reserves
+    # in-flight requests), so the balance can never go negative.
     summary = await compute_balance(db, current_user)
     if data.amount > summary["available"] + 1e-6:
-        raise HTTPException(
-            status_code=400,
-            detail="Total available balance insufficient — try again",
-        )
+        raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
     tx = Transaction(
         ref="TEMP",
         type=TxType.WITHDRAWAL_REQUEST,
@@ -262,8 +300,12 @@ async def create_withdrawal(
     await db.flush()
     prefix = current_user.pay_out or "WIT"
     tx.ref = _make_ref(prefix, tx.id)
-    if data.saveBankAccount:
+    # Remember this member's payout details so they auto-fill on the next withdrawal.
+    _wd_mode = (data.payoutMode or "BANK").upper()
+    if _wd_mode == "BANK" and data.accountNumber:
         await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName, member_id=data.memberId)
+    elif _wd_mode == "UPI":
+        await _save_member_upi(db, current_user, data.memberId, (data.payoutDetails or {}).get("upiId"))
     await db.flush()
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
     await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount})", actor=current_user)
@@ -279,6 +321,10 @@ async def create_settlement(
     current_user: User = Depends(get_current_user),
 ):
     _require_amount(data.amount)
+    # A settlement cannot exceed the Available Balance either (same rule as withdrawals).
+    summary = await compute_balance(db, current_user)
+    if data.amount > summary["available"] + 1e-6:
+        raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
     tx = Transaction(
         ref="TEMP",
         type=TxType.SETTLEMENT_REQUEST,

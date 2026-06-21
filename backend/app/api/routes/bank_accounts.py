@@ -18,6 +18,7 @@ def _b(a: MerchantBankAccount) -> dict:
         "ifsc": a.ifsc,
         "branch": a.branch,
         "bankName": a.bank_name,
+        "upiId": a.upi_id,
     }
 
 

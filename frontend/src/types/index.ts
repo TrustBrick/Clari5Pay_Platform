@@ -26,6 +26,7 @@ export interface User {
   risk?: 'LOW' | 'MEDIUM' | 'HIGH';
   profile?: string;
   merchantRole?: MerchantRole | string | null;
+  merchantCode?: string | null;   // serial Merchant ID, e.g. MID000001
   // Super Admin monitoring
   merchantCount?: number;
 }
@@ -56,6 +57,7 @@ export interface MerchantBankAccount {
   ifsc: string;
   branch: string;
   bankName?: string | null;
+  upiId?: string | null;
 }
 
 export type TxStatus =
@@ -130,6 +132,25 @@ export interface Account {
   merchantName: string;
 }
 
+export interface AccountMerchantBalance {
+  merchantName: string;
+  merchantCode?: string | null;
+  deposited: number;
+  available: number;        // AB
+  runningBalance: number;   // RB
+  mab: number;              // MAB
+}
+
+export interface AccountBalance {
+  referenceNumber: string;
+  accountName: string;
+  accountNumber: string;
+  bankName: string;
+  status: string;
+  totalDeposited: number;
+  merchants: AccountMerchantBalance[];
+}
+
 export interface SupportMessage {
   id: number;
   merchantId: number;
@@ -156,7 +177,10 @@ export interface Notification {
 }
 
 export interface BalanceSummary {
-  available: number;
+  available: number;          // AB
+  runningBalance?: number;    // RB (reserved by pending requests)
+  grossAvailable?: number;
+  maxSettleable?: number;
   totalDeposit: number;
   payInFees: number;
   totalSettled: number;

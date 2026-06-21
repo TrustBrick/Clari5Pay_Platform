@@ -1,14 +1,94 @@
-from datetime import date, datetime
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
-from app.models.models import AccountMaster, AccountTransaction, Transaction, User
+from app.models.models import AccountMaster, AccountTransaction, Transaction, TxStatus, User, UserRole
 from app.core.deps import get_current_admin
 from app.schemas.schemas import AccountCreate, ReasonRequest
 from app.api.routes.system_logs import log_event, record_audit
+from app.api.routes.transactions import compute_balance
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+
+
+def _monthly_average_balance(biz_txns: list[Transaction], pay_in_rate: float, pay_out_rate: float) -> float:
+    """Monthly Average Balance: the average of the daily end-of-day settled balance across
+    the current calendar month (reconstructed from completed transactions — always accurate,
+    no nightly job to miss). Floored at 0."""
+    completed = [t for t in biz_txns if t.status == TxStatus.COMPLETED]
+    if not completed:
+        return 0.0
+    today = date.today()
+    day = today.replace(day=1)
+    total, days = 0.0, 0
+    while day <= today:
+        dep = sum(t.amount for t in completed if t.type.value.startswith("DEPOSIT") and t.tx_date <= day)
+        wd = sum(t.amount for t in completed if t.type.value.startswith("WITHDRAWAL") and t.tx_date <= day)
+        st = sum(t.amount for t in completed if t.type.value.startswith("SETTLEMENT") and t.tx_date <= day)
+        bal = dep - dep * pay_in_rate - st - wd - wd * pay_out_rate
+        total += max(0.0, bal)
+        days += 1
+        day += timedelta(days=1)
+    return round(total / days, 2) if days else 0.0
+
+
+@router.get("/balances")
+async def account_balances(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Per admin bank account: how much each merchant has deposited into it, alongside that
+    merchant's Available Balance (AB), Running Balance (RB) and Monthly Average Balance (MAB).
+    Deposits are routed to an account via the reference the agent sends (Transaction.admin_ref)."""
+    accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id.desc()))).scalars().all()
+    merchants = (await db.execute(select(User).where(User.role == UserRole.MERCHANT))).scalars().all()
+    txns = (await db.execute(select(Transaction))).scalars().all()
+
+    rep_by_name: dict[str, User] = {}        # one representative merchant user per business name
+    for m in merchants:
+        rep_by_name.setdefault(m.name, m)
+
+    # AB / RB / MAB are business-level (a business shares one balance pool); compute once each.
+    bal_by_name: dict[str, dict] = {}
+    for name, user in rep_by_name.items():
+        summ = await compute_balance(db, user)
+        biz_txns = [t for t in txns if t.merchant_name == name]
+        summ["mab"] = _monthly_average_balance(biz_txns, (user.pay_in_fee or 0) / 100, (user.pay_out_fee or 0) / 100)
+        bal_by_name[name] = summ
+
+    # Completed deposits routed to each account, summed per merchant business.
+    dep: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for t in txns:
+        if t.type.value.startswith("DEPOSIT") and t.status == TxStatus.COMPLETED and t.admin_ref:
+            dep[t.admin_ref][t.merchant_name] += t.amount
+
+    out = []
+    for a in accounts:
+        rows = []
+        for name, deposited in dep.get(a.reference_number, {}).items():
+            b = bal_by_name.get(name, {})
+            rep = rep_by_name.get(name)
+            rows.append({
+                "merchantName": name,
+                "merchantCode": rep.merchant_code if rep else None,
+                "deposited": round(deposited, 2),
+                "available": round(b.get("available", 0.0), 2),     # AB
+                "runningBalance": round(b.get("runningBalance", 0.0), 2),  # RB
+                "mab": b.get("mab", 0.0),                           # MAB
+            })
+        rows.sort(key=lambda r: r["deposited"], reverse=True)
+        out.append({
+            "referenceNumber": a.reference_number,
+            "accountName": a.account_name,
+            "accountNumber": a.account_number,
+            "bankName": a.bank_name,
+            "status": a.status,
+            "totalDeposited": round(sum(r["deposited"] for r in rows), 2),
+            "merchants": rows,
+        })
+    return out
 
 
 def _a(a: AccountMaster, merchant_name: str | None = None) -> dict:

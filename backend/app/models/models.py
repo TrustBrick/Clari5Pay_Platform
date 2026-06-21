@@ -82,6 +82,9 @@ class User(Base):
     # Merchant access role (DEO / DEPOSIT_OPERATOR / WITHDRAWAL_OPERATOR / SUPERVISOR / MANAGER).
     merchant_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
+    # Unique serial Merchant ID (bank-account style, e.g. MID000001) assigned at creation.
+    merchant_code: Mapped[Optional[str]] = mapped_column(String(16), unique=True, index=True, nullable=True)
+
     # Merchant-specific
     pay_in: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     pay_out: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
@@ -251,11 +254,13 @@ class MerchantBankAccount(Base):
     merchant_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
     # Saved bank accounts are scoped to a Member ID — each member has its own set.
     member_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
-    account_holder: Mapped[str] = mapped_column(String(128), nullable=False)
-    account_number: Mapped[str] = mapped_column(String(32), nullable=False)
-    ifsc: Mapped[str] = mapped_column(String(16), nullable=False)
-    branch: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Bank fields are optional so a member can have a saved UPI without a full bank account.
+    account_holder: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # saved UPI for this member
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
