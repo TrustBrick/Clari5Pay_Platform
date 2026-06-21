@@ -49,11 +49,14 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
 };
 
 // ─── Badge ───────────────────────────────────────────────────────────────────
+// Statuses that are still "in flight" → their dot gently pulses to signal processing.
+const INFLIGHT_STATUSES = new Set(['PENDING','ADMIN_APPROVED','ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED']);
 export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: string }> = ({ status, type, viewerRole }) => {
   const s = statusStyle(status);
   return (
     <span style={{ display:'inline-flex',alignItems:'center',gap:4,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:'nowrap' }}>
-      <span style={{ width:6,height:6,borderRadius:'50%',background:s.color,display:'inline-block' }}/>
+      <span className={INFLIGHT_STATUSES.has(status) ? 'c5-dot-pulse' : undefined}
+        style={{ width:6,height:6,borderRadius:'50%',background:s.color,display:'inline-block' }}/>
       {statusLabel(status, type, viewerRole)}
     </span>
   );
@@ -114,7 +117,7 @@ export const Btn: React.FC<{
     green:{ background:T.grad2,color:'#fff',boxShadow:`0 4px 14px ${T.green}40` },
     dark:{ background:T.dark,color:'#fff' },
   };
-  return <button type={type} onClick={onClick} disabled={disabled} style={{ ...base,...vars[variant],...style }}>{children}</button>;
+  return <button type={type} onClick={onClick} disabled={disabled} className="c5-btn" style={{ ...base,...vars[variant],...style }}>{children}</button>;
 };
 
 // ─── Input ───────────────────────────────────────────────────────────────────
@@ -195,7 +198,7 @@ export const StatusChart: React.FC<{ data: Array<{ label: string; value: number;
 // ─── Modal ───────────────────────────────────────────────────────────────────
 export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean }> = ({ title, children, onClose, wide, xl }) => (
   <div style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:16,backdropFilter:'blur(4px)' }}>
-    <div style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
+    <div className="c5-pop" style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
       <div style={{ padding:'20px 24px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:T.surface,zIndex:1 }}>
         <h2 style={{ margin:0,fontSize:16,fontWeight:800,color:T.textMain }}>{title}</h2>
         <button onClick={onClose} style={{ background:'none',border:'none',fontSize:20,cursor:'pointer',color:T.textMuted,borderRadius:8,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center' }}>✕</button>
@@ -212,6 +215,23 @@ export const LoadingScreen: React.FC<{ label?: string }> = ({ label = 'Loading�
     <div style={{ width:34,height:34,border:`3px solid ${T.border}`,borderTopColor:T.blue,borderRadius:'50%',animation:'c5spin 0.8s linear infinite' }}/>
     <p style={{ color:T.textMuted,fontSize:13,fontWeight:600 }}>{label}</p>
     <style>{`@keyframes c5spin{to{transform:rotate(360deg)}}`}</style>
+  </div>
+);
+
+// ─── Skeletons (shimmer placeholders for perceived speed while data loads) ─────
+export const Skeleton: React.FC<{ w?: number | string; h?: number; style?: CSSProperties }> = ({ w='100%', h=14, style={} }) => (
+  <div className="c5-skel" style={{ width:w, height:h, ...style }} />
+);
+
+export const TableSkeleton: React.FC<{ rows?: number; cols?: number }> = ({ rows=6, cols=6 }) => (
+  <div>
+    {Array.from({ length: rows }).map((_, r) => (
+      <div key={r} style={{ display:'flex',gap:14,padding:'13px 14px',borderBottom:`1px solid ${T.borderLight}` }}>
+        {Array.from({ length: cols }).map((_, c) => (
+          <div key={c} className="c5-skel" style={{ flex:1, height:13 }} />
+        ))}
+      </div>
+    ))}
   </div>
 );
 

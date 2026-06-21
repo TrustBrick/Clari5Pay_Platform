@@ -92,6 +92,62 @@
   animation: slide-up 0.4s ease forwards;
 }
 
+/* ── Clari5Pay micro-interactions (crisp 200–350ms; "trust + speed") ── */
+
+/* Modal pop-in */
+@keyframes c5-pop {
+  from { opacity: 0; transform: scale(0.96) translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.c5-pop { animation: c5-pop 0.24s cubic-bezier(0.2, 0.7, 0.3, 1); }
+
+/* Button tactile lift / press (applied to all shared Btn) */
+.c5-btn { transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease; }
+.c5-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.03); }
+.c5-btn:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+
+/* Pulsing status dot — signals an in-flight / processing payment */
+@keyframes c5-dot-pulse {
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.35); opacity: 0.6; }
+}
+.c5-dot-pulse { animation: c5-dot-pulse 1.5s ease-in-out infinite; }
+
+/* Error shake (wrong OTP / PIN) — a sharp "no" head-shake */
+@keyframes c5-shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-7px); }
+  40%, 60% { transform: translateX(7px); }
+}
+.c5-shake { animation: c5-shake 0.35s cubic-bezier(0.36, 0.07, 0.19, 0.97); }
+
+/* Skeleton shimmer — perceived speed while data loads */
+@keyframes c5-shimmer { 100% { transform: translateX(100%); } }
+.c5-skel {
+  position: relative;
+  overflow: hidden;
+  background: #e9eef6;
+  border-radius: 6px;
+}
+.c5-skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.65), transparent);
+  animation: c5-shimmer 1.2s infinite;
+}
+
+/* Accessibility: honour reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
 /* Mobile sidebar */
 @media (max-width: 860px) {
   .sidebar {

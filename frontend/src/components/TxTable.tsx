@@ -1,7 +1,7 @@
 import React from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel } from '../utils/helpers';
-import { Badge, Btn } from './UI';
+import { Badge, Btn, TableSkeleton } from './UI';
 import type { Transaction } from '../types';
 
 type ActionMode = 'admin' | 'merchant' | 'view' | 'none';
@@ -11,6 +11,7 @@ interface TxTableProps {
   onAction?: (t: Transaction, action: string) => void;
   actionMode?: ActionMode;
   viewerRole?: string;
+  loading?: boolean;
 }
 
 // Pick the per-row action button based on mode + transaction type + status.
@@ -36,11 +37,12 @@ const typeColor = (type: string): { color: string; bg: string } => {
   return { color: T.info, bg: T.infoBg };
 };
 
-const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole }) => {
+const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole, loading }) => {
   // No action handler (e.g. the dashboard preview) → drop the Action column entirely.
   const showAction = !!onAction && actionMode !== 'none';
   const headers = ['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Member ID', 'Type', 'Amount', 'Date', 'Status'];
   if (showAction) headers.push('Action');
+  if (loading) return <div style={{ overflowX: 'auto' }}><TableSkeleton rows={6} cols={headers.length} /></div>;
   return (
   <div style={{ overflowX: 'auto' }}>
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>

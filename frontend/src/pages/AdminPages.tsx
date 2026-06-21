@@ -452,9 +452,7 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
             </select>
           </div>
         </div>
-        {loading
-          ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div>
-          : <TxTable txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>}
+        <TxTable loading={loading} txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>
       </Card>
       {active && <RequestModal tx={active} canAct onClose={()=>setActive(null)} onDone={reload}/>}
     </div>
@@ -497,9 +495,7 @@ export const AdminTransactionsPage: React.FC = () => {
           </select>
         </div>
       </div>
-      {loading
-        ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div>
-        : <TxTable txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>}
+      <TxTable loading={loading} txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>
       <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}` }}>
         <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {txns.length}</p>
       </div>

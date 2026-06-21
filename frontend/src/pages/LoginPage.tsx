@@ -30,6 +30,7 @@ const LoginPage: React.FC = () => {
   const [otp, setOtp] = useState<OtpChallenge | null>(null);
   const [code, setCode] = useState('');
   const [verifying, setVerifying] = useState(false);
+  const [shake, setShake] = useState(false);
   // OTP on/off toggle (testing aid)
   const [otpEnabled, setOtpEnabled] = useState(true);
   // Resend OTP becomes available only after a 60-second cooldown.
@@ -80,6 +81,7 @@ const LoginPage: React.FC = () => {
       // success → AuthContext sets the user; App redirects to the dashboard.
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Invalid OTP. Please try again.');
+      setShake(true); setTimeout(() => setShake(false), 400);
     } finally {
       setVerifying(false);
     }
@@ -214,9 +216,11 @@ const LoginPage: React.FC = () => {
               </div>
             )}
 
-            <Input label="One-Time Password" value={code}
-              onChange={e=>setCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
-              placeholder="6-digit code" icon="🔑" required/>
+            <div className={shake ? 'c5-shake' : undefined}>
+              <Input label="One-Time Password" value={code}
+                onChange={e=>setCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
+                placeholder="6-digit code" icon="🔑" required/>
+            </div>
 
             <Btn size="lg" full onClick={handleVerify} disabled={verifying||code.length<6}>
               {verifying?'Verifying...':'Verify & Sign In →'}

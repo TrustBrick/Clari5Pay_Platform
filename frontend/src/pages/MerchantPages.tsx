@@ -1062,9 +1062,7 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
           </select>
         </div>
       </div>
-      {loading
-        ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div>
-        : <TxTable txns={filtered} viewerRole={user.role} actionMode={user.role==='MERCHANT'?'merchant':'view'} onAction={(t)=>setSlipTx(t)}/>}
+      <TxTable loading={loading} txns={filtered} viewerRole={user.role} actionMode={user.role==='MERCHANT'?'merchant':'view'} onAction={(t)=>setSlipTx(t)}/>
       <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
         <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {txns.length}</p>
       </div>
