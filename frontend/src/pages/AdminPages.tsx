@@ -655,6 +655,7 @@ export const AdminAccountsPage: React.FC = () => {
   const [toggleAcc, setToggleAcc] = useState<Account | null>(null);
   const [busy, setBusy] = useState(false);
   const [balances, setBalances] = useState<AccountBalance[]>([]);
+  const [acctMerchants, setAcctMerchants] = useState<AccountBalance | null>(null);
 
   const reload = () => {
     accountAPI.list().then(setAccounts).catch(()=>{});
@@ -705,13 +706,13 @@ export const AdminAccountsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Account Name','Reference ID','Account Number','IFSC Code','Branch','Deposits Received','Available','Status','Details'].map(h=>(
+                {['Account Name','Reference ID','Account Number','IFSC Code','Branch','Deposits Received','Available','Merchants','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={9} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={10} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
               {filtered.map((a,i)=>{ const bal = balMap[a.referenceNumber]; return (
                 <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                   <td style={{ padding:'11px 14px' }}>
@@ -724,6 +725,11 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.branch}</td>
                   <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{fmt(bal?.totalDeposited ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
+                  <td style={{ padding:'11px 14px' }}>
+                    {bal && bal.merchants.length > 0
+                      ? <Btn size="sm" variant="ghost" onClick={()=>setAcctMerchants(bal)}>👥 {bal.merchants.length} merchant{bal.merchants.length>1?'s':''}</Btn>
+                      : <span style={{ color:T.textLight }}>0</span>}
+                  </td>
                   <td style={{ padding:'11px 14px' }}>
                     <Btn size="sm" variant={a.status==='ACTIVE'?'success':'danger'} onClick={()=>setToggleAcc(a)}>{a.status==='ACTIVE'?'● ACTIVE':'○ INACTIVE'}</Btn>
                   </td>
@@ -780,6 +786,34 @@ export const AdminAccountsPage: React.FC = () => {
           </Card>
         ))}
       </div>
+
+      {acctMerchants && (
+        <Modal title={`Merchants using ${acctMerchants.accountName} (${acctMerchants.referenceNumber})`} onClose={()=>setAcctMerchants(null)} wide>
+          <p style={{ margin:'0 0 12px',fontSize:12,color:T.textMuted }}>
+            {acctMerchants.merchants.length} merchant{acctMerchants.merchants.length>1?'s have':' has'} deposited into this account · Total received: <b style={{ color:T.textMain }}>{fmt(acctMerchants.totalDeposited)}</b>
+          </p>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+              <thead>
+                <tr style={{ background:T.canvas }}>
+                  {['Merchant','Merchant ID','Deposited (this a/c)'].map(h=>(
+                    <th key={h} style={{ padding:'9px 12px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {acctMerchants.merchants.map((m,i)=>(
+                  <tr key={m.merchantName} style={{ background:i%2===0?T.surface:'#f8faff' }}>
+                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{m.merchantName}</td>
+                    <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{m.merchantCode||'—'}</code></td>
+                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{fmt(m.deposited)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
 
       {detail && (
         <Modal title="Account Details" onClose={()=>setDetail(null)}>
