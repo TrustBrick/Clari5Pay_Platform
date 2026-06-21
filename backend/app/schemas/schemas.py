@@ -136,6 +136,7 @@ class DepositCreate(BaseModel):
     memberId: str
     segment: str = "A"
     profile: str = "NEW"
+    senderUpiId: Optional[str] = None   # merchant's own UPI the payment is sent from (UPI deposits)
     proof: Optional[str] = None
     # Selected/added merchant bank account sent to admin with the request
     accountHolder: Optional[str] = None

@@ -58,6 +58,7 @@ export interface MerchantBankAccount {
   branch: string;
   bankName?: string | null;
   upiId?: string | null;
+  isDefault?: boolean;
 }
 
 export type TxStatus =
@@ -93,6 +94,7 @@ export interface Transaction {
   depositType?: string;
   member?: string;
   memberId?: string;
+  senderUpiId?: string | null;
   bank?: string;
   accountHolder?: string | null;
   accountNumber?: string | null;

@@ -33,6 +33,8 @@ _NEW_COLUMNS = [
     ("login_otps", "purpose", "VARCHAR(16) DEFAULT 'login' NOT NULL"),
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "upi_id", "VARCHAR(64)"),
+    ("merchant_bank_accounts", "is_default", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    ("transactions", "sender_upi_id", "VARCHAR(64)"),
     ("audit_logs", "location", "VARCHAR(128)"),
 ]
 

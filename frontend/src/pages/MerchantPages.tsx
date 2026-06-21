@@ -491,22 +491,42 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const [saveNew, setSaveNew] = useState(true);
   const [riskAnalysis, setRiskAnalysis] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [senderUpi, setSenderUpi] = useState('');
+  const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
   // UPI / QR deposits are paid via the agent's UPI ID — no bank account is needed here.
   const isUpiQr = ['UPI','QR'].includes(form.depositType);
+
+  // For UPI deposits: load this member's saved UPIs and auto-fill the default one.
+  useEffect(() => {
+    const mid = form.memberId.trim();
+    if (!isUpiQr || !mid) { setSavedUpis([]); return; }
+    let alive = true;
+    bankAccountAPI.listMine(mid).then(rows => {
+      if (!alive) return;
+      const upis = rows.filter(r => r.upiId);
+      setSavedUpis(upis);
+      const def = upis.find(u => u.isDefault) || upis[0];
+      if (def?.upiId) setSenderUpi(prev => prev || def.upiId || '');
+    }).catch(()=>{});
+    return () => { alive = false; };
+  }, [isUpiQr, form.memberId]);
 
   const submit = async () => {
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
     if(parseFloat(form.amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
     if(!isUpiQr && (!bank.accountHolder||!bank.accountNumber)){ showToast('Select or add a bank account','error'); return; }
+    if(isUpiQr && !senderUpi.includes('@')){ showToast('Enter your Sender UPI ID (name@bank)','error'); return; }
     setLoading(true);
     try {
       await transactionAPI.createDeposit({
         ...form, amount: parseFloat(form.amount), riskAnalysis,
-        ...(isUpiQr ? {} : {
-          accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
-          saveBankAccount: saveNew,
-        }),
+        ...(isUpiQr
+          ? { senderUpiId: senderUpi.trim() }
+          : {
+              accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
+              saveBankAccount: saveNew,
+            }),
       });
       showToast('Deposit request submitted — awaiting agent review');
       onSubmitted?.();
@@ -528,8 +548,16 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
       </div>
       {isUpiQr
-        ? <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 14px',margin:'4px 0 14px',fontSize:12,color:T.blue }}>
-            {form.depositType} payment — the agent will share a {form.depositType === 'QR' ? 'QR code' : 'UPI ID & QR'} with the amount included. No bank account needed.
+        ? <div style={{ margin:'4px 0 14px' }}>
+            <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 14px',marginBottom:12,fontSize:12,color:T.blue }}>
+              {form.depositType} payment — the agent will share a {form.depositType === 'QR' ? 'QR code' : 'UPI ID & QR'} with the amount included. No bank account needed.
+            </div>
+            {savedUpis.length > 0 && (
+              <Sel label="Saved UPI IDs" value={savedUpis.some(u=>u.upiId===senderUpi)?senderUpi:''} onChange={e=>setSenderUpi(e.target.value)}
+                options={[{ value:'', label:'— Pick a saved UPI or type below —' }, ...savedUpis.map(u => ({ value:u.upiId||'', label:`${u.upiId}${u.isDefault?'  ★ default':''}` }))]} />
+            )}
+            <Input label="Sender UPI ID" value={senderUpi} onChange={e=>setSenderUpi(e.target.value)} placeholder="e.g. merchant@paytm" required
+              hint="The UPI ID you'll pay from — saved for this Member ID and auto-filled next time" />
           </div>
         : <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>}
       <div style={{ marginBottom:14 }}>
@@ -569,6 +597,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [available, setAvailable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
   const setD = (k: string, v: string) => setDetails(d => ({...d,[k]:v}));
 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); }).catch(()=>{}); }, []);
@@ -576,10 +605,11 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   // Auto-fill the member's saved payout details (bank or UPI) so they're never re-typed.
   useEffect(() => {
     const mid = memberId.trim();
-    if (!mid) return;
+    if (!mid) { setSavedUpis([]); return; }
     let alive = true;
     bankAccountAPI.listMine(mid).then(rows => {
       if (!alive) return;
+      setSavedUpis(rows.filter(r => r.upiId));
       if (mode === 'BANK') {
         const b = rows.find(r => r.accountNumber);
         if (b) setDetails(d => ({ ...d,
@@ -590,7 +620,8 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
           branch: d.branch || b.branch || '',
         }));
       } else if (mode === 'UPI') {
-        const u = rows.find(r => r.upiId);
+        // Prefer the member's default UPI.
+        const u = rows.find(r => r.upiId && r.isDefault) || rows.find(r => r.upiId);
         if (u && u.upiId) setDetails(d => ({ ...d, upiId: d.upiId || u.upiId || '' }));
       }
     }).catch(()=>{});
@@ -630,6 +661,10 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         <Sel label="Payout Mode" value={mode} onChange={e=>{ setMode(e.target.value); setDetails({}); }} options={PAYOUT_MODES} required/>
       </div>
       <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>{PAYOUT_MODES.find(m=>m.value===mode)?.label} Details</p>
+      {mode==='UPI' && savedUpis.length > 0 && (
+        <Sel label="Saved UPI IDs" value={savedUpis.some(u=>u.upiId===details.upiId)?(details.upiId||''):''} onChange={e=>setD('upiId',e.target.value)}
+          options={[{ value:'', label:'— Pick a saved UPI or type below —' }, ...savedUpis.map(u => ({ value:u.upiId||'', label:`${u.upiId}${u.isDefault?'  ★ default':''}` }))]} />
+      )}
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         {fields.map(f => (
           <Input key={f.key} label={f.label} value={details[f.key]||''} required

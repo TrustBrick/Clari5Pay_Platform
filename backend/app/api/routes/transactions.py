@@ -38,7 +38,8 @@ async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, i
 
 
 async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> None:
-    """Persist a member's payout UPI so it auto-fills on their next withdrawal (deduped)."""
+    """Persist a member's UPI so it auto-fills on their next deposit/withdrawal (deduped).
+    The first UPI saved for a member becomes that member's default."""
     if not upi:
         return
     existing = (await db.execute(
@@ -50,7 +51,16 @@ async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> 
     )).scalar_one_or_none()
     if existing:
         return
-    db.add(MerchantBankAccount(merchant_id=merchant.id, member_id=member_id, upi_id=upi))
+    has_upi = (await db.execute(
+        select(MerchantBankAccount.id).where(
+            MerchantBankAccount.merchant_id == merchant.id,
+            MerchantBankAccount.member_id == member_id,
+            MerchantBankAccount.upi_id.is_not(None),
+        ).limit(1)
+    )).scalar_one_or_none()
+    db.add(MerchantBankAccount(
+        merchant_id=merchant.id, member_id=member_id, upi_id=upi, is_default=(has_upi is None),
+    ))
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -151,6 +161,7 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "depositType": t.deposit_type,
         "member": t.member_name,
         "memberId": t.member_id,
+        "senderUpiId": t.sender_upi_id,
         "bank": t.bank_name,
         "accountHolder": t.account_holder,
         "accountNumber": t.account_number,
@@ -259,6 +270,7 @@ async def create_deposit(
         member_name=data.memberName,
         member_id=data.memberId,
         segment=data.segment,
+        sender_upi_id=data.senderUpiId,
         merchant_proof=data.proof,
         account_holder=data.accountHolder,
         account_number=data.accountNumber,
@@ -274,6 +286,9 @@ async def create_deposit(
     tx.ref = _make_ref(prefix, tx.id)
     if data.saveBankAccount:
         await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName, member_id=data.memberId)
+    # Remember the merchant's sender UPI for this member (first one becomes the default).
+    if data.senderUpiId:
+        await _save_member_upi(db, current_user, data.memberId, data.senderUpiId.strip())
     await db.flush()
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
     await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)

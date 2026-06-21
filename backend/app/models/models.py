@@ -118,6 +118,8 @@ class Transaction(Base):
     member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     member_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     segment: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    # For UPI deposits: the merchant's own UPI the payment is sent FROM.
+    sender_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # Withdrawal-specific
     bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -275,6 +277,8 @@ class MerchantBankAccount(Base):
     branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # saved UPI for this member
+    # The default saved UPI for a member (the first one saved; merchant can change it).
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 

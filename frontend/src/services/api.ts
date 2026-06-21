@@ -221,6 +221,14 @@ export const bankAccountAPI = {
     const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts', data);
     return res.data;
   },
+  addUpi: async (memberId: string, upiId: string) => {
+    const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts/upi', { memberId, upiId });
+    return res.data;
+  },
+  setDefaultUpi: async (id: number) => {
+    const res = await api.patch<MerchantBankAccount>(`/api/merchant-bank-accounts/${id}/default`);
+    return res.data;
+  },
 };
 
 export const supportAPI = {
