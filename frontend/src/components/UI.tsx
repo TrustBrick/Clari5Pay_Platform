@@ -6,6 +6,19 @@ import type { TxStatus, ChartDataPoint } from '../types';
 // ─── Logo ────────────────────────────────────────────────────────────────────
 export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ size = 'md', dark = false }) => {
   const scale = size === 'sm' ? 0.38 : size === 'lg' ? 0.7 : 0.5;
+  const [pngOk, setPngOk] = useState(true);
+  // Use the brand image (public/logo.jpg) everywhere so it's identical on every screen.
+  // On dark panels the logo's white background would clash, so it sits on a clean white card.
+  // If the image isn't present yet, fall back to the SVG below so the logo never breaks.
+  if (pngOk) {
+    const img = (
+      <img src="/logo.jpg" alt="Clari5Pay — Secure Payments. Trusted Always." onError={() => setPngOk(false)}
+        style={{ height: 220 * scale, width: 'auto', maxWidth: '100%', display: 'block' }} />
+    );
+    return dark
+      ? <div style={{ background: '#fff', borderRadius: 16, padding: '14px 18px', display: 'inline-block', boxShadow: '0 6px 24px rgba(0,0,0,0.18)' }}>{img}</div>
+      : img;
+  }
   // On dark backgrounds the navy "pay" + grey tagline are invisible — switch them to light.
   const clari = dark ? '#4d9fff' : '#0052cc';
   const pay = dark ? '#ffffff' : '#0a2540';
