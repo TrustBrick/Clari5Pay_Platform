@@ -6,16 +6,8 @@ import type { TxStatus, ChartDataPoint } from '../types';
 // ─── Logo ────────────────────────────────────────────────────────────────────
 export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ size = 'md', dark = false }) => {
   const scale = size === 'sm' ? 0.38 : size === 'lg' ? 0.7 : 0.5;
-  const [pngOk, setPngOk] = useState(true);
-  // On light backgrounds use the transparent brand image (public/logo.png — white removed).
-  // On dark panels the logo's dark-navy wordmark would be unreadable, so the adaptive SVG below
-  // is used instead (it lightens those colours). Falls back to the SVG if the image is missing.
-  if (!dark && pngOk) {
-    return (
-      <img src="/logo.png" alt="Clari5Pay — Secure Payments. Trusted Always." onError={() => setPngOk(false)}
-        style={{ height: 220 * scale, width: 'auto', maxWidth: '100%', display: 'block' }} />
-    );
-  }
+  // The shield icon is the brand image (public/logo-mark.png, transparent); the wordmark +
+  // tagline stay as text so their colours adapt on dark backgrounds (navy "pay"/tagline → light).
   // On dark backgrounds the navy "pay" + grey tagline are invisible — switch them to light.
   const clari = dark ? '#4d9fff' : '#0052cc';
   const pay = dark ? '#ffffff' : '#0a2540';
@@ -28,20 +20,7 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
   const sTag = { fontFamily: "'Segoe UI',Arial,sans-serif", fontWeight: 500, fill: tag, fontSize: '13.5px', letterSpacing: '0.5px' } as const;
   return (
     <svg viewBox="0 0 650 220" style={{ width: 650 * scale, height: 220 * scale, maxWidth: '100%' }}>
-      <g transform="translate(10,5)">
-        <path d="M 55 125 C 35 105 38 65 62 48 C 50 68 48 105 76 132 Z" fill="#0052cc" opacity="0.85"/>
-        <path d="M 145 125 C 165 105 162 65 138 48 C 150 68 152 105 124 132 Z" fill="#26d00c" opacity="0.85"/>
-        <path d="M 100 35 C 80 35 60 42 60 65 C 60 105 85 135 100 148 L 100 35 Z" fill="none" stroke="#0052cc" strokeWidth="6" strokeLinejoin="round"/>
-        <path d="M 100 35 C 120 35 140 42 140 65 C 140 105 115 135 100 148 L 100 35 Z" fill="none" stroke="#26d00c" strokeWidth="6" strokeLinejoin="round"/>
-        <g stroke="#00a3ff" strokeWidth="3" strokeLinecap="round" fill="none" opacity="0.8">
-          <path d="M 82 85 A 18 18 0 0 1 118 85"/><path d="M 77 85 A 23 23 0 0 1 123 85"/>
-          <path d="M 72 85 A 28 28 0 0 1 128 85"/><path d="M 87 85 A 13 13 0 0 1 113 85"/>
-          <path d="M 92 85 A 8 8 0 0 1 108 85"/>
-        </g>
-        <path d="M 86 112 V 100 A 14 14 0 0 1 114 100 V 112" fill="none" stroke="#0a2540" strokeWidth="5" strokeLinecap="round"/>
-        <rect x="74" y="110" width="52" height="42" rx="6" fill="#0a2540"/>
-        <path d="M 88 130 L 96 137 L 112 120" fill="none" stroke="#ffffff" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>
-      </g>
+      <image href="/logo-mark.png" x="15" y="32" width="160" height="160" preserveAspectRatio="xMidYMid meet" />
       <g transform="translate(195,122)">
         <text x="0" y="0">
           <tspan style={sClari}>clari</tspan>
