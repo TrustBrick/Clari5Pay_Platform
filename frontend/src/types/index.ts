@@ -204,6 +204,7 @@ export interface BalanceSummary {
   runningBalance?: number;    // RB (reserved by pending requests)
   grossAvailable?: number;
   maxSettleable?: number;
+  maxWithdrawable?: number;   // AB net of the pay-out fee on a new withdrawal
   totalDeposit: number;
   payInFees: number;
   totalSettled: number;

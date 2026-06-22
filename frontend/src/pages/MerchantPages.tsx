@@ -424,11 +424,14 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const [saveNew, setSaveNew] = useState(true);
   const [riskAnalysis, setRiskAnalysis] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [senderUpi, setSenderUpi] = useState('');
+  const isUpi = form.depositType === 'UPI';
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
   const submit = async () => {
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
     if(parseFloat(form.amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
+    if(isUpi && !senderUpi.includes('@')){ showToast('Enter a valid Sender UPI ID (name@bank)','error'); return; }
     if(!bank.accountHolder||!bank.accountNumber){ showToast('Select or add a bank account','error'); return; }
     setLoading(true);
     try {
@@ -436,6 +439,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         ...form, amount: parseFloat(form.amount), riskAnalysis,
         accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
         saveBankAccount: saveNew,
+        ...(isUpi ? { senderUpiId: senderUpi.trim() } : {}),
       });
       showToast('Deposit request submitted — awaiting agent review');
       onSubmitted?.();
@@ -456,7 +460,14 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
         <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
       </div>
-      <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+      {isUpi
+        ? <div style={{ background:T.canvas,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
+            <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Sender Account Details</p>
+            <Input label="UPI ID" value={senderUpi} onChange={e=>setSenderUpi(e.target.value)} placeholder="e.g. satish@ybl" required
+              hint="The UPI the payment is sent from — saved to this Membership ID for future withdrawals" />
+            <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+          </div>
+        : <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>}
       <div style={{ marginBottom:14 }}>
         <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Agent (optional)</label>
         <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder="Any message for the agent reviewing this request"
@@ -492,45 +503,58 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [mode, setMode] = useState('BANK');
   const [details, setDetails] = useState<Record<string,string>>({});
   const [available, setAvailable] = useState(0);
+  const [maxWithdrawable, setMaxWithdrawable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [savedBanks, setSavedBanks] = useState<MerchantBankAccount[]>([]);
   const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
+  const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
   const [proofs, setProofs] = useState<string[]>([]);
-  const setD = (k: string, v: string) => setDetails(d => ({...d,[k]:v}));
 
-  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); }).catch(()=>{}); }, []);
+  // Pick a saved destination (UPI or bank) → drives payout mode + details.
+  const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
+    if (kind === 'UPI') { setDestId(`upi-${row.id}`); setMode('UPI'); setDetails({ upiId: row.upiId || '' }); }
+    else { setDestId(`bank-${row.id}`); setMode('BANK'); setDetails({ accountHolder: row.accountHolder || '', accountNumber: row.accountNumber || '', ifsc: row.ifsc || '', bank: row.bankName || '', branch: row.branch || '' }); }
+  };
 
-  // Auto-fill the member's saved payout details (bank or UPI) so they're never re-typed.
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); }).catch(()=>{}); }, []);
+
+  // Load this member's saved withdrawal destinations (bank accounts + UPIs), member-scoped.
   useEffect(() => {
     const mid = memberId.trim();
-    if (!mid) { setSavedUpis([]); return; }
+    if (!mid) { setSavedBanks([]); setSavedUpis([]); setDestId(''); setDetails({}); return; }
     let alive = true;
     bankAccountAPI.listMine(mid).then(rows => {
       if (!alive) return;
-      setSavedUpis(rows.filter(r => r.upiId));
-      if (mode === 'BANK') {
-        const b = rows.find(r => r.accountNumber);
-        if (b) setDetails(d => ({ ...d,
-          accountHolder: d.accountHolder || b.accountHolder || '',
-          accountNumber: d.accountNumber || b.accountNumber || '',
-          ifsc: d.ifsc || b.ifsc || '',
-          bank: d.bank || b.bankName || '',
-          branch: d.branch || b.branch || '',
-        }));
-      } else if (mode === 'UPI') {
-        // Prefer the member's default UPI.
-        const u = rows.find(r => r.upiId && r.isDefault) || rows.find(r => r.upiId);
-        if (u && u.upiId) setDetails(d => ({ ...d, upiId: d.upiId || u.upiId || '' }));
+      const banks = rows.filter(r => r.accountNumber);
+      const upis = rows.filter(r => r.upiId);
+      setSavedBanks(banks);
+      setSavedUpis(upis);
+      // If exactly one saved destination exists, auto-select it; otherwise let the user choose.
+      if (banks.length + upis.length === 1) {
+        if (upis.length === 1) applyDest('UPI', upis[0]); else applyDest('BANK', banks[0]);
+      } else {
+        setDestId(''); setDetails({});
       }
     }).catch(()=>{});
     return () => { alive = false; };
-  }, [memberId, mode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memberId]);
 
+  // Saved destinations the member can withdraw to (UPI IDs + bank accounts), built into radio options.
+  const savedDests = [
+    ...savedUpis.map(u => ({ id:`upi-${u.id}`, kind:'UPI' as const, label:`UPI · ${u.upiId}${u.isDefault?'  ★ default':''}`, row:u })),
+    ...savedBanks.map(b => ({ id:`bank-${b.id}`, kind:'BANK' as const, label:`Bank · ${b.bankName || 'Account'} ····${(b.accountNumber || '').slice(-4)}`, row:b })),
+  ];
+  const hasSaved = savedDests.length > 0;
+  const usingOther = destId === 'OTHER' || !hasSaved;
+  const chosenSaved = savedDests.find(d => d.id === destId);
   const fields = MODE_FIELDS[mode];
   const submit = async () => {
     if(!amount||!memberId){ showToast('Enter amount and Membership ID','error'); return; }
     if(parseFloat(amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
-    if(parseFloat(amount) > available){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
+    if(parseFloat(amount) > maxWithdrawable + 0.01){ showToast('Insufficient Balance','error'); return; }
+    if(hasSaved && !destId){ showToast('Select a withdrawal destination','error'); return; }
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
     setLoading(true);
@@ -549,41 +573,75 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
 
   return (
     <div>
-      <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 14px',marginBottom:14,fontSize:12,color:T.blue,fontWeight:700 }}>
-        Available balance: {fmt(available)}
-        {rb > 0 && <span style={{ color:T.textMuted,fontWeight:600 }}> · Reserved (pending): {fmt(rb)}</span>}
+      <div style={{ background:T.infoBg,borderRadius:12,padding:'14px 16px',marginBottom:16 }}>
+        <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 2px',textTransform:'uppercase',letterSpacing:'0.06em',fontWeight:800 }}>Available Withdrawal Balance</p>
+        <p style={{ fontSize:26,fontWeight:800,color:T.blue,margin:0 }}>{fmt(available)}</p>
+        <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>
+          Max you can withdraw after fees: <b>{fmt(maxWithdrawable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
+        </p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Input label="Amount (INR)" type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="Min 1" required/>
         <Input label="Membership ID" value={memberId} onChange={e=>setMemberId(e.target.value)} placeholder="Alphanumeric" required/>
-        <Sel label="Payout Mode" value={mode} onChange={e=>{ setMode(e.target.value); setDetails({}); }} options={PAYOUT_MODES} required/>
       </div>
-      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>{PAYOUT_MODES.find(m=>m.value===mode)?.label} Details</p>
-      {mode==='UPI' && savedUpis.length > 0 && (
-        <Sel label="Saved UPI IDs" value={savedUpis.some(u=>u.upiId===details.upiId)?(details.upiId||''):''} onChange={e=>setD('upiId',e.target.value)}
-          options={[{ value:'', label:'— Pick a saved UPI or type below —' }, ...savedUpis.map(u => ({ value:u.upiId||'', label:`${u.upiId}${u.isDefault?'  ★ default':''}` }))]} />
+
+      {hasSaved && (
+        <div style={{ marginBottom:12 }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>Withdrawal Destination</p>
+          {savedDests.map(d => (
+            <label key={d.id} style={{ display:'flex',alignItems:'center',gap:10,padding:'9px 12px',border:`1.5px solid ${destId===d.id?T.blue:T.border}`,borderRadius:10,marginBottom:8,cursor:'pointer',fontSize:13,color:T.textMain,fontWeight:600 }}>
+              <input type="radio" name="wd-dest" checked={destId===d.id} onChange={()=>applyDest(d.kind, d.row)} />
+              {d.label}
+            </label>
+          ))}
+          <label style={{ display:'flex',alignItems:'center',gap:10,padding:'9px 12px',border:`1.5px solid ${destId==='OTHER'?T.blue:T.border}`,borderRadius:10,cursor:'pointer',fontSize:13,color:T.textMain,fontWeight:600 }}>
+            <input type="radio" name="wd-dest" checked={destId==='OTHER'} onChange={()=>{ setDestId('OTHER'); setMode('BANK'); setDetails({}); }} />
+            Other / new method
+          </label>
+        </div>
       )}
-      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        {fields.map(f => (
-          <Input key={f.key} label={f.label} value={details[f.key]||''} required
-            hint={f.key==='ifsc' ? 'Auto-fills bank & branch' : undefined}
-            onChange={async e=>{
-              let v = e.target.value;
-              if (f.upper) v = v.toUpperCase();
-              if (f.digits) v = v.replace(/[^\d]/g,'').slice(0, f.max || 10);
-              setDetails(d => ({...d,[f.key]:v}));
-              if (f.key==='ifsc' && isValidIfsc(v)) {
-                const info = await lookupIfsc(v);
-                if (info) setDetails(d => ({...d, ifsc:v, bank:info.bank, branch:info.branch}));
-              }
-            }}/>
-        ))}
-      </div>
-      {mode==='BANK' && details.bank && (() => { const b = bankBadge(details.bank); return (
-        <div style={{ display:'flex',alignItems:'center',gap:8,margin:'0 0 12px',fontSize:12,color:T.textMain }}>
-          <span style={{ width:20,height:20,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
-          <b>{details.bank}</b>{details.branch ? <span style={{ color:T.textMuted }}>· {details.branch}</span> : null}
-        </div>); })()}
+
+      {chosenSaved && (
+        <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:12 }}>
+          {chosenSaved.kind === 'UPI'
+            ? <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>UPI ID</span><b>{details.upiId}</b></div>
+            : <>
+                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Holder</span><b>{details.accountHolder}</b></div>
+                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Number</span><b>{details.accountNumber}</b></div>
+                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>IFSC</span><b>{details.ifsc}</b></div>
+                {details.bank && <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Bank</span><b>{details.bank}</b></div>}
+                {details.branch && <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Branch</span><b>{details.branch}</b></div>}
+              </>}
+        </div>
+      )}
+
+      {usingOther && (
+        <>
+          <Sel label="Payout Mode" value={mode} onChange={e=>{ setMode(e.target.value); setDetails({}); }} options={PAYOUT_MODES} required/>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>{PAYOUT_MODES.find(m=>m.value===mode)?.label} Details</p>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+            {fields.map(f => (
+              <Input key={f.key} label={f.label} value={details[f.key]||''} required
+                hint={f.key==='ifsc' ? 'Auto-fills bank & branch' : undefined}
+                onChange={async e=>{
+                  let v = e.target.value;
+                  if (f.upper) v = v.toUpperCase();
+                  if (f.digits) v = v.replace(/[^\d]/g,'').slice(0, f.max || 10);
+                  setDetails(d => ({...d,[f.key]:v}));
+                  if (f.key==='ifsc' && isValidIfsc(v)) {
+                    const info = await lookupIfsc(v);
+                    if (info) setDetails(d => ({...d, ifsc:v, bank:info.bank, branch:info.branch}));
+                  }
+                }}/>
+            ))}
+          </div>
+          {mode==='BANK' && details.bank && (() => { const b = bankBadge(details.bank); return (
+            <div style={{ display:'flex',alignItems:'center',gap:8,margin:'0 0 12px',fontSize:12,color:T.textMain }}>
+              <span style={{ width:20,height:20,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
+              <b>{details.bank}</b>{details.branch ? <span style={{ color:T.textMuted }}>· {details.branch}</span> : null}
+            </div>); })()}
+        </>
+      )}
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 14px',fontSize:11,color:T.textMuted }}>
         After payment, the agent uploads the proof — {mode==='CRYPTO' ? 'Transaction Hash (Hash ID)' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}.
       </div>
