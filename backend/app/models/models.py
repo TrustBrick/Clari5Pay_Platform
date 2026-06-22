@@ -135,7 +135,8 @@ class Transaction(Base):
     reject_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # admin rejection reason
 
     # Proof / verification workflow
-    merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # merchant payment slip image (data URL)
+    merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # first merchant slip image (data URL) — kept for back-compat
+    merchant_proofs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array of up to 3 proof/slip files (data URLs)
     merchant_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # merchant payment reference number
     admin_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # admin-uploaded bank-details image (data URL)
     admin_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # admin reference number

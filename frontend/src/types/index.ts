@@ -100,6 +100,7 @@ export interface Transaction {
   accountNumber?: string | null;
   ifsc?: string | null;
   merchantProof?: string | null;
+  merchantProofs?: string[] | null;
   merchantRef?: string | null;
   adminProof?: string | null;
   adminRef?: string | null;

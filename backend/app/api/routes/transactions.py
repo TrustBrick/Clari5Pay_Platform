@@ -62,6 +62,57 @@ async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> 
         merchant_id=merchant.id, member_id=member_id, upi_id=upi, is_default=(has_upi is None),
     ))
 
+
+# Shown when a request's member name doesn't match the name already on file for that ID.
+MEMBER_NAME_MISMATCH_MSG = "Member Name does not match the existing Membership ID record."
+
+# Proof/slip upload limits (mirrored on the frontend).
+MAX_PROOFS = 3
+PROOF_LIMIT_MSG = "You can upload a maximum of 3 proof/slip files per request."
+PROOF_TYPE_MSG = "Unsupported file type. Allowed: JPG, JPEG, PNG, PDF."
+_ALLOWED_PROOF_PREFIXES = (
+    "data:image/jpeg", "data:image/jpg", "data:image/png", "data:application/pdf",
+)
+
+
+def _clean_proofs(proofs: list[str] | None, single: str | None = None) -> list[str]:
+    """Validate uploaded proofs: at most 3 files, each a JPG/JPEG/PNG/PDF. Returns the list."""
+    items = [p for p in (proofs or []) if p]
+    if not items and single:
+        items = [single]
+    if len(items) > MAX_PROOFS:
+        raise HTTPException(status_code=400, detail=PROOF_LIMIT_MSG)
+    for p in items:
+        head = p[:64].lower()
+        if head.startswith("data:") and not head.startswith(_ALLOWED_PROOF_PREFIXES):
+            raise HTTPException(status_code=400, detail=PROOF_TYPE_MSG)
+    return items
+
+
+async def _assert_member_name(db: AsyncSession, user: User, member_id, member_name) -> None:
+    """If this Membership ID was used before (across the merchant's business), the entered
+    Member Name must match the name already on record. Raises 400 on mismatch."""
+    if not member_id or not member_name:
+        return
+    ids = (await db.execute(
+        select(User.id).where(User.role == UserRole.MERCHANT, User.name == user.name)
+    )).scalars().all()
+    if not ids:
+        return
+    existing = (await db.execute(
+        select(Transaction.member_name)
+        .where(
+            Transaction.merchant_id.in_(ids),
+            Transaction.member_id == member_id,
+            Transaction.member_name.is_not(None),
+            Transaction.member_name != "",
+        )
+        .order_by(Transaction.id.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if existing and existing.strip().casefold() != member_name.strip().casefold():
+        raise HTTPException(status_code=400, detail=MEMBER_NAME_MISMATCH_MSG)
+
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
 # A generated UPI/QR payment code stays valid for this long before it must be regenerated.
@@ -110,12 +161,21 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
 
     # Running Balance (RB): in-flight (Pending) withdrawal + settlement amounts that are
     # reserved the moment they're requested, until they complete or are rejected/cancelled.
-    pending = (t for t in txns if t.status not in _TERMINAL_STATUSES)
-    running_balance = sum(t.amount for t in pending
-                          if t.type.value.startswith("WITHDRAWAL") or t.type.value.startswith("SETTLEMENT"))
+    # A pending withdrawal reserves the amount PLUS its pay-out fee (so the balance can't go
+    # negative once the fee is charged on completion); settlements carry no fee.
+    running_balance = 0.0
+    for t in txns:
+        if t.status in _TERMINAL_STATUSES:
+            continue
+        if t.type.value.startswith("WITHDRAWAL"):
+            running_balance += t.amount * (1 + pay_out_rate)
+        elif t.type.value.startswith("SETTLEMENT"):
+            running_balance += t.amount
 
     # Available Balance (AB): reserves the running balance and never goes negative.
     available = max(0.0, gross_available - running_balance)
+    # The most a NEW withdrawal can be: its amount + pay-out fee must fit inside AB.
+    max_withdrawable = available / (1 + pay_out_rate) if pay_out_rate else available
 
     deposit_count = sum(1 for t in txns if t.type.value.startswith("DEPOSIT"))
     withdrawal_count = sum(1 for t in txns if t.type.value.startswith("WITHDRAWAL"))
@@ -125,6 +185,7 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
         "runningBalance": running_balance,   # RB — reserved by pending requests
         "grossAvailable": gross_available,   # before reserving pending
         "maxSettleable": available,          # settlements carry no extra fee → equals AB
+        "maxWithdrawable": max_withdrawable, # AB net of the pay-out fee on a new withdrawal
         "totalDeposit": total_deposit,
         "payInFees": pay_in_fees,
         "totalSettled": total_settled,
@@ -167,6 +228,7 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "accountNumber": t.account_number,
         "ifsc": t.ifsc,
         "merchantProof": t.merchant_proof if full else None,
+        "merchantProofs": (json.loads(t.merchant_proofs) if t.merchant_proofs else None) if full else None,
         "merchantRef": t.merchant_ref,
         "adminProof": t.admin_proof if full else None,
         "adminRef": t.admin_ref,
@@ -257,6 +319,8 @@ async def create_deposit(
     current_user: User = Depends(get_current_user),
 ):
     _require_amount(data.amount)
+    await _assert_member_name(db, current_user, data.memberId, data.memberName)
+    _proofs = _clean_proofs(data.proofs, data.proof)
     tx = Transaction(
         ref="TEMP",
         type=TxType.DEPOSIT_REQUEST,
@@ -271,7 +335,8 @@ async def create_deposit(
         member_id=data.memberId,
         segment=data.segment,
         sender_upi_id=data.senderUpiId,
-        merchant_proof=data.proof,
+        merchant_proof=_proofs[0] if _proofs else None,
+        merchant_proofs=json.dumps(_proofs) if _proofs else None,
         account_holder=data.accountHolder,
         account_number=data.accountNumber,
         ifsc=data.ifsc,
@@ -304,11 +369,14 @@ async def create_withdrawal(
     current_user: User = Depends(get_current_user),
 ):
     _require_amount(data.amount)
-    # Block withdrawals that exceed the Available Balance (which already reserves
-    # in-flight requests), so the balance can never go negative.
+    # Block withdrawals whose amount + pay-out fee exceeds the Available Balance (which
+    # already reserves in-flight requests), so the balance can never go negative.
     summary = await compute_balance(db, current_user)
-    if data.amount > summary["available"] + 1e-6:
+    pay_out_rate = (current_user.pay_out_fee or 0) / 100
+    total_required = data.amount * (1 + pay_out_rate)
+    if total_required > summary["available"] + 1e-6:
         raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
+    _proofs = _clean_proofs(data.proofs, data.proof)
     tx = Transaction(
         ref="TEMP",
         type=TxType.WITHDRAWAL_REQUEST,
@@ -323,7 +391,8 @@ async def create_withdrawal(
         account_holder=data.accountHolder,
         account_number=data.accountNumber,
         ifsc=data.ifsc,
-        merchant_proof=data.proof,
+        merchant_proof=_proofs[0] if _proofs else None,
+        merchant_proofs=json.dumps(_proofs) if _proofs else None,
         utr=data.utr,
         notes=data.notes,
         payout_mode=(data.payoutMode or "BANK").upper(),
@@ -358,6 +427,7 @@ async def create_settlement(
     summary = await compute_balance(db, current_user)
     if data.amount > summary["available"] + 1e-6:
         raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
+    _proofs = _clean_proofs(data.proofs, data.proof)
     tx = Transaction(
         ref="TEMP",
         type=TxType.SETTLEMENT_REQUEST,
@@ -368,7 +438,8 @@ async def create_settlement(
         tx_date=date.today(),
         tx_time=datetime.now().strftime("%H:%M:%S"),
         member_id=data.memberId,
-        merchant_proof=data.proof,
+        merchant_proof=_proofs[0] if _proofs else None,
+        merchant_proofs=json.dumps(_proofs) if _proofs else None,
     )
     db.add(tx)
     await db.flush()
@@ -445,15 +516,17 @@ async def submit_slip(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Merchant pays using the admin's details and submits proof (image and/or reference)."""
-    if not (data.merchantProof or data.merchantRef):
+    """Merchant pays using the admin's details and submits proof (image(s) and/or reference)."""
+    _proofs = _clean_proofs(data.merchantProofs, data.merchantProof)
+    if not (_proofs or data.merchantRef):
         raise HTTPException(
             status_code=400,
             detail="Upload an image or enter a reference number",
         )
     tx = await _get_own_tx(tx_id, db, current_user)
-    if data.merchantProof:
-        tx.merchant_proof = data.merchantProof
+    if _proofs:
+        tx.merchant_proof = _proofs[0]
+        tx.merchant_proofs = json.dumps(_proofs)
     tx.merchant_ref = data.merchantRef
     tx.status = TxStatus.SLIP_SUBMITTED
     await db.flush()
@@ -502,6 +575,7 @@ async def recheck_payment(
         raise HTTPException(status_code=400, detail="Recheck applies to deposits only.")
     reason = (data.reason if data else None) or "Payment could not be verified — please re-upload the correct proof."
     tx.merchant_proof = None
+    tx.merchant_proofs = None
     tx.merchant_ref = None
     tx.status = TxStatus.ACCOUNT_SUBMITTED
     await db.flush()

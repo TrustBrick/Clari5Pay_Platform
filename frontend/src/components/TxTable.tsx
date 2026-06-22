@@ -31,6 +31,21 @@ const rowAction = (mode: ActionMode, status: string, type: string): { label: str
   return null;
 };
 
+// Click-to-copy control for reference numbers (transient ✓ feedback).
+const CopyRef: React.FC<{ value: string }> = ({ value }) => {
+  const [copied, setCopied] = React.useState(false);
+  const copy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch { /* ignore */ }
+  };
+  return (
+    <button onClick={copy} title="Copy reference number" aria-label="Copy reference number"
+      style={{ border:'none',background:'transparent',cursor:'pointer',color:copied?T.success:T.textMuted,fontSize:12,lineHeight:1,padding:'0 2px' }}>
+      {copied ? '✓' : '⧉'}
+    </button>
+  );
+};
+
 const typeColor = (type: string): { color: string; bg: string } => {
   if (type.startsWith('DEPOSIT')) return { color: T.success, bg: T.successBg };
   if (type.startsWith('WITHDRAWAL')) return { color: T.danger, bg: T.dangerBg };
@@ -40,7 +55,7 @@ const typeColor = (type: string): { color: string; bg: string } => {
 const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole, loading }) => {
   // No action handler (e.g. the dashboard preview) → drop the Action column entirely.
   const showAction = !!onAction && actionMode !== 'none';
-  const headers = ['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Member ID', 'Type', 'Amount', 'Date', 'Status'];
+  const headers = ['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Membership ID', 'Type', 'Amount', 'Date', 'Status'];
   if (showAction) headers.push('Action');
   if (loading) return <div style={{ overflowX: 'auto' }}><TableSkeleton rows={6} cols={headers.length} /></div>;
   return (
@@ -62,7 +77,10 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
           return (
             <tr key={t.id} style={{ background: i % 2 === 0 ? T.surface : '#f8faff' }}>
               <td style={{ padding:'11px 14px' }}>
-                <span style={{ fontWeight:700,color:T.textMain }}>{t.ref}</span>
+                <span style={{ display:'inline-flex',alignItems:'center',gap:6 }}>
+                  <span style={{ fontWeight:700,color:T.textMain }}>{t.ref}</span>
+                  <CopyRef value={t.ref} />
+                </span>
               </td>
               <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:700 }}>{t.merchant}</td>
               <td style={{ padding:'11px 14px',color:T.textMuted }}>{t.memberId || '—'}</td>

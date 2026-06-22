@@ -5,13 +5,15 @@ import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
+import { ProofGallery } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account, AccountBalance, MerchantBalance, AdminUpi } from '../types';
 
-const REQUEST_TYPES = ['DEPOSIT', 'WITHDRAWAL', 'SETTLEMENT', 'DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
+// Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
+const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
 const REQUEST_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'COMPLETED', 'CANCELLED'];
 
 // Active (pending) workflow statuses — anything not yet completed/cancelled.
@@ -42,8 +44,6 @@ const RequestModal: React.FC<{
 }> = ({ tx, canAct, onClose, onDone }) => {
   const { showToast } = useToast();
   const isDeposit = tx.type.startsWith('DEPOSIT');
-  // UPI / QR deposits are settled via a UPI ID (the QR is rendered for the merchant with the amount baked in).
-  const isUpiQr = isDeposit && ['UPI', 'QR'].includes((tx.depositType || '').toUpperCase());
   // Withdrawal payout mode drives what proof the agent must capture (Crypto → Hash; Cash → image only).
   const payoutMode = (tx.payoutMode || 'BANK').toUpperCase();
   const isCryptoPayout = payoutMode === 'CRYPTO';
@@ -53,8 +53,6 @@ const RequestModal: React.FC<{
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountRef, setAccountRef] = useState('');
   const [reusedRef, setReusedRef] = useState('');
-  const [upiId, setUpiId] = useState('');
-  const [savedUpis, setSavedUpis] = useState<AdminUpi[]>([]);
   const [receipt, setReceipt] = useState<string | null>(null);
   const [payUtr, setPayUtr] = useState('');
   const [saving, setSaving] = useState(false);
@@ -62,9 +60,9 @@ const RequestModal: React.FC<{
   const [rejecting, setRejecting] = useState(false);
   const [riskConfirm, setRiskConfirm] = useState(false);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
-  const [imgs, setImgs] = useState<{ adminProof?: string | null; merchantProof?: string | null }>({ adminProof: tx.adminProof, merchantProof: tx.merchantProof });
+  const [imgs, setImgs] = useState<{ adminProof?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
   useEffect(() => {
-    transactionAPI.getDetail(tx.id).then(d => setImgs({ adminProof: d.adminProof, merchantProof: d.merchantProof })).catch(()=>{});
+    transactionAPI.getDetail(tx.id).then(d => setImgs({ adminProof: d.adminProof, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs })).catch(()=>{});
   }, [tx.id]);
 
   // Admin steps:
@@ -109,11 +107,11 @@ const RequestModal: React.FC<{
   };
 
   useEffect(() => {
-    if (!chooseStep || isUpiQr) return;
+    if (!chooseStep) return;
     accountAPI.list().then(a => {
       const active = a.filter(x => (x.status || '').toUpperCase() === 'ACTIVE');
       setAccounts(active);
-      // Reuse the account previously assigned to this Member ID (agent can still change it).
+      // Reuse the account previously assigned to this Membership ID (agent can still change it).
       if (tx.memberId) {
         accountAPI.lastForMember(tx.memberId).then(r => {
           if (r.referenceNumber && active.some(x => x.referenceNumber === r.referenceNumber)) {
@@ -123,12 +121,7 @@ const RequestModal: React.FC<{
         }).catch(()=>{});
       }
     }).catch(()=>{});
-  }, [chooseStep, isUpiQr, tx.memberId]);
-
-  // Load saved admin UPI IDs for the "send UPI" dropdown.
-  useEffect(() => {
-    if (chooseStep && isUpiQr) adminUpiAPI.listActive().then(setSavedUpis).catch(()=>{});
-  }, [chooseStep, isUpiQr]);
+  }, [chooseStep, tx.memberId]);
 
   const onReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -155,19 +148,6 @@ const RequestModal: React.FC<{
     finally { setSaving(false); }
   };
 
-  const sendUpi = async () => {
-    const vpa = upiId.trim();
-    if (!vpa || !vpa.includes('@')) { showToast('Enter a valid UPI ID (e.g. name@bank)', 'error'); return; }
-    setSaving(true);
-    try {
-      // The QR (with the amount embedded) is rendered for the merchant; bank details are never sent.
-      await transactionAPI.submitAccount(tx.id, { adminUpiId: vpa, adminRef: tx.ref });
-      showToast(`${tx.ref} — UPI/QR sent (valid 15 min)`);
-      onDone?.(); onClose();
-    } catch { showToast('Failed to send UPI/QR', 'error'); }
-    finally { setSaving(false); }
-  };
-
   const complete = async (withReceipt: boolean) => {
     if (withReceipt && needReceipt && !receipt) { showToast('Upload the payment proof', 'error'); return; }
     if (withReceipt && needUtr && !payUtr.trim()) { showToast(isCryptoPayout ? 'Enter the transaction hash' : 'Enter the UTR number', 'error'); return; }
@@ -188,7 +168,7 @@ const RequestModal: React.FC<{
           <Row k="Type" v={typeLabel(tx.type)} />
           <Row k="Amount" v={fmt(tx.amount)} />
           <Row k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="ADMIN" />} />
-          {tx.memberId && <Row k="Member ID" v={tx.memberId} />}
+          {tx.memberId && <Row k="Membership ID" v={tx.memberId} />}
           {tx.member && <Row k="Member Name" v={tx.member} />}
           {tx.depositType && <Row k="Deposit Type" v={tx.depositType} />}
           {tx.utr && <Row k="UTR Number" v={tx.utr} />}
@@ -208,7 +188,6 @@ const RequestModal: React.FC<{
               {(tx.adminBankDetails || tx.adminUpiId || tx.adminRef) ? (
                 <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12 }}>
                   {tx.adminUpiId && <Row k="UPI ID" v={tx.adminUpiId} />}
-                  {tx.adminUpiId && <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>{(tx.depositType||'').toUpperCase()} — QR for {fmt(tx.amount)} sent (valid 15 min). Bank details are not shared for UPI/QR.</p>}
                   {tx.adminBankDetails && <p style={{ margin:0,whiteSpace:'pre-line',lineHeight:1.6,color:T.textMain,fontWeight:600 }}>{tx.adminBankDetails}</p>}
                 </div>
               ) : <div style={{ padding:24,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>Not sent yet</div>}
@@ -241,7 +220,10 @@ const RequestModal: React.FC<{
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Merchant Payment Slip</p>
           {tx.merchantRef && <Row k="Reference Number" v={tx.merchantRef} />}
-          {imgs.merchantProof && <img src={imgs.merchantProof} alt="Payment slip" style={{ display:'block',maxHeight:260,maxWidth:240,width:'auto',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+          {(() => {
+            const list = (imgs.merchantProofs && imgs.merchantProofs.length) ? imgs.merchantProofs : (imgs.merchantProof ? [imgs.merchantProof] : []);
+            return list.length ? <ProofGallery srcs={list} /> : null;
+          })()}
           {(imgs.merchantProof || tx.merchantRef) && (
             <Btn size="sm" variant="ghost" style={{ marginTop:10 }}
               onClick={() => imgs.merchantProof
@@ -253,23 +235,7 @@ const RequestModal: React.FC<{
         </div>
       )}
 
-      {chooseStep && isUpiQr && (
-        <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
-          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>{tx.depositType?.toUpperCase()} payment — send UPI ID</p>
-          {savedUpis.length > 0 && (
-            <Sel label="Saved UPI IDs" value={savedUpis.some(u=>u.upiId===upiId)?upiId:''} onChange={e=>setUpiId(e.target.value)}
-              options={[{ value:'', label:'— Pick a saved UPI or type below —' }, ...savedUpis.map(u => ({ value:u.upiId, label:`${u.label} — ${u.upiId}` }))]} />
-          )}
-          <Input label="UPI ID (VPA)" value={upiId} onChange={e=>setUpiId(e.target.value)} placeholder="e.g. clari5pay@hdfcbank" required hint={savedUpis.length>0 ? 'Pick from saved above, or type a new one (manage them in Account Management → Admin UPI IDs)' : undefined}/>
-          <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>The Receiver gets a QR with the exact amount ({fmt(tx.amount)}) baked in. The code is valid for 15 minutes. Bank account details are not shared for UPI/QR payments.</p>
-          <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={sendUpi} disabled={saving||!upiId.trim()}>{saving ? 'Sending...' : 'Send UPI / QR'}</Btn>
-            <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
-          </div>
-        </div>
-      )}
-
-      {chooseStep && !isUpiQr && (
+      {chooseStep && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Select an account to send ({accounts.length} active)</p>
           <Sel label="Account" value={accountRef} onChange={e=>setAccountRef(e.target.value)}
@@ -408,8 +374,8 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
       <div className="ad-stat-money" style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:14 }}>
         <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
         <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits − Withdrawals" color={T.success}/>
-        <StatCard icon="🧾" label="Commission Amount" value={fmt(commissionAmount)} sub="Pay-in + pay-out fees" color={T.info}/>
-        <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Gross − Commission" color={T.green}/>
+        <StatCard icon="🧾" label="Commission Amount" value={fmt(commissionAmount)} sub="Pay In + Pay Out Fees" color={T.info}/>
+        <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Gross (Deposits − Withdrawals) − Commission" color={T.green}/>
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(6,minmax(0,1fr))',gap:12,marginBottom:20 }}>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
@@ -425,17 +391,17 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
       `}</style>
       <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(300px,1fr))',gap:16,marginBottom:20 }}>
         <Card style={{ padding:22 }}>
-          <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.blue }}>Deposits</h3>
+          <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.textMain }}>Deposits</h3>
           <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>{depReqs} total · by status</p>
           <StatusChart data={byTypeStatus('DEPOSIT')}/>
         </Card>
         <Card style={{ padding:22 }}>
-          <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.danger }}>Withdrawals</h3>
+          <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.textMain }}>Withdrawals</h3>
           <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>{wdReqs} total · by status</p>
           <StatusChart data={byTypeStatus('WITHDRAWAL')}/>
         </Card>
         <Card style={{ padding:22 }}>
-          <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.info }}>Settlements</h3>
+          <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.textMain }}>Settlements</h3>
           <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>{setReqs} total · by status</p>
           <StatusChart data={byTypeStatus('SETTLEMENT')}/>
         </Card>

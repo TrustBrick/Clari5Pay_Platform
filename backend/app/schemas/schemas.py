@@ -138,6 +138,7 @@ class DepositCreate(BaseModel):
     profile: str = "NEW"
     senderUpiId: Optional[str] = None   # merchant's own UPI the payment is sent from (UPI deposits)
     proof: Optional[str] = None
+    proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
     # Selected/added merchant bank account sent to admin with the request
     accountHolder: Optional[str] = None
     accountNumber: Optional[str] = None
@@ -162,6 +163,7 @@ class WithdrawalCreate(BaseModel):
     bankName: Optional[str] = None
     branch: Optional[str] = None
     proof: Optional[str] = None
+    proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
     utr: Optional[str] = None
     notes: Optional[str] = None
     saveBankAccount: bool = False
@@ -171,6 +173,7 @@ class SettlementCreate(BaseModel):
     amount: float
     memberId: Optional[str] = None
     proof: Optional[str] = None
+    proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
 
 
 class AccountSubmitRequest(BaseModel):
@@ -182,6 +185,7 @@ class AccountSubmitRequest(BaseModel):
 
 class SlipRequest(BaseModel):
     merchantProof: Optional[str] = None
+    merchantProofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
     merchantRef: Optional[str] = None
 
 

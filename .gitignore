@@ -32,3 +32,4 @@ docker-compose.override.yml
 # Local-only docs (not for the repo)
 QUERIES.md
 TEST_DATA.md
+RELEASE-2026-06-21.md
