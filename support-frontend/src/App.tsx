@@ -11,6 +11,17 @@ const T = {
   danger: '#dc2626', infoBg: 'rgba(0,82,204,0.1)', grad: 'linear-gradient(135deg,#0052cc,#00a3ff)',
 };
 
+// Reactively track narrow viewports so the layout can collapse to one pane on phones.
+function useIsMobile(breakpoint = 760): boolean {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < breakpoint);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [breakpoint]);
+  return isMobile;
+}
+
 // ─── Login ─────────────────────────────────────────────────────────────────────
 const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => {
   const [username, setUsername] = useState('');
@@ -26,10 +37,10 @@ const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => 
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: T.dark, fontFamily: "'Inter','Segoe UI',sans-serif" }}>
-      <div style={{ background: T.surface, borderRadius: 20, padding: 40, width: 380, boxShadow: '0 24px 80px rgba(0,0,0,0.35)' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: T.dark, fontFamily: "'Inter','Segoe UI',sans-serif", padding: 16, boxSizing: 'border-box' }}>
+      <div style={{ background: T.surface, borderRadius: 20, padding: 'clamp(24px, 5vw, 40px)', width: 'min(380px, 100%)', boxSizing: 'border-box', boxShadow: '0 24px 80px rgba(0,0,0,0.35)' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 16, background: T.grad, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26, margin: '0 auto 14px' }}>💬</div>
+          <img src="/logo-mark.png" alt="Clari5Pay" style={{ height: 64, width: 'auto', display: 'block', margin: '0 auto 12px' }} />
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.textMain }}>Clari5Pay Support</h1>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: T.textMuted }}>Customer Support Portal</p>
         </div>
@@ -65,6 +76,8 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
   const [merchant, setMerchant] = useState<MerchantDetail | null>(null);
   const [input, setInput] = useState('');
   const [connected, setConnected] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);   // mobile: merchant-details slide-over
+  const isMobile = useIsMobile();
   const wsRef = useRef<WebSocket | null>(null);
   const activeIdRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -117,27 +130,43 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
 
   const filtered = convos.filter(c => !search || c.merchantName.toLowerCase().includes(search.toLowerCase()));
 
+  // On mobile only one pane shows at a time: the list, or (once a convo is open) the chat.
+  const showList = !isMobile || activeId == null;
+  const showChat = !isMobile || activeId != null;
+  const backToList = () => { setActiveId(null); setMessages([]); setMerchant(null); setShowDetails(false); };
+
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: "'Inter','Segoe UI',sans-serif", background: T.canvas }}>
       {/* Top bar */}
-      <header style={{ height: 56, background: T.dark, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 20px', flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 20 }}>💬</span>
-          <span style={{ color: '#fff', fontWeight: 800, fontSize: 15 }}>Clari5Pay Customer Support</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 12 }}>
+      <header style={{ height: 56, background: T.dark, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: isMobile ? '0 12px' : '0 20px', flexShrink: 0, gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 7 : 10, minWidth: 0 }}>
+          {isMobile && activeId != null && (
+            <button onClick={backToList} aria-label="Back to conversations"
+              style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', width: 30, height: 30, borderRadius: 8, fontSize: 16, cursor: 'pointer', flexShrink: 0, lineHeight: 1 }}>←</button>
+          )}
+          <img src="/logo-mark.png" alt="" style={{ height: 28, width: 'auto', display: 'block' }} />
+          <span style={{ color: '#fff', fontWeight: 800, fontSize: isMobile ? 13 : 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {isMobile ? 'Clari5Pay Support' : 'Clari5Pay Customer Support'}
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: isMobile ? 4 : 12, flexShrink: 0 }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? T.success : T.textLight }} />
-            <span style={{ fontSize: 11, color: connected ? '#7ee0b8' : 'rgba(255,255,255,0.5)' }}>{connected ? 'Live' : 'Offline'}</span>
+            {!isMobile && <span style={{ fontSize: 11, color: connected ? '#7ee0b8' : 'rgba(255,255,255,0.5)' }}>{connected ? 'Live' : 'Offline'}</span>}
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>{user.name}</span>
-          <button onClick={onLogout} style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>Sign Out</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 12, flexShrink: 0 }}>
+          {!isMobile && <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>{user.name}</span>}
+          {isMobile && activeId != null && merchant && (
+            <button onClick={() => setShowDetails(true)} aria-label="Merchant details"
+              style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', width: 30, height: 30, borderRadius: 8, fontSize: 14, cursor: 'pointer', lineHeight: 1 }}>ⓘ</button>
+          )}
+          <button onClick={onLogout} style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}>Sign Out</button>
         </div>
       </header>
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         {/* Conversations list */}
-        <aside style={{ width: 300, background: T.surface, borderRight: `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+        {showList && (
+        <aside style={{ width: isMobile ? '100%' : 300, background: T.surface, borderRight: isMobile ? 'none' : `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
           <div style={{ padding: 14, borderBottom: `1px solid ${T.border}` }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search merchant..."
               style={{ width: '100%', padding: '8px 12px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' }} />
@@ -156,12 +185,14 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
             ))}
           </div>
         </aside>
+        )}
 
         {/* Chat thread */}
+        {showChat && (
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           {activeId == null ? (
             <div style={{ margin: 'auto', textAlign: 'center', color: T.textMuted }}>
-              <div style={{ fontSize: 48, marginBottom: 8 }}>💬</div>
+              <img src="/logo-mark.png" alt="" style={{ height: 64, width: 'auto', margin: '0 auto 8px', opacity: 0.55 }} />
               <p>Select a conversation to start chatting</p>
             </div>
           ) : (
@@ -170,13 +201,13 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
                 <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: T.textMain }}>{merchant?.name || 'Merchant'}</h2>
                 <p style={{ margin: 0, fontSize: 11, color: T.textMuted }}>{merchant?.email}</p>
               </div>
-              <div style={{ flex: 1, overflowY: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ flex: 1, overflowY: 'auto', padding: isMobile ? 14 : 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {messages.length === 0 && <p style={{ margin: 'auto', color: T.textMuted, fontSize: 13 }}>No messages yet</p>}
                 {messages.map(m => {
                   const mine = m.sender === 'SUPPORT';
                   return (
                     <div key={m.id} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
-                      <div style={{ maxWidth: '70%', padding: '10px 14px', borderRadius: mine ? '16px 16px 4px 16px' : '16px 16px 16px 4px', background: mine ? T.grad : T.surface, color: mine ? '#fff' : T.textMain, fontSize: 13, lineHeight: 1.5, border: mine ? 'none' : `1px solid ${T.border}` }}>
+                      <div style={{ maxWidth: isMobile ? '85%' : '70%', padding: '10px 14px', borderRadius: mine ? '16px 16px 4px 16px' : '16px 16px 16px 4px', background: mine ? T.grad : T.surface, color: mine ? '#fff' : T.textMain, fontSize: 13, lineHeight: 1.5, border: mine ? 'none' : `1px solid ${T.border}` }}>
                         {!mine && <p style={{ margin: '0 0 2px', fontSize: 10, fontWeight: 800, color: T.blue }}>{m.senderName}</p>}
                         {m.content}
                         <p style={{ margin: '3px 0 0', fontSize: 9, opacity: 0.6, textAlign: 'right' }}>{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
@@ -196,10 +227,17 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
             </>
           )}
         </main>
+        )}
 
-        {/* Merchant details */}
-        {activeId != null && merchant && (
-          <aside style={{ width: 260, background: T.surface, borderLeft: `1px solid ${T.border}`, padding: 20, overflowY: 'auto', flexShrink: 0 }}>
+        {/* Merchant details — fixed right pane on desktop, slide-over on mobile */}
+        {merchant && (isMobile ? showDetails : activeId != null) && (
+          <aside style={isMobile
+            ? { position: 'absolute', inset: 0, zIndex: 30, background: T.surface, padding: 20, overflowY: 'auto' }
+            : { width: 260, background: T.surface, borderLeft: `1px solid ${T.border}`, padding: 20, overflowY: 'auto', flexShrink: 0 }}>
+            {isMobile && (
+              <button onClick={() => setShowDetails(false)}
+                style={{ width: '100%', marginBottom: 14, padding: '9px', borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.canvas, color: T.textMain, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>✕ Close</button>
+            )}
             <div style={{ textAlign: 'center', marginBottom: 18 }}>
               <div style={{ width: 60, height: 60, borderRadius: '50%', background: T.grad, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, fontWeight: 800, color: '#fff', margin: '0 auto 10px' }}>{merchant.name.charAt(0)}</div>
               <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: T.textMain }}>{merchant.name}</p>
