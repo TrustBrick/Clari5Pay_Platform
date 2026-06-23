@@ -75,7 +75,8 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
         {txns.map((t, i) => {
           const tc = typeColor(t.type);
           return (
-            <tr key={t.id} style={{ background: i % 2 === 0 ? T.surface : '#f8faff' }}>
+            <tr key={t.id} className="c5-row-in"
+              style={{ background: i % 2 === 0 ? T.surface : '#f8faff', ['--c5-i' as any]: Math.min(i, 12) }}>
               <td style={{ padding:'11px 14px' }}>
                 <span style={{ display:'inline-flex',alignItems:'center',gap:6 }}>
                   <span style={{ fontWeight:700,color:T.textMain }}>{t.ref}</span>

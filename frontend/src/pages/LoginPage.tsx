@@ -186,7 +186,7 @@ const LoginPage: React.FC = () => {
 
       {/* Left Panel */}
       <div className="login-left" style={{ flex:1,display:'flex',flexDirection:'column',justifyContent:'center',alignItems:'center',padding:48,position:'relative' }}>
-        <div style={{ maxWidth:480,width:'100%' }}>
+        <div className="c5-stagger" style={{ maxWidth:480,width:'100%' }}>
           <div style={{ marginBottom:48 }}><Logo size="lg" dark/></div>
           <h2 style={{ color:'#fff',fontSize:28,fontWeight:800,margin:'0 0 12px',lineHeight:1.3 }}>Enterprise Payment<br/>Infrastructure</h2>
           <p style={{ color:'rgba(255,255,255,0.55)',fontSize:15,lineHeight:1.7,marginBottom:40 }}>A unified platform for merchants, admins, and platform teams to manage payments with full audit trails and real-time risk intelligence.</p>
@@ -200,7 +200,7 @@ const LoginPage: React.FC = () => {
       </div>
 
       {/* Right Panel */}
-      <div style={{ width:'100%',maxWidth:480,background:'rgba(255,255,255,0.97)',backdropFilter:'blur(20px)',display:'flex',flexDirection:'column',justifyContent:'center',padding:'40px 40px',boxShadow:'-20px 0 80px rgba(0,0,0,0.3)',position:'relative',zIndex:1 }} className="login-right">
+      <div style={{ width:'100%',maxWidth:480,background:'rgba(255,255,255,0.97)',backdropFilter:'blur(20px)',display:'flex',flexDirection:'column',justifyContent:'center',padding:'40px 40px',boxShadow:'-20px 0 80px rgba(0,0,0,0.3)',position:'relative',zIndex:1 }} className="login-right c5-panel-in">
         {otp ? (
           <>
             <div style={{ marginBottom:28 }}>

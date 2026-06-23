@@ -59,8 +59,8 @@ export const RiskBadge: React.FC<{ risk: string }> = ({ risk }) => {
 };
 
 // ─── Card ─────────────────────────────────────────────────────────────────────
-export const Card: React.FC<{ children: React.ReactNode; style?: CSSProperties; glow?: boolean }> = ({ children, style={}, glow }) => (
-  <div style={{ background:T.surface,borderRadius:16,boxShadow:glow?`0 0 0 1px ${T.blue}30,0 8px 32px rgba(0,82,204,0.1)`:'0 4px 6px -1px rgba(0,0,0,0.07),0 2px 4px -1px rgba(0,0,0,0.04)',border:`1px solid ${T.border}`,overflow:'hidden',...style }}>
+export const Card: React.FC<{ children: React.ReactNode; style?: CSSProperties; glow?: boolean; className?: string }> = ({ children, style={}, glow, className }) => (
+  <div className={className} style={{ background:T.surface,borderRadius:16,boxShadow:glow?`0 0 0 1px ${T.blue}30,0 8px 32px rgba(0,82,204,0.1)`:'0 4px 6px -1px rgba(0,0,0,0.07),0 2px 4px -1px rgba(0,0,0,0.04)',border:`1px solid ${T.border}`,overflow:'hidden',...style }}>
     {children}
   </div>
 );
@@ -74,7 +74,7 @@ export const StatCard: React.FC<{
   const len = String(value).length;
   const valueSize = len > 13 ? 17 : len > 10 ? 20 : 24;
   return (
-  <Card style={{ padding:'18px 18px',position:'relative',overflow:'hidden' }}>
+  <Card className="c5-hover-lift" style={{ padding:'18px 18px',position:'relative',overflow:'hidden' }}>
     <div style={{ position:'absolute',top:-20,right:-20,width:100,height:100,borderRadius:'50%',background:`${color}10`,pointerEvents:'none' }}/>
     <div style={{ display:'flex',alignItems:'flex-start',justifyContent:'space-between',position:'relative',gap:10 }}>
       <div style={{ minWidth:0,flex:1 }}>
@@ -186,7 +186,7 @@ export const StatusChart: React.FC<{ data: Array<{ label: string; value: number;
 
 // ─── Modal ───────────────────────────────────────────────────────────────────
 export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean }> = ({ title, children, onClose, wide, xl }) => (
-  <div style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:16,backdropFilter:'blur(4px)' }}>
+  <div className="c5-overlay" style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:16,backdropFilter:'blur(4px)' }}>
     <div className="c5-pop" style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
       <div style={{ padding:'20px 24px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:T.surface,zIndex:1 }}>
         <h2 style={{ margin:0,fontSize:16,fontWeight:800,color:T.textMain }}>{title}</h2>

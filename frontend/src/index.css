@@ -139,6 +139,43 @@
   animation: c5-shimmer 1.2s infinite;
 }
 
+/* Modal/overlay backdrop fade (pairs with .c5-pop on the dialog) */
+@keyframes c5-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+.c5-overlay { animation: c5-overlay-in 0.2s ease forwards; }
+
+/* Toast: slide in from the right edge, and slide back out on dismiss */
+@keyframes c5-toast-in  { from { opacity: 0; transform: translateX(120%); } to { opacity: 1; transform: translateX(0); } }
+@keyframes c5-toast-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(120%); } }
+.c5-toast-in  { animation: c5-toast-in  0.32s cubic-bezier(0.2, 0.8, 0.3, 1) forwards; }
+.c5-toast-out { animation: c5-toast-out 0.28s cubic-bezier(0.4, 0, 1, 1) forwards; }
+
+/* Staggered row/list entrance — set --c5-i (item index) for the cascade delay */
+@keyframes c5-row-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.c5-row-in {
+  opacity: 0;
+  animation: c5-row-in 0.32s ease forwards;
+  animation-delay: calc(var(--c5-i, 0) * 35ms);
+}
+
+/* Login right panel slide-in from the right */
+@keyframes c5-panel-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+.c5-panel-in { animation: c5-panel-in 0.5s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+
+/* Generic cascading child entrance — add .c5-stagger to a container */
+.c5-stagger > * { opacity: 0; animation: fade-in 0.45s ease forwards; }
+.c5-stagger > *:nth-child(1) { animation-delay: 0.05s; }
+.c5-stagger > *:nth-child(2) { animation-delay: 0.12s; }
+.c5-stagger > *:nth-child(3) { animation-delay: 0.19s; }
+.c5-stagger > *:nth-child(4) { animation-delay: 0.26s; }
+.c5-stagger > *:nth-child(5) { animation-delay: 0.33s; }
+.c5-stagger > *:nth-child(6) { animation-delay: 0.40s; }
+.c5-stagger > *:nth-child(7) { animation-delay: 0.47s; }
+.c5-stagger > *:nth-child(8) { animation-delay: 0.54s; }
+
+/* Card hover lift — subtle raise + stronger shadow */
+.c5-hover-lift { transition: transform 0.18s ease, box-shadow 0.22s ease; }
+.c5-hover-lift:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0, 82, 204, 0.14); }
+
 /* Accessibility: honour reduced-motion */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
