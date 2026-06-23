@@ -11,6 +11,9 @@ import { useAuth } from '../context/AuthContext';
 import { lookupIfsc, isValidIfsc, bankBadge, BANK_NAMES } from '../utils/ifsc';
 import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost } from '../types';
 
+// The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
+export { ReportsPage } from './ReportsPage';
+
 // ─── Reusable merchant bank-account picker (select saved or add new) ───────────
 type BankForm = { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName: string };
 const emptyBank: BankForm = { accountHolder: '', accountNumber: '', ifsc: '', branch: '', bankName: '' };

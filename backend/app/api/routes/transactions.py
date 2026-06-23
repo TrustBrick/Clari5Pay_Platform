@@ -243,6 +243,7 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "payoutMode": t.payout_mode,
         "payoutDetails": json.loads(t.payout_details) if t.payout_details else None,
         "qrExpiresAt": (t.qr_expires_at.isoformat() + "Z") if t.qr_expires_at else None,
+        "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
         "utr": t.utr,
         "notes": t.notes,
         "riskAnalysis": t.risk_analysis,
@@ -412,6 +413,285 @@ async def member_profile(
         "ifsc": bank_row.ifsc if bank_row else None,
         "branch": bank_row.branch if bank_row else None,
         "bankName": bank_row.bank_name if bank_row else None,
+    }
+
+
+# ─── Reports module (merchant) ────────────────────────────────────────────────
+# Amounts are summed over COMPLETED transactions only (real money moved); counts
+# include every transaction in the merchant's business pool. Everything here is
+# scoped to the caller's own business name, so a merchant only ever sees their
+# own memberships, transactions and reports.
+
+def _kind(t: Transaction) -> str | None:
+    v = t.type.value
+    if v.startswith("DEPOSIT"):
+        return "deposit"
+    if v.startswith("WITHDRAWAL"):
+        return "withdrawal"
+    if v.startswith("SETTLEMENT"):
+        return "settlement"
+    return None
+
+
+def _completed(t: Transaction) -> bool:
+    return t.status == TxStatus.COMPLETED
+
+
+def _member_label(t: Transaction) -> str:
+    return (t.member_name or "").strip() or "—"
+
+
+def _window_stats(txns: list[Transaction], since: datetime | None,
+                  until: datetime | None = None) -> dict:
+    """Count + amount totals over a time window (by created_at), split by kind.
+    Counts include all transactions in the window; amounts use completed ones."""
+    rows = [t for t in txns
+            if t.created_at
+            and (since is None or t.created_at >= since)
+            and (until is None or t.created_at < until)]
+    out = {"count": len(rows), "totalAmount": 0.0,
+           "deposits": 0.0, "withdrawals": 0.0, "settlements": 0.0,
+           "depositCount": 0, "withdrawalCount": 0, "settlementCount": 0}
+    for t in rows:
+        k = _kind(t)
+        if not k:
+            continue
+        out[k + "Count"] += 1
+        if _completed(t):
+            out[k + "s" if k != "deposit" else "deposits"] += t.amount
+            out["totalAmount"] += t.amount
+    for key in ("totalAmount", "deposits", "withdrawals", "settlements"):
+        out[key] = round(out[key], 2)
+    return out
+
+
+def _top(members: dict, value_key: str, limit: int = 10) -> list[dict]:
+    rows = sorted(members.values(), key=lambda m: m[value_key], reverse=True)
+    out = []
+    for i, m in enumerate(rows[:limit], start=1):
+        if m[value_key] <= 0:
+            continue
+        out.append({"rank": i, "memberId": m["memberId"], "memberName": m["memberName"],
+                    **{value_key: round(m[value_key], 2)}})
+    return out
+
+
+def _pct_change(curr: float, prev: float) -> float | None:
+    if prev <= 0:
+        return None
+    return round((curr - prev) / prev * 100, 1)
+
+
+@router.get("/reports")
+async def merchant_reports(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Full analytics payload for the merchant Reports module — summary cards, time-window
+    quick reports, membership analytics, leaderboards, transaction intelligence, daily trends
+    and auto-generated business insights. Strictly scoped to the caller's own business pool."""
+    if current_user.role != UserRole.MERCHANT:
+        raise HTTPException(status_code=403, detail="Merchant only")
+
+    ids = (await db.execute(
+        select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
+    )).scalars().all()
+    txns = (await db.execute(
+        select(Transaction).where(Transaction.merchant_id.in_(ids))
+    )).scalars().all() if ids else []
+
+    now = datetime.utcnow()
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    # ── Per-member aggregation ──
+    members: dict[str, dict] = {}
+    first_seen: dict[str, date] = {}
+    for t in txns:
+        mid = (t.member_id or "").strip()
+        if not mid:
+            continue
+        m = members.setdefault(mid, {
+            "memberId": mid, "memberName": _member_label(t),
+            "count": 0, "amount": 0.0,
+            "deposit": 0.0, "withdrawal": 0.0, "settlement": 0.0, "total": 0.0,
+            "firstDate": None, "lastDate": None,
+        })
+        if (t.member_name or "").strip():
+            m["memberName"] = _member_label(t)
+        m["count"] += 1
+        k = _kind(t)
+        if _completed(t) and k:
+            m[k] += t.amount
+            m["amount"] += t.amount
+            m["total"] += t.amount
+        d = t.created_at.date() if t.created_at else t.tx_date
+        if d:
+            if first_seen.get(mid) is None or d < first_seen[mid]:
+                first_seen[mid] = d
+            m["firstDate"] = str(d) if m["firstDate"] is None or str(d) < m["firstDate"] else m["firstDate"]
+            m["lastDate"] = str(d) if m["lastDate"] is None or str(d) > m["lastDate"] else m["lastDate"]
+
+    # ── Summary cards ──
+    def kind_count(k: str) -> int:
+        return sum(1 for t in txns if _kind(t) == k)
+
+    def kind_amount(k: str) -> float:
+        return round(sum(t.amount for t in txns if _kind(t) == k and _completed(t)), 2)
+
+    most_active = max(members.values(), key=lambda m: m["count"], default=None)
+    today_rows = [t for t in txns if (t.created_at.date() if t.created_at else t.tx_date) == today]
+    largest_today = max(today_rows, key=lambda t: t.amount, default=None)
+    active_30d = {(t.member_id or "").strip() for t in txns
+                  if (t.member_id or "").strip()
+                  and t.created_at and t.created_at >= now - timedelta(days=30)}
+
+    cards = {
+        "totalTransactions": len(txns),
+        "totalDeposits": kind_count("deposit"),
+        "totalWithdrawals": kind_count("withdrawal"),
+        "totalSettlements": kind_count("settlement"),
+        "totalDepositAmount": kind_amount("deposit"),
+        "totalWithdrawalAmount": kind_amount("withdrawal"),
+        "totalSettlementAmount": kind_amount("settlement"),
+        "totalTransactionAmount": round(
+            sum(t.amount for t in txns if _completed(t)), 2),
+        "activeMemberships": len(active_30d),
+        "mostActiveMember": ({"memberId": most_active["memberId"],
+                              "memberName": most_active["memberName"],
+                              "count": most_active["count"]} if most_active else None),
+        "largestTransactionToday": ({
+            "memberId": largest_today.member_id, "memberName": _member_label(largest_today),
+            "amount": round(largest_today.amount, 2), "type": _kind(largest_today),
+            "date": str(largest_today.tx_date), "time": largest_today.tx_time,
+        } if largest_today else None),
+    }
+
+    # ── Quick-report windows ──
+    windows = {
+        "10m": _window_stats(txns, now - timedelta(minutes=10)),
+        "20m": _window_stats(txns, now - timedelta(minutes=20)),
+        "30m": _window_stats(txns, now - timedelta(minutes=30)),
+        "1h": _window_stats(txns, now - timedelta(hours=1)),
+        "today": _window_stats(txns, datetime(today.year, today.month, today.day)),
+        "yesterday": _window_stats(
+            txns, datetime(yesterday.year, yesterday.month, yesterday.day),
+            datetime(today.year, today.month, today.day)),
+        "7d": _window_stats(txns, now - timedelta(days=7)),
+        "30d": _window_stats(txns, now - timedelta(days=30)),
+    }
+
+    # ── Membership analytics & leaderboards ──
+    member_analytics = {
+        "mostActive": _top(members, "count"),
+        "largestDeposit": _top(members, "deposit"),
+        "largestWithdrawal": _top(members, "withdrawal"),
+        "largestSettlement": _top(members, "settlement"),
+        "highestValue": _top(members, "total"),
+    }
+
+    # ── Transaction intelligence: largest ever per kind ──
+    def largest_ever(k: str) -> dict | None:
+        rows = [t for t in txns if _kind(t) == k and _completed(t)]
+        if not rows:
+            return None
+        t = max(rows, key=lambda t: t.amount)
+        return {"memberId": t.member_id, "memberName": _member_label(t),
+                "amount": round(t.amount, 2), "date": str(t.tx_date), "time": t.tx_time}
+
+    intelligence = {
+        "largestDepositEver": largest_ever("deposit"),
+        "largestWithdrawalEver": largest_ever("withdrawal"),
+        "largestSettlementEver": largest_ever("settlement"),
+    }
+
+    # ── Daily trends (last 30 days) ──
+    days = [today - timedelta(days=i) for i in range(29, -1, -1)]
+    trend = {d: {"deposit": 0.0, "withdrawal": 0.0, "settlement": 0.0, "newMembers": 0}
+             for d in days}
+    for t in txns:
+        d = t.created_at.date() if t.created_at else t.tx_date
+        if d in trend and _completed(t):
+            k = _kind(t)
+            if k:
+                trend[d][k] += t.amount
+    for mid, fd in first_seen.items():
+        if fd in trend:
+            trend[fd]["newMembers"] += 1
+    trends = {
+        "deposits": [{"date": str(d), "amount": round(trend[d]["deposit"], 2)} for d in days],
+        "withdrawals": [{"date": str(d), "amount": round(trend[d]["withdrawal"], 2)} for d in days],
+        "settlements": [{"date": str(d), "amount": round(trend[d]["settlement"], 2)} for d in days],
+        "membershipGrowth": [{"date": str(d), "count": trend[d]["newMembers"]} for d in days],
+    }
+
+    # ── Auto-generated business insights ──
+    insights: list[str] = []
+    last24 = [t for t in txns if t.created_at and t.created_at >= now - timedelta(hours=24)]
+    if last24:
+        by_member: dict[str, int] = {}
+        for t in last24:
+            mid = (t.member_id or "").strip()
+            if mid:
+                by_member[mid] = by_member.get(mid, 0) + 1
+        if by_member:
+            top_mid = max(by_member, key=by_member.get)
+            insights.append(
+                f"Most active member in the last 24 hours: {members[top_mid]['memberName']} "
+                f"({top_mid}) with {by_member[top_mid]} transaction(s).")
+    dep30 = [t for t in txns if _kind(t) == "deposit" and _completed(t)
+             and t.created_at and t.created_at >= now - timedelta(minutes=30)]
+    if dep30:
+        t = max(dep30, key=lambda t: t.amount)
+        insights.append(
+            f"Largest deposit in the last 30 minutes: ₹{t.amount:,.2f} by {_member_label(t)} "
+            f"({t.member_id}).")
+    month_start = datetime(today.year, today.month, 1)
+    month_rows = [t for t in txns if t.created_at and t.created_at >= month_start and _completed(t)]
+    if month_rows:
+        vol: dict[str, float] = {}
+        for t in month_rows:
+            mid = (t.member_id or "").strip()
+            if mid:
+                vol[mid] = vol.get(mid, 0) + t.amount
+        if vol:
+            top_mid = max(vol, key=vol.get)
+            insights.append(
+                f"Highest transaction volume this month: {members[top_mid]['memberName']} "
+                f"({top_mid}) at ₹{vol[top_mid]:,.2f}.")
+    dep_curr = windows["7d"]["deposits"]
+    dep_prev = _window_stats(txns, now - timedelta(days=14), now - timedelta(days=7))["deposits"]
+    dch = _pct_change(dep_curr, dep_prev)
+    if dch is not None:
+        verb = "increased" if dch >= 0 else "decreased"
+        insights.append(f"Deposit activity {verb} by {abs(dch)}% versus the previous 7 days.")
+    wd_curr = windows["7d"]["withdrawals"]
+    wd_prev = _window_stats(txns, now - timedelta(days=14), now - timedelta(days=7))["withdrawals"]
+    wch = _pct_change(wd_curr, wd_prev)
+    if wch is not None:
+        verb = "increased" if wch >= 0 else "decreased"
+        insights.append(f"Withdrawal activity {verb} by {abs(wch)}% versus the previous 7 days.")
+    total_vol = sum(m["total"] for m in members.values())
+    if total_vol > 0:
+        top10 = sum(m["total"] for m in sorted(
+            members.values(), key=lambda m: m["total"], reverse=True)[:10])
+        insights.append(
+            f"Top 10 members contributed {round(top10 / total_vol * 100, 1)}% of total volume.")
+
+    # ── Raw rows for client-side search, custom ranges, recent high-value & drill-down ──
+    rows = [{
+        "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
+        "type": _kind(t), "amount": round(t.amount, 2), "status": t.status.value,
+        "date": str(t.tx_date), "time": t.tx_time,
+        "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
+        "completed": _completed(t),
+    } for t in txns]
+    rows.sort(key=lambda r: r["createdAt"] or "", reverse=True)
+
+    return {
+        "cards": cards, "windows": windows, "memberAnalytics": member_analytics,
+        "intelligence": intelligence, "trends": trends, "insights": insights,
+        "transactions": rows,
     }
 
 

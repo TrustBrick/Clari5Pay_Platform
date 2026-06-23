@@ -360,3 +360,80 @@ export interface BlogAnalytics {
   mostPopularCategory?: string | null;
   monthly: Array<{ month: string; key: string; published: number; views: number }>;
 }
+
+// ─── Reports module (merchant) ────────────────────────────────────────────────
+export interface ReportWindow {
+  count: number;
+  totalAmount: number;
+  deposits: number;
+  withdrawals: number;
+  settlements: number;
+  depositCount: number;
+  withdrawalCount: number;
+  settlementCount: number;
+}
+export interface ReportMemberRow {
+  rank?: number;
+  memberId: string;
+  memberName: string;
+  count?: number;
+  deposit?: number;
+  withdrawal?: number;
+  settlement?: number;
+  total?: number;
+}
+export interface ReportLargest {
+  memberId: string;
+  memberName: string;
+  amount: number;
+  date: string;
+  time: string;
+}
+export interface ReportRow {
+  ref: string;
+  memberId: string | null;
+  member: string;
+  type: 'deposit' | 'withdrawal' | 'settlement' | null;
+  amount: number;
+  status: string;
+  date: string;
+  time: string;
+  createdAt: string | null;
+  completed: boolean;
+}
+export interface ReportData {
+  cards: {
+    totalTransactions: number;
+    totalDeposits: number;
+    totalWithdrawals: number;
+    totalSettlements: number;
+    totalDepositAmount: number;
+    totalWithdrawalAmount: number;
+    totalSettlementAmount: number;
+    totalTransactionAmount: number;
+    activeMemberships: number;
+    mostActiveMember: { memberId: string; memberName: string; count: number } | null;
+    largestTransactionToday: { memberId: string; memberName: string; amount: number; type: string | null; date: string; time: string } | null;
+  };
+  windows: Record<'10m' | '20m' | '30m' | '1h' | 'today' | 'yesterday' | '7d' | '30d', ReportWindow>;
+  memberAnalytics: {
+    mostActive: ReportMemberRow[];
+    largestDeposit: ReportMemberRow[];
+    largestWithdrawal: ReportMemberRow[];
+    largestSettlement: ReportMemberRow[];
+    highestValue: ReportMemberRow[];
+  };
+  intelligence: {
+    largestDepositEver: ReportLargest | null;
+    largestWithdrawalEver: ReportLargest | null;
+    largestSettlementEver: ReportLargest | null;
+  };
+  trends: {
+    deposits: Array<{ date: string; amount: number }>;
+    withdrawals: Array<{ date: string; amount: number }>;
+    settlements: Array<{ date: string; amount: number }>;
+    membershipGrowth: Array<{ date: string; count: number }>;
+  };
+  insights: string[];
+  transactions: ReportRow[];
+}

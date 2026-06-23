@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -169,6 +169,10 @@ export const transactionAPI = {
   },
   flagRisk: async (id: string, reason?: string) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/flag-risk`, { reason });
+    return res.data;
+  },
+  reports: async () => {
+    const res = await api.get<ReportData>('/api/transactions/reports');
     return res.data;
   },
 };
