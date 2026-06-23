@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { Logo, Btn, Input } from '../components/UI';
+import { PORTAL, PORTAL_NAME } from '../utils/portal';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { authAPI } from '../services/api';
@@ -68,7 +69,7 @@ const LoginPage: React.FC = () => {
       }
       // otpRequired === false → session already established; App redirects to dashboard.
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Login failed. Please try again.');
+      setError(e?.response?.data?.detail || e?.message || 'Login failed. Please try again.');
     }
   };
 
@@ -80,7 +81,7 @@ const LoginPage: React.FC = () => {
       await verifyOtp(otp.otpToken, code.trim());
       // success → AuthContext sets the user; App redirects to the dashboard.
     } catch (e: any) {
-      setError(e?.response?.data?.detail || 'Invalid OTP. Please try again.');
+      setError(e?.response?.data?.detail || e?.message || 'Invalid OTP. Please try again.');
       setShake(true); setTimeout(() => setShake(false), 400);
     } finally {
       setVerifying(false);
@@ -237,7 +238,7 @@ const LoginPage: React.FC = () => {
             <div style={{ marginBottom:32 }}>
               <div style={{ display:'flex',justifyContent:'center',marginBottom:20 }} className="login-logo-mobile"><Logo size="sm"/></div>
               <h2 style={{ fontSize:22,fontWeight:800,color:T.textMain,margin:'0 0 6px' }}>Welcome back</h2>
-              <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>Sign in to your clari5pay account</p>
+              <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>Sign in to the <b style={{ color:T.blue }}>{PORTAL_NAME[PORTAL]}</b></p>
             </div>
 
             {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}>⚠ {error}</div>}

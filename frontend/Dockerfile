@@ -9,6 +9,9 @@ COPY . .
 #                            same host and nginx proxies it to the backend container.
 ARG VITE_API_BASE_URL=http://localhost:8001
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+# Which portal this build is: merchant | admin | superadmin | app (default = combined chooser).
+ARG VITE_PORTAL=app
+ENV VITE_PORTAL=$VITE_PORTAL
 RUN npm run build
 
 FROM nginx:alpine

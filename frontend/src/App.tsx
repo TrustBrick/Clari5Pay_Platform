@@ -5,6 +5,8 @@ import { PAGE_TITLES } from './utils/nav';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import LoginPage from './pages/LoginPage';
+import PortalChooser from './pages/PortalChooser';
+import { PORTAL } from './utils/portal';
 import {
   MerchantDashboard, DepositManagement, WithdrawalManagement, SettlementManagement,
   TransactionHistory, BalancePage, RiskPage, MerchantSupportChat, ProfilePage,
@@ -42,6 +44,8 @@ const App: React.FC = () => {
     }
   }, [user]);
 
+  // app.clari5pay.com is just a chooser that routes users to their dedicated portal.
+  if (PORTAL === 'app') return <PortalChooser />;
   if (!user) return <LoginPage />;
 
   // Effective page: fall back to the role default if the current page isn't valid for this role

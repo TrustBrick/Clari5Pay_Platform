@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import type { OtpChallenge, User } from '../types';
 import { authAPI, setAuthToken } from '../services/api';
+import { PORTAL, PORTAL_NAME, ROLE_PORTAL_URL, roleAllowedHere } from '../utils/portal';
 
 interface AuthContextType {
   user: User | null;
@@ -18,7 +19,10 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(() => {
     const stored = localStorage.getItem('clari5pay_user');
-    return stored ? JSON.parse(stored) : null;
+    if (!stored) return null;
+    const u = JSON.parse(stored) as User;
+    // Drop a stale session that doesn't belong on this portal (e.g. opened a different one).
+    return roleAllowedHere(u.role) ? u : null;
   });
   const [token, setToken] = useState<string | null>(() =>
     localStorage.getItem('clari5pay_token')
@@ -26,6 +30,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(false);
 
   const applySession = useCallback((accessToken: string, u: User) => {
+    // Each role-portal only admits its own role; send others to the right portal.
+    if (!roleAllowedHere(u.role)) {
+      const url = ROLE_PORTAL_URL[u.role];
+      throw new Error(`This is the ${PORTAL_NAME[PORTAL]}. Your account signs in at ${url || 'the correct portal'}.`);
+    }
     localStorage.setItem('clari5pay_user', JSON.stringify(u));
     localStorage.setItem('clari5pay_token', accessToken);
     setAuthToken(accessToken);
