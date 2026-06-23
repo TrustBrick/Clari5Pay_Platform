@@ -5,13 +5,13 @@ import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
-import { TxExportButton } from '../components/TxExport';
+import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
 import { ProofGallery } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, MerchantBalance, AdminUpi } from '../types';
+import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, AdminUpi } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
@@ -385,7 +385,8 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
     merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
   );
   const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
-  const grossAmount = sumType(completedTx, 'DEPOSIT') - sumType(completedTx, 'WITHDRAWAL');
+  // Gross = total money volume (deposits + withdrawals + settlements).
+  const grossAmount = sumType(completedTx, 'DEPOSIT') + sumType(completedTx, 'WITHDRAWAL') + sumType(completedTx, 'SETTLEMENT');
   // Commission = fees the platform earns on completed deposits/withdrawals/settlements.
   // Withdrawals and settlements both carry the pay-out fee.
   const commissionAmount = completedTx.reduce((a, t) => {
@@ -418,9 +419,9 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
     <div>
       <div className="ad-stat-money" style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:14 }}>
         <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
-        <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits − Withdrawals" color={T.success}/>
+        <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits + Withdrawals + Settlements" color={T.success}/>
         <StatCard icon="🧾" label="Commission Amount" value={fmt(commissionAmount)} sub="Pay In + Pay Out + Settlement Fees" color={T.info}/>
-        <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Gross (Deposits − Withdrawals) − Commission" color={T.green}/>
+        <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Gross − Commission" color={T.green}/>
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(6,minmax(0,1fr))',gap:12,marginBottom:20 }}>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
@@ -513,6 +514,262 @@ export const AdminTransactionsPage: React.FC = () => {
       </div>
       {active && <RequestModal tx={active} canAct onClose={()=>setActive(null)} onDone={reload}/>}
     </Card>
+  );
+};
+
+// ─── Merchant Analytics (Admin + Super Admin) ───────────────────────────────────
+// One card per merchant business with deposit/withdrawal/settlement totals + gross/
+// commission/net/available. Backend scopes the merchant list by role (Admin → only
+// merchants they created; Super Admin → all). Card amounts are computed client-side
+// from completed transactions so the date-range filter visibly re-scopes them.
+const ANALYTICS_TABS: Array<{ pfx: 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT'; label: string }> = [
+  { pfx: 'DEPOSIT', label: 'Deposits' },
+  { pfx: 'WITHDRAWAL', label: 'Withdrawals' },
+  { pfx: 'SETTLEMENT', label: 'Settlements' },
+];
+const EXPORT_SCOPES: Array<{ value: string; label: string }> = [
+  { value: 'ALL', label: 'Complete Merchant Report' },
+  { value: 'DEPOSIT', label: 'Deposits Only' },
+  { value: 'WITHDRAWAL', label: 'Withdrawals Only' },
+  { value: 'SETTLEMENT', label: 'Settlements Only' },
+];
+
+export const MerchantAnalyticsPage: React.FC = () => {
+  const [stats, setStats] = useState<MerchantStats[]>([]);
+  const [txns, setTxns] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [merchant, setMerchant] = useState('ALL');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [type, setType] = useState('ALL');
+  const [status, setStatus] = useState('ALL');
+  const [drill, setDrill] = useState<MerchantStats | null>(null);
+  const [tab, setTab] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT'>('DEPOSIT');
+  const [exportScope, setExportScope] = useState<Record<string, string>>({});
+
+  const reload = () => Promise.all([transactionAPI.merchantStats(), transactionAPI.getAll()])
+    .then(([s, t]) => { setStats(s); setTxns(t); })
+    .catch(() => { setStats([]); setTxns([]); });
+  useEffect(() => { reload().finally(() => setLoading(false)); }, []);
+  usePoll(() => { if (!drill) reload(); });
+
+  const inRange = (t: Transaction) => (!from || (t.date || '') >= from) && (!to || (t.date || '') <= to);
+  const merchTx = (name: string) => txns.filter(t => t.merchant === name);
+
+  // Card numbers: counts include all statuses in range; amounts + gross/commission/net
+  // use COMPLETED only (fees realise on completion). Available is the current pooled balance.
+  const cardStats = (s: MerchantStats) => {
+    const tx = merchTx(s.name).filter(inRange);
+    const ofType = (pfx: string) => tx.filter(t => t.type.startsWith(pfx));
+    const done = (pfx: string) => ofType(pfx).filter(t => t.status === 'COMPLETED').reduce((a, t) => a + t.amount, 0);
+    const dep = done('DEPOSIT'), wd = done('WITHDRAWAL'), set = done('SETTLEMENT');
+    const pin = (s.payInFee || 0) / 100, pout = (s.payOutFee || 0) / 100;
+    const commission = dep * pin + wd * pout + set * pout;
+    const gross = dep + wd + set;   // total money volume
+    return {
+      depositCount: ofType('DEPOSIT').length, depositAmount: dep,
+      withdrawalCount: ofType('WITHDRAWAL').length, withdrawalAmount: wd,
+      settlementCount: ofType('SETTLEMENT').length, settlementAmount: set,
+      gross, commission, net: gross - commission, available: s.available,
+    };
+  };
+
+  const visible = stats.filter(s => merchant === 'ALL' || s.name === merchant);
+  const typePfx = type === 'ALL' ? null : type.split('_')[0];
+  const tabsShown = ANALYTICS_TABS.filter(t => !typePfx || t.pfx === typePfx);
+
+  // Rows for a merchant scoped by date + status (+ optional type prefix), for tables & export.
+  const scopedRows = (name: string, pfx: string | null) => txns.filter(t =>
+    t.merchant === name && inRange(t)
+    && (status === 'ALL' || t.status === status)
+    && (!pfx || t.type.startsWith(pfx)));
+
+  const dateSub = () => {
+    const parts: string[] = [];
+    if (from || to) parts.push(`Date ${from || 'start'} → ${to || 'today'}`);
+    if (status !== 'ALL') parts.push(`Status ${typeLabel(status)}`);
+    return parts.length ? parts.join(' · ') : 'All dates & statuses';
+  };
+
+  const runExport = (s: MerchantStats) => {
+    const scope = exportScope[s.name] || 'ALL';
+    const pfx = scope === 'ALL' ? null : scope;
+    const rows = scopedRows(s.name, pfx);
+    const scopeLabel = EXPORT_SCOPES.find(e => e.value === scope)?.label || 'Report';
+    exportTransactionsPdf(rows, `${s.name} — ${scopeLabel}`, dateSub());
+  };
+
+  const selStyle = { padding: '8px 12px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 12, outline: 'none', fontFamily: 'inherit' as const };
+
+  if (loading) return <LoadingScreen label="Loading merchant analytics…" />;
+
+  // ── Drill-down: one merchant's transactions, tabbed by type ──
+  if (drill) {
+    // Fee charged on a single transaction: deposits use Pay-In, withdrawals/settlements Pay-Out.
+    const feeOf = (t: Transaction) => {
+      const rate = (t.type.startsWith('DEPOSIT') ? (drill.payInFee || 0) : (drill.payOutFee || 0)) / 100;
+      return t.amount * rate;
+    };
+    // Per-type summary (respects active date + status filters).
+    const summary = (pfx: string) => {
+      const r = scopedRows(drill.name, pfx);
+      return { count: r.length, amount: r.reduce((a, t) => a + t.amount, 0) };
+    };
+    const sumCards: Array<[string, ReturnType<typeof summary>, string]> = [
+      ['Deposits', summary('DEPOSIT'), T.blue],
+      ['Withdrawals', summary('WITHDRAWAL'), T.danger],
+      ['Settlements', summary('SETTLEMENT'), T.info],
+    ];
+    const info: Array<[string, string]> = [
+      ['Business Name', drill.name],
+      ['Merchant Username', drill.username],
+      ['Merchant Email', drill.email],
+      ['Pay-In Fee', `${drill.payInFee}%`],
+      ['Pay-Out Fee', `${drill.payOutFee}%`],
+    ];
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+          <Btn size="sm" variant="secondary" onClick={() => setDrill(null)}>← Back to Analytics</Btn>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: T.textMain }}>{drill.name}</h2>
+          <span style={{ marginLeft: 'auto', fontSize: 12, color: T.textMuted }}>Available: <b style={{ color: T.green }}>{fmt(drill.available)}</b></span>
+        </div>
+        <Card style={{ padding: '14px 18px', marginBottom: 14 }}>
+          <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
+            {info.map(([k, v]) => (
+              <div key={k}><p style={{ margin: 0, fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: T.textMuted, fontWeight: 700 }}>{k}</p><p style={{ margin: '2px 0 0', fontSize: 13, fontWeight: 700, color: T.textMain }}>{v}</p></div>
+            ))}
+          </div>
+        </Card>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 12, marginBottom: 14 }} className="ma-sum">
+          {sumCards.map(([label, s, col]) => (
+            <Card key={label} style={{ padding: 16 }}>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 800, color: col }}>{label}</p>
+              <p style={{ margin: '8px 0 0', fontSize: 12, color: T.textMuted }}>Total {label} Requests: <b style={{ color: T.textMain }}>{s.count}</b></p>
+              <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Total {label} Amount: <b style={{ color: T.textMain }}>{fmt(s.amount)}</b></p>
+            </Card>
+          ))}
+        </div>
+        <style>{`@media(max-width:680px){.ma-sum{grid-template-columns:1fr!important;}}`}</style>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          <Input label="From" type="date" value={from} onChange={e => setFrom(e.target.value)} />
+          <Input label="To" type="date" value={to} onChange={e => setTo(e.target.value)} />
+          <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)}
+            options={[{ value: 'ALL', label: 'All Statuses' }, ...REQUEST_STATUSES.map(v => ({ value: v, label: typeLabel(v) }))]} />
+        </div>
+        <Card>
+          <div style={{ display: 'flex', borderBottom: `1px solid ${T.border}` }}>
+            {tabsShown.map(tb => {
+              const n = scopedRows(drill.name, tb.pfx).length;
+              const on = tab === tb.pfx;
+              return (
+                <button key={tb.pfx} onClick={() => setTab(tb.pfx)}
+                  style={{ flex: 1, padding: '12px 8px', border: 'none', background: on ? T.surface : 'transparent', borderBottom: on ? `2px solid ${T.blue}` : '2px solid transparent', color: on ? T.textMain : T.textMuted, fontWeight: on ? 800 : 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+                  {tb.label} ({n})
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: T.canvas }}>
+                  {['Reference No.', 'Membership ID', 'Member Name', 'Type', 'Amount', 'Fee Amount', 'Status', 'Date & Time'].map(h => (
+                    <th key={h} style={{ textAlign: (h === 'Amount' || h === 'Fee Amount') ? 'right' : 'left', padding: '10px 14px', fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.04em', color: T.textMuted, fontWeight: 800 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {scopedRows(drill.name, tab).map(t => (
+                  <tr key={t.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
+                    <td style={{ padding: '9px 14px', fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{t.ref}</td>
+                    <td style={{ padding: '9px 14px' }}>{t.memberId || '—'}</td>
+                    <td style={{ padding: '9px 14px' }}>{t.member || '—'}</td>
+                    <td style={{ padding: '9px 14px' }}>{typeLabel(t.type)}</td>
+                    <td style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700 }}>{fmt(t.amount)}</td>
+                    <td style={{ padding: '9px 14px', textAlign: 'right', color: T.danger }}>{fmt(feeOf(t))}</td>
+                    <td style={{ padding: '9px 14px' }}><Badge status={t.status} type={t.type} viewerRole="ADMIN" /></td>
+                    <td style={{ padding: '9px 14px', whiteSpace: 'nowrap', color: T.textMuted }}>{t.date} {t.time}</td>
+                  </tr>
+                ))}
+                {scopedRows(drill.name, tab).length === 0 && (
+                  <tr><td colSpan={8} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>No {tab.toLowerCase()} transactions for this selection.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  // ── Analytics overview: one card per merchant ──
+  return (
+    <div>
+      <Card style={{ padding: '14px 18px', marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <Sel label="Merchant" value={merchant} onChange={e => setMerchant(e.target.value)}
+            options={[{ value: 'ALL', label: 'All Merchants' }, ...stats.map(s => ({ value: s.name, label: s.name }))]} />
+          <Input label="From" type="date" value={from} onChange={e => setFrom(e.target.value)} />
+          <Input label="To" type="date" value={to} onChange={e => setTo(e.target.value)} />
+          <Sel label="Transaction Type" value={type} onChange={e => setType(e.target.value)}
+            options={[{ value: 'ALL', label: 'All Types' }, ...REQUEST_TYPES.map(v => ({ value: v, label: typeLabel(v) }))]} />
+          <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)}
+            options={[{ value: 'ALL', label: 'All Statuses' }, ...REQUEST_STATUSES.map(v => ({ value: v, label: typeLabel(v) }))]} />
+          {(from || to || type !== 'ALL' || status !== 'ALL' || merchant !== 'ALL') && (
+            <Btn size="sm" variant="ghost" onClick={() => { setMerchant('ALL'); setFrom(''); setTo(''); setType('ALL'); setStatus('ALL'); }}>Clear</Btn>
+          )}
+        </div>
+      </Card>
+
+      {visible.length === 0 ? (
+        <Card style={{ padding: 40, textAlign: 'center', color: T.textMuted }}>No merchants to display.</Card>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(340px,1fr))', gap: 16 }}>
+          {visible.map(s => {
+            const c = cardStats(s);
+            const rows: Array<[string, string, string?]> = [
+              ['Total Deposit Requests', String(c.depositCount)],
+              ['Deposit Amount', fmt(c.depositAmount)],
+              ['Total Withdrawal Requests', String(c.withdrawalCount)],
+              ['Withdrawal Amount', fmt(c.withdrawalAmount)],
+              ['Total Settlement Requests', String(c.settlementCount)],
+              ['Settlement Amount', fmt(c.settlementAmount)],
+              ['Gross Amount', fmt(c.gross), T.success],
+              ['Commission Amount', fmt(c.commission), T.info],
+              ['Net Amount', fmt(c.net), T.blue],
+              ['Available Balance', fmt(c.available), T.green],
+            ];
+            return (
+              <Card key={s.name} style={{ padding: 20, display: 'flex', flexDirection: 'column' }}>
+                <h3 style={{ margin: '0 0 2px', fontSize: 16, fontWeight: 800, color: T.textMain }}>{s.name}</h3>
+                <p style={{ margin: '0 0 14px', fontSize: 11, color: T.textMuted }}>Pay-In {s.payInFee}% · Pay-Out {s.payOutFee}%</p>
+                <div style={{ flex: 1 }}>
+                  {rows.map(([k, v, col], i) => {
+                    const strong = i >= 6;
+                    return (
+                      <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: i < rows.length - 1 ? `1px solid ${T.borderLight}` : 'none' }}>
+                        <span style={{ fontSize: 12.5, color: strong ? T.textMain : T.textMuted, fontWeight: strong ? 700 : 400 }}>{k}</span>
+                        <span style={{ fontSize: 13, fontWeight: 800, color: col || T.textMain }}>{v}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+                  <Btn size="sm" full onClick={() => { setDrill(s); setTab(tabsShown[0]?.pfx || 'DEPOSIT'); }}>View Transactions</Btn>
+                  <div style={{ display: 'flex', gap: 6, width: '100%' }}>
+                    <select value={exportScope[s.name] || 'ALL'} onChange={e => setExportScope(m => ({ ...m, [s.name]: e.target.value }))} style={{ ...selStyle, flex: 1 }}>
+                      {EXPORT_SCOPES.map(e => <option key={e.value} value={e.value}>{e.label}</option>)}
+                    </select>
+                    <Btn size="sm" variant="secondary" onClick={() => runExport(s)}>⬇ Export</Btn>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -1014,7 +1271,8 @@ export const SaDashboard: React.FC = () => {
   // Settlements carry the same pay-out fee as withdrawals.
   const settlementFees = completedTx.filter(t => t.type.startsWith('SETTLEMENT')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pout || 0), 0);
   const commissionAmount = payInFees + payOutFees + settlementFees;
-  const grossAmount = totalDeposits - totalWithdrawals;   // same definition as the admin dashboard
+  // Gross = total money volume (deposits + withdrawals + settlements) — same as the admin dashboard.
+  const grossAmount = totalDeposits + totalWithdrawals + totalSettlements;
   const netAmount = grossAmount - commissionAmount;
 
   return (

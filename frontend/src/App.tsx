@@ -15,6 +15,7 @@ import {
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
   SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage, SaNewsPage,
+  MerchantAnalyticsPage,
 } from './pages/AdminPages';
 import {
   AllBlogsPage, CreateBlogPage, BlogCategoriesPage, PublishedBlogsPage,
@@ -79,9 +80,11 @@ const App: React.FC = () => {
       profile: <ProfilePage {...props} />,
       'admin-dashboard': <AdminDashboard {...props} />,
       'admin-merchants': <AdminMerchantsPage />,
+      'admin-analytics': <MerchantAnalyticsPage />,
       'admin-transactions': <AdminTransactionsPage />,
       'admin-accounts': <AdminAccountsPage />,
       'sa-dashboard': <SaDashboard />,
+      'sa-analytics': <MerchantAnalyticsPage />,
       'sa-admins': <SaAdminsPage />,
       'sa-news': <SaNewsPage />,
       'sa-logs': <SystemLogsPage />,

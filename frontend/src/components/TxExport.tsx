@@ -8,7 +8,7 @@ import type { Transaction } from '../types';
 const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
 const prettyStatus = (s: string) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-function exportTransactionsPdf(rows: Transaction[], title: string, subtitle: string) {
+export function exportTransactionsPdf(rows: Transaction[], title: string, subtitle: string) {
   const w = window.open('', '_blank', 'width=1000,height=800');
   if (!w) { alert('Please allow pop-ups for this site to export the PDF.'); return; }
   const now = new Date().toLocaleString('en-IN');

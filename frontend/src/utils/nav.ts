@@ -33,6 +33,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
   ADMIN: [
     { key: 'admin-dashboard', icon: '⬡', label: 'Dashboard' },
     { key: 'admin-merchants', icon: '▤', label: 'Merchants' },
+    { key: 'admin-analytics', icon: '📊', label: 'Merchant Analytics' },
     { key: 'admin-transactions', icon: '≡', label: 'All Transactions' },
     { key: 'admin-accounts', icon: '🏦', label: 'Account Management' },
     BLOG_GROUP,
@@ -41,6 +42,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
   SUPER_ADMIN: [
     { key: 'sa-dashboard', icon: '⬡', label: 'Platform Overview' },
     { key: 'sa-admins', icon: '🛡', label: 'Admin Management' },
+    { key: 'sa-analytics', icon: '📊', label: 'Merchant Analytics' },
     { key: 'sa-news', icon: '📰', label: 'News Management' },
     { key: 'sa-logs', icon: '🧾', label: 'System Logs' },
     { key: 'sa-audit', icon: '📋', label: 'Audit Logs' },
@@ -68,10 +70,12 @@ export const PAGE_TITLES: Record<string, string> = {
   profile: 'Profile',
   'admin-dashboard': 'Dashboard',
   'admin-merchants': 'Merchants',
+  'admin-analytics': 'Merchant Analytics',
   'admin-transactions': 'All Transactions',
   'admin-accounts': 'Account Management',
   'sa-dashboard': 'Platform Overview',
   'sa-admins': 'Admin Management',
+  'sa-analytics': 'Merchant Analytics',
   'sa-news': 'News Management',
   'sa-logs': 'System Logs',
   'sa-audit': 'Audit Logs',

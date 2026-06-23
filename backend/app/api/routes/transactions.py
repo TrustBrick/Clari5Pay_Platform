@@ -317,6 +317,60 @@ async def merchant_balances(
     return out
 
 
+@router.get("/merchant-stats")
+async def merchant_stats(
+    db: AsyncSession = Depends(get_db),
+    caller: User = Depends(get_current_admin),
+):
+    """Per-merchant-business analytics for the Merchant Analytics page. Super Admin sees every
+    merchant; an Admin sees only the merchants they created. Merchants sharing a business name
+    are aggregated into one row (same pooling as the balance logic)."""
+    q = select(User).where(User.role == UserRole.MERCHANT)
+    if caller.role != UserRole.SUPER_ADMIN:
+        q = q.where(User.created_by == caller.id)
+    merchants = (await db.execute(q)).scalars().all()
+
+    rep: dict[str, User] = {}
+    name_ids: dict[str, list[int]] = {}
+    for m in merchants:
+        rep.setdefault(m.name, m)
+        name_ids.setdefault(m.name, []).append(m.id)
+
+    out = []
+    for name, user in rep.items():
+        s = await compute_balance(db, user)
+        ids = name_ids[name]
+        txns = (await db.execute(
+            select(Transaction).where(Transaction.merchant_id.in_(ids))
+        )).scalars().all()
+        def cnt(pfx: str) -> int:
+            return sum(1 for t in txns if t.type.value.startswith(pfx))
+        # Gross = total money volume (deposits + withdrawals + settlements).
+        gross = s["totalDeposit"] + s["totalWithdrawn"] + s["totalSettled"]
+        commission = s["payInFees"] + s["payOutFees"] + s["settlementFees"]
+        out.append({
+            "name": name,
+            "merchantId": user.id,
+            "merchantIds": ids,
+            "username": user.username,
+            "email": user.email,
+            "payInFee": user.pay_in_fee or 0,
+            "payOutFee": user.pay_out_fee or 0,
+            "depositCount": cnt("DEPOSIT"),
+            "depositAmount": round(s["totalDeposit"], 2),
+            "withdrawalCount": cnt("WITHDRAWAL"),
+            "withdrawalAmount": round(s["totalWithdrawn"], 2),
+            "settlementCount": cnt("SETTLEMENT"),
+            "settlementAmount": round(s["totalSettled"], 2),
+            "grossAmount": round(gross, 2),
+            "commissionAmount": round(commission, 2),
+            "netAmount": round(gross - commission, 2),
+            "available": round(s["available"], 2),
+        })
+    out.sort(key=lambda r: r["name"].lower())
+    return out
+
+
 @router.get("/member-profile/{member_id}")
 async def member_profile(
     member_id: str,

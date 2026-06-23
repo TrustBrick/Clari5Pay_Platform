@@ -170,6 +170,26 @@ export interface MerchantBalance {
   runningBalance: number;
 }
 
+export interface MerchantStats {
+  name: string;
+  merchantId: number;
+  merchantIds: number[];
+  username: string;
+  email: string;
+  payInFee: number;
+  payOutFee: number;
+  depositCount: number;
+  depositAmount: number;
+  withdrawalCount: number;
+  withdrawalAmount: number;
+  settlementCount: number;
+  settlementAmount: number;
+  grossAmount: number;
+  commissionAmount: number;
+  netAmount: number;
+  available: number;
+}
+
 export interface AdminUpi {
   id: number;
   label: string;
