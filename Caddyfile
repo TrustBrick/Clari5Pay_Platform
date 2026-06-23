@@ -4,8 +4,8 @@
 # built per role), which serves the SPA and proxies /api (+ the chat WebSocket)
 # to the shared backend. WebSockets pass through.
 
-# Merchant portal.
-clari5pay.com {
+# Merchant portal (www → same).
+clari5pay.com, www.clari5pay.com {
 	encode zstd gzip
 	reverse_proxy frontend-merchant:3000
 }
