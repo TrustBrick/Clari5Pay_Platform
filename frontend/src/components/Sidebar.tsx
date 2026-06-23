@@ -64,7 +64,11 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
           {nav.map(item => (
             <div
               key={item.key}
-              onClick={() => { onNav(item.key); onClose(); }}
+              onClick={() => {
+                if (item.href) { window.open(item.href, '_blank', 'noopener,noreferrer'); }
+                else { onNav(item.key); }
+                onClose();
+              }}
               style={{
                 display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:10,cursor:'pointer',marginBottom:2,
                 background:active===item.key ? T.sidebarActive : 'transparent',

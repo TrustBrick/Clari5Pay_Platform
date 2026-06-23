@@ -195,6 +195,9 @@ export interface NavItem {
   icon: string;
   label: string;
   badge?: number;
+  // External link: when set, the sidebar opens this URL in a new tab instead of
+  // switching the in-app page (e.g. the public Blog).
+  href?: string;
 }
 
 export interface Notification {

@@ -12,6 +12,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'balance', icon: '◎', label: 'Balance Enquiry' },
     { key: 'risk', icon: '⚑', label: 'Risk Analysis' },
     { key: 'news', icon: '📰', label: 'News' },
+    { key: 'blog', icon: '📝', label: 'Blog', href: '/blog.html' },
     { key: 'support', icon: '💬', label: 'Customer Support' },
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
@@ -20,6 +21,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'admin-merchants', icon: '▤', label: 'Merchants' },
     { key: 'admin-transactions', icon: '≡', label: 'All Transactions' },
     { key: 'admin-accounts', icon: '🏦', label: 'Account Management' },
+    { key: 'blog', icon: '📝', label: 'Blog', href: '/blog.html' },
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
   SUPER_ADMIN: [
@@ -64,11 +66,11 @@ export const PAGE_TITLES: Record<string, string> = {
 // Maintain Profile + Profile collapse to a single Profile link.
 // Customer Support is available to every merchant role (default for all merchants).
 export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
-  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'news', 'support', 'profile'],
-  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'news', 'support', 'profile'],
-  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'news', 'support', 'profile'],
-  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'news', 'support', 'profile'],
-  MANAGER: ['dashboard', 'templates', 'news', 'support', 'profile'],
+  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'news', 'blog', 'support', 'profile'],
+  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'news', 'blog', 'support', 'profile'],
+  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'news', 'blog', 'support', 'profile'],
+  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'news', 'blog', 'support', 'profile'],
+  MANAGER: ['dashboard', 'templates', 'news', 'blog', 'support', 'profile'],
 };
 
 /**
