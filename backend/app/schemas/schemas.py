@@ -101,6 +101,29 @@ class NewsIn(BaseModel):
     body: str = ""
     image: Optional[str] = None
     published: bool = True
+    priority: str = "Normal"
+    publish_date: Optional[date] = None
+
+
+# ─── Blog Schemas ─────────────────────────────────────────────────────────────
+class BlogCategoryIn(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class BlogIn(BaseModel):
+    title: str
+    category_id: Optional[int] = None
+    short_description: Optional[str] = None
+    content: str = ""
+    cover_image: Optional[str] = None
+    images: list[str] = []
+    tags: list[str] = []
+    status: str = "DRAFT"          # DRAFT | PUBLISHED
+
+
+class BlogStatusIn(BaseModel):
+    status: str                    # DRAFT | PUBLISHED
 
 
 # ─── Transaction Schemas ──────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, LoginRequest, LoginResponse, MerchantBalance, MerchantBankAccount, Notification, NewsPost, OtpChallenge, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -354,16 +354,92 @@ export const newsAPI = {
     const res = await api.get<string[]>('/api/news/sections');
     return res.data;
   },
-  create: async (data: { section: string; title: string; body: string; image?: string | null; published: boolean }) => {
+  create: async (data: { section: string; title: string; body: string; image?: string | null; published: boolean; priority?: string; publish_date?: string | null }) => {
     const res = await api.post<NewsPost>('/api/news', data);
     return res.data;
   },
-  update: async (id: number, data: { section: string; title: string; body: string; image?: string | null; published: boolean }) => {
+  update: async (id: number, data: { section: string; title: string; body: string; image?: string | null; published: boolean; priority?: string; publish_date?: string | null }) => {
     const res = await api.patch<NewsPost>(`/api/news/${id}`, data);
     return res.data;
   },
   remove: async (id: number) => {
     const res = await api.delete(`/api/news/${id}`);
+    return res.data;
+  },
+};
+
+export interface BlogListParams {
+  status?: string;
+  category_id?: number;
+  author?: string;
+  q?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface BlogInput {
+  title: string;
+  category_id?: number | null;
+  short_description?: string;
+  content: string;
+  cover_image?: string | null;
+  images?: string[];
+  tags?: string[];
+  status: string;
+}
+
+export const blogAPI = {
+  list: async (params: BlogListParams = {}) => {
+    const res = await api.get<{ items: BlogPost[]; total: number }>('/api/blogs', { params });
+    return res.data;
+  },
+  stats: async () => {
+    const res = await api.get<BlogStats>('/api/blogs/stats');
+    return res.data;
+  },
+  analytics: async () => {
+    const res = await api.get<BlogAnalytics>('/api/blogs/analytics');
+    return res.data;
+  },
+  get: async (id: number) => {
+    const res = await api.get<BlogPost>(`/api/blogs/${id}`);
+    return res.data;
+  },
+  create: async (data: BlogInput) => {
+    const res = await api.post<BlogPost>('/api/blogs', data);
+    return res.data;
+  },
+  update: async (id: number, data: BlogInput) => {
+    const res = await api.patch<BlogPost>(`/api/blogs/${id}`, data);
+    return res.data;
+  },
+  setStatus: async (id: number, status: string) => {
+    const res = await api.patch<BlogPost>(`/api/blogs/${id}/status`, { status });
+    return res.data;
+  },
+  remove: async (id: number) => {
+    const res = await api.delete(`/api/blogs/${id}`);
+    return res.data;
+  },
+};
+
+export const blogCategoryAPI = {
+  list: async () => {
+    const res = await api.get<BlogCategory[]>('/api/blogs/categories');
+    return res.data;
+  },
+  create: async (data: { name: string; description?: string | null }) => {
+    const res = await api.post<BlogCategory>('/api/blogs/categories', data);
+    return res.data;
+  },
+  update: async (id: number, data: { name: string; description?: string | null }) => {
+    const res = await api.patch<BlogCategory>(`/api/blogs/categories/${id}`, data);
+    return res.data;
+  },
+  remove: async (id: number) => {
+    const res = await api.delete(`/api/blogs/categories/${id}`);
     return res.data;
   },
 };

@@ -308,6 +308,9 @@ class News(Base):
     image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # optional image (data URL)
     author_name: Mapped[str] = mapped_column(String(128), default="Admin", nullable=False)
     published: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Priority (Normal / High / Critical) and an optional scheduled publish date.
+    priority: Mapped[str] = mapped_column(String(16), default="Normal", nullable=False)
+    publish_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -323,3 +326,41 @@ class SupportMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BlogCategory(Base):
+    """A blog category (e.g. Payment Security, Fraud Prevention) managed by admins."""
+    __tablename__ = "blog_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    slug: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class BlogPost(Base):
+    """A blog article authored by an admin / super admin and shown across the platform."""
+    __tablename__ = "blog_posts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    slug: Mapped[Optional[str]] = mapped_column(String(220), index=True, nullable=True)
+    # Nullable so a post survives its category being deleted (set null in code).
+    category_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("blog_categories.id"), nullable=True)
+    short_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")        # sanitized HTML
+    cover_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # data URL
+    images: Mapped[Optional[str]] = mapped_column(Text, nullable=True)             # JSON array of data URLs
+    tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)               # JSON array of strings
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT", nullable=False)  # DRAFT | PUBLISHED
+    author_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    author_name: Mapped[str] = mapped_column(String(128), default="Admin", nullable=False)
+    # Engagement counters.
+    views: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    likes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    shares: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    comments_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

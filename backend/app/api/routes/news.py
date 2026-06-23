@@ -4,14 +4,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import News, User
-from app.core.deps import get_current_user, get_current_super_admin
+from app.core.deps import get_current_user, get_current_admin
 from app.schemas.schemas import NewsIn
 from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/news", tags=["news"])
 
-# The four news sections editors can post under.
-SECTIONS = ["Announcements", "Product Updates", "Offers", "Alerts"]
+# Sections editors can post under (Admins + Super Admins).
+SECTIONS = [
+    "Announcements", "Product Updates", "Offers", "Alerts",
+    "Release Notes", "Security Alerts", "Maintenance Notices",
+]
 
 
 def _ip(request: Request):
@@ -27,6 +30,8 @@ def _n(n: News) -> dict:
         "image": n.image,
         "author": n.author_name,
         "published": n.published,
+        "priority": n.priority,
+        "publishDate": n.publish_date.isoformat() if n.publish_date else None,
         "createdAt": (n.created_at.isoformat() + "Z") if n.created_at else None,
         "updatedAt": (n.updated_at.isoformat() + "Z") if n.updated_at else None,
     }
@@ -55,7 +60,7 @@ async def create_news(
     data: NewsIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    sa: User = Depends(get_current_super_admin),
+    actor: User = Depends(get_current_admin),
 ):
     if not data.title.strip():
         raise HTTPException(status_code=400, detail="Title is required")
@@ -64,13 +69,15 @@ async def create_news(
         title=data.title.strip(),
         body=data.body or "",
         image=data.image,
-        author_name=sa.name,
+        author_name=actor.name,
         published=data.published,
+        priority=data.priority or "Normal",
+        publish_date=data.publish_date,
     )
     db.add(n)
     await db.flush()
-    await log_event(db, "NEWS_CREATED", f"News \"{n.title}\" posted by {sa.name}", actor=sa)
-    await record_audit(db, "NEWS_CREATED", actor=sa, entity_type="news", entity_id=n.id, new=n.title, ip=_ip(request))
+    await log_event(db, "NEWS_CREATED", f"News \"{n.title}\" posted by {actor.name}", actor=actor)
+    await record_audit(db, "NEWS_CREATED", actor=actor, entity_type="news", entity_id=n.id, new=n.title, ip=_ip(request))
     await db.refresh(n)
     return _n(n)
 
@@ -81,7 +88,7 @@ async def update_news(
     data: NewsIn,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    sa: User = Depends(get_current_super_admin),
+    actor: User = Depends(get_current_admin),
 ):
     n = (await db.execute(select(News).where(News.id == news_id))).scalar_one_or_none()
     if not n:
@@ -92,10 +99,12 @@ async def update_news(
     if data.image is not None:
         n.image = data.image or None
     n.published = data.published
+    n.priority = data.priority or "Normal"
+    n.publish_date = data.publish_date
     n.updated_at = datetime.utcnow()
     await db.flush()
-    await log_event(db, "NEWS_UPDATED", f"News \"{n.title}\" updated by {sa.name}", actor=sa)
-    await record_audit(db, "NEWS_UPDATED", actor=sa, entity_type="news", entity_id=n.id, new=n.title, ip=_ip(request))
+    await log_event(db, "NEWS_UPDATED", f"News \"{n.title}\" updated by {actor.name}", actor=actor)
+    await record_audit(db, "NEWS_UPDATED", actor=actor, entity_type="news", entity_id=n.id, new=n.title, ip=_ip(request))
     await db.refresh(n)
     return _n(n)
 
@@ -105,13 +114,13 @@ async def delete_news(
     news_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    sa: User = Depends(get_current_super_admin),
+    actor: User = Depends(get_current_admin),
 ):
     n = (await db.execute(select(News).where(News.id == news_id))).scalar_one_or_none()
     if not n:
         raise HTTPException(status_code=404, detail="News not found")
     title = n.title
     await db.delete(n)
-    await log_event(db, "NEWS_DELETED", f"News \"{title}\" deleted by {sa.name}", actor=sa)
-    await record_audit(db, "NEWS_DELETED", actor=sa, entity_type="news", entity_id=news_id, old=title, ip=_ip(request))
+    await log_event(db, "NEWS_DELETED", f"News \"{title}\" deleted by {actor.name}", actor=actor)
+    await record_audit(db, "NEWS_DELETED", actor=actor, entity_type="news", entity_id=news_id, old=title, ip=_ip(request))
     return {"message": "News deleted"}

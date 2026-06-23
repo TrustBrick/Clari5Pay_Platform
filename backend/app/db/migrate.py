@@ -38,6 +38,8 @@ _NEW_COLUMNS = [
     ("transactions", "merchant_proofs", "TEXT"),
     ("admin_upis", "account_ref", "VARCHAR(40)"),
     ("audit_logs", "location", "VARCHAR(128)"),
+    ("news", "priority", "VARCHAR(16) DEFAULT 'Normal' NOT NULL"),
+    ("news", "publish_date", "DATE"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type

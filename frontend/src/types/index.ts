@@ -196,8 +196,12 @@ export interface NavItem {
   label: string;
   badge?: number;
   // External link: when set, the sidebar opens this URL in a new tab instead of
-  // switching the in-app page (e.g. the public Blog).
+  // switching the in-app page (legacy).
   href?: string;
+  // Submenu: a group item renders an expandable list of children.
+  children?: NavItem[];
+  // Gate a child to ADMIN / SUPER_ADMIN only (e.g. Create Blog, Analytics).
+  adminOnly?: boolean;
 }
 
 export interface Notification {
@@ -281,6 +285,57 @@ export interface NewsPost {
   image?: string | null;
   author: string;
   published: boolean;
+  priority?: string;
+  publishDate?: string | null;
   createdAt: string;
   updatedAt?: string | null;
+}
+
+export interface BlogCategory {
+  id: number;
+  name: string;
+  slug?: string | null;
+  description?: string | null;
+  postCount?: number | null;
+  createdAt?: string | null;
+}
+
+export interface BlogPost {
+  id: number;
+  title: string;
+  slug?: string | null;
+  categoryId?: number | null;
+  category?: string | null;
+  shortDescription?: string | null;
+  coverImage?: string | null;
+  content?: string;
+  images?: string[];
+  status: 'DRAFT' | 'PUBLISHED';
+  author: string;
+  authorId?: number | null;
+  views: number;
+  likes: number;
+  shares: number;
+  commentsCount: number;
+  readMinutes?: number;
+  tags?: string[];
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  publishedAt?: string | null;
+}
+
+export interface BlogStats {
+  total: number;
+  published: number;
+  draft: number;
+  totalViews: number;
+  totalCategories: number;
+  mostViewed?: { id: number; title: string; views: number } | null;
+}
+
+export interface BlogAnalytics {
+  topViewed: Array<{ id: number; title: string; views: number; reads: number; avgReadTime: number }>;
+  categoryPerformance: Array<{ category: string; views: number; posts: number }>;
+  mostPopularCategory?: string | null;
+  monthly: Array<{ month: string; key: string; published: number; views: number }>;
 }

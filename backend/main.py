@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.db.session import engine, Base
 from app.db.migrate import ensure_schema
-from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news, admin_upis
+from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news, admin_upis, blogs
 
 
 @asynccontextmanager
@@ -15,6 +15,12 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     # Reconcile new columns / enum values on already-seeded databases.
     await ensure_schema(engine)
+    # Idempotently seed the blog module (categories + sample posts) — no-op once present.
+    from app.db.session import AsyncSessionLocal
+    from app.db.seed import seed_blog
+    async with AsyncSessionLocal() as db:
+        await seed_blog(db)
+        await db.commit()
     yield
     await engine.dispose()
 
@@ -52,6 +58,7 @@ app.include_router(notifications.router)
 app.include_router(system_logs.router)
 app.include_router(system_logs.audit_router)
 app.include_router(news.router)
+app.include_router(blogs.router)
 app.include_router(ai.router)
 
 

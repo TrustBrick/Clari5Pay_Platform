@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { T } from '../utils/theme';
 import { navForUser } from '../utils/nav';
 import { Logo } from './UI';
-import type { User } from '../types';
+import type { User, NavItem } from '../types';
 
 interface SidebarProps {
   user: User;
@@ -15,6 +15,77 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, onClose }) => {
   const nav = navForUser(user);
+  const isStaff = user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+
+  const groupIsOpen = (item: NavItem) => {
+    const childActive = item.children?.some(c => c.key === active);
+    return openGroups[item.key] ?? !!childActive;
+  };
+
+  // A single clickable nav row (used for top-level leaves and submenu children).
+  const renderLeaf = (it: NavItem, indent = false) => {
+    const isActive = active === it.key;
+    return (
+      <div
+        key={it.key}
+        onClick={() => {
+          if (it.href) { window.open(it.href, '_blank', 'noopener,noreferrer'); }
+          else { onNav(it.key); }
+          onClose();
+        }}
+        style={{
+          display:'flex',alignItems:'center',gap:10,padding:indent ? '8px 12px 8px 22px' : '9px 12px',
+          borderRadius:10,cursor:'pointer',marginBottom:2,
+          background:isActive ? T.sidebarActive : 'transparent',
+          color:isActive ? '#7eb8ff' : 'rgba(255,255,255,0.6)',
+          fontWeight:isActive ? 700 : 500,
+          fontSize:indent ? 12.5 : 13,transition:'all 0.15s ease',
+          borderLeft:isActive ? `3px solid ${T.blue}` : '3px solid transparent',
+        }}
+        onMouseEnter={e => { if(!isActive){ (e.currentTarget as HTMLDivElement).style.background=T.sidebarHover; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.9)'; } }}
+        onMouseLeave={e => { if(!isActive){ (e.currentTarget as HTMLDivElement).style.background='transparent'; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.6)'; } }}
+      >
+        <span style={{ fontSize:indent ? 13 : 15,width:20,textAlign:'center',flexShrink:0 }}>{it.icon}</span>
+        <span style={{ flex:1 }}>{it.label}</span>
+        {it.badge && (
+          <span style={{ background:T.danger,color:'#fff',borderRadius:10,fontSize:10,padding:'1px 7px',fontWeight:800 }}>{it.badge}</span>
+        )}
+      </div>
+    );
+  };
+
+  // A submenu group: an expandable header + its (role-filtered) children.
+  const renderGroup = (item: NavItem) => {
+    const children = (item.children || []).filter(c => !c.adminOnly || isStaff);
+    if (children.length === 0) return null;
+    const opened = groupIsOpen(item);
+    const childActive = children.some(c => c.key === active);
+    return (
+      <div key={item.key} style={{ marginBottom:2 }}>
+        <div
+          onClick={() => setOpenGroups(g => ({ ...g, [item.key]: !opened }))}
+          style={{
+            display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:10,cursor:'pointer',
+            background: childActive && !opened ? T.sidebarActive : 'transparent',
+            color: childActive ? '#7eb8ff' : 'rgba(255,255,255,0.6)',
+            fontWeight: childActive ? 700 : 500, fontSize:13, transition:'all 0.15s ease',
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background=T.sidebarHover; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = (childActive && !opened) ? T.sidebarActive : 'transparent'; }}
+        >
+          <span style={{ fontSize:15,width:20,textAlign:'center',flexShrink:0 }}>{item.icon}</span>
+          <span style={{ flex:1 }}>{item.label}</span>
+          <span style={{ fontSize:10,transition:'transform 0.2s ease',transform:opened ? 'rotate(90deg)' : 'none',opacity:0.7 }}>▸</span>
+        </div>
+        {opened && (
+          <div className="animate-fade-in" style={{ marginTop:2 }}>
+            {children.map(c => renderLeaf(c, true))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -61,32 +132,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
 
         {/* Nav */}
         <nav style={{ flex:1,padding:'10px',overflowY:'auto' }}>
-          {nav.map(item => (
-            <div
-              key={item.key}
-              onClick={() => {
-                if (item.href) { window.open(item.href, '_blank', 'noopener,noreferrer'); }
-                else { onNav(item.key); }
-                onClose();
-              }}
-              style={{
-                display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:10,cursor:'pointer',marginBottom:2,
-                background:active===item.key ? T.sidebarActive : 'transparent',
-                color:active===item.key ? '#7eb8ff' : 'rgba(255,255,255,0.6)',
-                fontWeight:active===item.key ? 700 : 500,
-                fontSize:13,transition:'all 0.15s ease',
-                borderLeft:active===item.key ? `3px solid ${T.blue}` : '3px solid transparent',
-              }}
-              onMouseEnter={e => { if(active!==item.key){ (e.currentTarget as HTMLDivElement).style.background=T.sidebarHover; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.9)'; } }}
-              onMouseLeave={e => { if(active!==item.key){ (e.currentTarget as HTMLDivElement).style.background='transparent'; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.6)'; } }}
-            >
-              <span style={{ fontSize:15,width:20,textAlign:'center',flexShrink:0 }}>{item.icon}</span>
-              <span style={{ flex:1 }}>{item.label}</span>
-              {item.badge && (
-                <span style={{ background:T.danger,color:'#fff',borderRadius:10,fontSize:10,padding:'1px 7px',fontWeight:800 }}>{item.badge}</span>
-              )}
-            </div>
-          ))}
+          {nav.map(item => item.children ? renderGroup(item) : renderLeaf(item))}
         </nav>
 
         <div style={{ padding:'10px',borderTop:'1px solid rgba(255,255,255,0.08)' }}>

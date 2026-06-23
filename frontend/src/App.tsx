@@ -16,14 +16,24 @@ import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
   SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage, SaNewsPage,
 } from './pages/AdminPages';
+import {
+  AllBlogsPage, CreateBlogPage, BlogCategoriesPage, PublishedBlogsPage,
+  DraftBlogsPage, BlogAnalyticsPage,
+} from './pages/BlogPages';
 
 const defaultPageFor = (role?: string) =>
   role === 'MERCHANT' ? 'dashboard' : role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard';
+
+// Blog write-pages require staff; blog read-pages are open to every role.
+const BLOG_WRITE_PAGES = ['blog-create', 'blog-drafts', 'blog-analytics'];
 
 // Is `page` a valid destination for this role? (prevents showing another role's page)
 const pageAllowed = (role: string, page: string) => {
   if (!page) return false;
   if (page === 'profile') return true;
+  if (page.startsWith('blog-')) {
+    return BLOG_WRITE_PAGES.includes(page) ? (role === 'ADMIN' || role === 'SUPER_ADMIN') : true;
+  }
   if (role === 'SUPER_ADMIN') return page.startsWith('sa-');
   if (role === 'ADMIN') return page.startsWith('admin-');
   return !page.startsWith('sa-') && !page.startsWith('admin-'); // MERCHANT
@@ -76,6 +86,12 @@ const App: React.FC = () => {
       'sa-news': <SaNewsPage />,
       'sa-logs': <SystemLogsPage />,
       'sa-audit': <AuditLogsPage />,
+      'blog-all': <AllBlogsPage user={user} />,
+      'blog-create': <CreateBlogPage user={user} />,
+      'blog-categories': <BlogCategoriesPage user={user} />,
+      'blog-published': <PublishedBlogsPage user={user} />,
+      'blog-drafts': <DraftBlogsPage user={user} />,
+      'blog-analytics': <BlogAnalyticsPage user={user} />,
     };
     return map[activePage] || map[defaultPageFor(user.role)];
   };
