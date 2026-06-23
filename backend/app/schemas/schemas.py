@@ -215,6 +215,11 @@ class BankAccountCreate(BaseModel):
 class AdminUpiCreate(BaseModel):
     label: Optional[str] = None
     upiId: str
+    accountRef: Optional[str] = None   # the receiving account this UPI belongs to
+
+
+class AdminUpiLink(BaseModel):
+    accountRef: Optional[str] = None
 
 
 # ─── Account Schemas ──────────────────────────────────────────────────────────
@@ -228,6 +233,7 @@ class AccountCreate(BaseModel):
     account_type: AccountType
     status: str = "ACTIVE"
     merchant_id: Optional[int] = None
+    upiId: Optional[str] = None   # optional UPI to link to this account on creation
 
 
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────

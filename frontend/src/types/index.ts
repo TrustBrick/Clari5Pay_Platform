@@ -153,9 +153,14 @@ export interface AccountBalance {
   branch: string;
   bankName: string;
   status: string;
+  bankDeposited?: number;
+  upiDeposited?: number;
   totalDeposited: number;
-  totalFees: number;
-  available: number;        // net received into this admin account
+  totalFees?: number;
+  withdrawals?: number;
+  settlements?: number;
+  available: number;        // deposits − withdrawals − settlements (all channels)
+  linkedUpis?: { id: number; label: string; upiId: string; status: string }[];
   merchants: AccountMerchantBalance[];
 }
 
@@ -169,6 +174,7 @@ export interface AdminUpi {
   id: number;
   label: string;
   upiId: string;
+  accountRef?: string | null;
   status: string;
   createdDate: string;
   createdTime: string;

@@ -54,6 +54,9 @@ const RequestModal: React.FC<{
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountRef, setAccountRef] = useState('');
   const [reusedRef, setReusedRef] = useState('');
+  const [sendVia, setSendVia] = useState<'BANK' | 'UPI'>('BANK');   // deposit: send a bank account or a linked UPI
+  const [linkedUpis, setLinkedUpis] = useState<AdminUpi[]>([]);
+  const [upiId, setUpiId] = useState('');
   const [receipt, setReceipt] = useState<string | null>(null);
   const [payUtr, setPayUtr] = useState('');
   const [saving, setSaving] = useState(false);
@@ -124,6 +127,12 @@ const RequestModal: React.FC<{
     }).catch(()=>{});
   }, [chooseStep, tx.memberId]);
 
+  // Load UPIs that belong to an account — the agent can send one instead of a bank account.
+  useEffect(() => {
+    if (!chooseStep) return;
+    adminUpiAPI.listActive().then(rows => setLinkedUpis(rows.filter(u => u.accountRef))).catch(()=>{});
+  }, [chooseStep]);
+
   const onReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (f) setReceipt(await fileToDataUrl(f));
@@ -146,6 +155,19 @@ const RequestModal: React.FC<{
       showToast(`${tx.ref} — account details sent`);
       onDone?.(); onClose();
     } catch { showToast('Failed to send account', 'error'); }
+    finally { setSaving(false); }
+  };
+
+  // Send a linked UPI — the deposit is credited to that UPI's parent account.
+  const sendUpi = async () => {
+    const u = linkedUpis.find(x => x.upiId === upiId);
+    if (!u) { showToast('Select a UPI ID', 'error'); return; }
+    setSaving(true);
+    try {
+      await transactionAPI.submitAccount(tx.id, { adminUpiId: u.upiId, adminRef: u.accountRef || undefined });
+      showToast(`${tx.ref} — UPI sent`);
+      onDone?.(); onClose();
+    } catch { showToast('Failed to send UPI', 'error'); }
     finally { setSaving(false); }
   };
 
@@ -238,17 +260,38 @@ const RequestModal: React.FC<{
 
       {chooseStep && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
-          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Select an account to send ({accounts.length} active)</p>
-          <Sel label="Account" value={accountRef} onChange={e=>setAccountRef(e.target.value)}
-            options={[{ value:'', label:'— Select an account —' }, ...accounts.map(a => ({ value:a.referenceNumber, label:`${a.accountName} — ${a.bankName} (A/C ${a.accountNumber})` }))]} />
-          {reusedRef && accountRef === reusedRef && (
-            <p style={{ fontSize:11,color:T.success,margin:'-8px 0 10px',fontWeight:600 }}>↻ Reused from Member {tx.memberId}'s previous deposit — change it if needed.</p>
-          )}
-          <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>A PNG of the selected account is auto-generated and sent to the merchant.</p>
-          <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={sendAccount} disabled={saving||!accountRef}>{saving ? 'Sending...' : '🏦 Send Account'}</Btn>
-            <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+          <div style={{ display:'flex',gap:8,marginBottom:12 }}>
+            <Btn size="sm" variant={sendVia==='BANK'?'primary':'ghost'} onClick={()=>setSendVia('BANK')}>🏦 Bank Account</Btn>
+            <Btn size="sm" variant={sendVia==='UPI'?'primary':'ghost'} onClick={()=>setSendVia('UPI')}>📲 UPI ID</Btn>
           </div>
+          {sendVia === 'BANK' ? (
+            <>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Select an account to send ({accounts.length} active)</p>
+              <Sel label="Account" value={accountRef} onChange={e=>setAccountRef(e.target.value)}
+                options={[{ value:'', label:'— Select an account —' }, ...accounts.map(a => ({ value:a.referenceNumber, label:`${a.accountName} — ${a.bankName} (A/C ${a.accountNumber})` }))]} />
+              {reusedRef && accountRef === reusedRef && (
+                <p style={{ fontSize:11,color:T.success,margin:'-8px 0 10px',fontWeight:600 }}>↻ Reused from Member {tx.memberId}'s previous deposit — change it if needed.</p>
+              )}
+              <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>A PNG of the selected account is auto-generated and sent to the merchant.</p>
+              <div style={{ display:'flex',gap:10 }}>
+                <Btn onClick={sendAccount} disabled={saving||!accountRef}>{saving ? 'Sending...' : '🏦 Send Account'}</Btn>
+                <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+              </div>
+            </>
+          ) : (
+            <>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Select a UPI to send ({linkedUpis.length} linked)</p>
+              {linkedUpis.length === 0
+                ? <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 12px' }}>No account-linked UPIs yet. Add one in Account Management → an account's "Add UPI".</p>
+                : <Sel label="UPI ID" value={upiId} onChange={e=>setUpiId(e.target.value)}
+                    options={[{ value:'', label:'— Select a UPI —' }, ...linkedUpis.map(u => ({ value:u.upiId, label:`${u.upiId}  ·  ${u.label}` }))]} />}
+              <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>The deposit is credited to this UPI's parent account. No QR is sent.</p>
+              <div style={{ display:'flex',gap:10 }}>
+                <Btn onClick={sendUpi} disabled={saving||!upiId}>{saving ? 'Sending...' : '📲 Send UPI'}</Btn>
+                <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -622,7 +665,7 @@ export const AdminAccountsPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [detail, setDetail] = useState<Account | null>(null);
   const [showCreate, setShowCreate] = useState(false);
-  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE' };
+  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'' };
   const [form, setForm] = useState(empty);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
@@ -633,7 +676,7 @@ export const AdminAccountsPage: React.FC = () => {
   // Admin UPI IDs (separate from bank accounts).
   const [upis, setUpis] = useState<AdminUpi[]>([]);
   const [showAddUpi, setShowAddUpi] = useState(false);
-  const [upiForm, setUpiForm] = useState({ label:'', upiId:'' });
+  const [upiForm, setUpiForm] = useState({ label:'', upiId:'', accountRef:'' });
 
   const reload = () => {
     accountAPI.list().then(setAccounts).catch(()=>{});
@@ -644,13 +687,18 @@ export const AdminAccountsPage: React.FC = () => {
   const addUpi = async () => {
     if (!upiForm.upiId.includes('@')) { showToast('Enter a valid UPI ID (name@bank)','error'); return; }
     try {
-      await adminUpiAPI.create({ label: upiForm.label || undefined, upiId: upiForm.upiId.trim() });
-      setUpiForm({ label:'', upiId:'' }); setShowAddUpi(false); await reload(); showToast('UPI ID saved');
+      await adminUpiAPI.create({ label: upiForm.label || undefined, upiId: upiForm.upiId.trim(), accountRef: upiForm.accountRef || undefined });
+      setUpiForm({ label:'', upiId:'', accountRef:'' }); setShowAddUpi(false); await reload(); showToast('UPI ID saved');
     } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to save UPI','error'); }
   };
   const toggleUpi = async (u: AdminUpi) => {
     try { await adminUpiAPI.toggle(u.id); await reload(); } catch { showToast('Failed to update UPI','error'); }
   };
+  const relinkUpi = async (u: AdminUpi, ref: string) => {
+    try { await adminUpiAPI.link(u.id, ref || null); await reload(); showToast('UPI link updated'); }
+    catch { showToast('Failed to link UPI','error'); }
+  };
+  const acctName = (ref?: string | null) => accounts.find(a => a.referenceNumber === ref)?.accountName;
   useEffect(() => { reload(); }, []);
   usePoll(() => { if (!detail && !showCreate && !toggleAcc) reload(); });
 
@@ -736,15 +784,16 @@ export const AdminAccountsPage: React.FC = () => {
         <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,gap:8,flexWrap:'wrap' }}>
           <div>
             <h2 style={{ margin:'0 0 2px',fontSize:16,fontWeight:800 }}>Admin UPI IDs</h2>
-            <p style={{ margin:0,fontSize:12,color:T.textMuted }}>Saved UPI IDs for receiving deposits — pick one instead of re-typing on each UPI/QR request.</p>
+            <p style={{ margin:0,fontSize:12,color:T.textMuted }}>UPI IDs for receiving deposits — each links to a parent account; deposits via a UPI credit that account.</p>
           </div>
           <Btn onClick={()=>setShowAddUpi(v=>!v)}>{showAddUpi ? 'Cancel' : '+ Add UPI'}</Btn>
         </div>
         <Card>
           {showAddUpi && (
             <div style={{ display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end',padding:'14px 18px',borderBottom:`1px solid ${T.border}`,background:T.canvas }}>
-              <div style={{ flex:'1 1 200px' }}><Input label="Name / Label" value={upiForm.label} onChange={e=>setUpiForm(f=>({...f,label:e.target.value}))} placeholder="e.g. Clari5Pay HDFC"/></div>
-              <div style={{ flex:'1 1 220px' }}><Input label="UPI ID (VPA)" value={upiForm.upiId} onChange={e=>setUpiForm(f=>({...f,upiId:e.target.value}))} placeholder="e.g. clari5pay@hdfcbank" required/></div>
+              <div style={{ flex:'1 1 180px' }}><Input label="Name / Label" value={upiForm.label} onChange={e=>setUpiForm(f=>({...f,label:e.target.value}))} placeholder="e.g. Satish Kumar"/></div>
+              <div style={{ flex:'1 1 200px' }}><Input label="UPI ID (VPA)" value={upiForm.upiId} onChange={e=>setUpiForm(f=>({...f,upiId:e.target.value}))} placeholder="e.g. satish@ybl" required/></div>
+              <div style={{ flex:'1 1 200px' }}><Sel label="Linked Account" value={upiForm.accountRef} onChange={e=>setUpiForm(f=>({...f,accountRef:e.target.value}))} options={[{value:'',label:'— Auto-link by name —'}, ...accounts.map(a=>({value:a.referenceNumber,label:`${a.accountName} (${a.referenceNumber})`}))]} /></div>
               <Btn onClick={addUpi} disabled={!upiForm.upiId.includes('@')}>Save UPI</Btn>
             </div>
           )}
@@ -752,17 +801,24 @@ export const AdminAccountsPage: React.FC = () => {
             <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
               <thead>
                 <tr style={{ background:T.canvas }}>
-                  {['UPI ID','Name / Label','Status','Action'].map(h=>(
+                  {['UPI ID','Name / Label','Linked Account','Status','Action'].map(h=>(
                     <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {upis.length === 0 && <tr><td colSpan={4} style={{ padding:28,textAlign:'center',color:T.textMuted }}>No UPI IDs saved yet — add one to reuse it on UPI/QR deposits.</td></tr>}
+                {upis.length === 0 && <tr><td colSpan={5} style={{ padding:28,textAlign:'center',color:T.textMuted }}>No UPI IDs saved yet — add one and link it to an account.</td></tr>}
                 {upis.map((u,i)=>(
                   <tr key={u.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                     <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{u.upiId}</td>
                     <td style={{ padding:'11px 14px',color:T.textMuted }}>{u.label}</td>
+                    <td style={{ padding:'8px 14px' }}>
+                      <select value={u.accountRef||''} onChange={e=>relinkUpi(u, e.target.value)}
+                        style={{ padding:'6px 8px',border:`1.5px solid ${u.accountRef?T.border:T.warning}`,borderRadius:8,fontSize:11,fontFamily:'inherit',maxWidth:170,outline:'none' }}>
+                        <option value="">— Not linked —</option>
+                        {accounts.map(a=> <option key={a.referenceNumber} value={a.referenceNumber}>{a.accountName}</option>)}
+                      </select>
+                    </td>
                     <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:u.status==='ACTIVE'?T.successBg:T.dangerBg,color:u.status==='ACTIVE'?T.success:T.danger }}>{u.status}</span></td>
                     <td style={{ padding:'11px 14px' }}><Btn size="sm" variant={u.status==='ACTIVE'?'danger':'success'} onClick={()=>toggleUpi(u)}>{u.status==='ACTIVE'?'Deactivate':'Activate'}</Btn></td>
                   </tr>
@@ -782,15 +838,28 @@ export const AdminAccountsPage: React.FC = () => {
         )}
         {balances.filter(b => b.merchants.length).map(b => (
           <Card key={b.referenceNumber} style={{ marginBottom:14 }}>
-            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',padding:'14px 18px',borderBottom:`1px solid ${T.border}` }}>
-              <div>
-                <span style={{ fontWeight:800,fontSize:14,color:T.textMain }}>{b.accountName}</span>
-                <span style={{ marginLeft:8,fontSize:12,color:T.textMuted }}>{b.bankName} · A/C {b.accountNumber}</span>
-              </div>
-              <div style={{ display:'flex',gap:10,alignItems:'center' }}>
+            <div style={{ padding:'14px 18px',borderBottom:`1px solid ${T.border}` }}>
+              <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap' }}>
+                <div>
+                  <span style={{ fontWeight:800,fontSize:14,color:T.textMain }}>{b.accountName}</span>
+                  <span style={{ marginLeft:8,fontSize:12,color:T.textMuted }}>{b.bankName} · A/C {b.accountNumber}</span>
+                </div>
                 <code style={{ background:T.infoBg,color:T.blue,padding:'2px 7px',borderRadius:5,fontSize:11,fontWeight:700 }}>{b.referenceNumber}</code>
-                <span style={{ fontSize:12,color:T.textMuted }}>Total deposited: <b style={{ color:T.textMain }}>{fmt(b.totalDeposited)}</b></span>
               </div>
+              <div style={{ display:'flex',gap:18,flexWrap:'wrap',marginTop:10,fontSize:12,color:T.textMuted }}>
+                <span>Bank: <b style={{ color:T.textMain }}>{fmt(b.bankDeposited ?? 0)}</b></span>
+                <span>UPI: <b style={{ color:T.textMain }}>{fmt(b.upiDeposited ?? 0)}</b></span>
+                <span>Total Deposits: <b style={{ color:T.textMain }}>{fmt(b.totalDeposited)}</b></span>
+                <span>Withdrawals: <b style={{ color:T.textMain }}>{fmt(b.withdrawals ?? 0)}</b></span>
+                <span>Settlements: <b style={{ color:T.textMain }}>{fmt(b.settlements ?? 0)}</b></span>
+                <span style={{ color:T.success }}>Available: <b>{fmt(b.available)}</b></span>
+              </div>
+              {b.linkedUpis && b.linkedUpis.length > 0 && (
+                <div style={{ display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginTop:8 }}>
+                  <span style={{ fontSize:11,color:T.textMuted }}>Linked UPIs:</span>
+                  {b.linkedUpis.map(u => <code key={u.id} style={{ background:T.canvas,color:T.textMain,padding:'2px 7px',borderRadius:5,fontSize:11 }}>{u.upiId}</code>)}
+                </div>
+              )}
             </div>
             <div style={{ overflowX:'auto' }}>
               <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
@@ -870,6 +939,7 @@ export const AdminAccountsPage: React.FC = () => {
             <Input label="Branch" value={form.branch} onChange={e=>set('branch',e.target.value)} required/>
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
+            <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>
           </div>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>

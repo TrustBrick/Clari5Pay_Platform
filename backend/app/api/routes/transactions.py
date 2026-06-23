@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
@@ -64,7 +64,7 @@ async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> 
 
 
 # Shown when a request's member name doesn't match the name already on file for that ID.
-MEMBER_NAME_MISMATCH_MSG = "This Membership ID is already associated with another member name."
+MEMBER_NAME_MISMATCH_MSG = "This Membership ID is already associated with another member."
 
 # Proof/slip upload limits (mirrored on the frontend).
 MAX_PROOFS = 3
@@ -533,20 +533,23 @@ async def account_submit(
             detail="Select an account to send",
         )
     tx = await _get_tx(tx_id, db)
-    tx.admin_ref = data.adminRef
     tx.admin_bank_details = data.adminBankDetails
     tx.admin_upi_id = data.adminUpiId
     if data.adminProof:
         tx.admin_proof = data.adminProof
-    # UPI/QR deposits: the QR (rendered from the UPI ID + amount) is valid for 15 minutes.
-    is_upi_qr = tx.type.value.startswith("DEPOSIT") and (tx.deposit_type or "").upper() in UPI_QR_TYPES
-    if is_upi_qr and data.adminUpiId:
-        tx.qr_expires_at = datetime.utcnow() + timedelta(minutes=QR_VALIDITY_MINUTES)
-        tx.admin_bank_details = None  # never expose bank details for UPI/QR payments
-    # Remember which managed account was assigned to this Member ID so repeat deposits reuse it.
-    elif data.adminRef and data.adminBankDetails and tx.member_id and data.adminRef.startswith("ACC"):
+    ref = data.adminRef
+    # A sent UPI always belongs to a receiving account → credit that parent account so its
+    # deposits (bank + UPI) roll up together. No QR is generated.
+    if data.adminUpiId:
+        upi_row = (await db.execute(select(AdminUpi).where(AdminUpi.upi_id == data.adminUpiId))).scalar_one_or_none()
+        if upi_row and upi_row.account_ref:
+            ref = upi_row.account_ref
+        tx.admin_bank_details = None  # a UPI send doesn't also expose bank details
+    tx.admin_ref = ref
+    # Remember which managed account served this Member ID (drives reuse + per-account reporting).
+    if ref and tx.member_id and ref.startswith("ACC"):
         db.add(AccountTransaction(
-            reference_number=data.adminRef, member_id=tx.member_id,
+            reference_number=ref, member_id=tx.member_id,
             transaction_reference_number=tx.ref, transaction_date=date.today(),
             transaction_time=datetime.now().strftime("%H:%M:%S"),
         ))

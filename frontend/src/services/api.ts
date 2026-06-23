@@ -205,8 +205,12 @@ export const adminUpiAPI = {
     const res = await api.get<AdminUpi[]>('/api/admin-upis/active');
     return res.data;
   },
-  create: async (data: { label?: string; upiId: string }) => {
+  create: async (data: { label?: string; upiId: string; accountRef?: string }) => {
     const res = await api.post<AdminUpi>('/api/admin-upis', data);
+    return res.data;
+  },
+  link: async (id: number, accountRef: string | null) => {
+    const res = await api.patch<AdminUpi>(`/api/admin-upis/${id}/account`, { accountRef });
     return res.data;
   },
   toggle: async (id: number, reason?: string) => {

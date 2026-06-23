@@ -195,6 +195,8 @@ class AdminUpi(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     label: Mapped[str] = mapped_column(String(128), nullable=False)        # holder / nickname
     upi_id: Mapped[str] = mapped_column(String(64), nullable=False)        # the VPA, e.g. name@bank
+    # The receiving Account this UPI belongs to — deposits via this UPI credit that account.
+    account_ref: Mapped[Optional[str]] = mapped_column(String(40), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(24), default="ACTIVE", nullable=False)
     created_date: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     created_time: Mapped[str] = mapped_column(String(16), nullable=False, default="")

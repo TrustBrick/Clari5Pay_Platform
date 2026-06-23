@@ -1,11 +1,11 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.db.session import get_db
-from app.models.models import AdminUpi, User
+from app.models.models import AdminUpi, AccountMaster, User
 from app.core.deps import get_current_admin
-from app.schemas.schemas import AdminUpiCreate, ReasonRequest
+from app.schemas.schemas import AdminUpiCreate, AdminUpiLink, ReasonRequest
 from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/admin-upis", tags=["admin-upis"])
@@ -20,10 +20,22 @@ def _u(u: AdminUpi) -> dict:
         "id": u.id,
         "label": u.label,
         "upiId": u.upi_id,
+        "accountRef": u.account_ref,
         "status": u.status,
         "createdDate": str(u.created_date),
         "createdTime": u.created_time,
     }
+
+
+async def _auto_account_ref(db: AsyncSession, label: str) -> str | None:
+    """Auto-link by name: if exactly one Account holder name matches the label, return its
+    reference. On 0 or multiple matches, return None (admin picks the account manually)."""
+    if not label:
+        return None
+    matches = (await db.execute(
+        select(AccountMaster).where(func.lower(AccountMaster.account_name) == label.strip().lower())
+    )).scalars().all()
+    return matches[0].reference_number if len(matches) == 1 else None
 
 
 @router.get("")
@@ -60,9 +72,13 @@ async def create_admin_upi(
     existing = (await db.execute(select(AdminUpi).where(AdminUpi.upi_id == upi))).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=400, detail="This UPI ID is already saved.")
+    label = (data.label or "").strip() or upi
+    # Use the account chosen by the admin; otherwise auto-link by an exact, unique holder-name match.
+    account_ref = (data.accountRef or "").strip() or await _auto_account_ref(db, label)
     row = AdminUpi(
-        label=(data.label or "").strip() or upi,
+        label=label,
         upi_id=upi,
+        account_ref=account_ref,
         status="ACTIVE",
         created_time=datetime.now().strftime("%H:%M:%S"),
     )
@@ -70,6 +86,29 @@ async def create_admin_upi(
     await db.flush()
     await log_event(db, "ADMIN_UPI_CREATED", f"UPI {upi} saved by {admin.name}", actor=admin)
     await record_audit(db, "ADMIN_UPI_CREATED", actor=admin, entity_type="admin_upi", entity_id=upi, ip=_ip(request))
+    await db.refresh(row)
+    return _u(row)
+
+
+@router.patch("/{upi_id}/account")
+async def link_admin_upi_account(
+    upi_id: int,
+    data: AdminUpiLink,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(get_current_admin),
+):
+    """Link (or unlink) a saved UPI to a receiving Account — used for 'Add UPI' later."""
+    row = (await db.execute(select(AdminUpi).where(AdminUpi.id == upi_id))).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="UPI not found")
+    ref = (data.accountRef or "").strip() or None
+    if ref:
+        acc = (await db.execute(select(AccountMaster).where(AccountMaster.reference_number == ref))).scalar_one_or_none()
+        if not acc:
+            raise HTTPException(status_code=404, detail="Account not found")
+    row.account_ref = ref
+    await db.flush()
+    await log_event(db, "ADMIN_UPI_LINKED", f"UPI {row.upi_id} linked to account {ref or '—'} by {admin.name}", actor=admin)
     await db.refresh(row)
     return _u(row)
 

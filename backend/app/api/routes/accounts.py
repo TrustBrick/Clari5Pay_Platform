@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
-from app.models.models import AccountMaster, AccountTransaction, Transaction, TxStatus, User, UserRole
+from app.models.models import AccountMaster, AccountTransaction, AdminUpi, Transaction, TxStatus, User, UserRole
 from app.core.deps import get_current_admin
 from app.schemas.schemas import AccountCreate, ReasonRequest
 from app.api.routes.system_logs import log_event, record_audit
@@ -58,22 +58,47 @@ async def account_balances(
         summ["mab"] = _monthly_average_balance(biz_txns, (user.pay_in_fee or 0) / 100, (user.pay_out_fee or 0) / 100)
         bal_by_name[name] = summ
 
-    # Completed deposits routed to each account, summed per merchant business.
-    dep: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    # Member → most recent receiving account (from account↔transaction links). Lets a member's
+    # withdrawals/settlements be attributed back to the account they deposit into.
+    links = (await db.execute(select(AccountTransaction).order_by(AccountTransaction.id.desc()))).scalars().all()
+    member_acct: dict[str, str] = {}
+    for l in links:
+        if l.member_id and l.reference_number and l.member_id not in member_acct:
+            member_acct[l.member_id] = l.reference_number
+
+    # Linked UPIs grouped by their parent account.
+    upis = (await db.execute(select(AdminUpi))).scalars().all()
+    upis_by_acct: dict[str, list] = defaultdict(list)
+    for u in upis:
+        if u.account_ref:
+            upis_by_acct[u.account_ref].append({"id": u.id, "label": u.label, "upiId": u.upi_id, "status": u.status})
+
+    # Per-account money movements from completed transactions. Deposits route via admin_ref
+    # (bank vs UPI distinguished by admin_upi_id); withdrawals/settlements via the member map.
+    dep: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))   # account → merchant → amount
+    bank_dep: dict[str, float] = defaultdict(float)
+    upi_dep: dict[str, float] = defaultdict(float)
+    acct_wd: dict[str, float] = defaultdict(float)
+    acct_st: dict[str, float] = defaultdict(float)
     for t in txns:
-        if t.type.value.startswith("DEPOSIT") and t.status == TxStatus.COMPLETED and t.admin_ref:
+        if t.status != TxStatus.COMPLETED:
+            continue
+        ty = t.type.value
+        if ty.startswith("DEPOSIT") and t.admin_ref:
             dep[t.admin_ref][t.merchant_name] += t.amount
+            (upi_dep if t.admin_upi_id else bank_dep)[t.admin_ref] += t.amount
+        elif ty.startswith("WITHDRAWAL") and t.member_id in member_acct:
+            acct_wd[member_acct[t.member_id]] += t.amount
+        elif ty.startswith("SETTLEMENT") and t.member_id in member_acct:
+            acct_st[member_acct[t.member_id]] += t.amount
 
     out = []
     for a in accounts:
+        ref = a.reference_number
         rows = []
-        total_dep, total_fee = 0.0, 0.0
-        for name, deposited in dep.get(a.reference_number, {}).items():
+        for name, deposited in dep.get(ref, {}).items():
             b = bal_by_name.get(name, {})
             rep = rep_by_name.get(name)
-            fee = deposited * ((rep.pay_in_fee or 0) / 100) if rep else 0.0
-            total_dep += deposited
-            total_fee += fee
             rows.append({
                 "merchantName": name,
                 "merchantCode": rep.merchant_code if rep else None,
@@ -83,8 +108,13 @@ async def account_balances(
                 "mab": b.get("mab", 0.0),                           # MAB (merchant-level)
             })
         rows.sort(key=lambda r: r["deposited"], reverse=True)
+        bank_d = bank_dep.get(ref, 0.0)
+        upi_d = upi_dep.get(ref, 0.0)
+        total_d = bank_d + upi_d
+        wd = acct_wd.get(ref, 0.0)
+        st = acct_st.get(ref, 0.0)
         out.append({
-            "referenceNumber": a.reference_number,
+            "referenceNumber": ref,
             "accountName": a.account_name,
             "accountHolder": a.account_name,      # AccountMaster has no separate holder field
             "accountNumber": a.account_number,
@@ -92,10 +122,14 @@ async def account_balances(
             "branch": a.branch,
             "bankName": a.bank_name,
             "status": a.status,
-            # Account-level money received into THIS admin bank account.
-            "totalDeposited": round(total_dep, 2),
-            "totalFees": round(total_fee, 2),
-            "available": round(total_dep - total_fee, 2),   # net received into this account
+            # Account-level money received into THIS account — bank + all linked UPIs roll up.
+            "bankDeposited": round(bank_d, 2),
+            "upiDeposited": round(upi_d, 2),
+            "totalDeposited": round(total_d, 2),
+            "withdrawals": round(wd, 2),
+            "settlements": round(st, 2),
+            "available": round(total_d - wd - st, 2),   # deposits − withdrawals − settlements
+            "linkedUpis": upis_by_acct.get(ref, []),
             "merchants": rows,
         })
     return out
@@ -231,6 +265,14 @@ async def create_account(
     )
     db.add(acc)
     await db.flush()
+
+    # Optionally link a UPI ID to this account on creation.
+    if data.upiId and "@" in data.upiId:
+        db.add(AdminUpi(
+            label=data.account_name, upi_id=data.upiId.strip(), account_ref=ref,
+            status="ACTIVE", created_time=now.strftime("%H:%M:%S"),
+        ))
+        await db.flush()
 
     # Optionally link the account to a merchant's most recent transaction.
     if data.merchant_id:

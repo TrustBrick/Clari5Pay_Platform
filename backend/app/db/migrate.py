@@ -36,6 +36,7 @@ _NEW_COLUMNS = [
     ("merchant_bank_accounts", "is_default", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("transactions", "sender_upi_id", "VARCHAR(64)"),
     ("transactions", "merchant_proofs", "TEXT"),
+    ("admin_upis", "account_ref", "VARCHAR(40)"),
     ("audit_logs", "location", "VARCHAR(128)"),
 ]
 
