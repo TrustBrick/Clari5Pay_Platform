@@ -5,6 +5,7 @@ import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
+import { TxExportButton } from '../components/TxExport';
 import { ProofGallery } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
@@ -459,6 +460,7 @@ export const AdminTransactionsPage: React.FC = () => {
           <select value={status} onChange={e=>setStatus(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...REQUEST_STATUSES].map(v=><option key={v} value={v}>{v==='ALL'?'All Statuses':typeLabel(v)}</option>)}
           </select>
+          <TxExportButton txns={filtered} title="All Transactions" />
         </div>
       </div>
       <TxTable loading={loading} txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>
@@ -888,6 +890,22 @@ export const AdminAccountsPage: React.FC = () => {
 };
 
 // ─── SA Dashboard ─────────────────────────────────────────────────────────────
+// Financial summary card: big headline number + a labelled breakdown underneath.
+const FinanceCard: React.FC<{ icon: string; label: string; value: number; color: string; rows: Array<[string, number]> }> = ({ icon, label, value, color, rows }) => (
+  <Card style={{ padding:18 }}>
+    <div style={{ display:'flex',alignItems:'center',gap:8,marginBottom:6 }}>
+      <span style={{ width:30,height:30,borderRadius:9,background:`${color}1a`,display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:16 }}>{icon}</span>
+      <span style={{ fontSize:11.5,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}</span>
+    </div>
+    <p style={{ fontSize:26,fontWeight:800,color,margin:'0 0 10px' }}>{fmt(value)}</p>
+    {rows.map(([k,v],i)=>(
+      <div key={i} style={{ display:'flex',justifyContent:'space-between',padding:'5px 0',fontSize:12.5,borderTop:`1px solid ${T.borderLight}` }}>
+        <span style={{ color:T.textMuted }}>{k}</span><b style={{ color:T.textMain }}>{fmt(v)}</b>
+      </div>
+    ))}
+  </Card>
+);
+
 export const SaDashboard: React.FC = () => {
   const [merchants, setMerchants] = useState<User[]>([]);
   const [admins, setAdmins] = useState<User[]>([]);
@@ -917,27 +935,33 @@ export const SaDashboard: React.FC = () => {
     merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
   );
   const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
-  const grossAmount = sumType(completedTx, 'DEPOSIT') - sumType(completedTx, 'WITHDRAWAL');
-  const netAmount = completedTx.reduce((a, t) => {
-    const f = feeMap[t.merchantId];
-    if (!f) return a;
-    if (t.type.startsWith('DEPOSIT')) return a + t.amount * f.pin;
-    if (t.type.startsWith('WITHDRAWAL')) return a + t.amount * f.pout;
-    return a;
-  }, 0);
+  const totalDeposits = sumType(completedTx, 'DEPOSIT');
+  const totalWithdrawals = sumType(completedTx, 'WITHDRAWAL');
+  const totalSettlements = sumType(completedTx, 'SETTLEMENT');
+  const payInFees = completedTx.filter(t => t.type.startsWith('DEPOSIT')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pin || 0), 0);
+  const payOutFees = completedTx.filter(t => t.type.startsWith('WITHDRAWAL')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pout || 0), 0);
+  const commissionAmount = payInFees + payOutFees;
+  const grossAmount = totalDeposits - totalWithdrawals;   // same definition as the admin dashboard
+  const netAmount = grossAmount - commissionAmount;
 
   return (
     <div>
       {/* 3 per row → counts on top, money on the bottom row */}
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:20 }} className="sa-stat-grid">
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:16 }} className="sa-stat-grid">
         <StatCard icon="🛡" label="Total Admins" value={admins.length} color={T.blue}/>
         <StatCard icon="🏪" label="Total Merchants" value={merchants.length} color={T.success}/>
         <StatCard icon="✅" label="Active Admins" value={admins.filter(a=>a.active).length} color={T.info}/>
-        <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits − Withdrawals" color={T.success}/>
-        <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Commission earned" color={T.green}/>
         <StatCard icon="📊" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
       </div>
-      <style>{`@media(max-width:760px){.sa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}}@media(max-width:460px){.sa-stat-grid{grid-template-columns:1fr!important;}}`}</style>
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:20 }} className="sa-fin-grid">
+        <FinanceCard icon="💹" label="Gross Amount" value={grossAmount} color={T.success}
+          rows={[['Total Deposits', totalDeposits], ['Total Withdrawals', totalWithdrawals], ['Total Settlements', totalSettlements]]} />
+        <FinanceCard icon="🧾" label="Commission Amount" value={commissionAmount} color={T.info}
+          rows={[['Pay-In Fees', payInFees], ['Pay-Out Fees', payOutFees], ['Total Commission', commissionAmount]]} />
+        <FinanceCard icon="💰" label="Net Amount" value={netAmount} color={T.green}
+          rows={[['Gross Amount', grossAmount], ['Commission Amount', commissionAmount], ['Net (Gross − Commission)', netAmount]]} />
+      </div>
+      <style>{`@media(max-width:760px){.sa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}.sa-fin-grid{grid-template-columns:1fr!important;}}@media(max-width:460px){.sa-stat-grid{grid-template-columns:1fr!important;}}`}</style>
       <Card style={{ padding:22,marginBottom:20 }}>
         <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800 }}>Platform Volume</h3>
         <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>All merchants — completed deposits & withdrawals, last 7 days</p>

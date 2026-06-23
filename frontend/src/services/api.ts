@@ -100,6 +100,10 @@ export const transactionAPI = {
     const res = await api.get<BalanceSummary>('/api/transactions/summary');
     return res.data;
   },
+  memberProfile: async (memberId: string) => {
+    const res = await api.get<{ memberName?: string|null; upiId?: string|null; accountHolder?: string|null; accountNumber?: string|null; ifsc?: string|null; branch?: string|null; bankName?: string|null }>(`/api/transactions/member-profile/${encodeURIComponent(memberId)}`);
+    return res.data;
+  },
   createDeposit: async (data: Record<string, unknown>) => {
     const res = await api.post<Transaction>('/api/transactions/deposit', data);
     return res.data;

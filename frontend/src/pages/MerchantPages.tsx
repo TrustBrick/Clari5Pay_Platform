@@ -3,6 +3,7 @@ import { T } from '../utils/theme';
 import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDateTime } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist } from '../components/UI';
 import TxTable from '../components/TxTable';
+import { TxExportButton } from '../components/TxExport';
 import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -24,7 +25,9 @@ const BankAccountFields: React.FC<{
   // Saved accounts are specific to the entered Membership ID — refetch whenever it changes.
   useEffect(() => {
     if (!memberId.trim()) { setSaved([]); setSel('NEW'); onBank(emptyBank); onSaveNew(true); return; }
-    bankAccountAPI.listMine(memberId.trim()).then(list => {
+    bankAccountAPI.listMine(memberId.trim()).then(all => {
+      // Only real bank accounts here — UPI-only saved records would render as "null — null".
+      const list = all.filter(a => a.accountNumber);
       setSaved(list);
       if (list.length) {
         const a = list[0];
@@ -427,6 +430,24 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const [senderUpi, setSenderUpi] = useState('');
   const isUpi = form.depositType === 'UPI';
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  // Membership IDs are uppercase letters + digits only (auto-converted, lowercase blocked).
+  const setMemberId = (raw: string) => setForm(f => ({ ...f, memberId: raw.toUpperCase().replace(/[^A-Z0-9]/g, '') }));
+
+  // Auto-fill from the latest record for this Membership ID (member name, sender UPI; bank is
+  // handled by BankAccountFields). A known ID's name is authoritative (one name per ID).
+  useEffect(() => {
+    const mid = form.memberId.trim();
+    if (mid.length < 3) return;
+    let alive = true;
+    const t = setTimeout(() => {
+      transactionAPI.memberProfile(mid).then(p => {
+        if (!alive) return;
+        if (p.memberName) setForm(f => ({ ...f, memberName: p.memberName as string }));
+        if (p.upiId) setSenderUpi(p.upiId);
+      }).catch(()=>{});
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+  }, [form.memberId]);
 
   const submit = async () => {
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
@@ -456,7 +477,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={['UPI','IMPS','NEFT','RTGS','CASH'].map(v=>({value:v,label:v}))} required/>
         <Input label="Amount (INR)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Min 1" required/>
         <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" required/>
-        <Input label="Membership ID" value={form.memberId} onChange={e=>set('memberId',e.target.value)} placeholder="e.g. MBR20240001" required/>
+        <Input label="Membership ID" value={form.memberId} onChange={e=>setMemberId(e.target.value)} placeholder="e.g. MBR20240001" required/>
         <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
         <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
       </div>
@@ -509,7 +530,6 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [savedBanks, setSavedBanks] = useState<MerchantBankAccount[]>([]);
   const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
   const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
-  const [proofs, setProofs] = useState<string[]>([]);
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
@@ -559,7 +579,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
     setLoading(true);
     try {
-      const payload: Record<string, unknown> = { amount: parseFloat(amount), memberId, payoutMode: mode, payoutDetails: details, proofs };
+      const payload: Record<string, unknown> = { amount: parseFloat(amount), memberId, payoutMode: mode, payoutDetails: details };
       if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
       await transactionAPI.createWithdrawal(payload);
       showToast('Withdrawal request submitted');
@@ -582,7 +602,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Input label="Amount (INR)" type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="Min 1" required/>
-        <Input label="Membership ID" value={memberId} onChange={e=>setMemberId(e.target.value)} placeholder="Alphanumeric" required/>
+        <Input label="Membership ID" value={memberId} onChange={e=>setMemberId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="Alphanumeric (A-Z, 0-9)" required/>
       </div>
 
       {hasSaved && (
@@ -642,10 +662,9 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
             </div>); })()}
         </>
       )}
-      <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 14px',fontSize:11,color:T.textMuted }}>
-        After payment, the agent uploads the proof — {mode==='CRYPTO' ? 'Transaction Hash (Hash ID)' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}.
+      <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
+        No proof needed now — after payment, the agent uploads the proof ({mode==='CRYPTO' ? 'Transaction Hash' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}), which you can then view.
       </div>
-      <MultiProofUpload values={proofs} onChange={setProofs} label="Proof / Slip (optional, up to 3)" />
       <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!amount||!memberId}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
@@ -691,7 +710,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Input label="Settlement Amount (INR)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Enter amount" required/>
-        <Input label="Membership ID" value={form.memberId} onChange={e=>set('memberId',e.target.value)} placeholder="e.g. MBR20240001"/>
+        <Input label="Membership ID" value={form.memberId} onChange={e=>set('memberId',e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="e.g. MBR20240001"/>
       </div>
       <MultiProofUpload values={proofs} onChange={setProofs}/>
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount}>{loading?'Submitting...':'Submit Settlement Request →'}</Btn>
@@ -1017,6 +1036,7 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
           <select value={status} onChange={e=>setStatus(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...MERCHANT_STATUSES].map(v=><option key={v} value={v}>{v==='ALL'?'All Statuses':typeLabel(v)}</option>)}
           </select>
+          <TxExportButton txns={filtered} title="Transaction Ledger" />
         </div>
       </div>
       <TxTable loading={loading} txns={filtered} viewerRole={user.role} actionMode={user.role==='MERCHANT'?'merchant':'view'} onAction={(t)=>setSlipTx(t)}/>

@@ -64,7 +64,7 @@ async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> 
 
 
 # Shown when a request's member name doesn't match the name already on file for that ID.
-MEMBER_NAME_MISMATCH_MSG = "Member Name does not match the existing Membership ID record."
+MEMBER_NAME_MISMATCH_MSG = "This Membership ID is already associated with another member name."
 
 # Proof/slip upload limits (mirrored on the frontend).
 MAX_PROOFS = 3
@@ -312,6 +312,50 @@ async def merchant_balances(
     return out
 
 
+@router.get("/member-profile/{member_id}")
+async def member_profile(
+    member_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Latest known details for a Membership ID (member name + saved UPI + saved bank), scoped to
+    the merchant's business — used to auto-fill the deposit form for repeat members."""
+    if current_user.role != UserRole.MERCHANT:
+        raise HTTPException(status_code=403, detail="Merchant only")
+    ids = (await db.execute(
+        select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
+    )).scalars().all()
+    if not ids or not member_id:
+        return {}
+    name = (await db.execute(
+        select(Transaction.member_name).where(
+            Transaction.merchant_id.in_(ids), Transaction.member_id == member_id,
+            Transaction.member_name.is_not(None), Transaction.member_name != "",
+        ).order_by(Transaction.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    upi_row = (await db.execute(
+        select(MerchantBankAccount).where(
+            MerchantBankAccount.merchant_id.in_(ids), MerchantBankAccount.member_id == member_id,
+            MerchantBankAccount.upi_id.is_not(None),
+        ).order_by(MerchantBankAccount.is_default.desc(), MerchantBankAccount.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    bank_row = (await db.execute(
+        select(MerchantBankAccount).where(
+            MerchantBankAccount.merchant_id.in_(ids), MerchantBankAccount.member_id == member_id,
+            MerchantBankAccount.account_number.is_not(None),
+        ).order_by(MerchantBankAccount.is_default.desc(), MerchantBankAccount.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    return {
+        "memberName": name,
+        "upiId": upi_row.upi_id if upi_row else None,
+        "accountHolder": bank_row.account_holder if bank_row else None,
+        "accountNumber": bank_row.account_number if bank_row else None,
+        "ifsc": bank_row.ifsc if bank_row else None,
+        "branch": bank_row.branch if bank_row else None,
+        "bankName": bank_row.bank_name if bank_row else None,
+    }
+
+
 @router.post("/deposit")
 async def create_deposit(
     data: DepositCreate,
@@ -319,6 +363,8 @@ async def create_deposit(
     current_user: User = Depends(get_current_user),
 ):
     _require_amount(data.amount)
+    if data.memberId:
+        data.memberId = data.memberId.upper()
     await _assert_member_name(db, current_user, data.memberId, data.memberName)
     _proofs = _clean_proofs(data.proofs, data.proof)
     tx = Transaction(
@@ -371,6 +417,8 @@ async def create_withdrawal(
     _require_amount(data.amount)
     # Block withdrawals whose amount + pay-out fee exceeds the Available Balance (which
     # already reserves in-flight requests), so the balance can never go negative.
+    if data.memberId:
+        data.memberId = data.memberId.upper()
     summary = await compute_balance(db, current_user)
     pay_out_rate = (current_user.pay_out_fee or 0) / 100
     total_required = data.amount * (1 + pay_out_rate)
@@ -424,6 +472,8 @@ async def create_settlement(
 ):
     _require_amount(data.amount)
     # A settlement cannot exceed the Available Balance either (same rule as withdrawals).
+    if data.memberId:
+        data.memberId = data.memberId.upper()
     summary = await compute_balance(db, current_user)
     if data.amount > summary["available"] + 1e-6:
         raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
