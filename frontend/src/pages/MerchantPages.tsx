@@ -678,15 +678,16 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [form, setForm] = useState({ amount:'', memberId:'' });
   const [proofs, setProofs] = useState<string[]>([]);
   const [available, setAvailable] = useState(0);
+  const [maxSettleable, setMaxSettleable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
-  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); }).catch(()=>{}); }, []);
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
 
   const submit = async () => {
     if(!form.amount){ showToast('Enter an amount','error'); return; }
-    if(parseFloat(form.amount) > available){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
+    if(parseFloat(form.amount) > maxSettleable + 0.01){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
     setLoading(true);
     try {
       await transactionAPI.createSettlement({ amount: parseFloat(form.amount), memberId: form.memberId || undefined, proofs });
@@ -705,7 +706,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         <p style={{ fontSize:11,color:'rgba(255,255,255,0.6)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Available Balance</p>
         <p style={{ fontSize:30,fontWeight:800,color:'#fff',margin:0 }}>{fmt(available)}</p>
         <p style={{ fontSize:11,color:'rgba(255,255,255,0.75)',margin:'8px 0 0' }}>
-          Maximum you can settle: <b>{fmt(available)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
+          Max you can settle after fees: <b>{fmt(maxSettleable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
         </p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
@@ -839,15 +840,17 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
   const totalDeposit = s?.totalDeposit ?? 0;
   const payInFees = s?.payInFees ?? 0;
   const totalSettled = s?.totalSettled ?? 0;
+  const settlementFees = s?.settlementFees ?? 0;
   const totalWithdrawn = s?.totalWithdrawn ?? 0;
   const payOutFees = s?.payOutFees ?? 0;
-  const netAvailableBalance = totalDeposit - payInFees - totalSettled; // before withdrawals
+  const netAvailableBalance = totalDeposit - payInFees - totalSettled - settlementFees; // before withdrawals
   const available = s?.available ?? 0;                                 // spendable (after withdrawals)
 
   const rows: Array<[string, number, string, boolean]> = [
     ['Total Deposit Amount', totalDeposit, T.success, false],
     ['Pay-In Fees', payInFees, T.danger, false],
     ['Total Settled Amount', totalSettled, T.warning, false],
+    ['Settlement Fees', settlementFees, T.danger, false],
     ['Total Net Available Balance', netAvailableBalance, T.textMain, true],
     ['Total Withdrawn', totalWithdrawn, T.danger, false],
     ['Pay-Out Fees', payOutFees, T.danger, false],

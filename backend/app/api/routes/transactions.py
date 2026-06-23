@@ -155,27 +155,31 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     pay_in_fees = total_deposit * pay_in_rate
     total_settled = total("SETTLEMENT", TxStatus.COMPLETED)
     total_withdrawn = total("WITHDRAWAL", TxStatus.COMPLETED)
+    # Withdrawals and settlements are both money leaving the wallet, so both carry the
+    # same pay-out fee (commission). Keeping a single rate guarantees they behave identically.
     pay_out_fees = total_withdrawn * pay_out_rate
+    settlement_fees = total_settled * pay_out_rate
     # Net of all settled/completed movements (before reserving in-flight requests).
-    gross_available = total_deposit - pay_in_fees - total_settled - total_withdrawn - pay_out_fees
+    gross_available = (total_deposit - pay_in_fees
+                       - total_settled - settlement_fees
+                       - total_withdrawn - pay_out_fees)
 
     # Running Balance (RB): in-flight (Pending) withdrawal + settlement amounts that are
     # reserved the moment they're requested, until they complete or are rejected/cancelled.
-    # A pending withdrawal reserves the amount PLUS its pay-out fee (so the balance can't go
-    # negative once the fee is charged on completion); settlements carry no fee.
+    # Both reserve the amount PLUS the pay-out fee, so the balance can't go negative once
+    # the fee is charged on completion.
     running_balance = 0.0
     for t in txns:
         if t.status in _TERMINAL_STATUSES:
             continue
-        if t.type.value.startswith("WITHDRAWAL"):
+        if t.type.value.startswith("WITHDRAWAL") or t.type.value.startswith("SETTLEMENT"):
             running_balance += t.amount * (1 + pay_out_rate)
-        elif t.type.value.startswith("SETTLEMENT"):
-            running_balance += t.amount
 
     # Available Balance (AB): reserves the running balance and never goes negative.
     available = max(0.0, gross_available - running_balance)
-    # The most a NEW withdrawal can be: its amount + pay-out fee must fit inside AB.
+    # The most a NEW withdrawal/settlement can be: amount + pay-out fee must fit inside AB.
     max_withdrawable = available / (1 + pay_out_rate) if pay_out_rate else available
+    max_settleable = max_withdrawable
 
     deposit_count = sum(1 for t in txns if t.type.value.startswith("DEPOSIT"))
     withdrawal_count = sum(1 for t in txns if t.type.value.startswith("WITHDRAWAL"))
@@ -184,11 +188,12 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
         "available": available,              # AB — what can still be withdrawn/settled now
         "runningBalance": running_balance,   # RB — reserved by pending requests
         "grossAvailable": gross_available,   # before reserving pending
-        "maxSettleable": available,          # settlements carry no extra fee → equals AB
+        "maxSettleable": max_settleable,     # AB net of the pay-out fee on a new settlement
         "maxWithdrawable": max_withdrawable, # AB net of the pay-out fee on a new withdrawal
         "totalDeposit": total_deposit,
         "payInFees": pay_in_fees,
         "totalSettled": total_settled,
+        "settlementFees": settlement_fees,
         "totalWithdrawn": total_withdrawn,
         "payOutFees": pay_out_fees,
         "depositCount": deposit_count,
@@ -471,11 +476,14 @@ async def create_settlement(
     current_user: User = Depends(get_current_user),
 ):
     _require_amount(data.amount)
-    # A settlement cannot exceed the Available Balance either (same rule as withdrawals).
+    # Block settlements whose amount + pay-out fee exceeds the Available Balance (exactly the
+    # same rule as withdrawals), so the balance can never go negative once the fee is charged.
     if data.memberId:
         data.memberId = data.memberId.upper()
     summary = await compute_balance(db, current_user)
-    if data.amount > summary["available"] + 1e-6:
+    pay_out_rate = (current_user.pay_out_fee or 0) / 100
+    total_required = data.amount * (1 + pay_out_rate)
+    if total_required > summary["available"] + 1e-6:
         raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
     _proofs = _clean_proofs(data.proofs, data.proof)
     tx = Transaction(

@@ -386,12 +386,13 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   );
   const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
   const grossAmount = sumType(completedTx, 'DEPOSIT') - sumType(completedTx, 'WITHDRAWAL');
-  // Commission = fees the platform earns on completed deposits/withdrawals.
+  // Commission = fees the platform earns on completed deposits/withdrawals/settlements.
+  // Withdrawals and settlements both carry the pay-out fee.
   const commissionAmount = completedTx.reduce((a, t) => {
     const f = feeMap[t.merchantId];
     if (!f) return a;
     if (t.type.startsWith('DEPOSIT')) return a + t.amount * f.pin;
-    if (t.type.startsWith('WITHDRAWAL')) return a + t.amount * f.pout;
+    if (t.type.startsWith('WITHDRAWAL') || t.type.startsWith('SETTLEMENT')) return a + t.amount * f.pout;
     return a;
   }, 0);
   const netAmount = grossAmount - commissionAmount;
@@ -418,7 +419,7 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
       <div className="ad-stat-money" style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:14 }}>
         <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
         <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits − Withdrawals" color={T.success}/>
-        <StatCard icon="🧾" label="Commission Amount" value={fmt(commissionAmount)} sub="Pay In + Pay Out Fees" color={T.info}/>
+        <StatCard icon="🧾" label="Commission Amount" value={fmt(commissionAmount)} sub="Pay In + Pay Out + Settlement Fees" color={T.info}/>
         <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Gross (Deposits − Withdrawals) − Commission" color={T.green}/>
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(6,minmax(0,1fr))',gap:12,marginBottom:20 }}>
@@ -1010,7 +1011,9 @@ export const SaDashboard: React.FC = () => {
   const totalSettlements = sumType(completedTx, 'SETTLEMENT');
   const payInFees = completedTx.filter(t => t.type.startsWith('DEPOSIT')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pin || 0), 0);
   const payOutFees = completedTx.filter(t => t.type.startsWith('WITHDRAWAL')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pout || 0), 0);
-  const commissionAmount = payInFees + payOutFees;
+  // Settlements carry the same pay-out fee as withdrawals.
+  const settlementFees = completedTx.filter(t => t.type.startsWith('SETTLEMENT')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pout || 0), 0);
+  const commissionAmount = payInFees + payOutFees + settlementFees;
   const grossAmount = totalDeposits - totalWithdrawals;   // same definition as the admin dashboard
   const netAmount = grossAmount - commissionAmount;
 
@@ -1027,7 +1030,7 @@ export const SaDashboard: React.FC = () => {
         <FinanceCard icon="💹" label="Gross Amount" value={grossAmount} color={T.success}
           rows={[['Total Deposits', totalDeposits], ['Total Withdrawals', totalWithdrawals], ['Total Settlements', totalSettlements]]} />
         <FinanceCard icon="🧾" label="Commission Amount" value={commissionAmount} color={T.info}
-          rows={[['Pay-In Fees', payInFees], ['Pay-Out Fees', payOutFees], ['Total Commission', commissionAmount]]} />
+          rows={[['Pay-In Fees', payInFees], ['Pay-Out Fees', payOutFees], ['Settlement Fees', settlementFees], ['Total Commission', commissionAmount]]} />
         <FinanceCard icon="💰" label="Net Amount" value={netAmount} color={T.green}
           rows={[['Gross Amount', grossAmount], ['Commission Amount', commissionAmount], ['Net (Gross − Commission)', netAmount]]} />
       </div>

@@ -221,6 +221,7 @@ export interface BalanceSummary {
   totalDeposit: number;
   payInFees: number;
   totalSettled: number;
+  settlementFees?: number;
   totalWithdrawn: number;
   payOutFees: number;
   depositCount: number;
