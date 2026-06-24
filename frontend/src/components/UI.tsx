@@ -1,7 +1,30 @@
-import React, { CSSProperties, useState } from 'react';
+import React, { CSSProperties, useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
 import { statusStyle, statusLabel } from '../utils/helpers';
 import type { TxStatus, ChartDataPoint } from '../types';
+
+// ─── CountUp — animate a number from 0 → value on mount / when value changes ────
+export const CountUp: React.FC<{
+  value: number; duration?: number; format?: (n: number) => string;
+}> = ({ value, duration = 900, format = (n) => Math.round(n).toLocaleString('en-IN') }) => {
+  const [display, setDisplay] = useState(0);
+  const from = useRef(0);
+  const raf = useRef<number>();
+  useEffect(() => {
+    const start = performance.now();
+    const begin = from.current;
+    const animate = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);          // easeOutCubic
+      setDisplay(begin + (value - begin) * eased);
+      if (t < 1) raf.current = requestAnimationFrame(animate);
+      else from.current = value;
+    };
+    raf.current = requestAnimationFrame(animate);
+    return () => { if (raf.current) cancelAnimationFrame(raf.current); };
+  }, [value, duration]);
+  return <>{format(display)}</>;
+};
 
 // ─── Logo ────────────────────────────────────────────────────────────────────
 export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ size = 'md', dark = false }) => {
@@ -59,22 +82,22 @@ export const RiskBadge: React.FC<{ risk: string }> = ({ risk }) => {
 };
 
 // ─── Card ─────────────────────────────────────────────────────────────────────
-export const Card: React.FC<{ children: React.ReactNode; style?: CSSProperties; glow?: boolean; className?: string }> = ({ children, style={}, glow, className }) => (
-  <div className={className} style={{ background:T.surface,borderRadius:16,boxShadow:glow?`0 0 0 1px ${T.blue}30,0 8px 32px rgba(0,82,204,0.1)`:'0 4px 6px -1px rgba(0,0,0,0.07),0 2px 4px -1px rgba(0,0,0,0.04)',border:`1px solid ${T.border}`,overflow:'hidden',...style }}>
+export const Card: React.FC<{ children: React.ReactNode; style?: CSSProperties; glow?: boolean; className?: string; onClick?: () => void }> = ({ children, style={}, glow, className, onClick }) => (
+  <div className={className} onClick={onClick} style={{ background:T.surface,borderRadius:16,boxShadow:glow?`0 0 0 1px ${T.blue}30,0 8px 32px rgba(0,82,204,0.1)`:'0 4px 6px -1px rgba(0,0,0,0.07),0 2px 4px -1px rgba(0,0,0,0.04)',border:`1px solid ${T.border}`,overflow:'hidden',...style }}>
     {children}
   </div>
 );
 
 // ─── StatCard ─────────────────────────────────────────────────────────────────
 export const StatCard: React.FC<{
-  icon: string; label: string; value: string | number; sub?: string;
-  color?: string; trend?: number; gradient?: string;
-}> = ({ icon, label, value, sub, color=T.blue, trend, gradient }) => {
+  icon: string; label: string; value: React.ReactNode; sub?: string;
+  color?: string; trend?: number; gradient?: string; onClick?: () => void; valueLen?: number;
+}> = ({ icon, label, value, sub, color=T.blue, trend, gradient, onClick, valueLen }) => {
   // Shrink the value font for long strings (e.g. "INR 1,79,000.00") so it stays on one line.
-  const len = String(value).length;
+  const len = valueLen ?? ((typeof value === 'string' || typeof value === 'number') ? String(value).length : 10);
   const valueSize = len > 13 ? 17 : len > 10 ? 20 : 24;
   return (
-  <Card className="c5-hover-lift" style={{ padding:'18px 18px',position:'relative',overflow:'hidden' }}>
+  <Card className="c5-hover-lift" onClick={onClick} style={{ padding:'18px 18px',position:'relative',overflow:'hidden',cursor:onClick?'pointer':'default' }}>
     <div style={{ position:'absolute',top:-20,right:-20,width:100,height:100,borderRadius:'50%',background:`${color}10`,pointerEvents:'none' }}/>
     <div style={{ display:'flex',alignItems:'flex-start',justifyContent:'space-between',position:'relative',gap:10 }}>
       <div style={{ minWidth:0,flex:1 }}>
@@ -135,9 +158,9 @@ export const BankNamesDatalist: React.FC<{ names: string[] }> = ({ names }) => (
 // ─── Sel ─────────────────────────────────────────────────────────────────────
 export const Sel: React.FC<{
   label?: string; value: string; onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
-  options: Array<{value:string;label:string}>; required?: boolean;
-}> = ({ label, value, onChange, options, required }) => (
-  <div style={{ marginBottom:16 }}>
+  options: Array<{value:string;label:string}>; required?: boolean; style?: CSSProperties;
+}> = ({ label, value, onChange, options, required, style={} }) => (
+  <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <select value={value} onChange={onChange}
       style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',appearance:'none',backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%236b7280' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E")`,backgroundRepeat:'no-repeat',backgroundPosition:'right 12px center',cursor:'pointer',fontFamily:'inherit' }}

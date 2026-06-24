@@ -437,3 +437,41 @@ export interface ReportData {
   insights: string[];
   transactions: ReportRow[];
 }
+
+// ─── Risk Management module ───────────────────────────────────────────────────
+export type RiskLevelStr = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface RiskMember {
+  memberId: string;
+  memberName: string;
+  merchantName: string;
+  riskLevel: RiskLevelStr;
+  totalTransactions: number;
+  totalVolume: number;
+  lastActivity: string | null;
+}
+export interface RiskOverview {
+  scope: 'MERCHANT' | 'ADMIN' | 'SUPER_ADMIN';
+  members: RiskMember[];
+  stats: { low: number; medium: number; high: number; critical: number };
+  topMembers: RiskMember[];
+  topMerchants?: Array<{ merchantName: string; members: number; volume: number }>;
+}
+export interface RiskTxnStat { count: number; total: number; largest: number; average: number }
+export interface RiskProfile {
+  profile: {
+    memberId: string; memberName: string; merchantName: string;
+    registrationDate: string | null; firstTransactionDate: string | null; lastTransactionDate: string | null;
+    totalDeposits: number; totalWithdrawals: number; totalSettlements: number; totalVolume: number;
+    riskLevel: RiskLevelStr;
+  };
+  txnIntel: { deposits: RiskTxnStat; withdrawals: RiskTxnStat; settlements: RiskTxnStat };
+  relationships: {
+    linkedAccounts: Array<{ accountHolder: string | null; accountNumber: string | null; bankName: string | null; ifsc: string | null; branch: string | null }>;
+    linkedUpis: Array<{ upiId: string }>;
+    repeatedSenders: Array<{ upiId: string; count: number }>;
+    relatedMemberships: Array<{ memberId: string; via: string | null }>;
+  };
+  summary: { strengths: string[]; indicators: string[] };
+  transactions: Array<{ ref: string; type: string | null; amount: number; status: string; date: string; time: string; createdAt: string | null }>;
+}

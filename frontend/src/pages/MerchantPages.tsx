@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDateTime } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton } from '../components/UI';
+import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
 import { TxExportButton } from '../components/TxExport';
 import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI } from '../services/api';
@@ -224,6 +225,7 @@ export const MerchantSlipModal: React.FC<{
     setLoading(true);
     try {
       await transactionAPI.submitSlip(tx.id, { merchantProofs: proofs, merchantRef: ref.trim() || undefined });
+      fireConfetti();
       showToast('Payment proof submitted');
       onSubmitted?.();
       onClose();
@@ -341,10 +343,11 @@ export const MerchantSlipModal: React.FC<{
 };
 
 // ─── Merchant Dashboard ──────────────────────────────────────────────────────
-export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
+export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: string) => void }> = ({ user, onNavigate }) => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [summary, setSummary] = useState<BalanceSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const go = (p: string) => onNavigate?.(p);
 
   const reload = () => Promise.all([transactionAPI.getMine(), transactionAPI.summary()])
     .then(([t, s]) => { setTxns(t); setSummary(s); })
@@ -371,25 +374,38 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
     { label: 'Completed', value: byStatus(wdTx, 'COMPLETED'), color: T.success },
   ];
 
-  // Role-scoped dashboard cards.
+  // Role-scoped dashboard cards (count-up values; click jumps to the relevant page).
   const role = String(user.merchantRole || '').toUpperCase();
-  const pendingCard = <StatCard icon="⧗" label="Pending Requests" value={inFlight.length} sub="In progress" color={T.warning}/>;
-  const balanceCard = <StatCard icon="💰" label="Available Balance" value={fmt(summary?.available ?? 0)} sub="Updated now" color={T.success}/>;
+  const balLen = fmt(summary?.available ?? 0).length;
+  const pendingCard = <StatCard icon="⧗" label="Pending Requests" value={<CountUp value={inFlight.length} />} sub="In progress" color={T.warning} onClick={()=>go('transactions')}/>;
+  const balanceCard = <StatCard icon="💰" label="Available Balance" value={<CountUp value={summary?.available ?? 0} format={fmt} />} valueLen={balLen} sub="Updated now" color={T.success} onClick={()=>go('balance')}/>;
   let cards: React.ReactNode;
   if (role === 'DEPOSIT_OPERATOR') {
-    cards = <><StatCard icon="↓" label="No. of Deposits" value={summary?.depositCount ?? 0} color={T.blue}/>{pendingCard}</>;
+    cards = <><StatCard icon="↓" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')}/>{pendingCard}</>;
   } else if (role === 'WITHDRAWAL_OPERATOR') {
-    cards = <>{balanceCard}<StatCard icon="↑" label="No. of Withdrawals" value={summary?.withdrawalCount ?? 0} color={T.danger}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="↑" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>{pendingCard}</>;
   } else if (role === 'SUPERVISOR') {
-    cards = <>{balanceCard}<StatCard icon="⇄" label="No. of Settlements" value={settlementCount} color={T.info}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="⇄" label="No. of Settlements" value={<CountUp value={settlementCount} />} color={T.info} onClick={()=>go('settlement')}/>{pendingCard}</>;
   } else {
     cards = <>
-      <StatCard icon="💰" label="Available Balance" value={fmt(summary?.available ?? 0)} sub="Updated now" color={T.success}/>
-      <StatCard icon="↓" label="No. of Deposits" value={summary?.depositCount ?? 0} color={T.blue}/>
-      <StatCard icon="↑" label="No. of Withdrawals" value={summary?.withdrawalCount ?? 0} color={T.danger}/>
+      {balanceCard}
+      <StatCard icon="↓" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')}/>
+      <StatCard icon="↑" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>
       {pendingCard}
     </>;
   }
+
+  if (loading) return (
+    <div>
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:16,marginBottom:22 }}>
+        {[0,1,2,3].map(i => <Card key={i} style={{ padding:18 }}><Skeleton w={90} h={11}/><div style={{height:12}}/><Skeleton w={130} h={26}/></Card>)}
+      </div>
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:22 }}>
+        {[0,1].map(i => <Card key={i} style={{ padding:22 }}><Skeleton w={150} h={14}/><div style={{height:18}}/><Skeleton h={120}/></Card>)}
+      </div>
+      <Card style={{ padding:22 }}><Skeleton w={150} h={14}/><div style={{height:14}}/>{[0,1,2].map(i => <div key={i} style={{ padding:'7px 0' }}><Skeleton h={20}/></div>)}</Card>
+    </div>
+  );
 
   return (
     <div>
@@ -397,17 +413,17 @@ export const MerchantDashboard: React.FC<{ user: User }> = ({ user }) => {
         {cards}
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:22 }}>
-        <Card style={{ padding:22 }}>
+        <Card className="c5-hover-lift" onClick={()=>go('deposit')} style={{ padding:22,cursor:'pointer' }}>
           <div style={{ marginBottom:14 }}>
             <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Deposits by Status</h3>
-            <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Live counts from your deposits</p>
+            <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Live counts from your deposits · tap to manage</p>
           </div>
           <StatusChart data={depositGraph}/>
         </Card>
-        <Card style={{ padding:22 }}>
+        <Card className="c5-hover-lift" onClick={()=>go('withdrawal')} style={{ padding:22,cursor:'pointer' }}>
           <div style={{ marginBottom:14 }}>
             <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Withdrawals</h3>
-            <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Submitted vs completed</p>
+            <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Submitted vs completed · tap to manage</p>
           </div>
           <StatusChart data={withdrawalGraph}/>
         </Card>
@@ -465,6 +481,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         saveBankAccount: saveNew,
         ...(isUpi ? { senderUpiId: senderUpi.trim() } : {}),
       });
+      fireConfetti();
       showToast('Deposit request submitted — awaiting agent review');
       onSubmitted?.();
     } catch (e: any) {
@@ -585,6 +602,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       const payload: Record<string, unknown> = { amount: parseFloat(amount), memberId, payoutMode: mode, payoutDetails: details };
       if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
       await transactionAPI.createWithdrawal(payload);
+      fireConfetti();
       showToast('Withdrawal request submitted');
       onSubmitted?.();
     } catch (e: any) {
@@ -694,6 +712,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     setLoading(true);
     try {
       await transactionAPI.createSettlement({ amount: parseFloat(form.amount), memberId: form.memberId || undefined, proofs });
+      fireConfetti();
       showToast('Settlement request submitted');
       onSubmitted?.();
     } catch (e: any) {

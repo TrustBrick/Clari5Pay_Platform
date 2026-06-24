@@ -354,14 +354,10 @@ const BlogTable: React.FC<{ user: User; title: string; subtitle?: string; fixedS
       <Card style={{ padding:14,marginBottom:16 }}>
         <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,alignItems:'end' }}>
           <Input label="Search" value={q} onChange={e => setQ(e.target.value)} placeholder="Title / ID / author" icon="🔍" style={{ marginBottom:0 }} />
-          <div style={{ marginBottom:0 }}>
-            <Sel label="Category" value={catF} onChange={e => setCatF(e.target.value)} options={catOptions} />
-          </div>
+          <Sel label="Category" value={catF} onChange={e => setCatF(e.target.value)} options={catOptions} style={{ marginBottom:0 }} />
           {!fixedStatus && staff && (
-            <div style={{ marginBottom:0 }}>
-              <Sel label="Status" value={statusF} onChange={e => setStatusF(e.target.value)}
-                options={[{ value:'', label:'All Statuses' }, { value:'PUBLISHED', label:'Published' }, { value:'DRAFT', label:'Draft' }]} />
-            </div>
+            <Sel label="Status" value={statusF} onChange={e => setStatusF(e.target.value)}
+              options={[{ value:'', label:'All Statuses' }, { value:'PUBLISHED', label:'Published' }, { value:'DRAFT', label:'Draft' }]} style={{ marginBottom:0 }} />
           )}
           <Input label="Author" value={author} onChange={e => setAuthor(e.target.value)} placeholder="Author name" style={{ marginBottom:0 }} />
           <Input label="From" type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={{ marginBottom:0 }} />

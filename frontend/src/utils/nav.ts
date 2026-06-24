@@ -23,6 +23,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'cancel', icon: '⊘', label: 'Cancel Request' },
     { key: 'transactions', icon: '≡', label: 'Transactions' },
     { key: 'reports', icon: '📊', label: 'Reports' },
+    { key: 'risk-mgmt', icon: '🛡️', label: 'Risk Management' },
     { key: 'templates', icon: '▦', label: 'All Templates View' },
     { key: 'balance', icon: '◎', label: 'Balance Enquiry' },
     { key: 'risk', icon: '⚑', label: 'Risk Analysis' },
@@ -37,6 +38,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'admin-analytics', icon: '📊', label: 'Merchant Analytics' },
     { key: 'admin-transactions', icon: '≡', label: 'All Transactions' },
     { key: 'admin-accounts', icon: '🏦', label: 'Account Management' },
+    { key: 'risk-mgmt', icon: '🛡️', label: 'Risk Management' },
     BLOG_GROUP,
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
@@ -44,6 +46,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'sa-dashboard', icon: '⬡', label: 'Platform Overview' },
     { key: 'sa-admins', icon: '🛡', label: 'Admin Management' },
     { key: 'sa-analytics', icon: '📊', label: 'Merchant Analytics' },
+    { key: 'risk-mgmt', icon: '🛡️', label: 'Risk Management' },
     { key: 'sa-news', icon: '📰', label: 'News Management' },
     { key: 'sa-logs', icon: '🧾', label: 'System Logs' },
     { key: 'sa-audit', icon: '📋', label: 'Audit Logs' },
@@ -64,6 +67,7 @@ export const PAGE_TITLES: Record<string, string> = {
   cancel: 'Cancel Request',
   transactions: 'Transactions',
   reports: 'Reports',
+  'risk-mgmt': 'Risk Management',
   templates: 'All Templates View',
   balance: 'Balance Enquiry',
   risk: 'Risk Analysis',
@@ -94,11 +98,11 @@ export const PAGE_TITLES: Record<string, string> = {
 // Maintain Profile + Profile collapse to a single Profile link.
 // Customer Support is available to every merchant role (default for all merchants).
 export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
-  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'news', 'blog', 'support', 'profile'],
-  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'news', 'blog', 'support', 'profile'],
-  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'news', 'blog', 'support', 'profile'],
-  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'reports', 'news', 'blog', 'support', 'profile'],
-  MANAGER: ['dashboard', 'templates', 'reports', 'news', 'blog', 'support', 'profile'],
+  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
+  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
+  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
+  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
+  MANAGER: ['dashboard', 'templates', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
 };
 
 /**

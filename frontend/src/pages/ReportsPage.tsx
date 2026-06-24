@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { fmt, downloadText, today } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, Modal, LoadingScreen } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { transactionAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -167,13 +167,13 @@ type RTab = 'overview' | 'quick' | 'members' | 'intel' | 'trends' | 'search';
 const OverviewTab: React.FC<{ data: ReportData }> = ({ data }) => {
   const c = data.cards;
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 14 }}>
-      <StatCard icon="≡" label="Total Transactions" value={c.totalTransactions} color={T.blue} />
-      <StatCard icon="↓" label="Total Deposits" value={c.totalDeposits} sub={fmt(c.totalDepositAmount)} color={T.success} />
-      <StatCard icon="↑" label="Total Withdrawals" value={c.totalWithdrawals} sub={fmt(c.totalWithdrawalAmount)} color={T.danger} />
-      <StatCard icon="⇄" label="Total Settlements" value={c.totalSettlements} sub={fmt(c.totalSettlementAmount)} color={T.warning} />
-      <StatCard icon="₹" label="Total Transaction Amount" value={fmt(c.totalTransactionAmount)} color={T.blue} />
-      <StatCard icon="👥" label="Active Memberships" value={c.activeMemberships} sub="transacted in last 30 days" color={T.cyan || T.blue} />
+    <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 14 }}>
+      <StatCard icon="≡" label="Total Transactions" value={<CountUp value={c.totalTransactions} />} color={T.blue} />
+      <StatCard icon="↓" label="Total Deposits" value={<CountUp value={c.totalDeposits} />} sub={fmt(c.totalDepositAmount)} color={T.success} />
+      <StatCard icon="↑" label="Total Withdrawals" value={<CountUp value={c.totalWithdrawals} />} sub={fmt(c.totalWithdrawalAmount)} color={T.danger} />
+      <StatCard icon="⇄" label="Total Settlements" value={<CountUp value={c.totalSettlements} />} sub={fmt(c.totalSettlementAmount)} color={T.warning} />
+      <StatCard icon="₹" label="Total Transaction Amount" value={<CountUp value={c.totalTransactionAmount} format={fmt} />} valueLen={fmt(c.totalTransactionAmount).length} color={T.blue} />
+      <StatCard icon="👥" label="Active Memberships" value={<CountUp value={c.activeMemberships} />} sub="transacted in last 30 days" color={T.cyan || T.blue} />
       <StatCard icon="⭐" label="Most Active Member" value={c.mostActiveMember ? c.mostActiveMember.memberName : '-'} sub={c.mostActiveMember ? `${c.mostActiveMember.memberId} · ${c.mostActiveMember.count} txns` : undefined} color={T.success} />
       <StatCard icon="🔝" label="Largest Transaction Today" value={c.largestTransactionToday ? fmt(c.largestTransactionToday.amount) : '-'} sub={c.largestTransactionToday ? `${c.largestTransactionToday.memberName} (${c.largestTransactionToday.memberId})` : undefined} color={T.warning} />
     </div>
@@ -201,7 +201,7 @@ const QuickReportsTab: React.FC<{ data: ReportData }> = ({ data }) => {
     : (data.windows as Record<string, ReportData['windows']['10m']>)[sel];
 
   const metric = (label: string, value: string, color: string) => (
-    <Card style={{ padding: '16px 18px' }}>
+    <Card className="c5-hover-lift" style={{ padding: '16px 18px' }}>
       <p style={{ margin: '0 0 6px', fontSize: 11, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
       <p style={{ margin: 0, fontSize: 22, fontWeight: 800, color }}>{value}</p>
     </Card>
@@ -210,8 +210,8 @@ const QuickReportsTab: React.FC<{ data: ReportData }> = ({ data }) => {
   return (
     <div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-        {WIN_LABELS.map(([k, label]) => <button key={k} onClick={() => setSel(k)} style={pill(sel === k)}>{label}</button>)}
-        <button onClick={() => setSel('custom')} style={pill(custom)}>Custom Date Range</button>
+        {WIN_LABELS.map(([k, label]) => <button key={k} className="c5-btn" onClick={() => setSel(k)} style={pill(sel === k)}>{label}</button>)}
+        <button className="c5-btn" onClick={() => setSel('custom')} style={pill(custom)}>Custom Date Range</button>
       </div>
       {custom && (
         <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -219,7 +219,7 @@ const QuickReportsTab: React.FC<{ data: ReportData }> = ({ data }) => {
           <Input label="To" type="date" value={to} onChange={e => setTo(e.target.value)} />
         </div>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
+      <div key={sel} className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
         {metric('Number of Transactions', String(win?.count ?? 0), T.blue)}
         {metric('Total Amount', fmt(win?.totalAmount ?? 0), T.textMain)}
         {metric('Deposits', fmt(win?.deposits ?? 0), T.success)}
@@ -260,7 +260,7 @@ const IntelTab: React.FC<{ data: ReportData }> = ({ data }) => {
   const recent = data.transactions.filter(r => r.createdAt && new Date(r.createdAt).getTime() >= cutoff && r.amount >= Number(thr));
 
   const bigCard = (title: string, x: ReportData['intelligence']['largestDepositEver'], color: string) => (
-    <Card style={{ padding: 18 }}>
+    <Card className="c5-hover-lift" style={{ padding: 18 }}>
       <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</p>
       {x ? (
         <>
@@ -275,7 +275,7 @@ const IntelTab: React.FC<{ data: ReportData }> = ({ data }) => {
   return (
     <div>
       <RSectionTitle>Largest Transactions Ever</RSectionTitle>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(240px,1fr))', gap: 14 }}>
+      <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(240px,1fr))', gap: 14 }}>
         {bigCard('Largest Deposit Ever', i.largestDepositEver, T.success)}
         {bigCard('Largest Withdrawal Ever', i.largestWithdrawalEver, T.danger)}
         {bigCard('Largest Settlement Ever', i.largestSettlementEver, T.warning)}
@@ -303,7 +303,7 @@ const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
   const axis = { fontSize: 11, fill: T.textMuted };
 
   const chartCard = (title: string, node: React.ReactNode) => (
-    <Card style={{ padding: 18 }}>
+    <Card className="c5-hover-lift" style={{ padding: 18 }}>
       <p style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 800, color: T.textMain }}>{title}</p>
       <div style={{ width: '100%', height: 240 }}>{node}</div>
     </Card>
@@ -324,7 +324,7 @@ const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
   );
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 14 }}>
+    <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 14 }}>
       {chartCard('Deposits Trend (30 days)', area('Deposits', T.success))}
       {chartCard('Withdrawals Trend (30 days)', area('Withdrawals', T.danger))}
       {chartCard('Settlements Trend (30 days)', area('Settlements', T.warning))}
@@ -443,10 +443,21 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
   useEffect(() => { reload(); }, []);
   usePoll(reload, 30000);
 
-  if (!data) return <LoadingScreen />;
+  if (!data) return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+        {[0, 1, 2, 3, 4, 5].map(i => <Skeleton key={i} w={120} h={36} style={{ borderRadius: 10 }} />)}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 14 }}>
+        {[0, 1, 2, 3, 4, 5, 6, 7].map(i => (
+          <Card key={i} style={{ padding: 18 }}><Skeleton w={90} h={11} /><div style={{ height: 12 }} /><Skeleton w={120} h={24} /></Card>
+        ))}
+      </div>
+    </div>
+  );
 
   const tabBtn = (k: RTab, label: string) => (
-    <button key={k} onClick={() => setTab(k)} style={{
+    <button key={k} className="c5-btn" onClick={() => setTab(k)} style={{
       padding: '9px 16px', borderRadius: 10, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700,
       background: tab === k ? T.blue : T.canvas, color: tab === k ? '#fff' : T.textMuted, fontFamily: 'inherit',
     }}>{label}</button>
@@ -471,12 +482,14 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
         {tabBtn('search', '🔍 Search')}
       </div>
 
-      {tab === 'overview' && <OverviewTab data={data} />}
-      {tab === 'quick' && <QuickReportsTab data={data} />}
-      {tab === 'members' && <MembersTab data={data} onPick={setProfileId} />}
-      {tab === 'intel' && <IntelTab data={data} />}
-      {tab === 'trends' && <TrendsTab data={data} />}
-      {tab === 'search' && <SearchTab data={data} onPick={setProfileId} />}
+      <div key={tab} className="c5-panel-in">
+        {tab === 'overview' && <OverviewTab data={data} />}
+        {tab === 'quick' && <QuickReportsTab data={data} />}
+        {tab === 'members' && <MembersTab data={data} onPick={setProfileId} />}
+        {tab === 'intel' && <IntelTab data={data} />}
+        {tab === 'trends' && <TrendsTab data={data} />}
+        {tab === 'search' && <SearchTab data={data} onPick={setProfileId} />}
+      </div>
 
       {profileId && <MemberProfileModal data={data} memberId={profileId} onClose={() => setProfileId(null)} />}
 

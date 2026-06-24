@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.db.session import engine, Base
 from app.db.migrate import ensure_schema
-from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news, admin_upis, blogs
+from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news, admin_upis, blogs, risk
 
 
 @asynccontextmanager
@@ -59,6 +59,7 @@ app.include_router(system_logs.router)
 app.include_router(system_logs.audit_router)
 app.include_router(news.router)
 app.include_router(blogs.router)
+app.include_router(risk.router)
 app.include_router(ai.router)
 
 

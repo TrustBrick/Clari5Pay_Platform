@@ -21,6 +21,7 @@ import {
   AllBlogsPage, CreateBlogPage, BlogCategoriesPage, PublishedBlogsPage,
   DraftBlogsPage, BlogAnalyticsPage,
 } from './pages/BlogPages';
+import { RiskManagementPage } from './pages/RiskPages';
 
 const defaultPageFor = (role?: string) =>
   role === 'MERCHANT' ? 'dashboard' : role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard';
@@ -32,6 +33,7 @@ const BLOG_WRITE_PAGES = ['blog-create', 'blog-drafts', 'blog-analytics'];
 const pageAllowed = (role: string, page: string) => {
   if (!page) return false;
   if (page === 'profile') return true;
+  if (page === 'risk-mgmt') return true;   // Risk Management is available in all three portals
   if (page.startsWith('blog-')) {
     return BLOG_WRITE_PAGES.includes(page) ? (role === 'ADMIN' || role === 'SUPER_ADMIN') : true;
   }
@@ -64,7 +66,7 @@ const App: React.FC = () => {
   const activePage = pageAllowed(user.role, page) ? page : defaultPageFor(user.role);
 
   const renderPage = () => {
-    const props = { user };
+    const props = { user, onNavigate: setPage };
     const map: Record<string, React.ReactNode> = {
       dashboard: <MerchantDashboard {...props} />,
       deposit: <DepositManagement {...props} />,
@@ -73,6 +75,7 @@ const App: React.FC = () => {
       cancel: <CancelRequestPage {...props} />,
       transactions: <TransactionHistory {...props} />,
       reports: <ReportsPage {...props} />,
+      'risk-mgmt': <RiskManagementPage user={user} />,
       templates: <TemplatesPage {...props} />,
       balance: <BalancePage {...props} />,
       risk: <RiskPage {...props} />,

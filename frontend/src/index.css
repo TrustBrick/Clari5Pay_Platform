@@ -176,6 +176,18 @@
 .c5-hover-lift { transition: transform 0.18s ease, box-shadow 0.22s ease; }
 .c5-hover-lift:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0, 82, 204, 0.14); }
 
+/* Table row hover highlight */
+.c5-row-hover { transition: background 0.15s ease; }
+.c5-row-hover:hover { background: rgba(0, 82, 204, 0.045); }
+
+/* Confetti burst (success celebration) — particles injected by utils/confetti.ts */
+.c5-confetti-layer { position: fixed; inset: 0; pointer-events: none; z-index: 9999; overflow: hidden; }
+.c5-confetti { position: absolute; top: -12px; width: 9px; height: 14px; border-radius: 2px; will-change: transform, opacity; animation: c5-confetti-fall var(--dur, 2.4s) cubic-bezier(0.2, 0.6, 0.4, 1) forwards; }
+@keyframes c5-confetti-fall {
+  0%   { transform: translateY(-10px) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(105vh) rotate(720deg); opacity: 0.9; }
+}
+
 /* Accessibility: honour reduced-motion */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
