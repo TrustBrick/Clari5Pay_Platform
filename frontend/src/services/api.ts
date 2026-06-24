@@ -147,8 +147,8 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/done`, data ?? {});
     return res.data;
   },
-  cancel: async (id: string) => {
-    const res = await api.post<Transaction>(`/api/transactions/${id}/cancel`);
+  cancel: async (id: string, reason: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/cancel`, { reason });
     return res.data;
   },
   regenerateQr: async (id: string) => {

@@ -115,6 +115,9 @@ export interface Transaction {
   riskAnalysis?: boolean;
   highRisk?: boolean;
   rejectReason?: string | null;
+  cancelReason?: string | null;
+  cancelledBy?: string | null;
+  cancelledAt?: string | null;
   refPrefix?: string;
 }
 
@@ -400,6 +403,7 @@ export interface ReportRow {
   time: string;
   createdAt: string | null;
   completed: boolean;
+  cancelReason?: string | null;
 }
 export interface ReportData {
   cards: {

@@ -134,6 +134,11 @@ class Transaction(Base):
     high_risk: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)   # agent-flagged high risk (payment not received)
     reject_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # admin rejection reason
 
+    # Cancellation (merchant cancels their own pending request — reason is mandatory).
+    cancel_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # merchant cancellation reason
+    cancelled_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)  # name of the user who cancelled
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # when it was cancelled
+
     # Proof / verification workflow
     merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # first merchant slip image (data URL) — kept for back-compat
     merchant_proofs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array of up to 3 proof/slip files (data URLs)

@@ -249,6 +249,9 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "riskAnalysis": t.risk_analysis,
         "highRisk": t.high_risk,
         "rejectReason": t.reject_reason,
+        "cancelReason": t.cancel_reason,
+        "cancelledBy": t.cancelled_by,
+        "cancelledAt": (t.cancelled_at.isoformat() + "Z") if t.cancelled_at else None,
     }
 
 
@@ -685,6 +688,7 @@ async def merchant_reports(
         "date": str(t.tx_date), "time": t.tx_time,
         "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
         "completed": _completed(t),
+        "cancelReason": t.cancel_reason,
     } for t in txns]
     rows.sort(key=lambda r: r["createdAt"] or "", reverse=True)
 
@@ -1009,15 +1013,25 @@ async def flag_high_risk(
 @router.post("/{tx_id}/cancel")
 async def cancel_transaction(
     tx_id: str,
+    data: ReasonRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Merchant cancels one of their own pending requests."""
+    """Merchant cancels one of their own pending requests. A reason is mandatory and audited."""
+    reason = (data.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Cancellation reason is required.")
+    reason = reason[:500]
     tx = await _get_own_tx(tx_id, db, current_user)
     tx.status = TxStatus.CANCELLED
+    tx.cancel_reason = reason
+    tx.cancelled_by = current_user.name
+    tx.cancelled_at = datetime.utcnow()
     await db.flush()
-    await notify_tx(db, tx, f"{tx.ref}: cancelled by {tx.merchant_name}", "⊘")
-    await log_event(db, "CANCELLED", f"{tx.ref} cancelled by {tx.merchant_name}", actor=current_user)
+    await notify_tx(db, tx, f"{tx.ref}: cancelled by {tx.merchant_name} — {reason}", "⊘")
+    await log_event(db, "CANCELLED", f"{tx.ref} cancelled by {tx.merchant_name} — reason: {reason}", actor=current_user)
+    await record_audit(db, "CANCELLED", actor=current_user, entity_type=tx.type.value, entity_id=tx.ref,
+                       new="CANCELLED", reason=reason)
     await db.refresh(tx)
     return _t(tx)
 

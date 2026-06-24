@@ -21,7 +21,7 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <td>${esc(prettyStatus(t.status))}</td>
     <td class="nowrap">${esc(t.date)} ${esc(t.time)}</td>
     <td class="mono">${esc(t.adminUtr || t.utr || t.merchantRef)}</td>
-    <td>${esc(t.notes || t.rejectReason)}</td>
+    <td>${esc(t.cancelReason ? `Cancelled: ${t.cancelReason}` : (t.rejectReason || t.notes))}</td>
   </tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
   <style>

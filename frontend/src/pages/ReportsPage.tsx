@@ -16,10 +16,10 @@ const prettyStatusR = (s: string) => String(s || '').replace(/_/g, ' ').replace(
 
 const csvEscape = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
 const exportRowsCsv = (rows: ReportRow[], filename: string) => {
-  const head = ['Reference No.', 'Membership Number', 'Member Name', 'Type', 'Amount', 'Status', 'Date', 'Time'];
+  const head = ['Reference No.', 'Membership Number', 'Member Name', 'Type', 'Amount', 'Status', 'Date', 'Time', 'Cancellation Reason'];
   const lines = [head.map(csvEscape).join(',')];
   for (const r of rows) {
-    lines.push([r.ref, r.memberId || '', r.member, RTYPE_LABEL[r.type || ''] || '', r.amount, prettyStatusR(r.status), r.date, r.time].map(csvEscape).join(','));
+    lines.push([r.ref, r.memberId || '', r.member, RTYPE_LABEL[r.type || ''] || '', r.amount, prettyStatusR(r.status), r.date, r.time, r.cancelReason || ''].map(csvEscape).join(','));
   }
   downloadText(lines.join('\r\n'), filename);
 };

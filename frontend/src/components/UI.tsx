@@ -250,17 +250,28 @@ export const TableSkeleton: React.FC<{ rows?: number; cols?: number }> = ({ rows
 // ─── ReasonModal (prompts for a required free-text reason) ─────────────────────
 export const ReasonModal: React.FC<{
   title: string; label?: string; confirmLabel?: string; busy?: boolean;
+  message?: string; maxLength?: number; closeLabel?: string; requiredHint?: string; placeholder?: string;
   onSubmit: (reason: string) => void; onClose: () => void;
-}> = ({ title, label = 'Reason', confirmLabel = 'Confirm', busy, onSubmit, onClose }) => {
+}> = ({ title, label = 'Reason', confirmLabel = 'Confirm', busy, message, maxLength,
+       closeLabel = 'Cancel', requiredHint, placeholder = 'Enter a reason...', onSubmit, onClose }) => {
   const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
+  const empty = !reason.trim();
   return (
     <Modal title={title} onClose={onClose}>
+      {message && <p style={{ margin:'0 0 14px',fontSize:13,color:T.textMuted }}>{message}</p>}
       <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}<span style={{ color:T.danger }}> *</span></label>
-      <textarea value={reason} onChange={e=>setReason(e.target.value)} placeholder="Enter a reason..." autoFocus
-        style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:80,marginBottom:14 }}/>
+      <textarea value={reason} maxLength={maxLength} onChange={e=>setReason(e.target.value)} onBlur={()=>setTouched(true)} placeholder={placeholder} autoFocus
+        style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${touched && empty ? T.danger : T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:80,marginBottom:(maxLength||requiredHint)?4:14 }}/>
+      {(maxLength || requiredHint) && (
+        <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:14,fontSize:11,minHeight:16 }}>
+          <span style={{ color:T.danger,fontWeight:600 }}>{touched && empty && requiredHint ? requiredHint : ''}</span>
+          {maxLength && <span style={{ color:T.textMuted,flexShrink:0 }}>{reason.length} / {maxLength}</span>}
+        </div>
+      )}
       <div style={{ display:'flex',gap:10 }}>
-        <Btn onClick={()=>onSubmit(reason.trim())} disabled={busy||!reason.trim()}>{busy?'Saving...':confirmLabel}</Btn>
-        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={()=>{ if (empty) { setTouched(true); return; } onSubmit(reason.trim()); }} disabled={busy||empty}>{busy?'Saving...':confirmLabel}</Btn>
+        <Btn variant="secondary" onClick={onClose}>{closeLabel}</Btn>
       </div>
     </Modal>
   );

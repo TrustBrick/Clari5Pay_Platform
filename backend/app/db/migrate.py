@@ -36,6 +36,10 @@ _NEW_COLUMNS = [
     ("merchant_bank_accounts", "is_default", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("transactions", "sender_upi_id", "VARCHAR(64)"),
     ("transactions", "merchant_proofs", "TEXT"),
+    # Cancellation reason capture (merchant cancels a pending request).
+    ("transactions", "cancel_reason", "TEXT"),
+    ("transactions", "cancelled_by", "VARCHAR(128)"),
+    ("transactions", "cancelled_at", "TIMESTAMP"),
     ("admin_upis", "account_ref", "VARCHAR(40)"),
     ("audit_logs", "location", "VARCHAR(128)"),
     ("news", "priority", "VARCHAR(16) DEFAULT 'Normal' NOT NULL"),

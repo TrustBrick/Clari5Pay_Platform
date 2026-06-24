@@ -203,6 +203,17 @@ const RequestModal: React.FC<{
               <p style={{ fontSize:12,color:T.textMain,margin:0 }}>{tx.notes}</p>
             </div>
           )}
+          {tx.status === 'CANCELLED' && (
+            <div style={{ marginTop:10,background:T.dangerBg,borderRadius:10,padding:'8px 12px' }}>
+              <p style={{ fontSize:10,fontWeight:800,color:T.danger,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Cancellation Reason</p>
+              <p style={{ fontSize:12,color:T.textMain,margin:0 }}>{tx.cancelReason || '—'}</p>
+              {(tx.cancelledBy || tx.cancelledAt) && (
+                <p style={{ fontSize:11,color:T.textMuted,margin:'4px 0 0' }}>
+                  Cancelled by {tx.cancelledBy || 'merchant'}{tx.cancelledAt ? ` · ${new Date(tx.cancelledAt).toLocaleString('en-IN')}` : ''}
+                </p>
+              )}
+            </div>
+          )}
         </div>
         <div>
           {isDeposit ? (

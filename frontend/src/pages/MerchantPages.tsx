@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDateTime } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
 import { TxExportButton } from '../components/TxExport';
@@ -910,18 +910,20 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [target, setTarget] = useState<Transaction | null>(null);  // request awaiting a cancellation reason
 
   const reload = () => transactionAPI.getMine().then(setTxns).catch(()=>setTxns([]));
   useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
-  usePoll(() => { if (!busy) reload(); });
+  usePoll(() => { if (!busy && !target) reload(); });
 
   // Only requests still in flight can be cancelled.
   const cancellable = txns.filter(t => t.status === 'ACCOUNT_REQUESTED' || t.status === 'ACCOUNT_SUBMITTED');
 
-  const cancel = async (t: Transaction) => {
-    if (!window.confirm(`Cancel request ${t.ref}?`)) return;
+  const confirmCancel = async (reason: string) => {
+    if (!target) return;
+    const t = target;
     setBusy(t.id);
-    try { await transactionAPI.cancel(t.id); await reload(); showToast(`${t.ref} cancelled`); }
+    try { await transactionAPI.cancel(t.id, reason); setTarget(null); await reload(); showToast(`${t.ref} cancelled`); }
     catch { showToast('Failed to cancel request','error'); }
     finally { setBusy(null); }
   };
@@ -953,7 +955,7 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
                     <td style={{ padding:'11px 14px',color:T.textMain }}>{t.memberId||'—'}</td>
                     <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT"/></td>
                     <td style={{ padding:'11px 14px' }}>
-                      <Btn size="sm" variant="danger" disabled={busy===t.id} onClick={()=>cancel(t)}>{busy===t.id?'Cancelling...':'⊘ Cancel'}</Btn>
+                      <Btn size="sm" variant="danger" disabled={busy===t.id} onClick={()=>setTarget(t)}>{busy===t.id?'Cancelling...':'⊘ Cancel'}</Btn>
                     </td>
                   </tr>
                 ))}
@@ -962,6 +964,22 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
           </div>
         )}
       </Card>
+
+      {target && (
+        <ReasonModal
+          title="Cancel Request"
+          message={`Please provide the reason for cancelling ${target.ref} (${typeLabel(target.type)}).`}
+          label="Cancellation Reason"
+          placeholder="e.g. Wrong amount entered, Duplicate request, Customer requested cancellation..."
+          confirmLabel="Confirm Cancellation"
+          closeLabel="Close"
+          requiredHint="Cancellation reason is required."
+          maxLength={500}
+          busy={busy === target.id}
+          onSubmit={confirmCancel}
+          onClose={()=>setTarget(null)}
+        />
+      )}
     </div>
   );
 };
