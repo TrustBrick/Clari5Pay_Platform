@@ -33,6 +33,13 @@
   --c5-danger-bg: rgba(220, 38, 38, 0.1);
   --c5-skel: #e9eef6;
   --c5-scrollbar: rgba(0, 0, 0, 0.15);
+  /* Data-table styling (light keeps the existing look) */
+  --c5-table-head: #f0f4fb;
+  --c5-table-head-text: #4a5568;
+  --c5-row-odd: #ffffff;
+  --c5-row-even: #f8faff;
+  --c5-row-hover: rgba(0, 82, 204, 0.06);
+  --c5-table-border: #e2e8f0;
 }
 
 :root[data-theme="dark"] {
@@ -50,7 +57,31 @@
   --c5-scrollbar: rgba(255, 255, 255, 0.18);
   /* --c5-dark (Btn-dark / login panel bg) stays dark; brand + status/risk colors unchanged. */
   color-scheme: dark;
+  /* Dark data-table palette (per spec) */
+  --c5-table-head: #0f172a;
+  --c5-table-head-text: #ffffff;
+  --c5-row-odd: #111827;
+  --c5-row-even: #1e293b;
+  --c5-row-hover: rgba(37, 99, 235, 0.15);
+  --c5-table-border: #334155;
 }
+
+/* ─── Global dark-mode table styling ────────────────────────────────────────
+   Every data table is a real <table> with inline-styled rows. In DARK mode only,
+   force the row/zebra/header/border colors so no light row can show through —
+   regardless of the per-table inline background. Light mode is untouched.
+   Only backgrounds + borders + header text are forced, so colored cell text and
+   status badges keep their own colors. */
+:root[data-theme="dark"] table thead tr,
+:root[data-theme="dark"] table thead th {
+  background: var(--c5-table-head) !important;
+  color: var(--c5-table-head-text) !important;
+}
+:root[data-theme="dark"] table tbody tr { background: var(--c5-row-odd) !important; }
+:root[data-theme="dark"] table tbody tr:nth-child(even) { background: var(--c5-row-even) !important; }
+:root[data-theme="dark"] table tbody tr:hover { background: var(--c5-row-hover) !important; }
+:root[data-theme="dark"] table th,
+:root[data-theme="dark"] table td { border-color: var(--c5-table-border) !important; }
 
 /* Smooth fade only during an actual theme switch (added/removed by the controller),
    so normal hovers/interactions aren't affected. Honours prefers-reduced-motion below. */
