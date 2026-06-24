@@ -475,3 +475,37 @@ export interface RiskProfile {
   summary: { strengths: string[]; indicators: string[] };
   transactions: Array<{ ref: string; type: string | null; amount: number; status: string; date: string; time: string; createdAt: string | null }>;
 }
+
+// ─── Cyber Crime Complaint ────────────────────────────────────────────────────
+export interface BankDetail {
+  accountHolder: string | null;
+  accountNumber: string | null;
+  bankName: string | null;
+  branch: string | null;
+  ifsc: string | null;
+  upiId: string | null;
+}
+export interface RiskMemberBanks {
+  accounts: BankDetail[];
+  upis: string[];
+}
+export interface ComplaintDoc { name: string; type: string; dataUrl: string }
+export interface Complaint {
+  id: number;
+  ref: string;
+  memberId: string;
+  memberName: string;
+  merchantName: string;
+  status: 'DRAFT' | 'SUBMITTED';
+  accountHolder: string | null;
+  accountNumber: string | null;
+  bankName: string | null;
+  branch: string | null;
+  ifsc: string | null;
+  upiId: string | null;
+  description: string;
+  documents: ComplaintDoc[];
+  createdBy: string;
+  createdAt: string | null;
+  submittedAt: string | null;
+}

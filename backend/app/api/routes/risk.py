@@ -6,13 +6,15 @@ provides the data the Risk dashboard and Risk Profile pages need, scoped per por
   - Admin        → members of the merchants they created
   - Super Admin  → every member on the platform
 """
+import json
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import Transaction, TxStatus, User, UserRole, MerchantBankAccount
+from app.models.cyber import CyberComplaint
 from app.core.deps import get_current_user
 
 router = APIRouter(prefix="/api/risk", tags=["risk"])
@@ -224,3 +226,148 @@ async def risk_member_profile(
         "summary": {"strengths": strengths, "indicators": indicators},
         "transactions": history,
     }
+
+
+# ─── Cyber Crime Complaint ────────────────────────────────────────────────────
+MAX_DOCS = 10
+
+
+async def _member_merchant_id(db: AsyncSession, ids: list[int], member_id: str) -> int | None:
+    """The merchant a membership belongs to (within the caller's scope)."""
+    return (await db.execute(
+        select(Transaction.merchant_id).where(
+            Transaction.merchant_id.in_(ids), Transaction.member_id == member_id
+        ).limit(1)
+    )).scalar_one_or_none() if ids else None
+
+
+@router.get("/member/{member_id}/banks")
+async def member_banks(
+    member_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """All bank accounts / UPIs saved against a membership — auto-fetched into the complaint form."""
+    ids = await _scoped_merchant_ids(db, user)
+    member_id = member_id.strip()
+    if not await _member_merchant_id(db, ids, member_id):
+        raise HTTPException(status_code=404, detail="Member not found in your scope")
+    rows = (await db.execute(
+        select(MerchantBankAccount).where(
+            MerchantBankAccount.merchant_id.in_(ids), MerchantBankAccount.member_id == member_id
+        )
+    )).scalars().all()
+    accounts, seen = [], set()
+    for b in rows:
+        if b.account_number and b.account_number not in seen:
+            seen.add(b.account_number)
+            accounts.append({
+                "accountHolder": b.account_holder, "accountNumber": b.account_number,
+                "bankName": b.bank_name, "branch": b.branch, "ifsc": b.ifsc, "upiId": b.upi_id,
+            })
+    upis = sorted({b.upi_id for b in rows if b.upi_id})
+    return {"accounts": accounts, "upis": upis}
+
+
+async def _next_complaint_ref(db: AsyncSession) -> str:
+    refs = (await db.execute(select(CyberComplaint.ref))).scalars().all()
+    maxn = 0
+    for r in refs:
+        try:
+            maxn = max(maxn, int(r[3:]))
+        except (TypeError, ValueError):
+            continue
+    return f"CMP{maxn + 1:06d}"
+
+
+def _complaint_out(c: CyberComplaint) -> dict:
+    return {
+        "id": c.id, "ref": c.ref, "memberId": c.member_id, "memberName": c.member_name,
+        "merchantName": c.merchant_name, "status": c.status,
+        "accountHolder": c.account_holder, "accountNumber": c.account_number,
+        "bankName": c.bank_name, "branch": c.branch, "ifsc": c.ifsc, "upiId": c.upi_id,
+        "description": c.description,
+        "documents": json.loads(c.documents) if c.documents else [],
+        "createdBy": c.created_by_name,
+        "createdAt": (c.created_at.isoformat() + "Z") if c.created_at else None,
+        "submittedAt": (c.submitted_at.isoformat() + "Z") if c.submitted_at else None,
+    }
+
+
+@router.post("/complaints")
+async def create_complaint(
+    data: dict,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Save a draft or submit a cyber crime complaint for a membership (scoped)."""
+    ids = await _scoped_merchant_ids(db, user)
+    member_id = (data.get("memberId") or "").strip()
+    mmid = await _member_merchant_id(db, ids, member_id)
+    if not mmid:
+        raise HTTPException(status_code=404, detail="Member not found in your scope")
+
+    docs = data.get("documents") or []
+    if len(docs) > MAX_DOCS:
+        raise HTTPException(status_code=400, detail=f"You can attach at most {MAX_DOCS} documents.")
+
+    submit = bool(data.get("submit"))
+    if submit:
+        if not (data.get("accountNumber") or data.get("upiId")):
+            raise HTTPException(status_code=400, detail="Bank account or UPI is required to submit.")
+        if not (data.get("description") or "").strip():
+            raise HTTPException(status_code=400, detail="A complaint description is required to submit.")
+
+    c = CyberComplaint(
+        ref=await _next_complaint_ref(db),
+        member_id=member_id, member_name=data.get("memberName") or "",
+        merchant_name=data.get("merchantName") or "", merchant_id=mmid,
+        account_holder=data.get("accountHolder"), account_number=data.get("accountNumber"),
+        bank_name=data.get("bankName"), branch=data.get("branch"), ifsc=data.get("ifsc"),
+        upi_id=data.get("upiId"), description=data.get("description") or "",
+        documents=json.dumps(docs), status="SUBMITTED" if submit else "DRAFT",
+        created_by=user.id, created_by_name=user.name,
+        submitted_at=datetime.utcnow() if submit else None,
+    )
+    db.add(c)
+    await db.flush()
+
+    # Persist a newly-entered bank account against the membership for future auto-fetch.
+    if data.get("saveBank") and data.get("accountNumber"):
+        exists = (await db.execute(
+            select(MerchantBankAccount).where(
+                MerchantBankAccount.merchant_id == mmid,
+                MerchantBankAccount.member_id == member_id,
+                MerchantBankAccount.account_number == data["accountNumber"],
+            )
+        )).scalar_one_or_none()
+        if not exists:
+            db.add(MerchantBankAccount(
+                merchant_id=mmid, member_id=member_id,
+                account_holder=data.get("accountHolder"), account_number=data.get("accountNumber"),
+                ifsc=data.get("ifsc") or "", branch=data.get("branch") or "",
+                bank_name=data.get("bankName"), upi_id=data.get("upiId"),
+            ))
+
+    await db.commit()
+    await db.refresh(c)
+    return _complaint_out(c)
+
+
+@router.get("/complaints/member/{member_id}")
+async def list_member_complaints(
+    member_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Existing complaints for a membership (scoped) — newest first."""
+    ids = await _scoped_merchant_ids(db, user)
+    member_id = member_id.strip()
+    if not await _member_merchant_id(db, ids, member_id):
+        raise HTTPException(status_code=404, detail="Member not found in your scope")
+    rows = (await db.execute(
+        select(CyberComplaint).where(CyberComplaint.member_id == member_id,
+                                     CyberComplaint.merchant_id.in_(ids))
+        .order_by(CyberComplaint.id.desc())
+    )).scalars().all()
+    return [_complaint_out(c) for c in rows]
