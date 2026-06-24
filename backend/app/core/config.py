@@ -1,3 +1,4 @@
+from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
 
 
@@ -25,11 +26,23 @@ class Settings(BaseSettings):
     # SMTP — when SMTP_HOST is set, OTPs are emailed for real (production).
     # When it's empty (local dev), the OTP is logged to the server console and
     # returned to the client so it can be tested without an email server.
+    # Sender defaults target the noreplyclari5pay@gmail.com Gmail account; the App
+    # Password (SMTP_PASSWORD) must come from the environment — never hardcode it here.
+    # Env var names accept both the canonical SMTP_* keys and the EMAIL_FROM /
+    # SMTP_USERNAME aliases. SMTP_HOST stays empty by default so local dev (no SMTP)
+    # keeps logging the OTP to the console / returning it to the client; production
+    # sets SMTP_HOST=smtp.gmail.com via the environment.
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
-    SMTP_USER: str = ""
+    SMTP_USER: str = Field(
+        default="noreplyclari5pay@gmail.com",
+        validation_alias=AliasChoices("SMTP_USER", "SMTP_USERNAME"),
+    )
     SMTP_PASSWORD: str = ""
-    SMTP_FROM: str = "no-reply@clari5pay.io"
+    SMTP_FROM: str = Field(
+        default="noreplyclari5pay@gmail.com",
+        validation_alias=AliasChoices("SMTP_FROM", "EMAIL_FROM"),
+    )
     SMTP_TLS: bool = True
 
     @property
