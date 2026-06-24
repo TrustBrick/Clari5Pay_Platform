@@ -9,15 +9,27 @@ provides the data the Risk dashboard and Risk Profile pages need, scoped per por
 import json
 from collections import defaultdict
 from datetime import date, datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import Transaction, TxStatus, User, UserRole, MerchantBankAccount
 from app.models.cyber import CyberComplaint
 from app.core.deps import get_current_user
+from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/risk", tags=["risk"])
+
+
+def _ip(request: Request | None) -> str | None:
+    return request.client.host if request and request.client else None
+
+
+# Maps a workflow status to the column that records when the case first reached it.
+_STAGE_TS = {
+    "OPEN": "opened_at", "UNDER_REVIEW": "under_review_at", "ESCALATED": "escalated_at",
+    "COMPLAINT_FILED": "complaint_filed_at", "CLOSED": "closed_at",
+}
 
 
 def _kind(t: Transaction) -> str | None:
@@ -280,23 +292,47 @@ async def _next_complaint_ref(db: AsyncSession) -> str:
     return f"CMP{maxn + 1:06d}"
 
 
-def _complaint_out(c: CyberComplaint) -> dict:
+def _timeline(c: CyberComplaint) -> dict:
+    by = json.loads(c.stage_by) if c.stage_by else {}
+    iso = lambda dt: (dt.isoformat() + "Z") if dt else None
     return {
-        "id": c.id, "ref": c.ref, "memberId": c.member_id, "memberName": c.member_name,
-        "merchantName": c.merchant_name, "status": c.status,
-        "accountHolder": c.account_holder, "accountNumber": c.account_number,
-        "bankName": c.bank_name, "branch": c.branch, "ifsc": c.ifsc, "upiId": c.upi_id,
-        "description": c.description,
-        "documents": json.loads(c.documents) if c.documents else [],
+        "openedAt": iso(c.opened_at), "openedBy": by.get("OPEN"),
+        "underReviewAt": iso(c.under_review_at), "underReviewBy": by.get("UNDER_REVIEW"),
+        "escalatedAt": iso(c.escalated_at), "escalatedBy": by.get("ESCALATED"),
+        "complaintFiledAt": iso(c.complaint_filed_at), "complaintFiledBy": by.get("COMPLAINT_FILED"),
+        "closedAt": iso(c.closed_at), "closedBy": by.get("CLOSED"),
+    }
+
+
+def _complaint_out(c: CyberComplaint, full: bool = True) -> dict:
+    out = {
+        "id": c.id, "caseId": c.ref, "ref": c.ref,
+        "memberId": c.member_id, "memberName": c.member_name, "merchantName": c.merchant_name,
+        "status": c.status, "priority": c.priority, "riskLevel": c.risk_level,
+        "assignedTo": c.assigned_to, "assignedToId": c.assigned_to_id,
         "createdBy": c.created_by_name,
         "createdAt": (c.created_at.isoformat() + "Z") if c.created_at else None,
+        "updatedAt": (c.updated_at.isoformat() + "Z") if c.updated_at else None,
         "submittedAt": (c.submitted_at.isoformat() + "Z") if c.submitted_at else None,
+        "closedAt": (c.closed_at.isoformat() + "Z") if c.closed_at else None,
+        "timeline": _timeline(c),
     }
+    if full:
+        out.update({
+            "accountHolder": c.account_holder, "accountNumber": c.account_number,
+            "bankName": c.bank_name, "branch": c.branch, "ifsc": c.ifsc, "upiId": c.upi_id,
+            "description": c.description,
+            "documents": json.loads(c.documents) if c.documents else [],
+            "notes": json.loads(c.notes) if c.notes else [],
+            "resolutionNotes": c.resolution_notes,
+        })
+    return out
 
 
 @router.post("/complaints")
 async def create_complaint(
     data: dict,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -325,12 +361,19 @@ async def create_complaint(
         account_holder=data.get("accountHolder"), account_number=data.get("accountNumber"),
         bank_name=data.get("bankName"), branch=data.get("branch"), ifsc=data.get("ifsc"),
         upi_id=data.get("upiId"), description=data.get("description") or "",
-        documents=json.dumps(docs), status="SUBMITTED" if submit else "DRAFT",
+        documents=json.dumps(docs), status="OPEN" if submit else "DRAFT",
+        priority=data.get("priority") or "MEDIUM", risk_level=data.get("riskLevel") or "LOW",
         created_by=user.id, created_by_name=user.name,
         submitted_at=datetime.utcnow() if submit else None,
+        opened_at=datetime.utcnow() if submit else None,
+        stage_by=json.dumps({"OPEN": f"{user.name} ({user.role.value})"}) if submit else None,
     )
     db.add(c)
     await db.flush()
+    await log_event(db, "COMPLAINT_CREATED",
+                    f"Complaint {c.ref} {'submitted' if submit else 'drafted'} for {member_id} by {user.name}", actor=user)
+    await record_audit(db, "COMPLAINT_CREATED", actor=user, entity_type="complaint", entity_id=c.ref,
+                       new=c.status, ip=_ip(request))
 
     # Persist a newly-entered bank account against the membership for future auto-fetch.
     if data.get("saveBank") and data.get("accountNumber"):
@@ -371,3 +414,126 @@ async def list_member_complaints(
         .order_by(CyberComplaint.id.desc())
     )).scalars().all()
     return [_complaint_out(c) for c in rows]
+
+
+# ─── Case Management (Admin + Super Admin) ────────────────────────────────────
+COMPLAINT_STATUSES = ["DRAFT", "OPEN", "UNDER_REVIEW", "ESCALATED", "COMPLAINT_FILED", "CLOSED"]
+COMPLAINT_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+
+
+def _require_staff(user: User) -> None:
+    if user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        raise HTTPException(status_code=403, detail="Complaint management is for Admin / Super Admin only")
+
+
+@router.get("/complaints")
+async def list_complaints(
+    status: str | None = None,
+    priority: str | None = None,
+    q: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Complaint list, scoped: Admin = complaints for merchants they created; Super Admin = all.
+    (Merchants get only their own — used by the merchant complaint history.)"""
+    ids = await _scoped_merchant_ids(db, user)
+    rows = (await db.execute(
+        select(CyberComplaint).where(CyberComplaint.merchant_id.in_(ids))
+        .order_by(CyberComplaint.id.desc())
+    )).scalars().all() if ids else []
+    ql = (q or "").lower()
+    out = []
+    for c in rows:
+        if status and c.status != status:
+            continue
+        if priority and c.priority != priority:
+            continue
+        if ql and ql not in (c.ref or "").lower() and ql not in (c.member_id or "").lower() \
+                and ql not in (c.member_name or "").lower() and ql not in (c.merchant_name or "").lower():
+            continue
+        out.append(_complaint_out(c, full=False))
+    return {"scope": user.role.value, "complaints": out, "statuses": COMPLAINT_STATUSES, "priorities": COMPLAINT_PRIORITIES}
+
+
+@router.get("/complaints/{cid}")
+async def get_complaint(
+    cid: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    ids = await _scoped_merchant_ids(db, user)
+    c = (await db.execute(select(CyberComplaint).where(CyberComplaint.id == cid))).scalar_one_or_none()
+    if not c or c.merchant_id not in ids:
+        raise HTTPException(status_code=404, detail="Complaint not found in your scope")
+    return _complaint_out(c)
+
+
+@router.patch("/complaints/{cid}")
+async def update_complaint(
+    cid: int,
+    data: dict,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Change status / priority, assign (SA only), append a note, set resolution notes.
+    Every action is recorded in the audit log; workflow stage timestamps are stamped once."""
+    _require_staff(user)
+    ids = await _scoped_merchant_ids(db, user)
+    c = (await db.execute(select(CyberComplaint).where(CyberComplaint.id == cid))).scalar_one_or_none()
+    if not c or c.merchant_id not in ids:
+        raise HTTPException(status_code=404, detail="Complaint not found in your scope")
+    ip = _ip(request)
+    actions: list[tuple[str, str, str]] = []  # (action_type, audit_new, log_detail)
+
+    if "status" in data and data["status"] and data["status"] != c.status:
+        if data["status"] not in COMPLAINT_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid status")
+        old = c.status
+        c.status = data["status"]
+        # Stamp the stage timestamp + actor the first time the case reaches this status.
+        col = _STAGE_TS.get(c.status)
+        if col and getattr(c, col) is None:
+            setattr(c, col, datetime.utcnow())
+            sb = json.loads(c.stage_by) if c.stage_by else {}
+            sb[c.status] = f"{user.name} ({user.role.value})"
+            c.stage_by = json.dumps(sb)
+        act = "COMPLAINT_CLOSED" if c.status == "CLOSED" else "COMPLAINT_STATUS_CHANGED"
+        actions.append((act, f"{old} → {c.status}", f"Complaint {c.ref} status {old} → {c.status}"))
+
+    if "priority" in data and data["priority"] and data["priority"] != c.priority:
+        if data["priority"] not in COMPLAINT_PRIORITIES:
+            raise HTTPException(status_code=400, detail="Invalid priority")
+        old = c.priority
+        c.priority = data["priority"]
+        actions.append(("COMPLAINT_PRIORITY_CHANGED", f"{old} → {c.priority}", f"Complaint {c.ref} priority {old} → {c.priority}"))
+
+    # Assigning a case is a Super Admin action.
+    if "assignedTo" in data or "assignedToId" in data:
+        if user.role != UserRole.SUPER_ADMIN:
+            raise HTTPException(status_code=403, detail="Only Super Admin can assign cases")
+        c.assigned_to = (data.get("assignedTo") or None)
+        c.assigned_to_id = data.get("assignedToId")
+        actions.append(("COMPLAINT_ASSIGNED", c.assigned_to or "(unassigned)", f"Complaint {c.ref} assigned to {c.assigned_to or '(unassigned)'}"))
+
+    if data.get("resolutionNotes") is not None and data["resolutionNotes"] != (c.resolution_notes or ""):
+        c.resolution_notes = data["resolutionNotes"]
+        actions.append(("COMPLAINT_RESOLUTION_UPDATED", "resolution notes updated", f"Complaint {c.ref} resolution notes updated"))
+
+    note = (data.get("note") or "").strip()
+    if note:
+        existing = json.loads(c.notes) if c.notes else []
+        existing.append({
+            "author": user.name, "role": user.role.value, "text": note,
+            "at": datetime.utcnow().isoformat() + "Z",
+        })
+        c.notes = json.dumps(existing)
+        actions.append(("COMPLAINT_NOTE_ADDED", note[:120], f"Note added to complaint {c.ref} by {user.name}"))
+
+    c.updated_at = datetime.utcnow()
+    for action_type, new_val, detail in actions:
+        await record_audit(db, action_type, actor=user, entity_type="complaint", entity_id=c.ref, new=new_val, ip=ip)
+        await log_event(db, action_type, detail, actor=user)
+    await db.commit()
+    await db.refresh(c)
+    return _complaint_out(c)

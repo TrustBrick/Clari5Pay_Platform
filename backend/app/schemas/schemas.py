@@ -106,19 +106,13 @@ class NewsIn(BaseModel):
 
 
 # ─── Blog Schemas ─────────────────────────────────────────────────────────────
-class BlogCategoryIn(BaseModel):
-    name: str
-    description: Optional[str] = None
-
-
 class BlogIn(BaseModel):
     title: str
-    category_id: Optional[int] = None
+    category: str = "Announcements"
     short_description: Optional[str] = None
     content: str = ""
     cover_image: Optional[str] = None
-    images: list[str] = []
-    tags: list[str] = []
+    publish_date: Optional[date] = None
     status: str = "DRAFT"          # DRAFT | PUBLISHED
 
 

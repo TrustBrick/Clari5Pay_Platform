@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -192,6 +192,18 @@ export const riskAPI = {
   },
   createComplaint: async (payload: Record<string, unknown>) => {
     const res = await api.post<Complaint>('/api/risk/complaints', payload);
+    return res.data;
+  },
+  complaints: async (params?: { status?: string; priority?: string; q?: string }) => {
+    const res = await api.get<ComplaintList>('/api/risk/complaints', { params });
+    return res.data;
+  },
+  complaint: async (id: number) => {
+    const res = await api.get<Complaint>(`/api/risk/complaints/${id}`);
+    return res.data;
+  },
+  updateComplaint: async (id: number, patch: Record<string, unknown>) => {
+    const res = await api.patch<Complaint>(`/api/risk/complaints/${id}`, patch);
     return res.data;
   },
 };

@@ -1636,16 +1636,44 @@ export const AuditLogsPage: React.FC = () => {
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
+  const [userF, setUserF] = useState('');
+  const [roleF, setRoleF] = useState('');
+  const [actionF, setActionF] = useState('');
+  const [caseF, setCaseF] = useState('');
+  const [fromF, setFromF] = useState('');
+  const [toF, setToF] = useState('');
 
   const reload = () => auditLogAPI.list().then(setLogs).catch(()=>setLogs([]));
   useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
   usePoll(reload);
 
-  const filtered = logs.filter(l => !q ||
-    l.username.toLowerCase().includes(q.toLowerCase()) ||
-    l.action.toLowerCase().includes(q.toLowerCase()) ||
-    (l.entityId || '').toLowerCase().includes(q.toLowerCase()) ||
-    (l.reason || '').toLowerCase().includes(q.toLowerCase()));
+  const day = (s: string) => (s || '').slice(0, 10);
+  const filtered = logs.filter(l =>
+    (!q || l.username.toLowerCase().includes(q.toLowerCase()) || l.action.toLowerCase().includes(q.toLowerCase()) ||
+      (l.entityId || '').toLowerCase().includes(q.toLowerCase()) || (l.reason || '').toLowerCase().includes(q.toLowerCase())) &&
+    (!userF || l.username.toLowerCase().includes(userF.toLowerCase())) &&
+    (!roleF || (l.role || '') === roleF) &&
+    (!actionF || l.action === actionF) &&
+    (!caseF || (l.entityId || '').toLowerCase().includes(caseF.toLowerCase())) &&
+    (!fromF || day(l.createdAt) >= fromF) && (!toF || day(l.createdAt) <= toF));
+
+  const actionTypes = Array.from(new Set(logs.map(l => l.action))).sort();
+  const today = new Date().toISOString().slice(0, 10);
+  const exportCsv = () => {
+    const head = ['Time', 'User', 'Role', 'Action', 'Entity Type', 'Entity Id', 'Old Value', 'New Value', 'Reason', 'IP', 'Location'];
+    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [head.map(esc).join(',')];
+    filtered.forEach(l => lines.push([l.createdAt, l.username, l.role, l.action, l.entityType, l.entityId, l.oldValue, l.newValue, l.reason, l.ip, l.location].map(esc).join(',')));
+    downloadText(lines.join('\r\n'), `clari5pay-audit-logs-${today}.csv`);
+  };
+  const exportPdf = () => {
+    const w = window.open('', '_blank', 'width=1100,height=800');
+    if (!w) { alert('Please allow pop-ups to export.'); return; }
+    const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+    const body = filtered.map((l, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="nw">${esc(formatDateTime(l.createdAt))}</td><td>${esc(l.username)}</td><td>${esc((l.role || '').replace('_', ' '))}</td><td class="mono">${esc(l.action)}</td><td>${esc(l.entityType)} ${esc(l.entityId || '')}</td><td>${esc(l.oldValue)} → ${esc(l.newValue)}</td><td>${esc(l.reason)}</td><td>${esc(l.ip)}</td></tr>`).join('');
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Audit Logs</title><style>@page{size:A4 landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#0a2540}h1{font-size:16px}.sub{font-size:11px;color:#555;margin:0 0 10px}table{width:100%;border-collapse:collapse;font-size:9.5px}th{background:#0a2540;color:#fff;text-align:left;padding:5px 6px;font-size:8.5px;text-transform:uppercase}td{padding:4px 6px;border-bottom:1px solid #e2e8f0}tr.alt td{background:#f5f8ff}.mono{font-family:monospace}.nw{white-space:nowrap}.runfoot{position:fixed;bottom:5mm;left:0;right:0;text-align:center;font-size:8px;color:#9ca3af}</style></head><body><div class="runfoot">Clari5Pay · Audit Logs · CONFIDENTIAL · enable "Headers and footers" in the print dialog for page numbers</div><h1><span style="color:#0052cc">clari</span><span style="color:#26d00c">5</span>pay — Audit Logs</h1><p class="sub">Generated ${new Date().toLocaleString('en-IN')} · ${filtered.length} record(s)${fromF || toF ? ` · ${fromF || 'start'} → ${toF || 'today'}` : ''}</p><table><thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Entity</th><th>Old → New</th><th>Reason</th><th>IP</th></tr></thead><tbody>${body || '<tr><td colspan=8>No records</td></tr>'}</tbody></table></body></html>`);
+    w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
+  };
 
   return (
     <div>
@@ -1655,10 +1683,21 @@ export const AuditLogsPage: React.FC = () => {
       </div>
       <Card>
         <div style={{ padding:'14px 20px',borderBottom:`1px solid ${T.border}` }}>
-          <div style={{ position:'relative',maxWidth:340 }}>
-            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
-            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search user, action, entity or reason..."
-              style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
+          <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,alignItems:'end' }}>
+            <Input label="Search" value={q} onChange={e=>setQ(e.target.value)} placeholder="User / action / entity" icon="🔍" style={{ marginBottom:0 }}/>
+            <Input label="User" value={userF} onChange={e=>setUserF(e.target.value)} style={{ marginBottom:0 }}/>
+            <Sel label="Role" value={roleF} onChange={e=>setRoleF(e.target.value)} style={{ marginBottom:0 }}
+              options={[{value:'',label:'All Roles'},...['SUPER_ADMIN','ADMIN','MERCHANT','SUPPORT_AGENT'].map(r=>({value:r,label:r.replace('_',' ')}))]}/>
+            <Sel label="Action Type" value={actionF} onChange={e=>setActionF(e.target.value)} style={{ marginBottom:0 }}
+              options={[{value:'',label:'All Actions'},...actionTypes.map(a=>({value:a,label:a}))]}/>
+            <Input label="Case / Entity ID" value={caseF} onChange={e=>setCaseF(e.target.value)} placeholder="e.g. CMP000003" style={{ marginBottom:0 }}/>
+            <Input label="From" type="date" value={fromF} onChange={e=>setFromF(e.target.value)} style={{ marginBottom:0 }}/>
+            <Input label="To" type="date" value={toF} onChange={e=>setToF(e.target.value)} style={{ marginBottom:0 }}/>
+          </div>
+          <div style={{ display:'flex',gap:8,marginTop:12,alignItems:'center',flexWrap:'wrap' }}>
+            <Btn size="sm" variant="secondary" onClick={exportPdf}>⬇ Export PDF</Btn>
+            <Btn size="sm" variant="secondary" onClick={exportCsv}>⬇ Export Excel (CSV)</Btn>
+            <span style={{ fontSize:12,color:T.textMuted }}>{filtered.length} record(s)</span>
           </div>
         </div>
         <div style={{ overflowX:'auto' }}>

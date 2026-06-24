@@ -3,8 +3,6 @@ Seed the database with initial users and sample data.
 Run: python -m app.db.seed
 """
 import asyncio
-import json
-import re
 from datetime import date, datetime
 from sqlalchemy import select
 from app.db.session import engine, AsyncSessionLocal, Base
@@ -12,120 +10,65 @@ from app.db.migrate import ensure_schema
 from app.models.models import (
     User, Transaction, UserRole, RiskLevel, TxType, TxStatus,
     AccountMaster, AccountTransaction, AccountType, SupportMessage, SupportSender,
-    Notification, BlogCategory, BlogPost,
+    Notification, BlogPost,
 )
 from app.core.security import get_password_hash
 
 
-def _slug(title: str) -> str:
-    return (re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-") or "post")[:200]
-
-
-# 7 categories + sample articles distilled from the original blog.html topics.
-BLOG_CATEGORIES = [
-    ("Payment Security", "Secure payments, authentication, tokenization & encryption."),
-    ("Fraud Prevention", "Stopping payment fraud, chargebacks and money-laundering relays."),
-    ("Compliance", "PCI DSS, regulatory standards and compliance journeys."),
-    ("AML Monitoring", "Anti-money-laundering typologies and transaction monitoring."),
-    ("Product Updates", "What's new across the Clari5Pay platform."),
-    ("Industry Trends", "Where payments and financial crime are heading."),
-    ("Risk Intelligence", "Risk scoring, signals and real-time decisioning."),
-]
-
-# (category, title, short_description, html_content, status, views)
+# Sample company news/update posts. (category, title, short_description, content, status, publish_date)
 BLOG_POSTS = [
-    ("Payment Security", "Why secure payments are non-negotiable in 2026",
-     "The layered security model every PSP needs: authentication, encryption, fraud detection and a full audit trail.",
-     "<p>Secure payments rest on four layers that reinforce each other: strong <b>authentication</b>, "
-     "<b>encryption &amp; tokenization</b> in transit and at rest, real-time <b>fraud detection</b>, and an immutable "
-     "<b>audit trail</b>.</p><h2>The layered model</h2><ul><li>Authenticate the party</li><li>Protect the data</li>"
-     "<li>Score the transaction</li><li>Log everything</li></ul><p>Remove any one layer and the others are exposed.</p>",
-     "PUBLISHED", 1280),
-    ("Payment Security", "Tokenization vs encryption: what's the difference",
-     "A side-by-side breakdown of the two techniques and when each one applies.",
-     "<p><b>Encryption</b> mathematically scrambles data that can be reversed with a key. <b>Tokenization</b> swaps a "
-     "value for a meaningless reference with no mathematical relationship to the original.</p><p>Use tokenization to keep "
-     "card data out of scope; use encryption to protect data you must be able to recover.</p>",
-     "PUBLISHED", 940),
-    ("Payment Security", "3D Secure 2.0: how frictionless authentication works",
-     "Risk-based authentication, the liability shift, and the impact on cart abandonment.",
-     "<p>3DS2 shares ~100 data points with the issuer so low-risk transactions sail through without a challenge, while "
-     "risky ones step up to biometrics or OTP.</p><p>The result: stronger authentication <i>and</i> lower abandonment.</p>",
-     "PUBLISHED", 760),
-    ("Fraud Prevention", "How AI stops payment fraud before it happens",
-     "Inside the ML scoring pipeline and the five signals that matter most.",
-     "<p>An ML model scores every transaction in milliseconds using velocity, device, geo, behavioural and network "
-     "signals.</p><h2>Five key signals</h2><ul><li>Velocity spikes</li><li>Device fingerprint</li><li>Geo mismatch</li>"
-     "<li>Behavioural drift</li><li>Network relationships</li></ul>",
-     "PUBLISHED", 1510),
-    ("Fraud Prevention", "A merchant's complete guide to avoiding chargebacks",
-     "The chargeback lifecycle and the three types: true fraud, friendly fraud and merchant error.",
-     "<p>Chargebacks fall into three buckets: <b>true fraud</b>, <b>friendly fraud</b> and <b>merchant error</b>. Each "
-     "needs a different defence — from 3DS to clear billing descriptors and solid delivery evidence.</p>",
-     "PUBLISHED", 1120),
-    ("Fraud Prevention", "Money mule detection with network graph analysis",
-     "Catching laundering relays by analysing the relationships between accounts.",
-     "<p>Mules rarely look suspicious alone. Graph analysis surfaces the <i>relationships</i> — fan-in/fan-out, rapid "
-     "pass-through and shared devices — that expose a laundering relay.</p>",
-     "DRAFT", 0),
-    ("Compliance", "PCI DSS 4.0 explained",
-     "The six-step compliance journey and the key changes: MFA everywhere and the customised approach.",
-     "<p>PCI DSS 4.0 brings continuous security into focus: MFA for all access to the cardholder data environment and a "
-     "new <b>customised approach</b> that lets mature teams meet objectives their own way.</p>",
-     "PUBLISHED", 870),
-    ("AML Monitoring", "AML transaction monitoring: typologies that matter",
-     "Structuring, layering, trade-based laundering, shell companies and crypto conversion.",
-     "<p>Effective monitoring detects typologies, not just thresholds: <b>structuring</b>, <b>layering</b>, "
-     "<b>trade-based</b> laundering, <b>shell companies</b> and <b>crypto conversion</b>.</p>",
-     "PUBLISHED", 690),
-    ("Product Updates", "How Clari5Pay secures every transaction end to end",
-     "A walkthrough of the zero-trust architecture behind the platform.",
-     "<p>Every request is authenticated, authorised and audited. No implicit trust between services — a zero-trust "
-     "posture from the merchant portal all the way to settlement.</p>",
-     "PUBLISHED", 1340),
-    ("Product Updates", "Clari5Pay: built on 20 years of financial crime intelligence",
-     "How the platform compares to a standard payment gateway.",
-     "<p>Unlike a generic gateway, Clari5Pay is built on two decades of financial-crime intelligence — risk scoring and "
-     "AML monitoring are native, not bolted on.</p>",
-     "DRAFT", 0),
-    ("Industry Trends", "AI in payments: what's changing in 2026",
-     "The evolution from rule-based systems to ML, deep learning and GenAI.",
-     "<p>Payments intelligence has evolved from static rules to ML, then deep learning, and now GenAI assistants that "
-     "explain decisions in plain language.</p>",
-     "PUBLISHED", 1050),
-    ("Industry Trends", "UPI fraud in India: scale and attack vectors",
-     "Collect scams, SIM swap, vishing and app clones — and how to defend against them.",
-     "<p>UPI's scale makes it a target. The common vectors — <b>collect-request scams</b>, <b>SIM swap</b>, "
-     "<b>vishing</b> and <b>app clones</b> — all exploit trust rather than the rails themselves.</p>",
-     "PUBLISHED", 1620),
+    ("Deposit Management", "New Deposit Auto-Fill Feature",
+     "Membership IDs now automatically populate previous transaction details, so repeat deposits take seconds.",
+     "We've rolled out auto-fill on the deposit form. Enter a Membership ID and the member name and saved "
+     "sender details are filled in automatically from the last transaction.\n\nThis cuts repeat deposits to a "
+     "few taps and reduces typing errors on member details.",
+     "PUBLISHED", date(2026, 6, 21)),
+    ("Withdrawal Management", "Withdrawals Now Support Saved Bank & UPI Destinations",
+     "Pick a member's saved bank account or UPI as a radio option — no re-typing on every withdrawal.",
+     "Withdrawal requests now show each member's saved bank accounts and UPI IDs as selectable options, "
+     "auto-selected when there's only one.\n\nAn 'Available Withdrawal Balance' is shown up front with a "
+     "fee-aware check, so insufficient-balance requests are caught before submission.",
+     "PUBLISHED", date(2026, 6, 21)),
+    ("Security Updates", "Membership ID & Member Name Matching",
+     "Deposits are now blocked when the member name doesn't match the name on file for that Membership ID.",
+     "To prevent mismatched records, deposits are validated against the name already associated with a "
+     "Membership ID. Membership IDs are also normalised to uppercase A–Z and 0–9.",
+     "PUBLISHED", date(2026, 6, 20)),
+    ("Product Updates", "Multi-Proof Upload on Deposits, Withdrawals & Settlements",
+     "Attach up to three proof files (JPG, PNG or PDF) to a single request.",
+     "You can now attach up to three slip/proof files to deposits, withdrawals and settlements — enforced on "
+     "both the merchant and admin sides.",
+     "PUBLISHED", date(2026, 6, 20)),
+    ("Release Notes", "Release 2026.06 — Summary",
+     "Fee-in validation, Membership-ID rename, UPI-to-bank capture, QR removal and more.",
+     "This release bundles the June updates: withdrawal fee included in balance validation, the Member ID → "
+     "Membership ID rename across the UI, full bank-detail capture on UPI deposits, and removal of the QR step.",
+     "PUBLISHED", date(2026, 6, 22)),
+    ("Announcements", "Scheduled Maintenance Notice",
+     "A short maintenance window is planned; the portal may be briefly unavailable.",
+     "We will perform routine maintenance soon. The portal may be briefly unavailable during the window. "
+     "We'll keep this notice updated with the exact timing.",
+     "DRAFT", None),
 ]
 
 
 async def seed_blog(db) -> None:
-    """Idempotently seed blog categories + sample posts. No-op if any category exists.
+    """Idempotently seed sample blog posts. No-op if any post already exists.
     Adds + flushes only — the caller commits."""
-    if (await db.execute(select(BlogCategory))).scalars().first():
+    if (await db.execute(select(BlogPost))).scalars().first():
         return
     sa = (await db.execute(select(User).where(User.username == "superadmin"))).scalar_one_or_none()
     author_id = sa.id if sa else None
     author_name = sa.name if sa else "Super Admin"
-    cats: dict[str, BlogCategory] = {}
-    for name, desc in BLOG_CATEGORIES:
-        c = BlogCategory(name=name, slug=_slug(name), description=desc)
-        db.add(c)
-        cats[name] = c
-    await db.flush()
-    for cat_name, title, short, content, status, views in BLOG_POSTS:
-        c = cats.get(cat_name)
+    for category, title, short, content, status, pub in BLOG_POSTS:
         db.add(BlogPost(
-            title=title, slug=_slug(title), category_id=c.id if c else None,
-            short_description=short, content=content, status=status,
-            author_id=author_id, author_name=author_name, views=views,
-            images=json.dumps([]), tags=json.dumps([]),
+            title=title, category=category, short_description=short, content=content,
+            status=status, author_id=author_id, author_name=author_name,
+            publish_date=pub,
             published_at=datetime.utcnow() if status == "PUBLISHED" else None,
         ))
     await db.flush()
-    print(f"✅ Seeded blog: {len(BLOG_CATEGORIES)} categories, {len(BLOG_POSTS)} posts")
+    print(f"✅ Seeded blog: {len(BLOG_POSTS)} posts")
 
 
 async def seed():

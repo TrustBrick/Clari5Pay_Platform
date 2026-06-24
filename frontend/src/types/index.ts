@@ -489,23 +489,49 @@ export interface RiskMemberBanks {
   accounts: BankDetail[];
   upis: string[];
 }
-export interface ComplaintDoc { name: string; type: string; dataUrl: string }
+export interface ComplaintDoc { name: string; type: string; dataUrl: string; kind?: string }
+export type ComplaintStatus = 'DRAFT' | 'OPEN' | 'UNDER_REVIEW' | 'ESCALATED' | 'COMPLAINT_FILED' | 'CLOSED' | 'SUBMITTED';
+export type ComplaintPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+export interface ComplaintNote { author: string; role: string; text: string; at: string }
 export interface Complaint {
   id: number;
+  caseId: string;
   ref: string;
   memberId: string;
   memberName: string;
   merchantName: string;
-  status: 'DRAFT' | 'SUBMITTED';
-  accountHolder: string | null;
-  accountNumber: string | null;
-  bankName: string | null;
-  branch: string | null;
-  ifsc: string | null;
-  upiId: string | null;
-  description: string;
-  documents: ComplaintDoc[];
+  status: ComplaintStatus;
+  priority: ComplaintPriority;
+  riskLevel: string;
+  assignedTo: string | null;
+  assignedToId: number | null;
+  accountHolder?: string | null;
+  accountNumber?: string | null;
+  bankName?: string | null;
+  branch?: string | null;
+  ifsc?: string | null;
+  upiId?: string | null;
+  description?: string;
+  documents?: ComplaintDoc[];
+  notes?: ComplaintNote[];
+  resolutionNotes?: string | null;
+  timeline?: ComplaintTimeline;
   createdBy: string;
   createdAt: string | null;
+  updatedAt?: string | null;
   submittedAt: string | null;
+  closedAt: string | null;
+}
+export interface ComplaintTimeline {
+  openedAt: string | null; openedBy?: string | null;
+  underReviewAt: string | null; underReviewBy?: string | null;
+  escalatedAt: string | null; escalatedBy?: string | null;
+  complaintFiledAt: string | null; complaintFiledBy?: string | null;
+  closedAt: string | null; closedBy?: string | null;
+}
+export interface ComplaintList {
+  scope: 'MERCHANT' | 'ADMIN' | 'SUPER_ADMIN';
+  complaints: Complaint[];
+  statuses: ComplaintStatus[];
+  priorities: ComplaintPriority[];
 }

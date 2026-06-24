@@ -40,6 +40,24 @@ _NEW_COLUMNS = [
     ("audit_logs", "location", "VARCHAR(128)"),
     ("news", "priority", "VARCHAR(16) DEFAULT 'Normal' NOT NULL"),
     ("news", "publish_date", "DATE"),
+    # Blog simplified to News-style posts: plain category string + publish_date
+    # (replaces the old slug/category_id/images/tags/engagement columns, which
+    # stay as harmless orphans on already-deployed blog_posts tables).
+    ("blog_posts", "category", "VARCHAR(64) DEFAULT 'Announcements' NOT NULL"),
+    ("blog_posts", "publish_date", "DATE"),
+    # Cyber Crime Complaint — case management (Phase 2).
+    ("cyber_complaints", "priority", "VARCHAR(16) DEFAULT 'MEDIUM' NOT NULL"),
+    ("cyber_complaints", "risk_level", "VARCHAR(16) DEFAULT 'LOW' NOT NULL"),
+    ("cyber_complaints", "assigned_to", "VARCHAR(128)"),
+    ("cyber_complaints", "assigned_to_id", "INTEGER"),
+    ("cyber_complaints", "notes", "TEXT"),
+    ("cyber_complaints", "resolution_notes", "TEXT"),
+    ("cyber_complaints", "closed_at", "TIMESTAMP"),
+    ("cyber_complaints", "opened_at", "TIMESTAMP"),
+    ("cyber_complaints", "under_review_at", "TIMESTAMP"),
+    ("cyber_complaints", "escalated_at", "TIMESTAMP"),
+    ("cyber_complaints", "complaint_filed_at", "TIMESTAMP"),
+    ("cyber_complaints", "stage_by", "TEXT"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type

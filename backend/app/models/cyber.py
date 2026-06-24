@@ -33,7 +33,22 @@ class CyberComplaint(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     documents: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON [{name,type,dataUrl}]
 
-    status: Mapped[str] = mapped_column(String(24), default="DRAFT", nullable=False)  # DRAFT | SUBMITTED
+    # Case management workflow: DRAFT | OPEN | UNDER_REVIEW | ESCALATED | COMPLAINT_FILED | CLOSED
+    status: Mapped[str] = mapped_column(String(24), default="DRAFT", nullable=False)
+    priority: Mapped[str] = mapped_column(String(16), default="MEDIUM", nullable=False)  # LOW|MEDIUM|HIGH|CRITICAL
+    risk_level: Mapped[str] = mapped_column(String(16), default="LOW", nullable=False)
+    assigned_to: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    assigned_to_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)            # JSON [{author,role,text,at}]
+    resolution_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Workflow stage timestamps (set the first time the case reaches each stage).
+    stage_by: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # JSON {STATUS: "Name (ROLE)"}
+    opened_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    under_review_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    escalated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    complaint_filed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     created_by: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
     created_by_name: Mapped[str] = mapped_column(String(128), default="", nullable=False)

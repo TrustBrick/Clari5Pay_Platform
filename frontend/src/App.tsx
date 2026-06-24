@@ -22,6 +22,7 @@ import {
   DraftBlogsPage, BlogAnalyticsPage,
 } from './pages/BlogPages';
 import { RiskManagementPage } from './pages/RiskPages';
+import { ComplaintManagementPage } from './pages/ComplaintPages';
 
 const defaultPageFor = (role?: string) =>
   role === 'MERCHANT' ? 'dashboard' : role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard';
@@ -34,6 +35,7 @@ const pageAllowed = (role: string, page: string) => {
   if (!page) return false;
   if (page === 'profile') return true;
   if (page === 'risk-mgmt') return true;   // Risk Management is available in all three portals
+  if (page === 'complaints') return role === 'ADMIN' || role === 'SUPER_ADMIN';
   if (page.startsWith('blog-')) {
     return BLOG_WRITE_PAGES.includes(page) ? (role === 'ADMIN' || role === 'SUPER_ADMIN') : true;
   }
@@ -76,6 +78,7 @@ const App: React.FC = () => {
       transactions: <TransactionHistory {...props} />,
       reports: <ReportsPage {...props} />,
       'risk-mgmt': <RiskManagementPage user={user} />,
+      complaints: <ComplaintManagementPage user={user} />,
       templates: <TemplatesPage {...props} />,
       balance: <BalancePage {...props} />,
       risk: <RiskPage {...props} />,
