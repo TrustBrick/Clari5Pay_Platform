@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, today, depositTypeLabel } from '../utils/helpers';
+import { fmt, today, depositTypeLabel, memberLabel } from '../utils/helpers';
 import { downloadXlsx } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { transactionAPI } from '../services/api';
@@ -26,8 +26,7 @@ const exportRowsXlsx = (rows: ReportRow[], filename: string) => {
     name: 'Transactions',
     columns: [
       { header: 'Reference Number', get: r => r.ref },
-      { header: 'Membership Number', get: r => r.memberId || '' },
-      { header: 'Member Name', get: r => r.member || '' },
+      { header: 'Membership - Member', get: r => memberLabel(r.memberId, r.member), width: 28 },
       { header: 'Transaction Type', get: r => rtypeLabel(r) },
       { header: 'Amount (INR)', get: r => Number(r.amount), width: 14 },
       { header: 'Status', get: r => prettyStatusR(r.status) },
@@ -46,7 +45,7 @@ function exportReportPdf(data: ReportData, businessName: string) {
   const c = data.cards;
   const card = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
   const memRows = (rows: ReportMemberRow[], key: keyof ReportMemberRow, money: boolean) => rows.map((m, i) =>
-    `<tr class="${i % 2 ? 'alt' : ''}"><td>${i + 1}</td><td class="mono">${m.memberId}</td><td>${m.memberName}</td><td class="amt">${money ? fmt(Number(m[key] || 0)) : (m[key] ?? 0)}</td></tr>`).join('');
+    `<tr class="${i % 2 ? 'alt' : ''}"><td>${i + 1}</td><td>${memberLabel(m.memberId, m.memberName)}</td><td class="amt">${money ? fmt(Number(m[key] || 0)) : (m[key] ?? 0)}</td></tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay Report</title>
   <style>
     @page { size: A4; margin: 14mm; } * { box-sizing: border-box; }
@@ -82,10 +81,10 @@ function exportReportPdf(data: ReportData, businessName: string) {
       ${card('Largest Today', c.largestTransactionToday ? fmt(c.largestTransactionToday.amount) : '-')}
     </div>
     <h2>Top Members by Transactions</h2>
-    <table><thead><tr><th>Rank</th><th>Membership</th><th>Member</th><th style="text-align:right">Transactions</th></tr></thead>
+    <table><thead><tr><th>Rank</th><th>Membership - Member</th><th style="text-align:right">Transactions</th></tr></thead>
       <tbody>${memRows(data.memberAnalytics.mostActive, 'count', false) || '<tr><td colspan=4>No data</td></tr>'}</tbody></table>
     <h2>Top Members by Overall Volume</h2>
-    <table><thead><tr><th>Rank</th><th>Membership</th><th>Member</th><th style="text-align:right">Total Volume</th></tr></thead>
+    <table><thead><tr><th>Rank</th><th>Membership - Member</th><th style="text-align:right">Total Volume</th></tr></thead>
       <tbody>${memRows(data.memberAnalytics.highestValue, 'total', true) || '<tr><td colspan=4>No data</td></tr>'}</tbody></table>
     <h2>Business Insights</h2>
     <ul>${data.insights.map(i => `<li>${i}</li>`).join('') || '<li>No insights available yet.</li>'}</ul>
@@ -121,18 +120,16 @@ const MemberTable: React.FC<{
         <thead>
           <tr style={{ background: T.canvas }}>
             {showRank && <th style={thR}>Rank</th>}
-            <th style={thR}>Membership No.</th>
-            <th style={thR}>Member Name</th>
+            <th style={thR}>Membership - Member</th>
             <th style={{ ...thR, textAlign: 'right' }}>{valueLabel}</th>
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={showRank ? 4 : 3} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No data yet.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={showRank ? 3 : 2} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No data yet.</td></tr>}
           {rows.map((m, i) => (
             <tr key={m.memberId} style={{ cursor: 'pointer' }} onClick={() => onPick(m.memberId)}>
               {showRank && <td style={{ ...tdR, fontWeight: 800, color: T.blue }}>{m.rank ?? i + 1}</td>}
-              <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700 }}>{m.memberId}</td>
-              <td style={tdR}>{m.memberName}</td>
+              <td style={{ ...tdR, fontWeight: 600 }}>{memberLabel(m.memberId, m.memberName)}</td>
               <td style={{ ...tdR, textAlign: 'right', fontWeight: 800 }}>{money ? fmt(Number(m[valueKey] || 0)) : (m[valueKey] ?? 0)}</td>
             </tr>
           ))}
@@ -148,16 +145,15 @@ const ReportRowsTable: React.FC<{ rows: ReportRow[]; onPick?: (id: string) => vo
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
         <thead>
           <tr style={{ background: T.canvas }}>
-            {['Reference', 'Membership', 'Member', 'Type', 'Amount', 'Status', 'Date & Time'].map(h => <th key={h} style={thR}>{h}</th>)}
+            {['Reference', 'Membership - Member', 'Type', 'Amount', 'Status', 'Date & Time'].map(h => <th key={h} style={thR}>{h}</th>)}
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={7} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>{empty}</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={6} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>{empty}</td></tr>}
           {rows.slice(0, 500).map(r => (
             <tr key={r.ref} style={{ cursor: onPick ? 'pointer' : 'default' }} onClick={() => onPick && r.memberId && onPick(r.memberId)}>
               <td style={{ ...tdR, fontFamily: 'monospace' }}>{r.ref}</td>
-              <td style={{ ...tdR, fontFamily: 'monospace' }}>{r.memberId || '-'}</td>
-              <td style={tdR}>{r.member}</td>
+              <td style={{ ...tdR, fontWeight: 600 }}>{memberLabel(r.memberId, r.member)}</td>
               <td style={tdR}>{rtypeLabel(r) || '-'}</td>
               <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
               <td style={tdR}>{prettyStatusR(r.status)}</td>
@@ -188,8 +184,8 @@ const OverviewTab: React.FC<{ data: ReportData }> = ({ data }) => {
       <StatCard icon="⇄" label="Total Settlements" value={<CountUp value={c.totalSettlements} />} sub={fmt(c.totalSettlementAmount)} color={T.warning} />
       <StatCard icon="₹" label="Total Transaction Amount" value={<CountUp value={c.totalTransactionAmount} format={fmt} />} valueLen={fmt(c.totalTransactionAmount).length} color={T.blue} />
       <StatCard icon="👥" label="Active Memberships" value={<CountUp value={c.activeMemberships} />} sub="transacted in last 30 days" color={T.cyan || T.blue} />
-      <StatCard icon="⭐" label="Most Active Member" value={c.mostActiveMember ? c.mostActiveMember.memberName : '-'} sub={c.mostActiveMember ? `${c.mostActiveMember.memberId} · ${c.mostActiveMember.count} txns` : undefined} color={T.success} />
-      <StatCard icon="🔝" label="Largest Transaction Today" value={c.largestTransactionToday ? fmt(c.largestTransactionToday.amount) : '-'} sub={c.largestTransactionToday ? `${c.largestTransactionToday.memberName} (${c.largestTransactionToday.memberId})` : undefined} color={T.warning} />
+      <StatCard icon="⭐" label="Most Active Member" value={c.mostActiveMember ? memberLabel(c.mostActiveMember.memberId, c.mostActiveMember.memberName) : '-'} sub={c.mostActiveMember ? `${c.mostActiveMember.count} txns` : undefined} color={T.success} />
+      <StatCard icon="🔝" label="Largest Transaction Today" value={c.largestTransactionToday ? fmt(c.largestTransactionToday.amount) : '-'} sub={c.largestTransactionToday ? memberLabel(c.largestTransactionToday.memberId, c.largestTransactionToday.memberName) : undefined} color={T.warning} />
     </div>
   );
 };
@@ -279,7 +275,7 @@ const IntelTab: React.FC<{ data: ReportData }> = ({ data }) => {
       {x ? (
         <>
           <p style={{ margin: '0 0 4px', fontSize: 26, fontWeight: 800, color }}>{fmt(x.amount)}</p>
-          <p style={{ margin: 0, fontSize: 13, color: T.textMain }}>{x.memberName} <span style={{ color: T.textMuted }}>({x.memberId})</span></p>
+          <p style={{ margin: 0, fontSize: 13, color: T.textMain }}>{memberLabel(x.memberId, x.memberName)}</p>
           <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{x.date} {x.time}</p>
         </>
       ) : <p style={{ margin: 0, color: T.textMuted }}>No data yet.</p>}

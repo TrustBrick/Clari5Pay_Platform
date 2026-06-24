@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDateTime } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDate, formatDateTime } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
@@ -840,7 +840,7 @@ const ManagementPage: React.FC<{
             <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
               <thead>
                 <tr style={{ background:T.canvas }}>
-                  {['Membership ID',`Total ${noun} Requests`,'Status','Total Amount','Action'].map(h=>(
+                  {['Membership - Member',`Total ${noun} Requests`,'Status','Total Amount','Action'].map(h=>(
                     <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                   ))}
                 </tr>
@@ -849,7 +849,7 @@ const ManagementPage: React.FC<{
                 {groups.length === 0 && <tr><td colSpan={5} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No {noun.toLowerCase()} requests yet</td></tr>}
                 {groups.map((g,i)=>(
                   <tr key={g.key} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>setOpenMember(g.key)}>
-                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{g.key}</td>
+                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{memberLabel(g.key, g.items[0]?.member)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.items.length}</td>
                     <td style={{ padding:'11px 14px' }}><Badge status={g.items[0].status} type={g.items[0].type} viewerRole="MERCHANT"/></td>
                     <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.items.reduce((a,t)=>a+t.amount,0))}</td>
@@ -988,7 +988,7 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
             <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
               <thead>
                 <tr style={{ background:T.canvas }}>
-                  {['Reference Number','Type','Amount','Membership ID','Status','Action'].map(h=>(
+                  {['Reference Number','Type','Amount','Membership - Member','Status','Action'].map(h=>(
                     <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                   ))}
                 </tr>
@@ -1000,7 +1000,7 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
                     <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{t.ref}</td>
                     <td style={{ padding:'11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800 }}>{fmt(t.amount)}</td>
-                    <td style={{ padding:'11px 14px',color:T.textMain }}>{t.memberId||'—'}</td>
+                    <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600 }}>{memberLabel(t.memberId, t.member)}</td>
                     <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT"/></td>
                     <td style={{ padding:'11px 14px' }}>
                       <Btn size="sm" variant="danger" disabled={busy===t.id} onClick={()=>setTarget(t)}>{busy===t.id?'Cancelling...':'⊘ Cancel'}</Btn>
@@ -1338,43 +1338,225 @@ export const SECTION_COLOR: Record<string, string> = {
   'Announcements': T.blue, 'Product Updates': T.success, 'Offers': T.warning, 'Alerts': T.danger,
 };
 
-export const NewsPage: React.FC<{ user: User }> = () => {
-  const [posts, setPosts] = useState<NewsPost[]>([]);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => { newsAPI.list().then(setPosts).catch(()=>setPosts([])).finally(()=>setLoading(false)); }, []);
-  usePoll(() => { newsAPI.list().then(setPosts).catch(()=>{}); });
+export const NEWS_CATEGORIES = ['System Updates', 'Security Alerts', 'Maintenance', 'Product Updates', 'Announcements'];
+const CAT_COLOR: Record<string, string> = {
+  'System Updates': T.info, 'Security Alerts': T.danger, 'Maintenance': T.warning,
+  'Product Updates': T.success, 'Announcements': T.blue,
+  // legacy / migrated-from-blog categories keep a sensible colour too
+  'Offers': T.warning, 'Alerts': T.danger, 'Release Notes': T.cyan,
+};
+const catColor = (c?: string) => CAT_COLOR[c || ''] || SECTION_COLOR[c || ''] || T.blue;
 
-  if (loading) return <LoadingScreen label="Loading news…"/>;
+// ─── Super-Admin News editor (create / edit) ───────────────────────────────────
+const NewsEditor: React.FC<{ post: NewsPost | null; onClose: () => void; onSaved: () => void }> = ({ post, onClose, onSaved }) => {
+  const { showToast } = useToast();
+  const [title, setTitle] = useState(post?.title || '');
+  const [category, setCategory] = useState(post?.category || 'Announcements');
+  const [body, setBody] = useState(post?.body || '');
+  const [image, setImage] = useState<string | null>(post?.image ?? null);
+  const [publishDate, setPublishDate] = useState(post?.publishDate || '');
+  const [featured, setFeatured] = useState(post?.featured || false);
+  const [published, setPublished] = useState(post?.published ?? true);
+  const [saving, setSaving] = useState(false);
+
+  const onImg = async (e: React.ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (f) setImage(await fileToDataUrl(f)); };
+  const save = async () => {
+    if (!title.trim()) { showToast('Title is required', 'error'); return; }
+    setSaving(true);
+    try {
+      const payload = { category, title: title.trim(), body, image: image ?? null, published, featured, publish_date: publishDate || undefined };
+      if (post) await newsAPI.update(post.id, payload); else await newsAPI.create(payload);
+      showToast(post ? 'News updated' : 'News published'); onSaved(); onClose();
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to save news', 'error'); }
+    finally { setSaving(false); }
+  };
+  const lbl = { display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, margin: '0 0 6px', textTransform: 'uppercase' as const, letterSpacing: '0.05em' };
 
   return (
-    <div style={{ maxWidth:820 }}>
-      <div style={{ marginBottom:18 }}>
-        <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>News &amp; Updates</h2>
-        <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Platform announcements and product updates</p>
+    <Modal title={post ? 'Edit News' : 'New News Post'} onClose={onClose} wide>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
+        <Input label="Title" value={title} onChange={e => setTitle(e.target.value)} placeholder="News headline" required />
+        <Sel label="Category" value={category} onChange={e => setCategory(e.target.value)} options={NEWS_CATEGORIES.map(c => ({ value: c, label: c }))} />
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <label style={lbl}>Description</label>
+        <textarea value={body} onChange={e => setBody(e.target.value)} placeholder="News content / description"
+          style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical', minHeight: 120 }} />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px', alignItems: 'end', marginBottom: 14 }}>
+        <Input label="Publish Date" type="date" value={publishDate} onChange={e => setPublishDate(e.target.value)} />
+        <div>
+          <label style={lbl}>Image</label>
+          <input type="file" accept="image/*" onChange={onImg} style={{ fontSize: 12 }} />
+        </div>
+      </div>
+      {image && <img src={image} alt="" style={{ display: 'block', maxWidth: '100%', maxHeight: 200, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}`, margin: '0 0 14px', background: T.canvas }} />}
+      <div style={{ display: 'flex', gap: 20, marginBottom: 16 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: T.textMain, cursor: 'pointer' }}>
+          <input type="checkbox" checked={published} onChange={e => setPublished(e.target.checked)} /> Published
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: T.textMain, cursor: 'pointer' }}>
+          <input type="checkbox" checked={featured} onChange={e => setFeatured(e.target.checked)} /> Featured
+        </label>
+      </div>
+      <Btn full onClick={save} disabled={saving || !title.trim()}>{saving ? 'Saving…' : (post ? 'Save Changes' : 'Publish News')}</Btn>
+    </Modal>
+  );
+};
+
+export const NewsPage: React.FC<{ user: User }> = ({ user }) => {
+  const isSA = user.role === 'SUPER_ADMIN';
+  const { showToast } = useToast();
+  const [posts, setPosts] = useState<NewsPost[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selId, setSelId] = useState<number | null>(null);
+  const [q, setQ] = useState('');
+  const [cat, setCat] = useState('');
+  const [editing, setEditing] = useState<NewsPost | null | undefined>(undefined); // undefined = closed, null = new
+  const viewed = useRef<Set<number>>(new Set());
+
+  const load = (resetSel = false) => newsAPI.list()
+    .then(rows => { setPosts(rows); setSelId(prev => (!resetSel && prev && rows.some(r => r.id === prev)) ? prev : (rows[0]?.id ?? null)); })
+    .catch(() => setPosts([])).finally(() => setLoading(false));
+  useEffect(() => { load(true); }, []);
+  usePoll(() => { newsAPI.list().then(setPosts).catch(() => {}); });
+
+  // Count a read once per session when a post becomes the selected article.
+  useEffect(() => { if (selId && !viewed.current.has(selId)) { viewed.current.add(selId); newsAPI.view(selId); } }, [selId]);
+
+  const selected = posts.find(p => p.id === selId) || null;
+  const categories = Array.from(new Set(posts.map(p => p.category).filter(Boolean)));
+  const matches = (p: NewsPost) =>
+    (!q || p.title.toLowerCase().includes(q.toLowerCase()) || (p.body || '').toLowerCase().includes(q.toLowerCase())) &&
+    (!cat || p.category === cat);
+  const filtered = posts.filter(matches);
+  const latest = [...filtered].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 6);
+  const recent = [...filtered].filter(p => p.updatedAt).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '')).slice(0, 6);
+  const featured = filtered.filter(p => p.featured).slice(0, 6);
+  // Only count actually-viewed articles; an empty list shows a clear message (not zero-view rows).
+  const mostViewed = [...filtered].filter(p => (p.views || 0) > 0).sort((a, b) => (b.views || 0) - (a.views || 0)).slice(0, 6);
+
+  const remove = async (p: NewsPost) => {
+    if (!window.confirm(`Delete "${p.title}"? This cannot be undone.`)) return;
+    try { await newsAPI.remove(p.id); showToast('News deleted'); load(true); } catch { showToast('Failed to delete', 'error'); }
+  };
+  const togglePublish = async (p: NewsPost) => {
+    try { await newsAPI.update(p.id, { category: p.category, title: p.title, body: p.body, image: p.image, published: !p.published, featured: p.featured, publish_date: p.publishDate || undefined }); showToast(p.published ? 'Unpublished' : 'Published'); load(); }
+    catch { showToast('Failed to update', 'error'); }
+  };
+
+  // Super-Admin overview cards (over all news, not the filtered view).
+  const stats = {
+    total: posts.length,
+    published: posts.filter(p => p.published).length,
+    featured: posts.filter(p => p.featured).length,
+    views: posts.reduce((a, p) => a + (p.views || 0), 0),
+  };
+
+  if (loading) return <LoadingScreen label="Loading news…" />;
+
+  const sideCard = (title: string, items: NewsPost[], meta: (p: NewsPost) => string, emptyMsg = 'Nothing here yet.') => (
+    <Card style={{ padding: 14, marginBottom: 12 }}>
+      <p style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</p>
+      {items.length === 0 ? <p style={{ fontSize: 12, color: T.textMuted, margin: 0 }}>{emptyMsg}</p> : items.map(p => (
+        <div key={p.id} onClick={() => setSelId(p.id)} className="c5-row-hover"
+          style={{ display: 'flex', gap: 8, padding: '7px 6px', borderRadius: 8, cursor: 'pointer', borderLeft: `3px solid ${p.id === selId ? catColor(p.category) : 'transparent'}` }}>
+          {p.image && <img src={p.image} alt="" style={{ width: 38, height: 38, borderRadius: 6, objectFit: 'cover', flexShrink: 0, border: `1px solid ${T.border}` }} />}
+          <div style={{ minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: 12.5, fontWeight: 700, color: T.textMain, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</p>
+            <p style={{ margin: '2px 0 0', fontSize: 10.5, color: T.textMuted }}>{meta(p)}</p>
+          </div>
+        </div>
+      ))}
+    </Card>
+  );
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>News &amp; Updates</h2>
+          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Platform announcements and product updates{isSA ? ' — you can create, edit and publish news.' : ''}</p>
+        </div>
+        <Input value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 Search news" style={{ marginBottom: 0, width: 200 }} />
+        <Sel value={cat} onChange={e => setCat(e.target.value)} style={{ marginBottom: 0, width: 180 }}
+          options={[{ value: '', label: 'All Categories' }, ...categories.map(c => ({ value: c, label: c }))]} />
+        {isSA && <Btn onClick={() => setEditing(null)}>＋ New Post</Btn>}
       </div>
 
-      {posts.length === 0 ? (
-        <Card style={{ padding:40,textAlign:'center' }}>
-          <div style={{ fontSize:40,marginBottom:10 }}>📰</div>
-          <p style={{ fontWeight:800,color:T.textMain,margin:'0 0 4px' }}>No news yet</p>
-          <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Announcements and updates will appear here.</p>
-        </Card>
-      ) : (
-        <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
-          {posts.map(p => { const c = SECTION_COLOR[p.section] || T.blue; return (
-            <Card key={p.id} style={{ padding:20 }}>
-              <div style={{ display:'flex',alignItems:'center',gap:10,marginBottom:8 }}>
-                <span style={{ padding:'2px 10px',borderRadius:20,fontSize:11,fontWeight:700,background:`${c}18`,color:c }}>{p.section}</span>
-                <span style={{ fontSize:11,color:T.textMuted }}>{formatDateTime(p.createdAt)} · {p.author}</span>
-              </div>
-              <h3 style={{ margin:'0 0 6px',fontSize:15,fontWeight:800,color:T.textMain }}>{p.title}</h3>
-              {p.image && <img src={p.image} alt="" style={{ display:'block',maxWidth:'100%',maxHeight:260,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,margin:'0 0 10px',background:T.canvas }} />}
-              <p style={{ margin:0,fontSize:13,color:T.textMuted,lineHeight:1.6,whiteSpace:'pre-line' }}>{p.body}</p>
-            </Card>
-          ); })}
-          <p style={{ textAlign:'center',fontSize:11,color:T.textMuted,margin:'4px 0' }}>You're all caught up.</p>
+      {isSA && (
+        <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 12, marginBottom: 16 }}>
+          <StatCard icon="📰" label="Total News" value={String(stats.total)} color={T.blue} />
+          <StatCard icon="✓" label="Published News" value={String(stats.published)} color={T.success} />
+          <StatCard icon="★" label="Featured News" value={String(stats.featured)} color={T.warning} />
+          <StatCard icon="👁" label="Total Views" value={String(stats.views)} color={T.info} />
         </div>
       )}
+
+      {posts.length === 0 ? (
+        <Card style={{ padding: 40, textAlign: 'center' }}>
+          <div style={{ fontSize: 40, marginBottom: 10 }}>📰</div>
+          <p style={{ fontWeight: 800, color: T.textMain, margin: '0 0 4px' }}>No news yet</p>
+          <p style={{ fontSize: 12, color: T.textMuted, margin: 0 }}>{isSA ? 'Create the first post with “＋ New Post”.' : 'Announcements and updates will appear here.'}</p>
+        </Card>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2fr) minmax(260px,1fr)', gap: 18, alignItems: 'start' }}>
+          {/* Left — selected article detail */}
+          <div>
+            {selected ? (
+              <Card style={{ padding: 24 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+                  <span style={{ padding: '3px 12px', borderRadius: 20, fontSize: 11, fontWeight: 800, background: `${catColor(selected.category)}22`, color: catColor(selected.category) }}>{selected.category}</span>
+                  {selected.featured && <span style={{ fontSize: 11, fontWeight: 700, color: T.warning }}>★ Featured</span>}
+                  {!selected.published && <span style={{ fontSize: 11, fontWeight: 700, color: T.textMuted }}>(Draft)</span>}
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: T.textMuted }}>👁 {selected.views} views</span>
+                </div>
+                {selected.image && <img src={selected.image} alt="" style={{ display: 'block', width: '100%', maxHeight: 320, objectFit: 'contain', borderRadius: 12, border: `1px solid ${T.border}`, margin: '0 0 14px', background: T.canvas }} />}
+                <h1 style={{ margin: '0 0 8px', fontSize: 22, fontWeight: 800, color: T.textMain, lineHeight: 1.3 }}>{selected.title}</h1>
+                <p style={{ margin: '0 0 16px', fontSize: 12, color: T.textMuted }}>
+                  Published {selected.publishDate ? formatDate(selected.publishDate) : formatDate(selected.createdAt)} · By {selected.author}
+                </p>
+                <p style={{ margin: 0, fontSize: 14, color: T.textMain, lineHeight: 1.7, whiteSpace: 'pre-line' }}>{selected.body}</p>
+
+                {isSA && (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 20, paddingTop: 16, borderTop: `1px solid ${T.border}` }}>
+                    <Btn size="sm" variant="secondary" onClick={() => setEditing(selected)}>✎ Edit</Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => togglePublish(selected)}>{selected.published ? '⤓ Unpublish' : '⤒ Publish'}</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => remove(selected)}>🗑 Delete</Btn>
+                  </div>
+                )}
+              </Card>
+            ) : (
+              <Card style={{ padding: 40, textAlign: 'center', color: T.textMuted }}>No news matches your search.</Card>
+            )}
+          </div>
+
+          {/* Right — always-visible navigation sidebar */}
+          <div>
+            <Card style={{ padding: 14, marginBottom: 12 }}>
+              <p style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Categories</p>
+              {NEWS_CATEGORIES.map(c => {
+                const n = posts.filter(p => p.category === c).length;
+                const on = cat === c;
+                return (
+                  <div key={c} onClick={() => setCat(on ? '' : c)} className="c5-row-hover"
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 6px', borderRadius: 8, cursor: 'pointer', background: on ? `${catColor(c)}18` : 'transparent' }}>
+                    <span style={{ width: 9, height: 9, borderRadius: '50%', background: catColor(c), flexShrink: 0 }} />
+                    <span style={{ flex: 1, fontSize: 12.5, fontWeight: on ? 800 : 600, color: T.textMain }}>{c}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: T.textMuted }}>{n}</span>
+                  </div>
+                );
+              })}
+            </Card>
+            {sideCard('Latest News', latest, p => `${p.category} · ${formatDate(p.publishDate || p.createdAt)}`)}
+            {sideCard('Recent Updates', recent, p => `Updated ${formatDate(p.updatedAt || p.createdAt)}`)}
+            {sideCard('Featured News', featured, p => p.category)}
+            {sideCard('Most Viewed', mostViewed, p => `👁 ${p.views} views`, 'No viewed articles yet')}
+          </div>
+        </div>
+      )}
+
+      {editing !== undefined && <NewsEditor post={editing} onClose={() => setEditing(undefined)} onSaved={() => load()} />}
     </div>
   );
 };

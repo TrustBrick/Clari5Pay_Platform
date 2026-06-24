@@ -1,18 +1,6 @@
 import type { NavItem, User, UserRole } from '../types';
 
-// Blog Management submenu group — shared across roles. The sidebar hides the
-// adminOnly children (Create / Draft / Analytics) for read-only roles.
-export const BLOG_GROUP: NavItem = {
-  key: 'blog', icon: '📝', label: 'Blog Management',
-  children: [
-    { key: 'blog-all', icon: '▦', label: 'All Blogs' },
-    { key: 'blog-create', icon: '✚', label: 'Create Blog', adminOnly: true },
-    { key: 'blog-categories', icon: '🏷', label: 'Categories' },
-    { key: 'blog-published', icon: '✓', label: 'Published Blogs' },
-    { key: 'blog-drafts', icon: '🗒', label: 'Draft Blogs', adminOnly: true },
-    { key: 'blog-analytics', icon: '📊', label: 'Blog Analytics', adminOnly: true },
-  ],
-};
+// The Blog module has been merged into News — there is no separate Blog menu.
 
 export const NAV: Record<UserRole, NavItem[]> = {
   MERCHANT: [
@@ -28,7 +16,6 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'balance', icon: '◎', label: 'Balance Enquiry' },
     { key: 'risk', icon: '⚑', label: 'Risk Analysis' },
     { key: 'news', icon: '📰', label: 'News' },
-    BLOG_GROUP,
     { key: 'support', icon: '💬', label: 'Customer Support' },
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
@@ -40,7 +27,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'admin-accounts', icon: '🏦', label: 'Account Management' },
     { key: 'risk-mgmt', icon: '🛡️', label: 'Risk Management' },
     { key: 'complaints', icon: '🚨', label: 'Complaint Management' },
-    BLOG_GROUP,
+    { key: 'news', icon: '📰', label: 'News' },
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
   SUPER_ADMIN: [
@@ -52,7 +39,6 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'sa-news', icon: '📰', label: 'News Management' },
     { key: 'sa-logs', icon: '🧾', label: 'System Logs' },
     { key: 'sa-audit', icon: '📋', label: 'Audit Logs' },
-    BLOG_GROUP,
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
   // Support agents use the separate Customer Support portal.
@@ -88,24 +74,17 @@ export const PAGE_TITLES: Record<string, string> = {
   'sa-news': 'News Management',
   'sa-logs': 'System Logs',
   'sa-audit': 'Audit Logs',
-  'blog-all': 'All Blogs',
-  'blog-create': 'Create Blog',
-  'blog-categories': 'Blog Categories',
-  'blog-published': 'Published Blogs',
-  'blog-drafts': 'Draft Blogs',
-  'blog-analytics': 'Blog Analytics',
-  'blog-details': 'Blog Details',
 };
 
 // Sidebar pages permitted per merchant role (drives the dynamic sidebar).
 // Maintain Profile + Profile collapse to a single Profile link.
 // Customer Support is available to every merchant role (default for all merchants).
 export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
-  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
-  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
-  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
-  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
-  MANAGER: ['dashboard', 'templates', 'reports', 'risk-mgmt', 'news', 'blog', 'support', 'profile'],
+  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  MANAGER: ['dashboard', 'templates', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
 };
 
 /**

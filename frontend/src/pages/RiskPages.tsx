@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, fileToDataUrl } from '../utils/helpers';
+import { fmt, fileToDataUrl, memberLabel } from '../utils/helpers';
 import { downloadXlsx } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, Skeleton, CountUp } from '../components/UI';
 import { riskAPI } from '../services/api';
@@ -87,7 +87,7 @@ export function exportRiskPdf(p: RiskProfile, generatedBy?: string) {
   <p class="sub">Investigation reference: RA-${pr.memberId} · Prepared for ${pr.merchantName}</p>
   <h2>Member Information</h2>
   <div class="grid">
-    <div><b>Membership Number:</b> ${pr.memberId}</div><div><b>Member Name:</b> ${pr.memberName}</div>
+    <div><b>Membership - Member:</b> ${memberLabel(pr.memberId, pr.memberName)}</div>
     <div><b>Merchant:</b> ${pr.merchantName}</div><div><b>Current Risk Level:</b> <span class="lvl">${pr.riskLevel}</span></div>
     <div><b>Registration:</b> ${pr.registrationDate || '—'}</div><div><b>First Transaction:</b> ${pr.firstTransactionDate || '—'}</div>
     <div><b>Last Transaction:</b> ${pr.lastTransactionDate || '—'}</div><div><b>Total Volume:</b> ${fmt(pr.totalVolume)}</div>
@@ -129,7 +129,7 @@ export function exportRiskXlsx(p: RiskProfile, generatedBy?: string) {
         { header: 'Field', get: (r: any) => r.field, width: 22 },
         { header: 'Value', get: (r: any) => r.value, width: 32 },
       ], rows: [
-        kv('Membership Number', pr.memberId), kv('Member Name', pr.memberName),
+        kv('Membership - Member', memberLabel(pr.memberId, pr.memberName)),
         kv('Merchant', pr.merchantName), kv('Current Risk Level', pr.riskLevel),
         kv('Registration', pr.registrationDate), kv('First Transaction', pr.firstTransactionDate),
         kv('Last Transaction', pr.lastTransactionDate), kv('Total Volume', pr.totalVolume),
@@ -217,8 +217,7 @@ export function exportComplaintPdf(args: { caseId?: string; memberId: string; me
   <p>To,<br><b>The Investigating Officer,</b><br>Cyber Crime Cell.</p>
   <p><b>Subject:</b> Complaint regarding suspicious financial activity associated with membership ${args.memberId}.</p>
   <h2>Membership Information</h2>
-  <div class="row"><b>Membership Number:</b> ${args.memberId}</div>
-  <div class="row"><b>Member Name:</b> ${args.memberName}</div>
+  <div class="row"><b>Membership - Member:</b> ${memberLabel(args.memberId, args.memberName)}</div>
   <div class="row"><b>Merchant:</b> ${args.merchantName}</div>
   ${invSummary}
   <h2>Bank / Payment Details</h2>
@@ -254,7 +253,7 @@ export function exportComplaintXlsx(args: { caseId?: string; memberId: string; m
         { header: 'Value', get: (r: any) => r.value, width: 40 },
       ], rows: [
         kv('Complaint Reference', args.caseId || 'DRAFT (unsaved)'),
-        kv('Membership Number', args.memberId), kv('Member Name', args.memberName),
+        kv('Membership - Member', memberLabel(args.memberId, args.memberName)),
         kv('Merchant', args.merchantName), kv('Risk Level', args.riskLevel),
         kv('Status', (args.status || '').replace(/_/g, ' ')), kv('Priority', args.priority),
         kv('Account Holder', b.accountHolder), kv('Account Number', b.accountNumber),
@@ -349,8 +348,7 @@ const ComplaintModal: React.FC<{ memberId: string; memberName: string; merchantN
 
         <h4 style={{ margin: '14px 0 8px', fontSize: 13, color: T.blue }}>Membership Information</h4>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
-          <div><span style={lbl}>Membership No.</span><b>{memberId}</b></div>
-          <div><span style={lbl}>Member Name</span><b>{memberName}</b></div>
+          <div><span style={lbl}>Membership - Member</span><b>{memberLabel(memberId, memberName)}</b></div>
           <div><span style={lbl}>Merchant</span><b>{merchantName}</b></div>
         </div>
 
@@ -449,8 +447,8 @@ const RiskProfileModal: React.FC<{ memberId: string; user: User; onClose: () => 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: 16, borderRadius: 12, background: RISK_META[p.profile.riskLevel].bg, flexWrap: 'wrap' }}>
             <div>
               <p style={{ margin: 0, fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Risk Assessment Report</p>
-              <p style={{ margin: '4px 0 0', fontSize: 18, fontWeight: 800, color: T.textMain }}>{p.profile.memberName}</p>
-              <p style={{ margin: '2px 0 0', fontSize: 12.5, color: T.textMuted }}>{p.profile.memberId} · {p.profile.merchantName}</p>
+              <p style={{ margin: '4px 0 0', fontSize: 18, fontWeight: 800, color: T.textMain }}>{memberLabel(p.profile.memberId, p.profile.memberName)}</p>
+              <p style={{ margin: '2px 0 0', fontSize: 12.5, color: T.textMuted }}>{p.profile.merchantName}</p>
               <p style={{ margin: '4px 0 0', fontSize: 11, color: T.textMuted }}>Generated {new Date().toLocaleString('en-IN')} · By: {genBy}</p>
             </div>
             <RiskBadge level={p.profile.riskLevel} />
@@ -458,8 +456,7 @@ const RiskProfileModal: React.FC<{ memberId: string; user: User; onClose: () => 
 
           <Section title="Member Profile">
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
-              {row('Membership Number', p.profile.memberId)}
-              {row('Member Name', p.profile.memberName)}
+              {row('Membership - Member', memberLabel(p.profile.memberId, p.profile.memberName))}
               {row('Merchant Name', p.profile.merchantName)}
               {row('Registration Date', p.profile.registrationDate || '—')}
               {row('First Transaction', p.profile.firstTransactionDate || '—')}
@@ -644,8 +641,7 @@ export const RiskManagementPage: React.FC<{ user: User }> = ({ user }) => {
             <thead>
               <tr style={{ background: T.canvas }}>
                 <th style={th}>Risk Level</th>
-                <th style={th}>Membership No.</th>
-                <th style={th}>Member Name</th>
+                <th style={th}>Membership - Member</th>
                 {isStaff && <th style={th}>Merchant</th>}
                 <th style={th}>Total Transactions</th>
                 <th style={th}>Last Activity</th>
@@ -653,12 +649,11 @@ export const RiskManagementPage: React.FC<{ user: User }> = ({ user }) => {
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && <tr><td colSpan={isStaff ? 7 : 6} style={{ ...td, textAlign: 'center', color: T.textMuted }}>No memberships found.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={isStaff ? 6 : 5} style={{ ...td, textAlign: 'center', color: T.textMuted }}>No memberships found.</td></tr>}
               {rows.map(m => (
                 <tr key={m.memberId} className="c5-row-hover">
                   <td style={td}><RiskBadge level={m.riskLevel} /></td>
-                  <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700 }}>{m.memberId}</td>
-                  <td style={td}>{m.memberName}</td>
+                  <td style={{ ...td, fontWeight: 600 }}>{memberLabel(m.memberId, m.memberName)}</td>
                   {isStaff && <td style={{ ...td, color: T.textMuted }}>{m.merchantName}</td>}
                   <td style={{ ...td, fontWeight: 700 }}>{m.totalTransactions}</td>
                   <td style={{ ...td, color: T.textMuted, whiteSpace: 'nowrap' }}>{m.lastActivity || '—'}</td>

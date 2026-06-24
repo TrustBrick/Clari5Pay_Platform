@@ -97,10 +97,12 @@ class AdminResetPasswordRequest(BaseModel):
 # ─── News Schemas ─────────────────────────────────────────────────────────────
 class NewsIn(BaseModel):
     section: str = "Announcements"
+    category: str = "Announcements"
     title: str
     body: str = ""
     image: Optional[str] = None
     published: bool = True
+    featured: bool = False
     priority: str = "Normal"
     publish_date: Optional[date] = None
 

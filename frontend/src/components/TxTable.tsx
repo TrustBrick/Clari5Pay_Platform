@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, memberLabel } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton } from './UI';
 import type { Transaction } from '../types';
 
@@ -55,7 +55,7 @@ const typeColor = (type: string): { color: string; bg: string } => {
 const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole, loading }) => {
   // No action handler (e.g. the dashboard preview) → drop the Action column entirely.
   const showAction = !!onAction && actionMode !== 'none';
-  const headers = ['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Membership ID', 'Type', 'Amount', 'Date', 'Status'];
+  const headers = ['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Membership - Member', 'Type', 'Amount', 'Date', 'Status'];
   if (showAction) headers.push('Action');
   if (loading) return <div style={{ overflowX: 'auto' }}><TableSkeleton rows={6} cols={headers.length} /></div>;
   return (
@@ -84,7 +84,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
                 </span>
               </td>
               <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:700 }}>{t.merchant}</td>
-              <td style={{ padding:'11px 14px',color:T.textMuted }}>{t.memberId || '—'}</td>
+              <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600 }}>{memberLabel(t.memberId, t.member)}</td>
               <td style={{ padding:'11px 14px' }}>
                 <span style={{ padding:'2px 8px',borderRadius:6,fontSize:11,fontWeight:700,background:tc.bg,color:tc.color,whiteSpace:'nowrap' }}>
                   {typeLabel(t.type)}

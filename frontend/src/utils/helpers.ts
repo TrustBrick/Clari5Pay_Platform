@@ -70,6 +70,16 @@ export const MERCHANT_ROLE_OPTIONS = [
   { value: 'MANAGER', label: 'Manager' },
 ];
 
+// Unified "Membership Number - Member Name" label (number always first), e.g.
+// "MBR02703 - Satish Kumar". Falls back to whichever part exists. Used everywhere a
+// member is shown: tables, detail views, dashboard widgets, PDF + Excel exports.
+export const memberLabel = (memberId?: string | null, memberName?: string | null): string => {
+  const id = (memberId ?? '').toString().trim();
+  const nm = (memberName ?? '').toString().trim();
+  if (id && nm) return `${id} - ${nm}`;
+  return id || nm || '—';
+};
+
 // Human-readable label for transaction types (handles the *_REQUEST variants).
 export const typeLabel = (t: string) =>
   t

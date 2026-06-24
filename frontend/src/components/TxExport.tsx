@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { T } from '../utils/theme';
-import { fmt } from '../utils/helpers';
+import { fmt, memberLabel } from '../utils/helpers';
 import { exportTransactionsXlsx, txnTypeLabel } from '../utils/xlsx';
 import { Btn, Sel } from './UI';
 import type { Transaction } from '../types';
@@ -15,8 +15,7 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
   const now = new Date().toLocaleString('en-IN');
   const body = rows.map((t, i) => `<tr class="${i % 2 ? 'alt' : ''}">
     <td class="mono">${esc(t.ref)}</td>
-    <td>${esc(t.memberId)}</td>
-    <td>${esc(t.member)}</td>
+    <td>${esc(memberLabel(t.memberId, t.member))}</td>
     <td>${esc(txnTypeLabel(t))}</td>
     <td class="amt">${esc(fmt(t.amount))}</td>
     <td>${esc(prettyStatus(t.status))}</td>
@@ -56,10 +55,10 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <p class="sub">${esc(subtitle)}</p>
     <table>
       <thead><tr>
-        <th>Reference No.</th><th>Membership ID</th><th>Member Name</th><th>Type</th>
+        <th>Reference No.</th><th>Membership - Member</th><th>Type</th>
         <th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>UTR</th><th>Remarks</th>
       </tr></thead>
-      <tbody>${body || '<tr><td class="empty" colspan="9">No transactions for this selection.</td></tr>'}</tbody>
+      <tbody>${body || '<tr><td class="empty" colspan="8">No transactions for this selection.</td></tr>'}</tbody>
     </table>
     <footer>Clari5Pay — confidential. This report was generated from live platform data.</footer>
   </body></html>`);

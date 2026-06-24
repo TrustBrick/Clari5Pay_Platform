@@ -310,11 +310,16 @@ class News(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     section: Mapped[str] = mapped_column(String(32), default="Announcements", nullable=False)  # one of 4 sections
+    # Category (absorbed from the old Blog module). Featured + view-count power the
+    # News sidebar (Featured / Most Viewed).
+    category: Mapped[str] = mapped_column(String(64), default="Announcements", nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # optional image (data URL)
     author_name: Mapped[str] = mapped_column(String(128), default="Admin", nullable=False)
     published: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    featured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    views: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # Priority (Normal / High / Critical) and an optional scheduled publish date.
     priority: Mapped[str] = mapped_column(String(16), default="Normal", nullable=False)
     publish_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)

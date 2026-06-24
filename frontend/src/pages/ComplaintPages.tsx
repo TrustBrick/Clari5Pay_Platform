@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { formatDateTime } from '../utils/helpers';
+import { formatDateTime, memberLabel } from '../utils/helpers';
 import { downloadXlsx } from '../utils/xlsx';
 import { Card, Btn, Input, Sel, Modal, Skeleton } from '../components/UI';
 import { riskAPI } from '../services/api';
@@ -137,7 +137,7 @@ const CaseDetail: React.FC<{ id: number; user: User; onClose: () => void; onChan
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
             <div>
               <div style={sec}>Membership Information</div>
-              {kv('Membership Number', c.memberId)}{kv('Member Name', c.memberName)}{kv('Merchant', c.merchantName)}{kv('Risk Level', c.riskLevel)}
+              {kv('Membership - Member', memberLabel(c.memberId, c.memberName))}{kv('Merchant', c.merchantName)}{kv('Risk Level', c.riskLevel)}
               <div style={sec}>Bank Information</div>
               {kv('Account Holder', c.accountHolder || '—')}{kv('Account Number', c.accountNumber || '—')}{kv('Bank', c.bankName || '—')}{kv('Branch', c.branch || '—')}{kv('IFSC', c.ifsc || '—')}{kv('UPI ID', c.upiId || '—')}
             </div>
@@ -299,17 +299,16 @@ export const ComplaintManagementPage: React.FC<{ user: User }> = ({ user }) => {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: T.canvas }}>
-                {['Case ID', 'Membership', 'Member', 'Merchant', 'Risk', 'Priority', 'Complaint Date', 'Days Open / SLA', 'Status', 'Assigned To', 'Action'].map(h => <th key={h} style={th}>{h}</th>)}
+                {['Case ID', 'Membership - Member', 'Merchant', 'Risk', 'Priority', 'Complaint Date', 'Days Open / SLA', 'Status', 'Assigned To', 'Action'].map(h => <th key={h} style={th}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
-              {!data && [0, 1, 2].map(i => <tr key={i}><td style={td} colSpan={11}><Skeleton h={18} /></td></tr>)}
-              {data && data.complaints.length === 0 && <tr><td style={{ ...td, textAlign: 'center', color: T.textMuted }} colSpan={11}>No complaints found.</td></tr>}
+              {!data && [0, 1, 2].map(i => <tr key={i}><td style={td} colSpan={10}><Skeleton h={18} /></td></tr>)}
+              {data && data.complaints.length === 0 && <tr><td style={{ ...td, textAlign: 'center', color: T.textMuted }} colSpan={10}>No complaints found.</td></tr>}
               {data?.complaints.map(c => (
                 <tr key={c.id} className="c5-row-hover">
                   <td style={{ ...td, fontFamily: 'monospace', fontWeight: 700 }}>{c.caseId}</td>
-                  <td style={{ ...td, fontFamily: 'monospace' }}>{c.memberId}</td>
-                  <td style={td}>{c.memberName}</td>
+                  <td style={{ ...td, fontWeight: 600 }}>{memberLabel(c.memberId, c.memberName)}</td>
                   <td style={{ ...td, color: T.textMuted }}>{c.merchantName}</td>
                   <td style={td}>{c.riskLevel}</td>
                   <td style={td}><Pill text={c.priority} meta={PRIO_META[c.priority] || PRIO_META.MEDIUM} /></td>

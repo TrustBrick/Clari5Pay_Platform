@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { typeLabel, depositTypeLabel } from './helpers';
+import { typeLabel, depositTypeLabel, memberLabel } from './helpers';
 import type { Transaction } from '../types';
 
 // ─── Shared client-side Excel (.xlsx) export — SheetJS, no server round-trip ──────
@@ -60,8 +60,7 @@ export const txnsToSheet = (rows: Transaction[], name = 'Transactions'): SheetDe
   name,
   columns: [
     { header: 'Reference Number', get: t => t.ref },
-    { header: 'Membership Number', get: t => t.memberId || '' },
-    { header: 'Member Name', get: t => t.member || '' },
+    { header: 'Membership - Member', get: t => memberLabel(t.memberId, t.member), width: 28 },
     { header: 'Merchant Name', get: t => t.merchant || '' },
     { header: 'Transaction Type', get: t => txnTypeLabel(t) },
     { header: 'Amount (INR)', get: t => Number(t.amount), width: 14 },

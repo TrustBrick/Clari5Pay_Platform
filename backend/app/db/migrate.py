@@ -46,6 +46,10 @@ _NEW_COLUMNS = [
     ("audit_logs", "location", "VARCHAR(128)"),
     ("news", "priority", "VARCHAR(16) DEFAULT 'Normal' NOT NULL"),
     ("news", "publish_date", "DATE"),
+    # News absorbs the Blog module: category + featured + view-count.
+    ("news", "category", "VARCHAR(64) DEFAULT 'Announcements' NOT NULL"),
+    ("news", "featured", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    ("news", "views", "INTEGER DEFAULT 0 NOT NULL"),
     # Blog simplified to News-style posts: plain category string + publish_date
     # (replaces the old slug/category_id/images/tags/engagement columns, which
     # stay as harmless orphans on already-deployed blog_posts tables).
@@ -102,6 +106,19 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             ") "
             "UPDATE users SET merchant_code = 'MID' || LPAD((numbered.rn + base.maxn)::text, 6, '0') "
             "FROM numbered, base WHERE users.id = numbered.id"
+        ))
+        # ── Blog → News merge: copy existing blog posts into the News module (one content
+        # module now). Idempotent: skips any blog title already present in news, so repeated
+        # startups never duplicate. Maps category/cover image/published/publish_date across.
+        await conn.execute(text(
+            "INSERT INTO news (section, category, title, body, image, author_name, "
+            "  published, featured, views, priority, publish_date, created_at) "
+            "SELECT 'Announcements', COALESCE(b.category, 'Announcements'), b.title, "
+            "  COALESCE(NULLIF(b.content, ''), b.short_description, ''), b.cover_image, "
+            "  COALESCE(b.author_name, 'Super Admin'), (b.status = 'PUBLISHED'), FALSE, 0, "
+            "  'Normal', b.publish_date, COALESCE(b.created_at, NOW()) "
+            "FROM blog_posts b "
+            "WHERE NOT EXISTS (SELECT 1 FROM news n WHERE n.title = b.title)"
         ))
 
     # ── Enum values (ALTER TYPE ... ADD VALUE must run outside a txn block) ──

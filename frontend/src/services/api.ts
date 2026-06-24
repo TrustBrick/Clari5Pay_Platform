@@ -393,13 +393,16 @@ export const newsAPI = {
     const res = await api.get<string[]>('/api/news/sections');
     return res.data;
   },
-  create: async (data: { section: string; title: string; body: string; image?: string | null; published: boolean; priority?: string; publish_date?: string | null }) => {
+  create: async (data: { section?: string; category: string; title: string; body: string; image?: string | null; published: boolean; featured?: boolean; priority?: string; publish_date?: string | null }) => {
     const res = await api.post<NewsPost>('/api/news', data);
     return res.data;
   },
-  update: async (id: number, data: { section: string; title: string; body: string; image?: string | null; published: boolean; priority?: string; publish_date?: string | null }) => {
+  update: async (id: number, data: { section?: string; category: string; title: string; body: string; image?: string | null; published: boolean; featured?: boolean; priority?: string; publish_date?: string | null }) => {
     const res = await api.patch<NewsPost>(`/api/news/${id}`, data);
     return res.data;
+  },
+  view: async (id: number) => {
+    try { await api.post(`/api/news/${id}/view`); } catch { /* best-effort view count */ }
   },
   remove: async (id: number) => {
     const res = await api.delete(`/api/news/${id}`);

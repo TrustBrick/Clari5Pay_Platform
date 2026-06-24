@@ -305,11 +305,14 @@ export interface ApiError {
 export interface NewsPost {
   id: number;
   section: string;
+  category: string;
   title: string;
   body: string;
   image?: string | null;
   author: string;
   published: boolean;
+  featured: boolean;
+  views: number;
   priority?: string;
   publishDate?: string | null;
   createdAt: string;
