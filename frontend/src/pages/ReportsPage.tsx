@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, downloadText, today } from '../utils/helpers';
+import { fmt, today, depositTypeLabel } from '../utils/helpers';
+import { downloadXlsx } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { transactionAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
@@ -13,15 +14,27 @@ import type { User, ReportData, ReportRow, ReportMemberRow } from '../types';
 
 const RTYPE_LABEL: Record<string, string> = { deposit: 'Deposit', withdrawal: 'Withdrawal', settlement: 'Settlement' };
 const prettyStatusR = (s: string) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+// Type label, with the deposit method appended for deposits, e.g. "Deposit (Crypto (USDT))".
+const rtypeLabel = (r: ReportRow) => {
+  const base = RTYPE_LABEL[r.type || ''] || '';
+  return r.type === 'deposit' && r.depositType ? `${base} (${depositTypeLabel(r.depositType)})` : base;
+};
 
-const csvEscape = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-const exportRowsCsv = (rows: ReportRow[], filename: string) => {
-  const head = ['Reference No.', 'Membership Number', 'Member Name', 'Type', 'Amount', 'Status', 'Date', 'Time', 'Cancellation Reason'];
-  const lines = [head.map(csvEscape).join(',')];
-  for (const r of rows) {
-    lines.push([r.ref, r.memberId || '', r.member, RTYPE_LABEL[r.type || ''] || '', r.amount, prettyStatusR(r.status), r.date, r.time, r.cancelReason || ''].map(csvEscape).join(','));
-  }
-  downloadText(lines.join('\r\n'), filename);
+const exportRowsXlsx = (rows: ReportRow[], filename: string) => {
+  downloadXlsx(filename, [{
+    name: 'Transactions',
+    columns: [
+      { header: 'Reference Number', get: r => r.ref },
+      { header: 'Membership Number', get: r => r.memberId || '' },
+      { header: 'Member Name', get: r => r.member || '' },
+      { header: 'Transaction Type', get: r => rtypeLabel(r) },
+      { header: 'Amount (INR)', get: r => Number(r.amount), width: 14 },
+      { header: 'Status', get: r => prettyStatusR(r.status) },
+      { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
+      { header: 'Cancellation Reason', get: r => r.cancelReason || '' },
+    ],
+    rows,
+  }]);
 };
 
 // Management-style PDF (print-to-PDF, no extra deps) of the report summary.
@@ -144,7 +157,7 @@ const ReportRowsTable: React.FC<{ rows: ReportRow[]; onPick?: (id: string) => vo
               <td style={{ ...tdR, fontFamily: 'monospace' }}>{r.ref}</td>
               <td style={{ ...tdR, fontFamily: 'monospace' }}>{r.memberId || '-'}</td>
               <td style={tdR}>{r.member}</td>
-              <td style={tdR}>{RTYPE_LABEL[r.type || ''] || '-'}</td>
+              <td style={tdR}>{rtypeLabel(r) || '-'}</td>
               <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
               <td style={tdR}>{prettyStatusR(r.status)}</td>
               <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
@@ -380,7 +393,7 @@ const SearchTab: React.FC<{ data: ReportData; onPick: (id: string) => void }> = 
           <Input label="Max Amount" type="number" value={maxA} onChange={e => setMaxA(e.target.value)} />
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
-          <Btn size="sm" variant="secondary" onClick={() => exportRowsCsv(rows, `clari5pay-search-${today()}.csv`)}>⬇ Export results (CSV)</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => exportRowsXlsx(rows, `clari5pay-search-${today()}.xlsx`)}>📊 Download Excel</Btn>
           <span style={{ fontSize: 12, color: T.textMuted }}>{rows.length} result(s)</span>
         </div>
       </Card>
@@ -469,8 +482,8 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
         <div style={{ flex: 1, minWidth: 200 }}>
           <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Analytics for <b style={{ color: T.textMain }}>{user.name}</b> — your memberships, transactions and reports only.</p>
         </div>
-        <Btn size="sm" variant="secondary" onClick={() => { exportRowsCsv(data.transactions, `clari5pay-report-${today()}.csv`); toast.showToast('CSV downloaded'); }}>⬇ Export CSV</Btn>
-        <Btn size="sm" variant="secondary" onClick={() => exportReportPdf(data, user.name)}>⬇ Export PDF</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => exportReportPdf(data, user.name)}>📄 Download PDF</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => { exportRowsXlsx(data.transactions, `clari5pay-report-${today()}.xlsx`); toast.showToast('Excel downloaded'); }}>📊 Download Excel</Btn>
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>

@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton } from './UI';
 import type { Transaction } from '../types';
 
@@ -89,6 +89,9 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
                 <span style={{ padding:'2px 8px',borderRadius:6,fontSize:11,fontWeight:700,background:tc.bg,color:tc.color,whiteSpace:'nowrap' }}>
                   {typeLabel(t.type)}
                 </span>
+                {t.type.startsWith('DEPOSIT') && t.depositType && (
+                  <div style={{ fontSize:10,color:T.textMuted,marginTop:3 }}>{depositTypeLabel(t.depositType)}</div>
+                )}
               </td>
               <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(t.amount)}</td>
               <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{t.date} <span style={{ fontSize:10 }}>{t.time}</span></td>

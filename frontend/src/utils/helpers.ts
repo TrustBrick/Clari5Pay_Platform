@@ -78,6 +78,41 @@ export const typeLabel = (t: string) =>
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
 
+// Deposit-type display labels. Codes UPI/IMPS/NEFT/RTGS are acronyms shown as-is;
+// BANK/CASH/CRYPTO get friendly labels. Used across history, reports, analytics,
+// audit logs and PDF/Excel exports so Cash/Crypto/Bank render consistently.
+export const DEPOSIT_TYPE_LABELS: Record<string, string> = {
+  UPI: 'UPI',
+  BANK: 'Bank Transfer',
+  IMPS: 'IMPS',
+  NEFT: 'NEFT',
+  RTGS: 'RTGS',
+  CASH: 'Cash',
+  CRYPTO: 'Crypto (USDT)',
+};
+export const depositTypeLabel = (code?: string | null) =>
+  code ? (DEPOSIT_TYPE_LABELS[String(code).toUpperCase()] || code) : '';
+
+// Friendly labels for the deposit-detail JSON keys (Cash / Crypto member-supplied fields).
+export const DEPOSIT_DETAIL_LABELS: Record<string, string> = {
+  village: 'Village', city: 'City', mobile: 'Mobile Number',
+  walletAddress: 'Wallet Address', network: 'Network', txHash: 'Transaction Hash ID',
+};
+export const depositDetailLabel = (key: string) =>
+  DEPOSIT_DETAIL_LABELS[key] ||
+  key.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()).trim();
+
+// Deposit-type dropdown options for the request form (code → display label).
+export const DEPOSIT_TYPE_OPTIONS = [
+  { value: 'UPI', label: 'UPI' },
+  { value: 'BANK', label: 'Bank Transfer' },
+  { value: 'IMPS', label: 'IMPS' },
+  { value: 'NEFT', label: 'NEFT' },
+  { value: 'RTGS', label: 'RTGS' },
+  { value: 'CASH', label: 'Cash' },
+  { value: 'CRYPTO', label: 'Crypto (USDT)' },
+];
+
 // Country dialing codes for the phone-number dropdown (India first, then alphabetical).
 export const COUNTRY_CODES = [
   { code: '+91', label: '🇮🇳 +91 India' },

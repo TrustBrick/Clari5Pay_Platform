@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel } from '../utils/helpers';
+import { fmt } from '../utils/helpers';
+import { exportTransactionsXlsx, txnTypeLabel } from '../utils/xlsx';
 import { Btn, Sel } from './UI';
 import type { Transaction } from '../types';
 
@@ -16,7 +17,7 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <td class="mono">${esc(t.ref)}</td>
     <td>${esc(t.memberId)}</td>
     <td>${esc(t.member)}</td>
-    <td>${esc(typeLabel(t.type))}</td>
+    <td>${esc(txnTypeLabel(t))}</td>
     <td class="amt">${esc(fmt(t.amount))}</td>
     <td>${esc(prettyStatus(t.status))}</td>
     <td class="nowrap">${esc(t.date)} ${esc(t.time)}</td>
@@ -75,18 +76,22 @@ export const TxExportButton: React.FC<{ txns: Transaction[]; title?: string }> =
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
-  const run = () => {
+  // Apply the chosen Last-N / date-range filter, returning the rows + a subtitle/scope label.
+  const selected = (): { rows: Transaction[]; subtitle: string; scope: string } => {
     let rows = [...txns];   // already newest-first from the API
-    let subtitle: string;
     if (mode === 'range') {
       rows = rows.filter(t => (!from || (t.date || '') >= from) && (!to || (t.date || '') <= to));
-      subtitle = `Date range: ${from || 'beginning'} → ${to || 'today'}`;
-    } else {
-      const n = parseInt(lastN, 10) || 50;
-      rows = rows.slice(0, n);
-      subtitle = `Last ${n} transactions`;
+      return { rows, subtitle: `Date range: ${from || 'beginning'} → ${to || 'today'}`, scope: `${from || 'all'}_${to || 'today'}` };
     }
-    exportTransactionsPdf(rows, title, subtitle);
+    const n = parseInt(lastN, 10) || 50;
+    rows = rows.slice(0, n);
+    return { rows, subtitle: `Last ${n} transactions`, scope: `last-${n}` };
+  };
+
+  const runPdf = () => { const { rows, subtitle } = selected(); exportTransactionsPdf(rows, title, subtitle); setOpen(false); };
+  const runExcel = () => {
+    const { rows, scope } = selected();
+    exportTransactionsXlsx(rows, `${title.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${scope}.xlsx`, title.slice(0, 31));
     setOpen(false);
   };
 
@@ -95,12 +100,12 @@ export const TxExportButton: React.FC<{ txns: Transaction[]; title?: string }> =
 
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
-      <Btn size="sm" variant="secondary" onClick={() => setOpen(o => !o)}>⬇ Export PDF</Btn>
+      <Btn size="sm" variant="secondary" onClick={() => setOpen(o => !o)}>⬇ Export</Btn>
       {open && (
         <>
           <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
           <div style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', zIndex: 41, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, boxShadow: '0 12px 40px rgba(0,0,0,0.16)', padding: 16, width: 280 }}>
-            <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Export Transactions (PDF)</p>
+            <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Export Transactions</p>
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <Btn size="sm" variant={mode === 'last' ? 'primary' : 'ghost'} onClick={() => setMode('last')}>Last N</Btn>
               <Btn size="sm" variant={mode === 'range' ? 'primary' : 'ghost'} onClick={() => setMode('range')}>Date range</Btn>
@@ -116,7 +121,10 @@ export const TxExportButton: React.FC<{ txns: Transaction[]; title?: string }> =
                 <div><label style={lbl}>To</label><input type="date" value={to} onChange={e => setTo(e.target.value)} style={inp} /></div>
               </div>
             )}
-            <Btn full onClick={run}>Generate PDF</Btn>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Btn full variant="secondary" onClick={runPdf}>📄 Download PDF</Btn>
+              <Btn full onClick={runExcel}>📊 Download Excel</Btn>
+            </div>
           </div>
         </>
       )}

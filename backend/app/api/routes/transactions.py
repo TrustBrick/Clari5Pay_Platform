@@ -242,6 +242,7 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "adminUtr": t.admin_utr,
         "payoutMode": t.payout_mode,
         "payoutDetails": json.loads(t.payout_details) if t.payout_details else None,
+        "depositDetails": json.loads(t.deposit_details) if t.deposit_details else None,
         "qrExpiresAt": (t.qr_expires_at.isoformat() + "Z") if t.qr_expires_at else None,
         "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
         "utr": t.utr,
@@ -684,7 +685,7 @@ async def merchant_reports(
     # ── Raw rows for client-side search, custom ranges, recent high-value & drill-down ──
     rows = [{
         "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
-        "type": _kind(t), "amount": round(t.amount, 2), "status": t.status.value,
+        "type": _kind(t), "depositType": t.deposit_type, "amount": round(t.amount, 2), "status": t.status.value,
         "date": str(t.tx_date), "time": t.tx_time,
         "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
         "completed": _completed(t),
@@ -710,11 +711,15 @@ async def create_deposit(
         data.memberId = data.memberId.upper()
     await _assert_member_name(db, current_user, data.memberId, data.memberName)
     _proofs = _clean_proofs(data.proofs, data.proof)
+    dep_type = (data.depositType or "").upper()
+    # Cash / Crypto requests carry their own member-supplied proof up-front, so they skip the
+    # bank/UPI "account sent" hop and land straight in the agent's review queue (SLIP_SUBMITTED).
+    direct_review = dep_type in ("CASH", "CRYPTO")
     tx = Transaction(
         ref="TEMP",
         type=TxType.DEPOSIT_REQUEST,
         amount=data.amount,
-        status=TxStatus.ACCOUNT_REQUESTED,
+        status=TxStatus.SLIP_SUBMITTED if direct_review else TxStatus.ACCOUNT_REQUESTED,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
         tx_date=date.today(),
@@ -724,6 +729,7 @@ async def create_deposit(
         member_id=data.memberId,
         segment=data.segment,
         sender_upi_id=data.senderUpiId,
+        deposit_details=json.dumps(data.depositDetails) if data.depositDetails else None,
         merchant_proof=_proofs[0] if _proofs else None,
         merchant_proofs=json.dumps(_proofs) if _proofs else None,
         account_holder=data.accountHolder,
@@ -745,8 +751,19 @@ async def create_deposit(
         await _save_member_upi(db, current_user, data.memberId, data.senderUpiId.strip())
     await db.flush()
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
-    await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)
-    await record_audit(db, "DEPOSIT_REQUESTED", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=str(tx.amount))
+    # Cash / Crypto get their own audit action + a rich detail line (membership, member, type, amount).
+    if direct_review:
+        kind = "Cash" if dep_type == "CASH" else "Crypto"
+        action = f"{dep_type}_DEPOSIT_REQUEST_CREATED"
+        human = f"{kind} Deposit Request Created"
+        detail = (f"{human} — {tx.ref} · Membership {tx.member_id or '—'} · "
+                  f"{tx.member_name or '—'} · {data.depositType} · {tx.amount}")
+        await log_event(db, action, detail, actor=current_user)
+        await record_audit(db, action, actor=current_user, entity_type="deposit", entity_id=tx.ref,
+                           new=f"{tx.member_id or '—'} · {tx.member_name or '—'} · {data.depositType} · {tx.amount}")
+    else:
+        await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)
+        await record_audit(db, "DEPOSIT_REQUESTED", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=str(tx.amount))
     await db.refresh(tx)
     return _t(tx)
 

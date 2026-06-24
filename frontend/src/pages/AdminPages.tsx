@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, MERCHANT_ROLE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, MERCHANT_ROLE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
 import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
+import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
@@ -45,6 +46,8 @@ const RequestModal: React.FC<{
 }> = ({ tx, canAct, onClose, onDone }) => {
   const { showToast } = useToast();
   const isDeposit = tx.type.startsWith('DEPOSIT');
+  const depType = (tx.depositType || '').toUpperCase();
+  const isCashDeposit = isDeposit && depType === 'CASH';   // "Request Additional Information" workflow
   // Withdrawal payout mode drives what proof the agent must capture (Crypto → Hash; Cash → image only).
   const payoutMode = (tx.payoutMode || 'BANK').toUpperCase();
   const isCryptoPayout = payoutMode === 'CRYPTO';
@@ -193,7 +196,9 @@ const RequestModal: React.FC<{
           <Row k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="ADMIN" />} />
           {tx.memberId && <Row k="Membership ID" v={tx.memberId} />}
           {tx.member && <Row k="Member Name" v={tx.member} />}
-          {tx.depositType && <Row k="Deposit Type" v={tx.depositType} />}
+          {tx.depositType && <Row k="Deposit Type" v={depositTypeLabel(tx.depositType)} />}
+          {isDeposit && tx.depositDetails && Object.entries(tx.depositDetails).map(([k, v]) =>
+            v ? <Row key={k} k={depositDetailLabel(k)} v={String(v)} /> : null)}
           {tx.utr && <Row k="UTR Number" v={tx.utr} />}
           {tx.riskAnalysis && <Row k="Risk Analysis" v="Requested" />}
           <Row k="Date" v={`${tx.date} ${tx.time}`} />
@@ -314,7 +319,7 @@ const RequestModal: React.FC<{
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
           <div style={{ display:'flex',gap:10,flexWrap:'wrap',marginTop:12,paddingTop:12,borderTop:`1px dashed ${T.border}` }}>
-            <Btn size="sm" variant="secondary" onClick={recheck} disabled={saving}>↻ Recheck Payment — request re-upload</Btn>
+            <Btn size="sm" variant="secondary" onClick={recheck} disabled={saving}>{isCashDeposit ? '↻ Request Additional Information' : '↻ Recheck Payment — request re-upload'}</Btn>
             {!riskConfirm ? (
               <Btn size="sm" variant="danger" onClick={()=>setRiskConfirm(true)} disabled={saving}>⚠ Mark High Risk</Btn>
             ) : (
@@ -602,12 +607,16 @@ export const MerchantAnalyticsPage: React.FC = () => {
     return parts.length ? parts.join(' · ') : 'All dates & statuses';
   };
 
-  const runExport = (s: MerchantStats) => {
+  const runExport = (s: MerchantStats, fmtKind: 'pdf' | 'excel' = 'pdf') => {
     const scope = exportScope[s.name] || 'ALL';
     const pfx = scope === 'ALL' ? null : scope;
     const rows = scopedRows(s.name, pfx);
     const scopeLabel = EXPORT_SCOPES.find(e => e.value === scope)?.label || 'Report';
-    exportTransactionsPdf(rows, `${s.name} — ${scopeLabel}`, dateSub());
+    if (fmtKind === 'excel') {
+      exportTransactionsXlsx(rows, `${s.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${scope.toLowerCase()}.xlsx`, s.name.slice(0, 31));
+    } else {
+      exportTransactionsPdf(rows, `${s.name} — ${scopeLabel}`, dateSub());
+    }
   };
 
   const selStyle = { padding: '8px 12px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 12, outline: 'none', fontFamily: 'inherit' as const };
@@ -772,7 +781,8 @@ export const MerchantAnalyticsPage: React.FC = () => {
                     <select value={exportScope[s.name] || 'ALL'} onChange={e => setExportScope(m => ({ ...m, [s.name]: e.target.value }))} style={{ ...selStyle, flex: 1 }}>
                       {EXPORT_SCOPES.map(e => <option key={e.value} value={e.value}>{e.label}</option>)}
                     </select>
-                    <Btn size="sm" variant="secondary" onClick={() => runExport(s)}>⬇ Export</Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => runExport(s, 'pdf')}>📄 PDF</Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => runExport(s, 'excel')}>📊 Excel</Btn>
                   </div>
                 </div>
               </Card>
@@ -1670,12 +1680,24 @@ export const AuditLogsPage: React.FC = () => {
 
   const actionTypes = Array.from(new Set(logs.map(l => l.action))).sort();
   const today = new Date().toISOString().slice(0, 10);
-  const exportCsv = () => {
-    const head = ['Time', 'User', 'Role', 'Action', 'Entity Type', 'Entity Id', 'Old Value', 'New Value', 'Reason', 'IP', 'Location'];
-    const esc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const lines = [head.map(esc).join(',')];
-    filtered.forEach(l => lines.push([l.createdAt, l.username, l.role, l.action, l.entityType, l.entityId, l.oldValue, l.newValue, l.reason, l.ip, l.location].map(esc).join(',')));
-    downloadText(lines.join('\r\n'), `clari5pay-audit-logs-${today}.csv`);
+  const exportExcel = () => {
+    downloadXlsx(`clari5pay-audit-logs-${today}.xlsx`, [{
+      name: 'Audit Logs',
+      columns: [
+        { header: 'Time', get: l => formatDateTime(l.createdAt), width: 20 },
+        { header: 'User', get: l => l.username || '' },
+        { header: 'Role', get: l => (l.role || '').replace('_', ' ') },
+        { header: 'Action', get: l => l.action || '' },
+        { header: 'Entity Type', get: l => l.entityType || '' },
+        { header: 'Entity Id', get: l => l.entityId || '' },
+        { header: 'Old Value', get: l => l.oldValue || '' },
+        { header: 'New Value', get: l => l.newValue || '' },
+        { header: 'Reason', get: l => l.reason || '' },
+        { header: 'IP', get: l => l.ip || '' },
+        { header: 'Location', get: l => l.location || '' },
+      ],
+      rows: filtered,
+    }]);
   };
   const exportPdf = () => {
     const w = window.open('', '_blank', 'width=1100,height=800');
@@ -1706,8 +1728,8 @@ export const AuditLogsPage: React.FC = () => {
             <Input label="To" type="date" value={toF} onChange={e=>setToF(e.target.value)} style={{ marginBottom:0 }}/>
           </div>
           <div style={{ display:'flex',gap:8,marginTop:12,alignItems:'center',flexWrap:'wrap' }}>
-            <Btn size="sm" variant="secondary" onClick={exportPdf}>⬇ Export PDF</Btn>
-            <Btn size="sm" variant="secondary" onClick={exportCsv}>⬇ Export Excel (CSV)</Btn>
+            <Btn size="sm" variant="secondary" onClick={exportPdf}>📄 Download PDF</Btn>
+            <Btn size="sm" variant="secondary" onClick={exportExcel}>📊 Download Excel</Btn>
             <span style={{ fontSize:12,color:T.textMuted }}>{filtered.length} record(s)</span>
           </div>
         </div>

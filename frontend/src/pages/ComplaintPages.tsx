@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { formatDateTime } from '../utils/helpers';
+import { downloadXlsx } from '../utils/xlsx';
 import { Card, Btn, Input, Sel, Modal, Skeleton } from '../components/UI';
 import { riskAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
-import { exportComplaintPdf, exportRiskPdf } from './RiskPages';
+import { exportComplaintPdf, exportComplaintXlsx, exportRiskPdf, exportRiskXlsx } from './RiskPages';
 import type { User, Complaint, ComplaintList, ComplaintStatus } from '../types';
 
 const STATUS_META: Record<string, { color: string; bg: string }> = {
@@ -66,12 +67,18 @@ const CaseDetail: React.FC<{ id: number; user: User; onClose: () => void; onChan
     try { const p = await riskAPI.member(c!.memberId); exportRiskPdf(p); }
     catch { showToast('Risk report unavailable', 'error'); }
   };
-  const complaintPdf = () => c && exportComplaintPdf({
-    caseId: c.caseId, memberId: c.memberId, memberName: c.memberName, merchantName: c.merchantName,
-    bank: { accountHolder: c.accountHolder || null, accountNumber: c.accountNumber || null, bankName: c.bankName || null, branch: c.branch || null, ifsc: c.ifsc || null, upiId: c.upiId || null },
-    description: c.description || '', documents: c.documents || [],
-    status: c.status, priority: c.priority, riskLevel: c.riskLevel, timeline: c.timeline,
+  const riskReportExcel = async () => {
+    try { const p = await riskAPI.member(c!.memberId); exportRiskXlsx(p); }
+    catch { showToast('Risk report unavailable', 'error'); }
+  };
+  const complaintArgs = () => ({
+    caseId: c!.caseId, memberId: c!.memberId, memberName: c!.memberName, merchantName: c!.merchantName,
+    bank: { accountHolder: c!.accountHolder || null, accountNumber: c!.accountNumber || null, bankName: c!.bankName || null, branch: c!.branch || null, ifsc: c!.ifsc || null, upiId: c!.upiId || null },
+    description: c!.description || '', documents: c!.documents || [],
+    status: c!.status, priority: c!.priority, riskLevel: c!.riskLevel, timeline: c!.timeline,
   });
+  const complaintPdf = () => c && exportComplaintPdf(complaintArgs());
+  const complaintExcel = () => c && exportComplaintXlsx(complaintArgs());
 
   const sec: React.CSSProperties = { margin: '16px 0 8px', fontSize: 12.5, fontWeight: 800, color: T.blue, textTransform: 'uppercase', letterSpacing: '0.04em' };
   const kv = (k: string, v: React.ReactNode) => (
@@ -149,7 +156,9 @@ const CaseDetail: React.FC<{ id: number; user: User; onClose: () => void; onChan
               <p style={{ fontSize: 12.5, color: T.textMain, whiteSpace: 'pre-wrap', margin: 0 }}>{c.description || '—'}</p>
               <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
                 <Btn size="sm" variant="secondary" onClick={complaintPdf}>📄 Complaint PDF</Btn>
+                <Btn size="sm" variant="secondary" onClick={complaintExcel}>📊 Complaint Excel</Btn>
                 <Btn size="sm" variant="secondary" onClick={riskReport}>🛡️ Risk Report PDF</Btn>
+                <Btn size="sm" variant="secondary" onClick={riskReportExcel}>📊 Risk Report Excel</Btn>
               </div>
             </div>
           </div>
@@ -216,6 +225,26 @@ export const ComplaintManagementPage: React.FC<{ user: User }> = ({ user }) => {
   (data?.complaints || []).forEach(c => { counts[c.status] = (counts[c.status] || 0) + 1; });
   const total = data?.complaints.length || 0;
   const criticalCount = (data?.complaints || []).filter(c => c.priority === 'CRITICAL').length;
+
+  const exportComplaintsExcel = () => {
+    const rows = data?.complaints || [];
+    downloadXlsx(`clari5pay-complaints-${new Date().toISOString().slice(0, 10)}.xlsx`, [{
+      name: 'Complaints',
+      columns: [
+        { header: 'Case ID', get: (c: any) => c.caseId },
+        { header: 'Membership Number', get: (c: any) => c.memberId || '' },
+        { header: 'Member Name', get: (c: any) => c.memberName || '' },
+        { header: 'Merchant Name', get: (c: any) => c.merchantName || '' },
+        { header: 'Risk Level', get: (c: any) => c.riskLevel || '' },
+        { header: 'Priority', get: (c: any) => c.priority || '' },
+        { header: 'Status', get: (c: any) => pretty(c.status || '') },
+        { header: 'Complaint Date', get: (c: any) => c.createdAt ? formatDateTime(c.createdAt) : '', width: 20 },
+        { header: 'Days Open', get: (c: any) => slaInfo(c).days },
+        { header: 'Assigned To', get: (c: any) => c.assignedTo || '' },
+      ],
+      rows,
+    }]);
+  };
   const metrics: Array<[string, number, string]> = [
     ['Total Complaints', total, T.blue],
     ['Open', counts.OPEN || 0, STATUS_META.OPEN.color],
@@ -258,6 +287,10 @@ export const ComplaintManagementPage: React.FC<{ user: User }> = ({ user }) => {
             options={[{ value: '', label: 'All Statuses' }, ...(data?.statuses || []).map(s => ({ value: s, label: pretty(s) }))]} />
           <Sel label="Priority" value={prioF} onChange={e => setPrioF(e.target.value)} style={{ marginBottom: 0 }}
             options={[{ value: '', label: 'All Priorities' }, ...(data?.priorities || []).map(s => ({ value: s, label: pretty(s) }))]} />
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Btn size="sm" variant="secondary" disabled={!total} onClick={exportComplaintsExcel}>📊 Download Excel</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted }}>{total} complaint(s)</span>
         </div>
       </Card>
 

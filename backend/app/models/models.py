@@ -150,6 +150,8 @@ class Transaction(Base):
     admin_utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)       # agent's payment UTR (withdrawal/settlement payout)
     payout_mode: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)     # withdrawal: BANK / UPI / CASH / CRYPTO
     payout_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # withdrawal: mode-specific fields as JSON
+    # Deposit: type-specific fields as JSON (CASH → village/city/mobile; CRYPTO → walletAddress/network/txHash).
+    deposit_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 

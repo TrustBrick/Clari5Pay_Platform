@@ -109,6 +109,7 @@ export interface Transaction {
   adminUtr?: string | null;
   payoutMode?: string | null;
   payoutDetails?: Record<string, string> | null;
+  depositDetails?: Record<string, string> | null;
   qrExpiresAt?: string | null;
   utr?: string | null;
   notes?: string | null;
@@ -397,6 +398,7 @@ export interface ReportRow {
   memberId: string | null;
   member: string;
   type: 'deposit' | 'withdrawal' | 'settlement' | null;
+  depositType?: string | null;
   amount: number;
   status: string;
   date: string;

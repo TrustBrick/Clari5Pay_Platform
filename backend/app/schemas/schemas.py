@@ -154,6 +154,8 @@ class DepositCreate(BaseModel):
     segment: str = "A"
     profile: str = "NEW"
     senderUpiId: Optional[str] = None   # merchant's own UPI the payment is sent from (UPI deposits)
+    # Type-specific fields for CASH (village/city/mobile) and CRYPTO (walletAddress/network/txHash).
+    depositDetails: Optional[dict] = None
     proof: Optional[str] = None
     proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
     # Selected/added merchant bank account sent to admin with the request

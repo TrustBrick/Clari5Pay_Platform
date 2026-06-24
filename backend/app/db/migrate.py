@@ -30,6 +30,8 @@ _NEW_COLUMNS = [
     ("transactions", "admin_utr", "VARCHAR(64)"),
     ("transactions", "payout_mode", "VARCHAR(24)"),
     ("transactions", "payout_details", "TEXT"),
+    # Deposit type-specific fields (CASH / CRYPTO) stored as JSON.
+    ("transactions", "deposit_details", "TEXT"),
     ("login_otps", "purpose", "VARCHAR(16) DEFAULT 'login' NOT NULL"),
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "upi_id", "VARCHAR(64)"),

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDateTime } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDateTime } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
@@ -266,6 +266,15 @@ export const MerchantSlipModal: React.FC<{
           </div>
         </div>
       )}
+      {tx.type.startsWith('DEPOSIT') && (tx.depositType || tx.depositDetails) && (
+        <div style={{ marginBottom:16 }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Request Details</p>
+          <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
+            {tx.depositType && <SlipRow k="Deposit Type" v={depositTypeLabel(tx.depositType)} />}
+            {tx.depositDetails && Object.entries(tx.depositDetails).map(([k,v]) => v ? <SlipRow key={k} k={depositDetailLabel(k)} v={String(v)} /> : null)}
+          </div>
+        </div>
+      )}
       <div style={{ marginBottom:16 }}>
         <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>{adminLabel}</p>
         <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
@@ -447,8 +456,15 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const [riskAnalysis, setRiskAnalysis] = useState(false);
   const [loading, setLoading] = useState(false);
   const [senderUpi, setSenderUpi] = useState('');
+  // Cash / Crypto member-supplied details + proof (no bank account on these types).
+  const [details, setDetails] = useState<Record<string,string>>({ network:'TRC20' });
+  const [proofs, setProofs] = useState<string[]>([]);
   const isUpi = form.depositType === 'UPI';
+  const isCash = form.depositType === 'CASH';
+  const isCrypto = form.depositType === 'CRYPTO';
+  const isBankLike = !isCash && !isCrypto;   // UPI / BANK / IMPS / NEFT / RTGS collect a bank account
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  const setDetail = (k: string, v: string) => setDetails(d => ({ ...d, [k]: v }));
   // Membership IDs are uppercase letters + digits only (auto-converted, lowercase blocked).
   const setMemberId = (raw: string) => setForm(f => ({ ...f, memberId: raw.toUpperCase().replace(/[^A-Z0-9]/g, '') }));
 
@@ -472,14 +488,22 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
     if(parseFloat(form.amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
     if(isUpi && !senderUpi.includes('@')){ showToast('Enter a valid Sender UPI ID (name@bank)','error'); return; }
-    if(!bank.accountHolder||!bank.accountNumber){ showToast('Select or add a bank account','error'); return; }
+    if(isBankLike && (!bank.accountHolder||!bank.accountNumber)){ showToast('Select or add a bank account','error'); return; }
+    if(isCash && (!details.village||!details.city||!details.mobile)){ showToast('Enter Village, City and Mobile Number','error'); return; }
+    if(isCash && !proofs.length){ showToast('Upload a proof / image of the cash deposit','error'); return; }
+    if(isCrypto && (!details.walletAddress||!details.network||!details.txHash)){ showToast('Enter Wallet Address, Network and Transaction Hash','error'); return; }
+    if(isCrypto && !proofs.length){ showToast('Upload a proof / screenshot of the transaction','error'); return; }
     setLoading(true);
     try {
       await transactionAPI.createDeposit({
         ...form, amount: parseFloat(form.amount), riskAnalysis,
-        accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
-        saveBankAccount: saveNew,
+        ...(isBankLike ? {
+          accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
+          saveBankAccount: saveNew,
+        } : {}),
         ...(isUpi ? { senderUpiId: senderUpi.trim() } : {}),
+        ...(isCash ? { depositDetails: { village: details.village, city: details.city, mobile: details.mobile }, proofs } : {}),
+        ...(isCrypto ? { depositDetails: { walletAddress: details.walletAddress, network: details.network, txHash: details.txHash }, proofs } : {}),
       });
       fireConfetti();
       showToast('Deposit request submitted — awaiting agent review');
@@ -494,21 +518,45 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   return (
     <div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={['UPI','IMPS','NEFT','RTGS','CASH'].map(v=>({value:v,label:v}))} required/>
+        <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={DEPOSIT_TYPE_OPTIONS} required/>
         <Input label="Amount (INR)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Min 1" required/>
         <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" required/>
         <Input label="Membership ID" value={form.memberId} onChange={e=>setMemberId(e.target.value)} placeholder="e.g. MBR20240001" required/>
-        <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
-        <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
+        {isBankLike && <>
+          <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
+          <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
+        </>}
       </div>
-      {isUpi
+      {isCash && (
+        <div style={{ background:T.canvas,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Cash Deposit Details</p>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+            <Input label="Village" value={details.village||''} onChange={e=>setDetail('village',e.target.value)} placeholder="Village" required/>
+            <Input label="City" value={details.city||''} onChange={e=>setDetail('city',e.target.value)} placeholder="City" required/>
+            <Input label="Mobile Number" value={details.mobile||''} onChange={e=>setDetail('mobile',e.target.value.replace(/[^0-9+]/g,''))} placeholder="Mobile number" required/>
+          </div>
+          <MultiProofUpload values={proofs} onChange={setProofs} label="Proof / Image Upload" required />
+        </div>
+      )}
+      {isCrypto && (
+        <div style={{ background:T.canvas,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Crypto (USDT) Details</p>
+          <Input label="Wallet Address" value={details.walletAddress||''} onChange={e=>setDetail('walletAddress',e.target.value.trim())} placeholder="USDT wallet address" required/>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+            <Input label="Network" value={details.network||''} onChange={e=>setDetail('network',e.target.value)} placeholder="TRC20" required/>
+            <Input label="Transaction Hash ID" value={details.txHash||''} onChange={e=>setDetail('txHash',e.target.value.trim())} placeholder="On-chain transaction hash" required/>
+          </div>
+          <MultiProofUpload values={proofs} onChange={setProofs} label="Proof / Screenshot Upload" required />
+        </div>
+      )}
+      {isBankLike && (isUpi
         ? <div style={{ background:T.canvas,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
             <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Sender Account Details</p>
             <Input label="UPI ID" value={senderUpi} onChange={e=>setSenderUpi(e.target.value)} placeholder="e.g. satish@ybl" required
               hint="The UPI the payment is sent from — saved to this Membership ID for future withdrawals" />
             <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
           </div>
-        : <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>}
+        : <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>)}
       <div style={{ marginBottom:14 }}>
         <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Agent (optional)</label>
         <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder="Any message for the agent reviewing this request"
