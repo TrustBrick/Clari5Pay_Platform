@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
 import { timeAgo, merchantRoleLabel } from '../utils/helpers';
+import ThemeToggle from './ThemeToggle';
 import { notificationAPI } from '../services/api';
 import type { Notification, User } from '../types';
 
@@ -78,6 +79,7 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick }) => {
       </div>
 
       <div style={{ display:'flex',alignItems:'center',gap:12 }}>
+        <ThemeToggle compact />
         <div style={{ position:'relative' }} ref={boxRef}>
           <div
             onClick={toggleOpen}

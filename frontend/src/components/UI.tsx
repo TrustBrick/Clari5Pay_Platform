@@ -32,9 +32,11 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
   // The shield icon is the brand image (public/logo-mark.png, transparent); the wordmark +
   // tagline stay as text so their colours adapt on dark backgrounds (navy "pay"/tagline → light).
   // On dark backgrounds the navy "pay" + grey tagline are invisible — switch them to light.
+  // Applied via the `style` prop (CSS), so var() resolves and flips with the theme.
+  // `dark` = rendered on a dark brand splash (login/chooser/sidebar) → force light ink.
   const clari = dark ? '#4d9fff' : '#0052cc';
-  const pay = dark ? '#ffffff' : '#0a2540';
-  const tag = dark ? 'rgba(255,255,255,0.6)' : '#4a5568';
+  const pay = dark ? '#ffffff' : 'var(--c5-text-main)';
+  const tag = dark ? 'rgba(255,255,255,0.6)' : 'var(--c5-text-muted)';
   // Inline styles (not shared CSS classes) so multiple logos on one page don't clash.
   const F = "'Montserrat','Segoe UI',Arial,sans-serif";
   const sClari = { fontFamily: F, fontWeight: 700, fill: clari, fontSize: '56px', letterSpacing: '-1px' } as const;

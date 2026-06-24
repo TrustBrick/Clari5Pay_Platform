@@ -6,6 +6,7 @@ import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../co
 import { transactionAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
+import { useTheme } from '../context/ThemeContext';
 import {
   ResponsiveContainer, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip as RcTooltip,
@@ -303,8 +304,13 @@ const IntelTab: React.FC<{ data: ReportData }> = ({ data }) => {
   );
 };
 
+// Concrete chart series colors — recharts renders these as SVG attributes (var() won't
+// resolve there), and status colors stay the same in light/dark (req 6).
+const SERIES = { success: '#059669', danger: '#dc2626', warning: '#d97706', blue: '#0052cc' };
+
 // ── Trends tab ──
 const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
+  const { chart } = useTheme();
   const t = data.trends;
   const merged = t.deposits.map((d, idx) => ({
     date: d.date.slice(5),
@@ -313,7 +319,8 @@ const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
     Settlements: t.settlements[idx]?.amount ?? 0,
   }));
   const growth = t.membershipGrowth.map(g => ({ date: g.date.slice(5), New: g.count }));
-  const axis = { fontSize: 11, fill: T.textMuted };
+  const axis = { fontSize: 11, fill: chart.axis };
+  const tip = { background: chart.tooltipBg, border: `1px solid ${chart.tooltipBorder}`, borderRadius: 8, color: chart.tooltipText };
 
   const chartCard = (title: string, node: React.ReactNode) => (
     <Card className="c5-hover-lift" style={{ padding: 18 }}>
@@ -328,9 +335,9 @@ const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
         <defs><linearGradient id={`g-${key}`} x1="0" y1="0" x2="0" y2="1">
           <stop offset="5%" stopColor={color} stopOpacity={0.4} /><stop offset="95%" stopColor={color} stopOpacity={0} />
         </linearGradient></defs>
-        <CartesianGrid strokeDasharray="3 3" stroke={T.borderLight} />
+        <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
         <XAxis dataKey="date" tick={axis} interval={4} /><YAxis tick={axis} width={54} />
-        <RcTooltip formatter={(v) => fmt(Number(v))} />
+        <RcTooltip formatter={(v) => fmt(Number(v))} contentStyle={tip} labelStyle={{ color: chart.tooltipText }} itemStyle={{ color: chart.tooltipText }} cursor={{ fill: chart.grid, opacity: 0.3 }} />
         <Area type="monotone" dataKey={key} stroke={color} strokeWidth={2} fill={`url(#g-${key})`} />
       </AreaChart>
     </ResponsiveContainer>
@@ -338,15 +345,15 @@ const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
 
   return (
     <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 14 }}>
-      {chartCard('Deposits Trend (30 days)', area('Deposits', T.success))}
-      {chartCard('Withdrawals Trend (30 days)', area('Withdrawals', T.danger))}
-      {chartCard('Settlements Trend (30 days)', area('Settlements', T.warning))}
+      {chartCard('Deposits Trend (30 days)', area('Deposits', SERIES.success))}
+      {chartCard('Withdrawals Trend (30 days)', area('Withdrawals', SERIES.danger))}
+      {chartCard('Settlements Trend (30 days)', area('Settlements', SERIES.warning))}
       {chartCard('Membership Growth (new active members/day)', (
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={growth} margin={{ top: 6, right: 10, left: -10, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={T.borderLight} />
+            <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
             <XAxis dataKey="date" tick={axis} interval={4} /><YAxis tick={axis} width={32} allowDecimals={false} />
-            <RcTooltip /><Bar dataKey="New" fill={T.blue} radius={[4, 4, 0, 0]} />
+            <RcTooltip contentStyle={tip} labelStyle={{ color: chart.tooltipText }} itemStyle={{ color: chart.tooltipText }} cursor={{ fill: chart.grid, opacity: 0.3 }} /><Bar dataKey="New" fill={SERIES.blue} radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       ))}

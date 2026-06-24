@@ -3,12 +3,15 @@ import {
   login, getUser, clearAuth, fetchConversations, fetchMessages, fetchMerchant,
   sendMessage, wsUrl, type Conversation, type Message, type MerchantDetail, type SupportUser,
 } from './api';
+import { ThemeToggle } from './theme';
 
+// Colors are CSS variables (defined in theme.css for light + dark); flipping data-theme
+// on <html> re-themes the app. `dark` stays dark in both (login + header brand bg).
 const T = {
-  blue: '#0052cc', dark: '#0a2540', surface: '#ffffff', canvas: '#f0f4fb',
-  textMain: '#0a2540', textMuted: '#4a5568', textLight: '#9ca3af', border: '#e2e8f0',
-  borderLight: '#f1f5f9', success: '#059669', successBg: 'rgba(5,150,105,0.1)',
-  danger: '#dc2626', infoBg: 'rgba(0,82,204,0.1)', grad: 'linear-gradient(135deg,#0052cc,#00a3ff)',
+  blue: 'var(--c5-blue)', dark: 'var(--c5-dark)', surface: 'var(--c5-surface)', canvas: 'var(--c5-canvas)',
+  textMain: 'var(--c5-text-main)', textMuted: 'var(--c5-text-muted)', textLight: 'var(--c5-text-light)', border: 'var(--c5-border)',
+  borderLight: 'var(--c5-border-light)', success: 'var(--c5-success)', successBg: 'var(--c5-success-bg)',
+  danger: 'var(--c5-danger)', infoBg: 'var(--c5-info-bg)', grad: 'linear-gradient(135deg,#0052cc,#00a3ff)',
 };
 
 // Reactively track narrow viewports so the layout can collapse to one pane on phones.
@@ -37,7 +40,8 @@ const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => 
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: T.dark, fontFamily: "'Inter','Segoe UI',sans-serif", padding: 16, boxSizing: 'border-box' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: T.dark, fontFamily: "'Inter','Segoe UI',sans-serif", padding: 16, boxSizing: 'border-box', position: 'relative' }}>
+      <div style={{ position: 'absolute', top: 18, right: 18 }}><ThemeToggle /></div>
       <div style={{ background: T.surface, borderRadius: 20, padding: 'clamp(24px, 5vw, 40px)', width: 'min(380px, 100%)', boxSizing: 'border-box', boxShadow: '0 24px 80px rgba(0,0,0,0.35)' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
           <img src="/logo-mark.png" alt="Clari5Pay" style={{ height: 64, width: 'auto', display: 'block', margin: '0 auto 12px' }} />
@@ -154,6 +158,7 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 12, flexShrink: 0 }}>
+          <ThemeToggle />
           {!isMobile && <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>{user.name}</span>}
           {isMobile && activeId != null && merchant && (
             <button onClick={() => setShowDetails(true)} aria-label="Merchant details"

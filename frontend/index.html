@@ -7,6 +7,17 @@
     <title>Clari5Pay — Secure Payments. Trusted Always.</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <!-- Apply the saved theme before first paint to avoid a light flash on dark-mode loads. -->
+    <script>
+      (function () {
+        try {
+          var m = localStorage.getItem('c5-theme') || 'system';
+          var dark = m === 'dark' || (m === 'system' && window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

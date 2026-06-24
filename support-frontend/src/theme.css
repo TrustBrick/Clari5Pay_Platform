@@ -1,0 +1,45 @@
+/* Theme tokens for the Support portal — mirrors the main app (light = :root, dark = [data-theme="dark"]).
+   App.tsx's T object maps to these vars, so flipping data-theme on <html> re-themes the app. */
+:root {
+  --c5-blue: #0052cc;
+  --c5-dark: #0a2540;
+  --c5-surface: #ffffff;
+  --c5-canvas: #f0f4fb;
+  --c5-text-main: #0a2540;
+  --c5-text-muted: #4a5568;
+  --c5-text-light: #9ca3af;
+  --c5-border: #e2e8f0;
+  --c5-border-light: #f1f5f9;
+  --c5-success: #059669;
+  --c5-success-bg: rgba(5, 150, 105, 0.1);
+  --c5-danger: #dc2626;
+  --c5-info-bg: rgba(0, 82, 204, 0.1);
+  --c5-scrollbar: rgba(0, 0, 0, 0.15);
+}
+
+:root[data-theme="dark"] {
+  --c5-surface: #161d29;
+  --c5-canvas: #0e141d;
+  --c5-text-main: #e6edf6;
+  --c5-text-muted: #9fb0c5;
+  --c5-text-light: #6b7a8d;
+  --c5-border: #283342;
+  --c5-border-light: #1d2632;
+  --c5-scrollbar: rgba(255, 255, 255, 0.18);
+  color-scheme: dark;
+}
+
+html[data-theme-anim] *,
+html[data-theme-anim] *::before,
+html[data-theme-anim] *::after {
+  transition: background-color 0.28s ease, border-color 0.28s ease, color 0.22s ease !important;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--c5-canvas); color: var(--c5-text-main); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: var(--c5-scrollbar); border-radius: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.001ms !important; }
+}

@@ -2,6 +2,65 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Theme tokens (light = :root, dark = [data-theme="dark"]) ───────────────
+   Every T.* token in utils/theme.ts maps to one of these CSS variables, so
+   flipping data-theme on <html> re-themes the whole app with no React re-render.
+   Brand + status/risk colors are intentionally identical in both themes. */
+:root {
+  --c5-blue: #0052cc;
+  --c5-green: #26d00c;
+  --c5-dark: #0a2540;
+  --c5-cyan: #00a3ff;
+  --c5-blue-dark: #003d99;
+  --c5-green-dark: #1aaa09;
+  --c5-surface: #ffffff;
+  --c5-canvas: #f0f4fb;
+  --c5-sidebar: #0a2540;
+  --c5-sidebar-hover: #112d52;
+  --c5-sidebar-active: rgba(0, 82, 204, 0.18);
+  --c5-text-main: #0a2540;
+  --c5-text-muted: #4a5568;
+  --c5-text-light: #9ca3af;
+  --c5-border: #e2e8f0;
+  --c5-border-light: #f1f5f9;
+  --c5-success: #059669;
+  --c5-success-bg: rgba(5, 150, 105, 0.1);
+  --c5-warning: #d97706;
+  --c5-warning-bg: rgba(217, 119, 6, 0.1);
+  --c5-info: #0052cc;
+  --c5-info-bg: rgba(0, 82, 204, 0.1);
+  --c5-danger: #dc2626;
+  --c5-danger-bg: rgba(220, 38, 38, 0.1);
+  --c5-skel: #e9eef6;
+  --c5-scrollbar: rgba(0, 0, 0, 0.15);
+}
+
+:root[data-theme="dark"] {
+  --c5-surface: #161d29;
+  --c5-canvas: #0e141d;
+  --c5-sidebar: #0b1422;
+  --c5-sidebar-hover: #16273f;
+  --c5-sidebar-active: rgba(0, 82, 204, 0.32);
+  --c5-text-main: #e6edf6;
+  --c5-text-muted: #9fb0c5;
+  --c5-text-light: #6b7a8d;
+  --c5-border: #283342;
+  --c5-border-light: #1d2632;
+  --c5-skel: #1d2632;
+  --c5-scrollbar: rgba(255, 255, 255, 0.18);
+  /* --c5-dark (Btn-dark / login panel bg) stays dark; brand + status/risk colors unchanged. */
+  color-scheme: dark;
+}
+
+/* Smooth fade only during an actual theme switch (added/removed by the controller),
+   so normal hovers/interactions aren't affected. Honours prefers-reduced-motion below. */
+html[data-theme-anim] *,
+html[data-theme-anim] *::before,
+html[data-theme-anim] *::after {
+  transition: background-color 0.28s ease, border-color 0.28s ease,
+    color 0.22s ease, fill 0.28s ease, stroke 0.28s ease, box-shadow 0.28s ease !important;
+}
+
 @layer base {
   * {
     margin: 0;
@@ -11,8 +70,8 @@
 
   body {
     font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-    background: #f0f4fb;
-    color: #0a2540;
+    background: var(--c5-canvas);
+    color: var(--c5-text-main);
   }
 
   ::-webkit-scrollbar {
@@ -21,7 +80,7 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.15);
+    background: var(--c5-scrollbar);
     border-radius: 3px;
   }
 
@@ -127,7 +186,7 @@
 .c5-skel {
   position: relative;
   overflow: hidden;
-  background: #e9eef6;
+  background: var(--c5-skel);
   border-radius: 6px;
 }
 .c5-skel::after {
@@ -135,7 +194,7 @@
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.65), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
   animation: c5-shimmer 1.2s infinite;
 }
 

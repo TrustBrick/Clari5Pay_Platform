@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { Logo, Btn, Input } from '../components/UI';
+import ThemeToggle from '../components/ThemeToggle';
 import { PORTAL, PORTAL_NAME } from '../utils/portal';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -175,6 +176,9 @@ const LoginPage: React.FC = () => {
         .login-left{display:flex;}
         .login-logo-mobile{display:none;}
       `}</style>
+
+      {/* Theme toggle (above the decorative orbs) */}
+      <div style={{ position:'absolute',top:18,right:18,zIndex:10 }}><ThemeToggle /></div>
 
       {/* Animated BG */}
       <div style={{ position:'absolute',inset:0,overflow:'hidden',pointerEvents:'none' }}>
