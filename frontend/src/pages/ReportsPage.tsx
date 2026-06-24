@@ -308,12 +308,28 @@ const SERIES = { success: '#059669', danger: '#dc2626', warning: '#d97706', blue
 const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
   const { chart } = useTheme();
   const t = data.trends;
-  const merged = t.deposits.map((d, idx) => ({
-    date: d.date.slice(5),
-    Deposits: d.amount,
+  const [gran, setGran] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+  const fullDaily = t.deposits.map((d, idx) => ({
+    date: d.date, Deposits: d.amount,
     Withdrawals: t.withdrawals[idx]?.amount ?? 0,
     Settlements: t.settlements[idx]?.amount ?? 0,
   }));
+  // Aggregate the daily series into the chosen granularity (sum per week/month).
+  const merged = (() => {
+    if (gran === 'daily') return fullDaily.map(d => ({ ...d, date: d.date.slice(5) }));
+    const b: Record<string, { date: string; Deposits: number; Withdrawals: number; Settlements: number }> = {};
+    for (const d of fullDaily) {
+      const dt = new Date(d.date + 'T00:00:00Z');
+      let key: string, label: string;
+      if (gran === 'monthly') { key = d.date.slice(0, 7); label = dt.toLocaleDateString('en-IN', { month: 'short', year: '2-digit', timeZone: 'UTC' }); }
+      else { const mon = new Date(dt); mon.setUTCDate(dt.getUTCDate() - ((dt.getUTCDay() + 6) % 7)); key = mon.toISOString().slice(0, 10); label = key.slice(5); }
+      if (!b[key]) b[key] = { date: label, Deposits: 0, Withdrawals: 0, Settlements: 0 };
+      b[key].Deposits += d.Deposits; b[key].Withdrawals += d.Withdrawals; b[key].Settlements += d.Settlements;
+    }
+    return Object.keys(b).sort().map(k => b[k]);
+  })();
+  const tick = gran === 'daily' ? 4 : 0;
+  const granLabel = gran === 'daily' ? 'Daily' : gran === 'weekly' ? 'Weekly' : 'Monthly';
   const growth = t.membershipGrowth.map(g => ({ date: g.date.slice(5), New: g.count }));
   const axis = { fontSize: 11, fill: chart.axis };
   const tip = { background: chart.tooltipBg, border: `1px solid ${chart.tooltipBorder}`, borderRadius: 8, color: chart.tooltipText };
@@ -332,7 +348,7 @@ const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
           <stop offset="5%" stopColor={color} stopOpacity={0.4} /><stop offset="95%" stopColor={color} stopOpacity={0} />
         </linearGradient></defs>
         <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
-        <XAxis dataKey="date" tick={axis} interval={4} /><YAxis tick={axis} width={54} />
+        <XAxis dataKey="date" tick={axis} interval={tick} /><YAxis tick={axis} width={54} />
         <RcTooltip formatter={(v) => fmt(Number(v))} contentStyle={tip} labelStyle={{ color: chart.tooltipText }} itemStyle={{ color: chart.tooltipText }} cursor={{ fill: chart.grid, opacity: 0.3 }} />
         <Area type="monotone" dataKey={key} stroke={color} strokeWidth={2} fill={`url(#g-${key})`} />
       </AreaChart>
@@ -340,10 +356,16 @@ const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
   );
 
   return (
-    <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 14 }}>
-      {chartCard('Deposits Trend (30 days)', area('Deposits', SERIES.success))}
-      {chartCard('Withdrawals Trend (30 days)', area('Withdrawals', SERIES.danger))}
-      {chartCard('Settlements Trend (30 days)', area('Settlements', SERIES.warning))}
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        {(['daily', 'weekly', 'monthly'] as const).map(g => (
+          <button key={g} className="c5-btn" onClick={() => setGran(g)} style={pill(gran === g)}>{g[0].toUpperCase() + g.slice(1)}</button>
+        ))}
+      </div>
+      <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 14 }}>
+      {chartCard(`Deposit Trend (${granLabel})`, area('Deposits', SERIES.success))}
+      {chartCard(`Withdrawal Trend (${granLabel})`, area('Withdrawals', SERIES.danger))}
+      {chartCard(`Settlement Trend (${granLabel})`, area('Settlements', SERIES.warning))}
       {chartCard('Membership Growth (new active members/day)', (
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={growth} margin={{ top: 6, right: 10, left: -10, bottom: 0 }}>
@@ -353,6 +375,7 @@ const TrendsTab: React.FC<{ data: ReportData }> = ({ data }) => {
           </BarChart>
         </ResponsiveContainer>
       ))}
+      </div>
     </div>
   );
 };
@@ -449,63 +472,253 @@ const MemberProfileModal: React.FC<{ data: ReportData; memberId: string; onClose
 };
 
 // ── Main page ──
+// ── Advanced-filter model + matching ───────────────────────────────────────────
+const DATE_PRESETS: [string, string][] = [
+  ['all', 'All Time'], ['today', 'Today'], ['yesterday', 'Yesterday'],
+  ['30m', 'Last 30 Minutes'], ['1h', 'Last 1 Hour'], ['24h', 'Last 24 Hours'],
+  ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days'], ['custom', 'Custom Range'],
+];
+const PAYMENT_METHODS = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'CASH', 'CRYPTO'];
+
+interface RFilters {
+  ref: string; memberId: string; memberName: string; combined: string; agentCode: string;
+  approvedBy: string; processedBy: string; type: string; status: string; method: string;
+  riskLevel: string; minA: string; maxA: string; exactA: string; datePreset: string; from: string; to: string;
+}
+const EMPTY_FILTERS: RFilters = {
+  ref: '', memberId: '', memberName: '', combined: '', agentCode: '', approvedBy: '', processedBy: '',
+  type: '', status: '', method: '', riskLevel: '', minA: '', maxA: '', exactA: '', datePreset: 'all', from: '', to: '',
+};
+
+const rowTs = (r: ReportRow) => r.createdAt ? new Date(r.createdAt).getTime() : new Date(`${r.date}T${r.time || '00:00:00'}Z`).getTime();
+const inDateWindow = (r: ReportRow, preset: string, from: string, to: string): boolean => {
+  if (preset === 'all') return true;
+  if (preset === 'custom') return (!from || (r.date || '') >= from) && (!to || (r.date || '') <= to);
+  const ts = rowTs(r); const now = Date.now(); const day = 86400000;
+  if (preset === '30m') return ts >= now - 30 * 60000;
+  if (preset === '1h') return ts >= now - 3600000;
+  if (preset === '24h') return ts >= now - day;
+  if (preset === '7d') return ts >= now - 7 * day;
+  if (preset === '30d') return ts >= now - 30 * day;
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  if (preset === 'today') return ts >= start.getTime();
+  if (preset === 'yesterday') return ts >= start.getTime() - day && ts < start.getTime();
+  return true;
+};
+const matchesFilters = (r: ReportRow, f: RFilters): boolean => {
+  const inc = (v: string | null | undefined, q: string) => !q || (v || '').toLowerCase().includes(q.toLowerCase());
+  return inc(r.ref, f.ref) && inc(r.memberId, f.memberId) && inc(r.member, f.memberName)
+    && (!f.combined || memberLabel(r.memberId, r.member).toLowerCase().includes(f.combined.toLowerCase()))
+    && inc(r.agentCode, f.agentCode) && inc(r.approvedBy, f.approvedBy) && inc(r.processedBy, f.processedBy)
+    && (!f.type || r.type === f.type) && (!f.status || r.status === f.status)
+    && (!f.method || (r.paymentMethod || '').toUpperCase() === f.method) && (!f.riskLevel || (r.riskLevel || '') === f.riskLevel)
+    && (!f.minA || r.amount >= Number(f.minA)) && (!f.maxA || r.amount <= Number(f.maxA))
+    && (!f.exactA || r.amount === Number(f.exactA))
+    && inDateWindow(r, f.datePreset, f.from, f.to);
+};
+const totalsOf = (rows: ReportRow[]) => {
+  const sum = (k: string) => rows.filter(r => r.type === k && r.completed).reduce((a, r) => a + r.amount, 0);
+  return { deposits: sum('deposit'), withdrawals: sum('withdrawal'), settlements: sum('settlement') };
+};
+
+// ── Filter-aware report export (Download PDF / Print) — includes the filtered table ──
+function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName: string, generatedBy: string, rangeLabel: string, autoPrint = true) {
+  const w = window.open('', '_blank', 'width=1180,height=820');
+  if (!w) { alert('Please allow pop-ups to export the report.'); return; }
+  const c = data.cards; const now = new Date().toLocaleString('en-IN'); const tot = totalsOf(rows);
+  const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
+  const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
+  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(memberLabel(r.memberId, r.member))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy)}</td><td>${esc(r.processedBy)}</td></tr>`).join('');
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay Report</title><style>
+    @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
+    .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0052cc;padding-bottom:10px}
+    .brand{font-size:22px;font-weight:800}.brand .b{color:#0052cc}.brand .g{color:#26d00c}.meta{margin-left:auto;text-align:right;font-size:11px;color:#4a5568;line-height:1.6}
+    h2{font-size:13px;margin:16px 0 8px;color:#0052cc}.kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+    .kpi{border:1px solid #e2e8f0;border-radius:8px;padding:7px 9px}.kl{font-size:8.5px;text-transform:uppercase;letter-spacing:.04em;color:#64748b}.kv{font-size:13px;font-weight:800;margin-top:2px}
+    table{width:100%;border-collapse:collapse;font-size:9.5px}th{background:#0a2540;color:#fff;text-align:left;padding:6px 7px;font-size:8.5px;text-transform:uppercase}
+    td{padding:5px 7px;border-bottom:1px solid #e2e8f0}tr.alt td{background:#f5f8ff}.amt{text-align:right;font-weight:700}.mono{font-family:'Courier New',monospace}.nw{white-space:nowrap}
+    tfoot td{font-weight:800;background:#eef4ff;border-top:2px solid #0052cc}footer{margin-top:14px;font-size:9px;color:#9ca3af;text-align:center}
+  </style></head><body>
+    <div class="head"><span class="brand"><span class="b">clari</span><span class="g">5</span>pay</span>
+      <div class="meta">Transaction Report — CONFIDENTIAL<br>${esc(businessName)}<br>Generated: ${esc(now)} · By ${esc(generatedBy)}<br>Range: ${esc(rangeLabel)} · ${rows.length} transaction(s)</div></div>
+    <h2>Summary</h2><div class="kpis">
+      ${kpi('Total Deposits', fmt(c.totalDepositAmount))}${kpi('Total Withdrawals', fmt(c.totalWithdrawalAmount))}${kpi('Total Settlements', fmt(c.totalSettlementAmount))}
+      ${kpi('Gross Amount', fmt(c.grossAmount))}${kpi('Commission', fmt(c.commissionAmount))}${kpi('Net Amount', fmt(c.netAmount))}${kpi('Available Balance', fmt(c.availableBalance))}</div>
+    <h2>Transactions (filtered)</h2>
+    <table><thead><tr><th>Reference</th><th>Membership - Member</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th><th>Processed By</th></tr></thead>
+      <tbody>${body || '<tr><td colspan="10" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>'}</tbody>
+      <tfoot><tr><td colspan="3">Footer Totals (filtered)</td><td class="amt">Dep ${esc(fmt(tot.deposits))}</td><td colspan="2">Wd ${esc(fmt(tot.withdrawals))}</td><td colspan="2">Set ${esc(fmt(tot.settlements))}</td><td colspan="2">Available ${esc(fmt(c.availableBalance))}</td></tr></tfoot>
+    </table>
+    <footer>Clari5Pay — confidential. Generated from live platform data, honouring the selected filters.</footer>
+  </body></html>`);
+  w.document.close(); w.focus();
+  if (autoPrint) setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
+}
+
 export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
   const [data, setData] = useState<ReportData | null>(null);
-  const [tab, setTab] = useState<RTab>('overview');
   const [profileId, setProfileId] = useState<string | null>(null);
+  const [f, setF] = useState<RFilters>(EMPTY_FILTERS);
+  const [genAt] = useState(() => new Date());
   const toast = useToast();
-
   const reload = () => transactionAPI.reports().then(setData).catch(() => {});
   useEffect(() => { reload(); }, []);
   usePoll(reload, 30000);
+  const set = (k: keyof RFilters, v: string) => setF(p => ({ ...p, [k]: v }));
 
   if (!data) return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
-        {[0, 1, 2, 3, 4, 5].map(i => <Skeleton key={i} w={120} h={36} style={{ borderRadius: 10 }} />)}
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 14 }}>
-        {[0, 1, 2, 3, 4, 5, 6, 7].map(i => (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 14 }}>
+        {[0, 1, 2, 3, 4, 5, 6].map(i => (
           <Card key={i} style={{ padding: 18 }}><Skeleton w={90} h={11} /><div style={{ height: 12 }} /><Skeleton w={120} h={24} /></Card>
         ))}
       </div>
     </div>
   );
 
-  const tabBtn = (k: RTab, label: string) => (
-    <button key={k} className="c5-btn" onClick={() => setTab(k)} style={{
-      padding: '9px 16px', borderRadius: 10, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700,
-      background: tab === k ? T.blue : T.canvas, color: tab === k ? '#fff' : T.textMuted, fontFamily: 'inherit',
-    }}>{label}</button>
+  const c = data.cards;
+  const statuses = Array.from(new Set(data.transactions.map(r => r.status)));
+  const filtered = data.transactions.filter(r => matchesFilters(r, f));
+  const tot = totalsOf(filtered);
+  const rangeLabel = f.datePreset === 'custom'
+    ? `${f.from || 'start'} → ${f.to || 'today'}`
+    : (DATE_PRESETS.find(d => d[0] === f.datePreset)?.[1] || 'All Time');
+
+  // 1 — Summary cards (colour-coded per spec)
+  const card = (label: string, value: number, color: string) => (
+    <Card className="c5-hover-lift" style={{ padding: '14px 16px', borderTop: `3px solid ${color}` }}>
+      <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
+      <p style={{ margin: 0, fontSize: 19, fontWeight: 800, color }}>{fmt(value)}</p>
+    </Card>
   );
+  const meta = (label: string, value: React.ReactNode) => (
+    <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>{label}</span><span style={{ fontSize: 13, fontWeight: 700, color: T.textMain }}>{value}</span></div>
+  );
+
+  const downloadExcel = () => { exportRowsXlsx(filtered, `clari5pay-report-${today()}.xlsx`); toast.showToast(`Excel — ${filtered.length} rows`); };
 
   return (
     <div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 16 }}>
         <div style={{ flex: 1, minWidth: 200 }}>
-          <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Analytics for <b style={{ color: T.textMain }}>{user.name}</b> — your memberships, transactions and reports only.</p>
+          <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Reports &amp; Analytics</h2>
+          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Financial intelligence dashboard — your memberships, transactions and reports.</p>
         </div>
-        <Btn size="sm" variant="secondary" onClick={() => exportReportPdf(data, user.name)}>📄 Download PDF</Btn>
-        <Btn size="sm" variant="secondary" onClick={() => { exportRowsXlsx(data.transactions, `clari5pay-report-${today()}.xlsx`); toast.showToast('Excel downloaded'); }}>📊 Download Excel</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true)}>📄 Download PDF</Btn>
+        <Btn size="sm" variant="secondary" onClick={downloadExcel}>📊 Download Excel</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true)}>🖨 Print Report</Btn>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>
-        {tabBtn('overview', '📊 Overview')}
-        {tabBtn('quick', '⚡ Quick Reports')}
-        {tabBtn('members', '👥 Membership Analytics')}
-        {tabBtn('intel', '🧠 Transaction Intelligence')}
-        {tabBtn('trends', '📈 Trends')}
-        {tabBtn('search', '🔍 Search')}
+      {/* 1 — Summary cards */}
+      <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12, marginBottom: 16 }}>
+        {card('Total Deposits', c.totalDepositAmount, T.success)}
+        {card('Total Withdrawals', c.totalWithdrawalAmount, T.danger)}
+        {card('Total Settlements', c.totalSettlementAmount, T.blue)}
+        {card('Gross Amount', c.grossAmount, T.textMain)}
+        {card('Commission Amount', c.commissionAmount, T.warning)}
+        {card('Net Amount', c.netAmount, '#7c3aed')}
+        {card('Available Balance', c.availableBalance, '#1d4ed8')}
       </div>
 
-      <div key={tab} className="c5-panel-in">
-        {tab === 'overview' && <OverviewTab data={data} />}
-        {tab === 'quick' && <QuickReportsTab data={data} />}
-        {tab === 'members' && <MembersTab data={data} onPick={setProfileId} />}
-        {tab === 'intel' && <IntelTab data={data} />}
-        {tab === 'trends' && <TrendsTab data={data} />}
-        {tab === 'search' && <SearchTab data={data} onPick={setProfileId} />}
-      </div>
+      {/* 2 — Report metadata */}
+      <Card style={{ padding: '14px 18px', marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 14 }}>
+          {meta('Merchant Name', user.name)}
+          {meta('Generated By', user.name)}
+          {meta('Generated Date & Time', genAt.toLocaleString('en-IN'))}
+          {meta('Selected Date Range', rangeLabel)}
+        </div>
+      </Card>
+
+      {/* 3 — Advanced filters */}
+      <RSectionTitle note="Filters apply to the transaction table, footer totals and exports.">🔎 Advanced Filters</RSectionTitle>
+      <Card style={{ padding: 16, marginBottom: 18 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {DATE_PRESETS.map(([k, label]) => <button key={k} className="c5-btn" onClick={() => set('datePreset', k)} style={pill(f.datePreset === k)}>{label}</button>)}
+        </div>
+        {f.datePreset === 'custom' && (
+          <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+            <Input label="From" type="date" value={f.from} onChange={e => set('from', e.target.value)} />
+            <Input label="To" type="date" value={f.to} onChange={e => set('to', e.target.value)} />
+          </div>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
+          <Input label="Reference Number" value={f.ref} onChange={e => set('ref', e.target.value)} />
+          <Input label="Membership Number" value={f.memberId} onChange={e => set('memberId', e.target.value)} />
+          <Input label="Member Name" value={f.memberName} onChange={e => set('memberName', e.target.value)} />
+          <Input label="Membership - Member" value={f.combined} onChange={e => set('combined', e.target.value)} placeholder="MBR… - Name" />
+          <Input label="Agent Code" value={f.agentCode} onChange={e => set('agentCode', e.target.value)} />
+          <Sel label="Transaction Type" value={f.type} onChange={e => set('type', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'deposit', label: 'Deposit' }, { value: 'withdrawal', label: 'Withdrawal' }, { value: 'settlement', label: 'Settlement' }]} />
+          <Sel label="Status" value={f.status} onChange={e => set('status', e.target.value)} options={[{ value: '', label: 'All' }, ...statuses.map(s => ({ value: s, label: prettyStatusR(s) }))]} />
+          <Sel label="Payment Method" value={f.method} onChange={e => set('method', e.target.value)} options={[{ value: '', label: 'All' }, ...PAYMENT_METHODS.map(m => ({ value: m, label: depositTypeLabel(m) }))]} />
+          <Input label="Approved By" value={f.approvedBy} onChange={e => set('approvedBy', e.target.value)} />
+          <Input label="Processed By" value={f.processedBy} onChange={e => set('processedBy', e.target.value)} />
+          <Sel label="Risk Level" value={f.riskLevel} onChange={e => set('riskLevel', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'LOW', label: 'Low' }, { value: 'HIGH', label: 'High' }]} />
+          <Input label="Minimum Amount" type="number" value={f.minA} onChange={e => set('minA', e.target.value)} />
+          <Input label="Maximum Amount" type="number" value={f.maxA} onChange={e => set('maxA', e.target.value)} />
+          <Input label="Exact Amount" type="number" value={f.exactA} onChange={e => set('exactA', e.target.value)} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12 }}>
+          <Btn size="sm" variant="ghost" onClick={() => setF(EMPTY_FILTERS)}>Clear Filters</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted }}>{filtered.length} of {data.transactions.length} transactions</span>
+        </div>
+      </Card>
+
+      {/* 4 — Membership analytics */}
+      <RSectionTitle>👥 Membership Analytics</RSectionTitle>
+      <MembersTab data={data} onPick={setProfileId} />
+
+      {/* 5 — Transaction intelligence */}
+      <RSectionTitle>🧠 Transaction Intelligence</RSectionTitle>
+      <IntelTab data={data} />
+
+      {/* 6 — Charts */}
+      <RSectionTitle>📈 Trend Charts</RSectionTitle>
+      <TrendsTab data={data} />
+
+      {/* 7 — Transaction table (filtered) */}
+      <RSectionTitle note="Reflects the advanced filters above.">📋 Transactions</RSectionTitle>
+      <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
+        <div style={{ overflowX: 'auto', maxHeight: 520 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: T.canvas }}>
+                {['Reference Number', 'Membership - Member', 'Transaction Type', 'Amount', 'Status', 'Date & Time', 'Payment Method', 'Available Balance', 'Approved By', 'Processed By'].map(h => <th key={h} style={thR}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 && <tr><td colSpan={10} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No transactions match the selected filters.</td></tr>}
+              {filtered.slice(0, 500).map(r => (
+                <tr key={r.ref} className="c5-row-hover" style={{ cursor: r.memberId ? 'pointer' : 'default' }} onClick={() => r.memberId && setProfileId(r.memberId)}>
+                  <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{r.ref}</td>
+                  <td style={{ ...tdR, fontWeight: 600 }}>{memberLabel(r.memberId, r.member)}</td>
+                  <td style={tdR}>{rtypeLabel(r) || '-'}</td>
+                  <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
+                  <td style={tdR}>{prettyStatusR(r.status)}</td>
+                  <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
+                  <td style={tdR}>{r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—'}</td>
+                  <td style={{ ...tdR, textAlign: 'right', color: T.textMuted }}>{r.availableBalance != null ? fmt(r.availableBalance) : '—'}</td>
+                  <td style={{ ...tdR, color: T.textMuted }}>{r.approvedBy || '—'}</td>
+                  <td style={{ ...tdR, color: T.textMuted }}>{r.processedBy || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {/* 8 — Footer summary */}
+      <Card style={{ padding: '16px 18px', marginBottom: 18, borderTop: `3px solid ${T.blue}` }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 14 }}>
+          {meta('Total Deposits', <span style={{ color: T.success }}>{fmt(tot.deposits)}</span>)}
+          {meta('Total Withdrawals', <span style={{ color: T.danger }}>{fmt(tot.withdrawals)}</span>)}
+          {meta('Total Settlements', <span style={{ color: T.blue }}>{fmt(tot.settlements)}</span>)}
+          {meta('Gross Amount', fmt(c.grossAmount))}
+          {meta('Commission Amount', <span style={{ color: T.warning }}>{fmt(c.commissionAmount)}</span>)}
+          {meta('Net Amount', <span style={{ color: '#7c3aed' }}>{fmt(c.netAmount)}</span>)}
+          {meta('Available Balance', <span style={{ color: '#1d4ed8' }}>{fmt(c.availableBalance)}</span>)}
+        </div>
+      </Card>
 
       {profileId && <MemberProfileModal data={data} memberId={profileId} onClose={() => setProfileId(null)} />}
 

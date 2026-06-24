@@ -32,6 +32,10 @@ _NEW_COLUMNS = [
     ("transactions", "payout_details", "TEXT"),
     # Deposit type-specific fields (CASH / CRYPTO) stored as JSON.
     ("transactions", "deposit_details", "TEXT"),
+    # Reporting: approver / processor / creating-agent tracking.
+    ("transactions", "approved_by", "VARCHAR(128)"),
+    ("transactions", "processed_by", "VARCHAR(128)"),
+    ("transactions", "agent_code", "VARCHAR(16)"),
     ("login_otps", "purpose", "VARCHAR(16) DEFAULT 'login' NOT NULL"),
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "upi_id", "VARCHAR(64)"),

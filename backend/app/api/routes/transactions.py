@@ -243,6 +243,9 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "payoutMode": t.payout_mode,
         "payoutDetails": json.loads(t.payout_details) if t.payout_details else None,
         "depositDetails": json.loads(t.deposit_details) if t.deposit_details else None,
+        "approvedBy": t.approved_by,
+        "processedBy": t.processed_by,
+        "agentCode": t.agent_code,
         "qrExpiresAt": (t.qr_expires_at.isoformat() + "Z") if t.qr_expires_at else None,
         "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
         "utr": t.utr,
@@ -550,6 +553,11 @@ async def merchant_reports(
                   if (t.member_id or "").strip()
                   and t.created_at and t.created_at >= now - timedelta(days=30)}
 
+    # Financial roll-up (gross / commission / net / available) — same engine as the wallet.
+    bal = await compute_balance(db, current_user)
+    commission_amount = round(bal["payInFees"] + bal["payOutFees"] + bal["settlementFees"], 2)
+    gross_amount = round(bal["totalDeposit"] + bal["totalWithdrawn"] + bal["totalSettled"], 2)
+
     cards = {
         "totalTransactions": len(txns),
         "totalDeposits": kind_count("deposit"),
@@ -558,6 +566,10 @@ async def merchant_reports(
         "totalDepositAmount": kind_amount("deposit"),
         "totalWithdrawalAmount": kind_amount("withdrawal"),
         "totalSettlementAmount": kind_amount("settlement"),
+        "grossAmount": gross_amount,
+        "commissionAmount": commission_amount,
+        "netAmount": round(bal["grossAvailable"], 2),
+        "availableBalance": round(bal["available"], 2),
         "totalTransactionAmount": round(
             sum(t.amount for t in txns if _completed(t)), 2),
         "activeMemberships": len(active_30d),
@@ -683,6 +695,23 @@ async def merchant_reports(
             f"Top 10 members contributed {round(top10 / total_vol * 100, 1)}% of total volume.")
 
     # ── Raw rows for client-side search, custom ranges, recent high-value & drill-down ──
+    # Running Available Balance after each transaction (replays completed txns chronologically).
+    pay_in_rate = (current_user.pay_in_fee or 0) / 100
+    pay_out_rate = (current_user.pay_out_fee or 0) / 100
+    running = 0.0
+    bal_by_id: dict[int, float] = {}
+    for t in sorted(txns, key=lambda x: (x.created_at or datetime.min)):
+        if _completed(t):
+            k = _kind(t)
+            if k == "deposit":
+                running += t.amount * (1 - pay_in_rate)
+            elif k in ("withdrawal", "settlement"):
+                running -= t.amount * (1 + pay_out_rate)
+        bal_by_id[t.id] = round(running, 2)
+
+    def _payment_method(t: Transaction):
+        return t.deposit_type if _kind(t) == "deposit" else (t.payout_mode or None)
+
     rows = [{
         "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
         "type": _kind(t), "depositType": t.deposit_type, "amount": round(t.amount, 2), "status": t.status.value,
@@ -690,6 +719,12 @@ async def merchant_reports(
         "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
         "completed": _completed(t),
         "cancelReason": t.cancel_reason,
+        "paymentMethod": _payment_method(t),
+        "approvedBy": t.approved_by,
+        "processedBy": t.processed_by,
+        "agentCode": t.agent_code,
+        "riskLevel": "HIGH" if t.high_risk else "LOW",
+        "availableBalance": bal_by_id.get(t.id),
     } for t in txns]
     rows.sort(key=lambda r: r["createdAt"] or "", reverse=True)
 
@@ -730,6 +765,7 @@ async def create_deposit(
         segment=data.segment,
         sender_upi_id=data.senderUpiId,
         deposit_details=json.dumps(data.depositDetails) if data.depositDetails else None,
+        agent_code=current_user.merchant_code,
         merchant_proof=_proofs[0] if _proofs else None,
         merchant_proofs=json.dumps(_proofs) if _proofs else None,
         account_holder=data.accountHolder,
@@ -805,6 +841,7 @@ async def create_withdrawal(
         notes=data.notes,
         payout_mode=(data.payoutMode or "BANK").upper(),
         payout_details=json.dumps(data.payoutDetails) if data.payoutDetails else None,
+        agent_code=current_user.merchant_code,
     )
     db.add(tx)
     await db.flush()
@@ -853,6 +890,7 @@ async def create_settlement(
         member_id=data.memberId,
         merchant_proof=_proofs[0] if _proofs else None,
         merchant_proofs=json.dumps(_proofs) if _proofs else None,
+        agent_code=current_user.merchant_code,
     )
     db.add(tx)
     await db.flush()
@@ -917,6 +955,7 @@ async def account_submit(
             transaction_time=datetime.now().strftime("%H:%M:%S"),
         ))
     tx.status = TxStatus.ACCOUNT_SUBMITTED
+    tx.approved_by = actor.name
     await db.flush()
     await notify_tx(db, tx, f"{tx.ref}: account details sent to {tx.merchant_name}", "🏦")
     await log_event(db, "ACCOUNT_SUBMITTED", f"{tx.ref}: account details sent to {tx.merchant_name}", actor=actor)
@@ -968,6 +1007,8 @@ async def mark_done(
     if data and data.adminUtr:
         tx.admin_utr = data.adminUtr
     tx.status = TxStatus.COMPLETED
+    tx.processed_by = actor.name
+    tx.approved_by = tx.approved_by or actor.name
     await db.flush()
     label = "deposited" if tx.type.value.startswith("DEPOSIT") else "completed"
     await notify_tx(db, tx, f"{tx.ref}: {label}", "✓")
@@ -1117,6 +1158,8 @@ async def complete_transaction(
 ):
     tx = await _get_tx(tx_id, db)
     tx.status = TxStatus.COMPLETED
+    tx.processed_by = _.name
+    tx.approved_by = tx.approved_by or _.name
     await db.flush()
     return _t(tx)
 

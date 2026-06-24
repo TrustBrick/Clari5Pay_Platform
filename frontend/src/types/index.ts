@@ -409,6 +409,12 @@ export interface ReportRow {
   createdAt: string | null;
   completed: boolean;
   cancelReason?: string | null;
+  paymentMethod?: string | null;
+  approvedBy?: string | null;
+  processedBy?: string | null;
+  agentCode?: string | null;
+  riskLevel?: string | null;
+  availableBalance?: number | null;
 }
 export interface ReportData {
   cards: {
@@ -419,6 +425,10 @@ export interface ReportData {
     totalDepositAmount: number;
     totalWithdrawalAmount: number;
     totalSettlementAmount: number;
+    grossAmount: number;
+    commissionAmount: number;
+    netAmount: number;
+    availableBalance: number;
     totalTransactionAmount: number;
     activeMemberships: number;
     mostActiveMember: { memberId: string; memberName: string; count: number } | null;
