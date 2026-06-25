@@ -553,10 +553,13 @@ async def merchant_reports(
                   if (t.member_id or "").strip()
                   and t.created_at and t.created_at >= now - timedelta(days=30)}
 
-    # Financial roll-up (gross / commission / net / available) — same engine as the wallet.
+    # Financial roll-up (gross / net / available). Commission + the underlying fee figures
+    # are INTERNAL business info — never returned to a Merchant; only Admin / Super Admin
+    # receive them. Enforced server-side here, regardless of what the UI requests.
     bal = await compute_balance(db, current_user)
     commission_amount = round(bal["payInFees"] + bal["payOutFees"] + bal["settlementFees"], 2)
     gross_amount = round(bal["totalDeposit"] + bal["totalWithdrawn"] + bal["totalSettled"], 2)
+    include_commission = current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
 
     cards = {
         "totalTransactions": len(txns),
@@ -567,7 +570,7 @@ async def merchant_reports(
         "totalWithdrawalAmount": kind_amount("withdrawal"),
         "totalSettlementAmount": kind_amount("settlement"),
         "grossAmount": gross_amount,
-        "commissionAmount": commission_amount,
+        # commissionAmount injected below for staff only (never for merchants).
         "netAmount": round(bal["grossAvailable"], 2),
         "availableBalance": round(bal["available"], 2),
         "totalTransactionAmount": round(
@@ -582,6 +585,9 @@ async def merchant_reports(
             "date": str(largest_today.tx_date), "time": largest_today.tx_time,
         } if largest_today else None),
     }
+    # Commission stays out of the Merchant payload entirely (server-side enforced).
+    if include_commission:
+        cards["commissionAmount"] = commission_amount
 
     # ── Quick-report windows ──
     windows = {

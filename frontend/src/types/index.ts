@@ -426,7 +426,7 @@ export interface ReportData {
     totalWithdrawalAmount: number;
     totalSettlementAmount: number;
     grossAmount: number;
-    commissionAmount: number;
+    commissionAmount?: number;   // staff-only — absent from the Merchant API payload
     netAmount: number;
     availableBalance: number;
     totalTransactionAmount: number;
