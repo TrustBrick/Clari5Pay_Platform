@@ -558,13 +558,38 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
 export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
   const [data, setData] = useState<ReportData | null>(null);
   const [profileId, setProfileId] = useState<string | null>(null);
+  // `draft` is bound to the filter inputs; `f` is the *applied* filter set that
+  // actually drives the table, summary/footer totals, count and exports. Editing a
+  // field only updates the draft — nothing filters until "Apply Filters" is pressed.
+  const [draft, setDraft] = useState<RFilters>(EMPTY_FILTERS);
   const [f, setF] = useState<RFilters>(EMPTY_FILTERS);
+  const [applying, setApplying] = useState(false);
   const [genAt] = useState(() => new Date());
   const toast = useToast();
   const reload = () => transactionAPI.reports().then(setData).catch(() => {});
   useEffect(() => { reload(); }, []);
   usePoll(reload, 30000);
-  const set = (k: keyof RFilters, v: string) => setF(p => ({ ...p, [k]: v }));
+  const set = (k: keyof RFilters, v: string) => setDraft(p => ({ ...p, [k]: v }));
+
+  // Apply Filters — pull a fresh server snapshot (the existing reports API), then
+  // commit the draft so the table, summary cards, footer totals, charts, count and
+  // exports all reflect the same filter set together. Disabled while in flight so a
+  // second click can't fire a duplicate request.
+  const applyFilters = async () => {
+    if (applying) return;
+    setApplying(true);
+    try { await reload(); setF(draft); }
+    finally { setApplying(false); }
+  };
+  // Clear Filters — reset every field to its default, refresh from the server and
+  // return the table / cards / footer / count to the full record set.
+  const clearFilters = async () => {
+    if (applying) return;
+    setApplying(true);
+    setDraft(EMPTY_FILTERS);
+    try { await reload(); setF(EMPTY_FILTERS); }
+    finally { setApplying(false); }
+  };
 
   if (!data) return (
     <div>
@@ -629,36 +654,39 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
       </Card>
 
       {/* 3 — Advanced filters */}
-      <RSectionTitle note="Filters apply to the transaction table, footer totals and exports.">🔎 Advanced Filters</RSectionTitle>
+      <RSectionTitle note="Set your filters, then click Apply Filters to update the table, footer totals and exports together.">🔎 Advanced Filters</RSectionTitle>
       <Card style={{ padding: 16, marginBottom: 18 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-          {DATE_PRESETS.map(([k, label]) => <button key={k} className="c5-btn" onClick={() => set('datePreset', k)} style={pill(f.datePreset === k)}>{label}</button>)}
+          {DATE_PRESETS.map(([k, label]) => <button key={k} className="c5-btn" onClick={() => set('datePreset', k)} style={pill(draft.datePreset === k)}>{label}</button>)}
         </div>
-        {f.datePreset === 'custom' && (
+        {draft.datePreset === 'custom' && (
           <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-            <Input label="From" type="date" value={f.from} onChange={e => set('from', e.target.value)} />
-            <Input label="To" type="date" value={f.to} onChange={e => set('to', e.target.value)} />
+            <Input label="From" type="date" value={draft.from} onChange={e => set('from', e.target.value)} />
+            <Input label="To" type="date" value={draft.to} onChange={e => set('to', e.target.value)} />
           </div>
         )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
-          <Input label="Reference Number" value={f.ref} onChange={e => set('ref', e.target.value)} />
-          <Input label="Membership Number" value={f.memberId} onChange={e => set('memberId', e.target.value)} />
-          <Input label="Member Name" value={f.memberName} onChange={e => set('memberName', e.target.value)} />
-          <Input label="Membership - Member" value={f.combined} onChange={e => set('combined', e.target.value)} placeholder="MBR… - Name" />
-          <Input label="Agent Code" value={f.agentCode} onChange={e => set('agentCode', e.target.value)} />
-          <Sel label="Transaction Type" value={f.type} onChange={e => set('type', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'deposit', label: 'Deposit' }, { value: 'withdrawal', label: 'Withdrawal' }, { value: 'settlement', label: 'Settlement' }]} />
-          <Sel label="Status" value={f.status} onChange={e => set('status', e.target.value)} options={[{ value: '', label: 'All' }, ...statuses.map(s => ({ value: s, label: prettyStatusR(s) }))]} />
-          <Sel label="Payment Method" value={f.method} onChange={e => set('method', e.target.value)} options={[{ value: '', label: 'All' }, ...PAYMENT_METHODS.map(m => ({ value: m, label: depositTypeLabel(m) }))]} />
-          <Input label="Approved By" value={f.approvedBy} onChange={e => set('approvedBy', e.target.value)} />
-          <Input label="Processed By" value={f.processedBy} onChange={e => set('processedBy', e.target.value)} />
-          <Sel label="Risk Level" value={f.riskLevel} onChange={e => set('riskLevel', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'LOW', label: 'Low' }, { value: 'HIGH', label: 'High' }]} />
-          <Input label="Minimum Amount" type="number" value={f.minA} onChange={e => set('minA', e.target.value)} />
-          <Input label="Maximum Amount" type="number" value={f.maxA} onChange={e => set('maxA', e.target.value)} />
-          <Input label="Exact Amount" type="number" value={f.exactA} onChange={e => set('exactA', e.target.value)} />
+          <Input label="Reference Number" value={draft.ref} onChange={e => set('ref', e.target.value)} />
+          <Input label="Membership Number" value={draft.memberId} onChange={e => set('memberId', e.target.value)} />
+          <Input label="Member Name" value={draft.memberName} onChange={e => set('memberName', e.target.value)} />
+          <Input label="Membership - Member" value={draft.combined} onChange={e => set('combined', e.target.value)} placeholder="MBR… - Name" />
+          <Input label="Agent Code" value={draft.agentCode} onChange={e => set('agentCode', e.target.value)} />
+          <Sel label="Transaction Type" value={draft.type} onChange={e => set('type', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'deposit', label: 'Deposit' }, { value: 'withdrawal', label: 'Withdrawal' }, { value: 'settlement', label: 'Settlement' }]} />
+          <Sel label="Status" value={draft.status} onChange={e => set('status', e.target.value)} options={[{ value: '', label: 'All' }, ...statuses.map(s => ({ value: s, label: prettyStatusR(s) }))]} />
+          <Sel label="Payment Method" value={draft.method} onChange={e => set('method', e.target.value)} options={[{ value: '', label: 'All' }, ...PAYMENT_METHODS.map(m => ({ value: m, label: depositTypeLabel(m) }))]} />
+          <Input label="Approved By" value={draft.approvedBy} onChange={e => set('approvedBy', e.target.value)} />
+          <Input label="Processed By" value={draft.processedBy} onChange={e => set('processedBy', e.target.value)} />
+          <Sel label="Risk Level" value={draft.riskLevel} onChange={e => set('riskLevel', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'LOW', label: 'Low' }, { value: 'HIGH', label: 'High' }]} />
+          <Input label="Minimum Amount" type="number" value={draft.minA} onChange={e => set('minA', e.target.value)} />
+          <Input label="Maximum Amount" type="number" value={draft.maxA} onChange={e => set('maxA', e.target.value)} />
+          <Input label="Exact Amount" type="number" value={draft.exactA} onChange={e => set('exactA', e.target.value)} />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12 }}>
-          <Btn size="sm" variant="ghost" onClick={() => setF(EMPTY_FILTERS)}>Clear Filters</Btn>
-          <span style={{ fontSize: 12, color: T.textMuted }}>{filtered.length} of {data.transactions.length} transactions</span>
+          <Btn size="sm" onClick={applyFilters} disabled={applying}>{applying ? '⏳ Applying…' : '🔍 Apply Filters'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={clearFilters} disabled={applying}>Clear Filters</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted }}>
+            {applying ? 'Applying filters…' : `${filtered.length} of ${data.transactions.length} transactions`}
+          </span>
         </div>
       </Card>
 
