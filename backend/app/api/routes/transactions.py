@@ -14,6 +14,7 @@ from app.schemas.schemas import (
     AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest, RemarkRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
+from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -80,8 +81,6 @@ async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> 
 
 
 # Shown when a request's member name doesn't match the name already on file for that ID.
-MEMBER_NAME_MISMATCH_MSG = "This Membership ID is already associated with another member."
-
 # Proof/slip upload limits (mirrored on the frontend).
 MAX_PROOFS = 3
 PROOF_LIMIT_MSG = "You can upload a maximum of 3 proof/slip files per request."
@@ -104,30 +103,6 @@ def _clean_proofs(proofs: list[str] | None, single: str | None = None) -> list[s
             raise HTTPException(status_code=400, detail=PROOF_TYPE_MSG)
     return items
 
-
-async def _assert_member_name(db: AsyncSession, user: User, member_id, member_name) -> None:
-    """If this Membership ID was used before (across the merchant's business), the entered
-    Member Name must match the name already on record. Raises 400 on mismatch."""
-    if not member_id or not member_name:
-        return
-    ids = (await db.execute(
-        select(User.id).where(User.role == UserRole.MERCHANT, User.name == user.name)
-    )).scalars().all()
-    if not ids:
-        return
-    existing = (await db.execute(
-        select(Transaction.member_name)
-        .where(
-            Transaction.merchant_id.in_(ids),
-            Transaction.member_id == member_id,
-            Transaction.member_name.is_not(None),
-            Transaction.member_name != "",
-        )
-        .order_by(Transaction.id.desc())
-        .limit(1)
-    )).scalar_one_or_none()
-    if existing and existing.strip().casefold() != member_name.strip().casefold():
-        raise HTTPException(status_code=400, detail=MEMBER_NAME_MISMATCH_MSG)
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -678,17 +653,14 @@ async def member_profile(
     the merchant's business — used to auto-fill the deposit form for repeat members."""
     if current_user.role != UserRole.MERCHANT:
         raise HTTPException(status_code=403, detail="Merchant only")
+    member_id = normalize_member_id(member_id)
     ids = (await db.execute(
         select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
     )).scalars().all()
     if not ids or not member_id:
         return {}
-    name = (await db.execute(
-        select(Transaction.member_name).where(
-            Transaction.merchant_id.in_(ids), Transaction.member_id == member_id,
-            Transaction.member_name.is_not(None), Transaction.member_name != "",
-        ).order_by(Transaction.id.desc()).limit(1)
-    )).scalar_one_or_none()
+    # Canonical Member Name for this Membership ID (shared membership service).
+    name = await lookup_member_name(db, current_user, member_id)
     upi_row = (await db.execute(
         select(MerchantBankAccount).where(
             MerchantBankAccount.merchant_id.in_(ids), MerchantBankAccount.member_id == member_id,
@@ -1039,9 +1011,10 @@ async def create_deposit(
     current_user: User = Depends(get_current_user),
 ):
     _require_amount(data.amount)
-    if data.memberId:
-        data.memberId = data.memberId.upper()
-    await _assert_member_name(db, current_user, data.memberId, data.memberName)
+    data.memberId = normalize_member_id(data.memberId)
+    # Membership lookup + capture rule (shared service): existing ID keeps its name,
+    # new ID takes the entered name; a conflicting name is rejected.
+    member_name = await resolve_member_name(db, current_user, data.memberId, data.memberName)
     _proofs = _clean_proofs(data.proofs, data.proof)
     dep_type = (data.depositType or "").upper()
     # Cash / Crypto requests carry their own member-supplied proof up-front, so they skip the
@@ -1057,7 +1030,7 @@ async def create_deposit(
         tx_date=_ist_now().date(),
         tx_time=_ist_now().strftime("%H:%M:%S"),
         deposit_type=data.depositType,
-        member_name=data.memberName,
+        member_name=member_name,
         member_id=data.memberId,
         segment=data.segment,
         sender_upi_id=data.senderUpiId,
@@ -1113,8 +1086,10 @@ async def create_withdrawal(
     _require_amount(data.amount)
     # Block withdrawals whose amount + pay-out fee exceeds the Available Balance (which
     # already reserves in-flight requests), so the balance can never go negative.
-    if data.memberId:
-        data.memberId = data.memberId.upper()
+    data.memberId = normalize_member_id(data.memberId)
+    # Membership lookup + capture rule (shared service): existing ID keeps its name,
+    # new ID takes the entered name; a conflicting name is rejected.
+    member_name = await resolve_member_name(db, current_user, data.memberId, data.memberName)
     summary = await compute_balance(db, current_user)
     pay_out_rate = (current_user.pay_out_fee or 0) / 100
     total_required = data.amount * (1 + pay_out_rate)
@@ -1132,6 +1107,7 @@ async def create_withdrawal(
         tx_date=_ist_now().date(),
         tx_time=_ist_now().strftime("%H:%M:%S"),
         member_id=data.memberId,
+        member_name=member_name,
         bank_name=data.bankName,
         account_holder=data.accountHolder,
         account_number=data.accountNumber,
@@ -1175,8 +1151,9 @@ async def create_settlement(
     _require_amount(data.amount)
     # Block settlements whose amount + pay-out fee exceeds the Available Balance (exactly the
     # same rule as withdrawals), so the balance can never go negative once the fee is charged.
-    if data.memberId:
-        data.memberId = data.memberId.upper()
+    data.memberId = normalize_member_id(data.memberId)
+    # Membership lookup + capture rule (shared service); Membership ID is optional here.
+    member_name = await resolve_member_name(db, current_user, data.memberId, data.memberName)
     summary = await compute_balance(db, current_user)
     pay_out_rate = (current_user.pay_out_fee or 0) / 100
     total_required = data.amount * (1 + pay_out_rate)
@@ -1194,6 +1171,7 @@ async def create_settlement(
         tx_date=_ist_now().date(),
         tx_time=_ist_now().strftime("%H:%M:%S"),
         member_id=data.memberId,
+        member_name=member_name,
         merchant_proof=_proofs[0] if _proofs else None,
         merchant_proofs=json.dumps(_proofs) if _proofs else None,
         agent_code=current_user.merchant_code,

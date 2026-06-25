@@ -175,6 +175,7 @@ class DepositCreate(BaseModel):
 class WithdrawalCreate(BaseModel):
     amount: float
     memberId: str
+    memberName: Optional[str] = None   # captured/auto-filled membership name (Change 10)
     # Payout mode + its mode-specific fields (BANK / UPI / CASH / CRYPTO).
     payoutMode: Optional[str] = None
     payoutDetails: Optional[dict] = None
@@ -193,6 +194,7 @@ class WithdrawalCreate(BaseModel):
 class SettlementCreate(BaseModel):
     amount: float
     memberId: Optional[str] = None
+    memberName: Optional[str] = None   # captured/auto-filled membership name (Change 10)
     proof: Optional[str] = None
     proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
 

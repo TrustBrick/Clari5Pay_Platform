@@ -459,6 +459,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const [riskAnalysis, setRiskAnalysis] = useState(false);
   const [loading, setLoading] = useState(false);
   const [senderUpi, setSenderUpi] = useState('');
+  const [memberLocked, setMemberLocked] = useState(false);  // Member Name auto-filled from an existing membership → read-only
   // Cash / Crypto member-supplied details + proof (no bank account on these types).
   const [details, setDetails] = useState<Record<string,string>>({ network:'TRC20' });
   const [proofs, setProofs] = useState<string[]>([]);
@@ -475,12 +476,14 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   // handled by BankAccountFields). A known ID's name is authoritative (one name per ID).
   useEffect(() => {
     const mid = form.memberId.trim();
-    if (mid.length < 3) return;
+    if (mid.length < 3) { setMemberLocked(false); return; }
     let alive = true;
     const t = setTimeout(() => {
       transactionAPI.memberProfile(mid).then(p => {
         if (!alive) return;
-        if (p.memberName) setForm(f => ({ ...f, memberName: p.memberName as string }));
+        // Existing membership → auto-fill the name and lock it; new ID → allow manual entry.
+        if (p.memberName) { setForm(f => ({ ...f, memberName: p.memberName as string })); setMemberLocked(true); }
+        else setMemberLocked(false);
         if (p.upiId) setSenderUpi(p.upiId);
       }).catch(()=>{});
     }, 400);
@@ -523,7 +526,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={DEPOSIT_TYPE_OPTIONS} required/>
         <Input label="Amount (INR)" type="text" inputMode="decimal" value={form.amount} onChange={e=>set('amount',formatIndianAmountInput(e.target.value))} placeholder="Min 1" required/>
-        <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" required/>
+        <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" required readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined}/>
         <Input label="Membership ID" value={form.memberId} onChange={e=>setMemberId(e.target.value)} placeholder="e.g. MBR20240001" required/>
         {isBankLike && <>
           <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
@@ -592,6 +595,8 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const { showToast } = useToast();
   const [amount, setAmount] = useState('');
   const [memberId, setMemberId] = useState('');
+  const [memberName, setMemberName] = useState('');
+  const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
   const [mode, setMode] = useState('BANK');
   const [details, setDetails] = useState<Record<string,string>>({});
   const [available, setAvailable] = useState(0);
@@ -609,6 +614,22 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   };
 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); }).catch(()=>{}); }, []);
+
+  // Auto-fill Member Name from the latest record for this Membership ID; lock it when the
+  // membership already exists, otherwise allow manual entry for a new member.
+  useEffect(() => {
+    const mid = memberId.trim();
+    if (mid.length < 3) { setMemberLocked(false); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      transactionAPI.memberProfile(mid).then(p => {
+        if (!alive) return;
+        if (p.memberName) { setMemberName(p.memberName as string); setMemberLocked(true); }
+        else setMemberLocked(false);
+      }).catch(()=>{});
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+  }, [memberId]);
 
   // Load this member's saved withdrawal destinations (bank accounts + UPIs), member-scoped.
   useEffect(() => {
@@ -643,7 +664,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const fields = MODE_FIELDS[mode];
   const amountNum = parseFloat(parseIndianAmount(amount));
   const submit = async () => {
-    if(!amount||!memberId){ showToast('Enter amount and Membership ID','error'); return; }
+    if(!amount||!memberId||!memberName.trim()){ showToast('Enter amount, Membership ID and Member Name','error'); return; }
     if(amountNum < 1){ showToast('Amount must be greater than 0.','error'); return; }
     if(amountNum > maxWithdrawable + 0.01){ showToast('Insufficient Balance','error'); return; }
     if(hasSaved && !destId){ showToast('Select a withdrawal destination','error'); return; }
@@ -651,7 +672,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
     setLoading(true);
     try {
-      const payload: Record<string, unknown> = { amount: amountNum, memberId, payoutMode: mode, payoutDetails: details };
+      const payload: Record<string, unknown> = { amount: amountNum, memberId, memberName: memberName.trim(), payoutMode: mode, payoutDetails: details };
       if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
       await transactionAPI.createWithdrawal(payload);
       fireConfetti();
@@ -680,6 +701,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Input label="Amount (INR)" type="text" inputMode="decimal" value={amount} onChange={e=>setAmount(formatIndianAmountInput(e.target.value))} placeholder="Min 1" required/>
         <Input label="Membership ID" value={memberId} onChange={e=>setMemberId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="Alphanumeric (A-Z, 0-9)" required/>
+        <Input label="Member Name" value={memberName} onChange={e=>setMemberName(e.target.value)} placeholder="Full name" required readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined}/>
       </div>
 
       {hasSaved && (
@@ -752,7 +774,8 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
 // ─── Settlement form ───────────────────────────────────────────────────────────
 export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ onSubmitted }) => {
   const { showToast } = useToast();
-  const [form, setForm] = useState({ amount:'', memberId:'' });
+  const [form, setForm] = useState({ amount:'', memberId:'', memberName:'' });
+  const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
   const [proofs, setProofs] = useState<string[]>([]);
   const [available, setAvailable] = useState(0);
   const [maxSettleable, setMaxSettleable] = useState(0);
@@ -762,13 +785,29 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
 
+  // Membership ID is optional for settlements; when entered, auto-fill + lock the Member Name.
+  useEffect(() => {
+    const mid = form.memberId.trim();
+    if (mid.length < 3) { setMemberLocked(false); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      transactionAPI.memberProfile(mid).then(p => {
+        if (!alive) return;
+        if (p.memberName) { setForm(f => ({ ...f, memberName: p.memberName as string })); setMemberLocked(true); }
+        else setMemberLocked(false);
+      }).catch(()=>{});
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+  }, [form.memberId]);
+
   const submit = async () => {
     const amountNum = parseFloat(parseIndianAmount(form.amount));
     if(!form.amount){ showToast('Enter an amount','error'); return; }
+    if(form.memberId && !form.memberName.trim()){ showToast('Enter the Member Name for this Membership ID','error'); return; }
     if(amountNum > maxSettleable + 0.01){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.createSettlement({ amount: amountNum, memberId: form.memberId || undefined, proofs });
+      await transactionAPI.createSettlement({ amount: amountNum, memberId: form.memberId || undefined, memberName: form.memberName.trim() || undefined, proofs });
       fireConfetti();
       showToast('Settlement request submitted');
       onSubmitted?.();
@@ -791,6 +830,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Input label="Settlement Amount (INR)" type="text" inputMode="decimal" value={form.amount} onChange={e=>set('amount',formatIndianAmountInput(e.target.value))} placeholder="Enter amount" required/>
         <Input label="Membership ID" value={form.memberId} onChange={e=>set('memberId',e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="e.g. MBR20240001"/>
+        <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined}/>
       </div>
       <MultiProofUpload values={proofs} onChange={setProofs}/>
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount}>{loading?'Submitting...':'Submit Settlement Request →'}</Btn>
