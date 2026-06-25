@@ -55,7 +55,7 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
       </g>
       <g transform="translate(195,155)">
         <line x1="0" y1="-5" x2="25" y2="-5" stroke="#0052cc" strokeWidth="2" strokeLinecap="round"/>
-        <text x="35" y="0" style={sTag}>Secure Payments. Trusted Always.</text>
+        <text x="35" y="0" style={sTag}>Secure Payments. Prevent Fraud.</text>
         <line x1="285" y1="-5" x2="310" y2="-5" stroke="#26d00c" strokeWidth="2" strokeLinecap="round"/>
       </g>
     </svg>

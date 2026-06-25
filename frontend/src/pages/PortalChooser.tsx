@@ -21,7 +21,7 @@ const PortalChooser: React.FC = () => (
         </a>
       ))}
     </div>
-    <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 26 }}>Clari5Pay — Secure Payments. Trusted Always.</p>
+    <p style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 26 }}>Clari5Pay — Secure Payments. Prevent Fraud.</p>
   </div>
 );
 

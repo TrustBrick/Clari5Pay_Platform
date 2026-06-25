@@ -49,7 +49,7 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <div class="head">
       <img src="/logo-mark.png" alt="">
       <span class="brand"><span class="b">clari</span><span class="g">5</span><span class="n">pay</span></span>
-      <div class="meta">Secure Payments. Trusted Always.<br>Generated: ${esc(now)}<br>${rows.length} transaction(s)</div>
+      <div class="meta">Secure Payments. Prevent Fraud.<br>Generated: ${esc(now)}<br>${rows.length} transaction(s)</div>
     </div>
     <h1>${esc(title)}</h1>
     <p class="sub">${esc(subtitle)}</p>

@@ -204,7 +204,7 @@ const LoginPage: React.FC = () => {
       </div>
 
       {/* Right Panel */}
-      <div style={{ width:'100%',maxWidth:480,background:'rgba(255,255,255,0.97)',backdropFilter:'blur(20px)',display:'flex',flexDirection:'column',justifyContent:'center',padding:'40px 40px',boxShadow:'-20px 0 80px rgba(0,0,0,0.3)',position:'relative',zIndex:1 }} className="login-right c5-panel-in">
+      <div style={{ width:'100%',maxWidth:480,background:T.surface,backdropFilter:'blur(20px)',display:'flex',flexDirection:'column',justifyContent:'center',padding:'40px 40px',boxShadow:'-20px 0 80px rgba(0,0,0,0.3)',position:'relative',zIndex:1 }} className="login-right c5-panel-in">
         {otp ? (
           <>
             <div style={{ marginBottom:28 }}>
