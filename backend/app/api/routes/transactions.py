@@ -2,7 +2,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, case
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog
 from app.core.deps import (
@@ -389,6 +389,37 @@ def _apply_tx_filters(stmt, search=None, date_from=None, date_to=None,
     return stmt
 
 
+# ─── Default business-priority ordering for the "All Transactions" feeds ───
+# Transactions are grouped by status in action-needed order (highest-priority,
+# action-required work floats to the top); any status not listed falls into a
+# single trailing bucket. Within every group, newest transactions come first
+# (created_at descending). Computed server-side so pagination stays correct,
+# large datasets stay performant (single ORDER BY), and every portal that lists
+# all transactions (Admin / Supervisor / Manager) shares one identical ordering.
+_STATUS_PRIORITY = [
+    TxStatus.ACCOUNT_REQUESTED,
+    TxStatus.PENDING_APPROVAL,
+    TxStatus.ACCOUNT_SUBMITTED,
+    TxStatus.SLIP_SUBMITTED,
+    TxStatus.SUPERVISOR_REVIEW,
+    TxStatus.MANAGER_REVIEW,
+    TxStatus.RESUBMITTED,
+    TxStatus.DEPOSITED,
+    TxStatus.COMPLETED,
+    TxStatus.REJECTED,
+]
+
+
+def _status_priority_order():
+    """ORDER BY clauses: status-priority group ascending, then newest-first.
+    Spread into ``.order_by(*_status_priority_order())`` on the list queries."""
+    rank = case(
+        *[(Transaction.status == status, idx) for idx, status in enumerate(_STATUS_PRIORITY)],
+        else_=len(_STATUS_PRIORITY),
+    )
+    return rank.asc(), Transaction.created_at.desc()
+
+
 @router.get("")
 async def get_all_transactions(
     db: AsyncSession = Depends(get_db),
@@ -400,7 +431,7 @@ async def get_all_transactions(
     datetime_to: datetime | None = None,
 ):
     stmt = _apply_tx_filters(select(Transaction), search, date_from, date_to,
-                             datetime_from, datetime_to).order_by(Transaction.created_at.desc())
+                             datetime_from, datetime_to).order_by(*_status_priority_order())
     result = await db.execute(stmt)
     return [_t(t, full=False) for t in result.scalars().all()]
 
@@ -436,13 +467,14 @@ async def get_all_transactions_overseer(
     datetime_to: datetime | None = None,
 ):
     """Read-only, system-wide transaction feed for oversight roles (Supervisor /
-    Manager) and Admins/Super Admins. Newest first; every transaction type is
-    included (deposit, withdrawal, settlement, cancels and any future type), so the
-    Manager/Supervisor "All Transactions" view stays complete without code changes.
-    Supports the same server-side search + date/time filters as the other lists.
+    Manager) and Admins/Super Admins. Ordered by business-status priority, newest
+    first within each status group (see _status_priority_order); every transaction
+    type is included (deposit, withdrawal, settlement, cancels and any future type),
+    so the Manager/Supervisor "All Transactions" view stays complete without code
+    changes. Supports the same server-side search + date/time filters as the other lists.
     """
     stmt = _apply_tx_filters(select(Transaction), search, date_from, date_to,
-                             datetime_from, datetime_to).order_by(Transaction.created_at.desc())
+                             datetime_from, datetime_to).order_by(*_status_priority_order())
     result = await db.execute(stmt)
     return [_t(t, full=False) for t in result.scalars().all()]
 
