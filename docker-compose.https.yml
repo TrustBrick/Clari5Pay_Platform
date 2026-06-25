@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # HTTPS overlay — puts Caddy (automatic Let's Encrypt TLS) in front of the app.
 #
-# Deploy it TOGETHER with the base prod file, and ONLY after app.clari5pay.com's
+# Deploy it TOGETHER with the base prod file, and ONLY after app.win365jackpot.com's
 # DNS A record points at this server (Caddy needs the domain to resolve here to
 # obtain a certificate):
 #
@@ -13,11 +13,11 @@
 services:
   frontend:
     # Caddy now owns 80/443 — drop the frontend's host port mapping (internal only).
-    # This build is the app.clari5pay.com portal chooser (VITE_PORTAL=app from prod.yml).
+    # This build is the app.win365jackpot.com portal chooser (VITE_PORTAL=app from prod.yml).
     ports: !reset []
 
   # ── Role portals: same codebase, built once per role (VITE_PORTAL) ──
-  frontend-merchant:                 # clari5pay.com
+  frontend-merchant:                 # win365jackpot.com
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -29,7 +29,7 @@ services:
     depends_on:
       - backend
 
-  frontend-admin:                    # admin.clari5pay.com
+  frontend-admin:                    # admin.win365jackpot.com
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -41,7 +41,7 @@ services:
     depends_on:
       - backend
 
-  frontend-sa:                       # sa.clari5pay.com
+  frontend-sa:                       # sa.win365jackpot.com
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -53,7 +53,7 @@ services:
     depends_on:
       - backend
 
-  # Customer Support agent portal (served at support.clari5pay.com via Caddy).
+  # Customer Support agent portal (served at support.win365jackpot.com via Caddy).
   support:
     build:
       context: ./support-frontend

@@ -50,7 +50,7 @@ const App: React.FC = () => {
     }
   }, [user]);
 
-  // app.clari5pay.com is just a chooser that routes users to their dedicated portal.
+  // app.win365jackpot.com is just a chooser that routes users to their dedicated portal.
   if (PORTAL === 'app') return <PortalChooser />;
   if (!user) return <LoginPage />;
 

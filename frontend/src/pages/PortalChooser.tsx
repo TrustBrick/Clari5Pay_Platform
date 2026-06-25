@@ -4,7 +4,7 @@ import { Logo } from '../components/UI';
 import ThemeToggle from '../components/ThemeToggle';
 import { PORTAL_LINKS } from '../utils/portal';
 
-// Shown on app.clari5pay.com — routes each user to their dedicated portal domain.
+// Shown on app.win365jackpot.com — routes each user to their dedicated portal domain.
 const PortalChooser: React.FC = () => (
   <div style={{ minHeight: '100vh', background: '#0a2540', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, boxSizing: 'border-box', fontFamily: "'Inter','Segoe UI',sans-serif", position: 'relative' }}>
     <div style={{ position: 'absolute', top: 18, right: 18 }}><ThemeToggle /></div>

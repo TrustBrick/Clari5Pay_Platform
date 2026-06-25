@@ -51,7 +51,7 @@ services:
         # it to the backend. No CORS, no hardcoded server address → no rebuild if
         # the EC2 IP or domain changes.
         VITE_API_BASE_URL: ""
-        VITE_PORTAL: "app"           # app.clari5pay.com → portal chooser landing
+        VITE_PORTAL: "app"           # app.win365jackpot.com → portal chooser landing
     container_name: clari5pay_ui
     restart: unless-stopped
     ports:

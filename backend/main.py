@@ -39,6 +39,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         settings.FRONTEND_ORIGIN,
+        # Production portals (served same-origin via the nginx /api proxy; listed
+        # here so any cross-portal browser request is also allowed).
+        "https://win365jackpot.com",
+        "https://app.win365jackpot.com",
+        "https://admin.win365jackpot.com",
+        "https://sa.win365jackpot.com",
+        "https://support.win365jackpot.com",
         "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
         "http://localhost:5173", "http://localhost:5174",
     ],

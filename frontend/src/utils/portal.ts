@@ -20,16 +20,16 @@ export const PORTAL_NAME: Record<Portal, string> = {
 
 // Where an account of each role should sign in.
 export const ROLE_PORTAL_URL: Record<string, string> = {
-  MERCHANT: 'https://13.127.94.68.sslip.io',
-  ADMIN: 'https://admin.13.127.94.68.sslip.io',
-  SUPER_ADMIN: 'https://sa.13.127.94.68.sslip.io',
+  MERCHANT: 'https://win365jackpot.com',
+  ADMIN: 'https://admin.win365jackpot.com',
+  SUPER_ADMIN: 'https://sa.win365jackpot.com',
 };
 
-// Cards shown on the app.13.127.94.68.sslip.io chooser landing.
+// Cards shown on the app.win365jackpot.com chooser landing.
 export const PORTAL_LINKS = [
-  { name: 'Merchant Portal', url: 'https://13.127.94.68.sslip.io', icon: '🏪', desc: 'Deposits, withdrawals & settlements' },
-  { name: 'Admin Portal', url: 'https://admin.13.127.94.68.sslip.io', icon: '🛡️', desc: 'Process requests & manage merchants' },
-  { name: 'Super Admin Portal', url: 'https://sa.13.127.94.68.sslip.io', icon: '👑', desc: 'Platform oversight & admin accounts' },
+  { name: 'Merchant Portal', url: 'https://win365jackpot.com', icon: '🏪', desc: 'Deposits, withdrawals & settlements' },
+  { name: 'Admin Portal', url: 'https://admin.win365jackpot.com', icon: '🛡️', desc: 'Process requests & manage merchants' },
+  { name: 'Super Admin Portal', url: 'https://sa.win365jackpot.com', icon: '👑', desc: 'Platform oversight & admin accounts' },
 ];
 
 // True if a user with this role may use the current portal.
