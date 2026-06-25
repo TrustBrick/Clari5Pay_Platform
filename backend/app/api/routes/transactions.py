@@ -376,15 +376,21 @@ def _t(t: Transaction, full: bool = True) -> dict:
 
 
 # ─── Server-side search & date/time filtering (shared by every list endpoint) ───
-# Search matches the reference number OR the Membership ID (case-insensitive,
-# partial — exact terms are a subset of partial). Date/Date-time inputs are in IST
-# (the display timezone); created_at is naive UTC, so IST bounds are shifted -5:30
-# before comparison, keeping filter results consistent with the IST times shown.
+# `search` matches the reference number OR the Membership ID; `ref` and `member_id`
+# match each field independently. All are case-insensitive partial matches (an exact
+# term is a subset of partial). Every supplied filter is ANDed together, so multiple
+# filters narrow the result. Date/Date-time inputs are in IST (the display timezone);
+# created_at is naive UTC, so IST bounds are shifted -5:30 before comparison, keeping
+# filter results consistent with the IST times shown.
 def _apply_tx_filters(stmt, search=None, date_from=None, date_to=None,
-                      datetime_from=None, datetime_to=None):
+                      datetime_from=None, datetime_to=None, ref=None, member_id=None):
     if search and search.strip():
         like = f"%{search.strip()}%"
         stmt = stmt.where(or_(Transaction.ref.ilike(like), Transaction.member_id.ilike(like)))
+    if ref and ref.strip():
+        stmt = stmt.where(Transaction.ref.ilike(f"%{ref.strip()}%"))
+    if member_id and member_id.strip():
+        stmt = stmt.where(Transaction.member_id.ilike(f"%{member_id.strip()}%"))
     if date_from:
         start_ist = datetime(date_from.year, date_from.month, date_from.day)
         stmt = stmt.where(Transaction.created_at >= start_ist - IST_OFFSET)
@@ -398,6 +404,18 @@ def _apply_tx_filters(stmt, search=None, date_from=None, date_to=None,
     if datetime_to:
         dt = datetime_to.replace(tzinfo=None)
         stmt = stmt.where(Transaction.created_at <= dt - IST_OFFSET)
+    return stmt
+
+
+# Optional server-side pagination — composes with filtering + ordering so large
+# datasets stay efficient. No bounds are applied unless the caller passes limit/offset
+# (the lists currently fetch the full filtered set; this keeps the capability available
+# without changing existing behaviour or the UI).
+def _paginate(stmt, limit=None, offset=None):
+    if offset:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return stmt
 
 
@@ -437,14 +455,19 @@ async def get_all_transactions(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_admin),
     search: str | None = None,
+    ref: str | None = None,
+    member_id: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     datetime_from: datetime | None = None,
     datetime_to: datetime | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ):
     stmt = _apply_tx_filters(select(Transaction), search, date_from, date_to,
-                             datetime_from, datetime_to).order_by(*_status_priority_order())
-    result = await db.execute(stmt)
+                             datetime_from, datetime_to, ref=ref, member_id=member_id,
+                             ).order_by(*_status_priority_order())
+    result = await db.execute(_paginate(stmt, limit, offset))
     return [_t(t, full=False) for t in result.scalars().all()]
 
 
@@ -453,18 +476,22 @@ async def get_my_transactions(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     search: str | None = None,
+    ref: str | None = None,
+    member_id: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     datetime_from: datetime | None = None,
     datetime_to: datetime | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ):
     if current_user.role != UserRole.MERCHANT:
         raise HTTPException(status_code=403, detail="Merchant only")
     stmt = _apply_tx_filters(
         select(Transaction).where(Transaction.merchant_id == current_user.id),
-        search, date_from, date_to, datetime_from, datetime_to,
+        search, date_from, date_to, datetime_from, datetime_to, ref=ref, member_id=member_id,
     ).order_by(Transaction.created_at.desc())
-    result = await db.execute(stmt)
+    result = await db.execute(_paginate(stmt, limit, offset))
     return [_t(t, full=False) for t in result.scalars().all()]
 
 
@@ -473,21 +500,27 @@ async def get_all_transactions_overseer(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_transactions_overseer),
     search: str | None = None,
+    ref: str | None = None,
+    member_id: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     datetime_from: datetime | None = None,
     datetime_to: datetime | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ):
     """Read-only, system-wide transaction feed for oversight roles (Supervisor /
     Manager) and Admins/Super Admins. Ordered by business-status priority, newest
     first within each status group (see _status_priority_order); every transaction
     type is included (deposit, withdrawal, settlement, cancels and any future type),
     so the Manager/Supervisor "All Transactions" view stays complete without code
-    changes. Supports the same server-side search + date/time filters as the other lists.
+    changes. Supports the same server-side search (reference / Membership ID) +
+    date/time filters as the other lists.
     """
     stmt = _apply_tx_filters(select(Transaction), search, date_from, date_to,
-                             datetime_from, datetime_to).order_by(*_status_priority_order())
-    result = await db.execute(stmt)
+                             datetime_from, datetime_to, ref=ref, member_id=member_id,
+                             ).order_by(*_status_priority_order())
+    result = await db.execute(_paginate(stmt, limit, offset))
     return [_t(t, full=False) for t in result.scalars().all()]
 
 

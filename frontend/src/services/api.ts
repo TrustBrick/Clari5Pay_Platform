@@ -96,11 +96,15 @@ export const authAPI = {
 // params 1:1. Date inputs are IST (YYYY-MM-DD); datetime inputs are IST
 // (YYYY-MM-DDTHH:MM). Empty/blank values are stripped so blank inputs aren't sent.
 export interface TxQuery {
-  search?: string;
+  search?: string;       // matches reference OR Membership ID (legacy combined search)
+  ref?: string;          // partial transaction reference number
+  member_id?: string;    // partial Membership ID
   date_from?: string;
   date_to?: string;
   datetime_from?: string;
   datetime_to?: string;
+  limit?: number;        // optional server-side pagination
+  offset?: number;
 }
 const cleanTxParams = (p?: TxQuery): Record<string, string> | undefined => {
   if (!p) return undefined;
