@@ -18,13 +18,18 @@ interface TxTableProps {
 const rowAction = (mode: ActionMode, status: string, type: string): { label: string; action: string; variant: 'primary' | 'ghost' } | null => {
   const isDeposit = type.startsWith('DEPOSIT');
   if (mode === 'admin') {
+    // Deposits reach the admin (SLIP_SUBMITTED) only after Supervisor approval; withdrawals/
+    // settlements (SLIP_SUBMITTED) only after Manager approval. Legacy withdrawals may still
+    // sit in ACCOUNT_REQUESTED.
     if (isDeposit && status === 'ACCOUNT_REQUESTED') return { label: '🏦 Choose Account', action: 'manage', variant: 'primary' };
     if (isDeposit && status === 'SLIP_SUBMITTED') return { label: '✓ Mark Deposited', action: 'manage', variant: 'primary' };
-    if (!isDeposit && status === 'ACCOUNT_REQUESTED') return { label: '💳 Pay & Complete', action: 'manage', variant: 'primary' };
+    if (!isDeposit && (status === 'ACCOUNT_REQUESTED' || status === 'SLIP_SUBMITTED')) return { label: '💳 Pay & Complete', action: 'manage', variant: 'primary' };
     return { label: '👁 View', action: 'view', variant: 'ghost' };
   }
   if (mode === 'merchant') {
+    // Slip upload: awaiting payment (ACCOUNT_SUBMITTED) or returned by a Supervisor (RESUBMITTED).
     if (isDeposit && status === 'ACCOUNT_SUBMITTED') return { label: '⇪ Pay / Submit Proof', action: 'slip', variant: 'primary' };
+    if (isDeposit && status === 'RESUBMITTED') return { label: '↻ Re-submit Proof', action: 'slip', variant: 'primary' };
     return { label: '👁 View', action: 'view', variant: 'ghost' };
   }
   if (mode === 'view') return { label: '👁 View', action: 'view', variant: 'ghost' };

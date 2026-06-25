@@ -217,8 +217,9 @@ export const MerchantSlipModal: React.FC<{
 
   // Both the UTR number and at least one payment proof are mandatory when submitting a slip.
   const canSubmit = proofs.length > 0 && !!ref.trim();
-  // Slip submission only applies to deposits awaiting the merchant's payment proof.
-  const canSubmitSlip = tx.type.startsWith('DEPOSIT') && tx.status === 'ACCOUNT_SUBMITTED';
+  // Slip submission applies to deposits awaiting the merchant's payment proof, or those a
+  // Supervisor returned for resubmission (the Data Operator re-uploads the correct slip).
+  const canSubmitSlip = tx.type.startsWith('DEPOSIT') && (tx.status === 'ACCOUNT_SUBMITTED' || tx.status === 'RESUBMITTED');
   const adminLabel = tx.type.startsWith('DEPOSIT') ? 'Payment Details from Agent' : 'Payment Receipt from Agent';
 
   const submit = async () => {
@@ -594,6 +595,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [mode, setMode] = useState('BANK');
   const [details, setDetails] = useState<Record<string,string>>({});
   const [available, setAvailable] = useState(0);
+  const [netAvailable, setNetAvailable] = useState(0);
   const [maxWithdrawable, setMaxWithdrawable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -607,7 +609,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     else { setDestId(`bank-${row.id}`); setMode('BANK'); setDetails({ accountHolder: row.accountHolder || '', accountNumber: row.accountNumber || '', ifsc: row.ifsc || '', bank: row.bankName || '', branch: row.branch || '' }); }
   };
 
-  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); }).catch(()=>{}); }, []);
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setNetAvailable(s.netAvailableBalance ?? s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); }).catch(()=>{}); }, []);
 
   // Load this member's saved withdrawal destinations (bank accounts + UPIs), member-scoped.
   useEffect(() => {
@@ -665,10 +667,18 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   return (
     <div>
       <div style={{ background:T.infoBg,borderRadius:12,padding:'14px 16px',marginBottom:16 }}>
-        <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 2px',textTransform:'uppercase',letterSpacing:'0.06em',fontWeight:800 }}>Available Withdrawal Balance</p>
-        <p style={{ fontSize:26,fontWeight:800,color:T.blue,margin:0 }}>{fmt(available)}</p>
-        <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>
-          Max you can withdraw after fees: <b>{fmt(maxWithdrawable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
+        <div style={{ display:'flex',gap:32,flexWrap:'wrap' }}>
+          <div>
+            <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 2px',textTransform:'uppercase',letterSpacing:'0.06em',fontWeight:800 }}>Available Balance</p>
+            <p style={{ fontSize:26,fontWeight:800,color:T.blue,margin:0 }}>{fmt(available)}</p>
+          </div>
+          <div>
+            <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 2px',textTransform:'uppercase',letterSpacing:'0.06em',fontWeight:800 }}>Net Available Balance</p>
+            <p style={{ fontSize:26,fontWeight:800,color:T.success,margin:0 }}>{fmt(netAvailable)}</p>
+          </div>
+        </div>
+        <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>
+          Net Available Balance = Available Balance − Total Withdrawal Fees. Max you can withdraw after fees: <b>{fmt(maxWithdrawable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
         </p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
@@ -749,12 +759,13 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [form, setForm] = useState({ amount:'', memberId:'' });
   const [proofs, setProofs] = useState<string[]>([]);
   const [available, setAvailable] = useState(0);
+  const [netAvailable, setNetAvailable] = useState(0);
   const [maxSettleable, setMaxSettleable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
-  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setNetAvailable(s.netAvailableBalance ?? s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
 
   const submit = async () => {
     if(!form.amount){ showToast('Enter an amount','error'); return; }
@@ -777,7 +788,8 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.grad3,borderRadius:14,padding:20,marginBottom:18,textAlign:'center' }}>
         <p style={{ fontSize:11,color:'rgba(255,255,255,0.6)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Available Balance</p>
         <p style={{ fontSize:30,fontWeight:800,color:'#fff',margin:0 }}>{fmt(available)}</p>
-        <p style={{ fontSize:11,color:'rgba(255,255,255,0.75)',margin:'8px 0 0' }}>
+        <p style={{ fontSize:12,color:'rgba(255,255,255,0.85)',margin:'10px 0 0',fontWeight:700 }}>Net Available Balance: {fmt(netAvailable)}</p>
+        <p style={{ fontSize:11,color:'rgba(255,255,255,0.75)',margin:'6px 0 0' }}>
           Max you can settle after fees: <b>{fmt(maxSettleable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
         </p>
       </div>
@@ -910,34 +922,27 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
   usePoll(reload);
 
   // Canonical balance — single source of truth from the backend (completed only):
-  //   Total Net Available Balance      = Deposits − Pay-In Fees − Settled
-  //   Gross Available Withdrawal Amount = Total Net Available Balance
-  //   Net Available Withdrawal Amount   = Gross Available Withdrawal Amount − Pay-Out Fees
-  //   Net Available Settlement Amount   = Net Available Withdrawal Amount
+  //   Available Balance     = Total Completed Deposit Amount − Total Deposit Fees
+  //   Net Available Balance = Available Balance − Total Withdrawal Fees
   const totalDeposit = s?.totalDeposit ?? 0;
   const payInFees = s?.payInFees ?? 0;
-  const totalSettled = s?.totalSettled ?? 0;
   const payOutFees = s?.payOutFees ?? 0;
-  const netAvailableBalance = s?.netAvailableBalance ?? (totalDeposit - payInFees - totalSettled);
-  const grossAvailableWithdrawal = s?.grossAvailableWithdrawal ?? netAvailableBalance;
-  const available = s?.netAvailableWithdrawal ?? s?.available ?? 0;   // Net Available Withdrawal Amount
+  const available = s?.available ?? (totalDeposit - payInFees);                   // Available Balance
+  const netAvailableBalance = s?.netAvailableBalance ?? (available - payOutFees); // Net Available Balance
 
   const rows: Array<[string, number, string, boolean]> = [
-    ['Total Deposit Amount', totalDeposit, T.success, false],
-    ['Pay-In Fees', payInFees, T.danger, false],
-    ['Total Settled Amount', totalSettled, T.warning, false],
-    ['Total Net Available Balance', netAvailableBalance, T.textMain, true],
-    ['Gross Available Withdrawal Amount', grossAvailableWithdrawal, T.textMain, true],
-    ['Pay-Out Fees', payOutFees, T.danger, false],
-    ['Net Available Withdrawal Amount', available, T.blue, true],
-    ['Net Available Settlement Amount', available, T.success, true],
+    ['Total Completed Deposit Amount', totalDeposit, T.success, false],
+    ['Total Deposit Fees', payInFees, T.danger, false],
+    ['Available Balance', available, T.textMain, true],
+    ['Total Withdrawal Fees', payOutFees, T.danger, false],
+    ['Net Available Balance', netAvailableBalance, T.blue, true],
   ];
 
   return (
     <div style={{ maxWidth:600 }}>
       <Card style={{ padding:26 }}>
         <div style={{ background:T.grad3,borderRadius:16,padding:28,marginBottom:22,color:'#fff' }}>
-          <p style={{ fontSize:11,color:'rgba(255,255,255,0.55)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Net Available Balance</p>
+          <p style={{ fontSize:11,color:'rgba(255,255,255,0.55)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Available Balance</p>
           <p style={{ fontSize:40,fontWeight:800,margin:'0 0 16px' }}>{fmt(available)}</p>
           <div style={{ display:'flex',gap:24,flexWrap:'wrap' }}>
             {[['Pay-In Fee',`${user.payInFee ?? 0}%`],['Pay-Out Fee',`${user.payOutFee ?? 0}%`],['Currency','INR']].map(([k,v])=>(
@@ -953,6 +958,175 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
         ))}
         <p style={{ fontSize:11,color:T.textMuted,margin:'14px 0 0' }}>Computed from completed transactions. Fees are applied at your configured rates.</p>
       </Card>
+    </div>
+  );
+};
+
+// ─── Reviewer (Supervisor / Manager) detail + action modal ─────────────────────
+// Shows the complete payment details for an assigned request and lets the reviewer
+// Approve / Reject / Resubmit. Remarks are mandatory on every action (review-only —
+// reviewers never complete a transaction).
+const REMARK_LABELS: Record<string, { title: string; confirm: string; label: string }> = {
+  approve: { title: 'Approve & forward to Admin', confirm: 'Approve', label: 'Approval Remarks' },
+  reject: { title: 'Reject Request', confirm: 'Reject', label: 'Rejection Remarks' },
+  resubmit: { title: 'Return for Resubmission', confirm: 'Resubmit', label: 'Resubmission Remarks' },
+};
+
+const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () => void; onDone: () => void }> = ({ tx, isManager, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [d, setD] = useState<Transaction>(tx);
+  const [action, setAction] = useState<'approve' | 'reject' | 'resubmit' | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Heavy proof images are omitted from list payloads — fetch the full record on open,
+  // and record a "<role> Viewed" audit entry (the reviewer is opening the request).
+  useEffect(() => { transactionAPI.getDetail(tx.id).then(setD).catch(() => {}); transactionAPI.recordView(tx.id); }, [tx.id]);
+
+  const slips = (d.merchantProofs && d.merchantProofs.length) ? d.merchantProofs : (d.merchantProof ? [d.merchantProof] : []);
+  const isDeposit = d.type.startsWith('DEPOSIT');
+
+  const submit = async (remark: string) => {
+    if (!action) return;
+    setBusy(true);
+    try {
+      if (isManager) await transactionAPI.managerReview(tx.id, action, remark);
+      else await transactionAPI.supervisorReview(tx.id, action, remark);
+      showToast(action === 'approve' ? 'Approved — forwarded to Admin' : action === 'reject' ? 'Request rejected' : 'Returned for resubmission');
+      onDone();
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Action failed', 'error');
+    } finally { setBusy(false); }
+  };
+
+  if (action) {
+    const l = REMARK_LABELS[action];
+    return (
+      <ReasonModal
+        title={`${l.title} — ${d.ref}`} label={l.label} confirmLabel={l.confirm}
+        requiredHint="Remarks are required" maxLength={1000} busy={busy}
+        placeholder="Enter your remarks (mandatory)…"
+        onSubmit={submit} onClose={() => setAction(null)} closeLabel="Back"
+      />
+    );
+  }
+
+  return (
+    <Modal title={`Review Request — ${d.ref}`} onClose={onClose} wide>
+      <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <SlipRow k="Merchant" v={d.merchant} />
+        <SlipRow k="Member" v={memberLabel(d.memberId, d.member) || '—'} />
+        <SlipRow k="Type" v={typeLabel(d.type)} />
+        <SlipRow k="Amount" v={fmt(d.amount)} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} />} />
+        <SlipRow k="Reference" v={d.ref} />
+        {d.merchantRef && <SlipRow k="Payment / UTR Reference" v={d.merchantRef} />}
+        {d.depositType && <SlipRow k="Payment Method" v={depositTypeLabel(d.depositType)} />}
+        {d.payoutMode && <SlipRow k="Payout Mode" v={d.payoutMode} />}
+        {d.bank && <SlipRow k="Bank" v={d.bank} />}
+        {d.accountHolder && <SlipRow k="Account Holder" v={d.accountHolder} />}
+        {d.accountNumber && <SlipRow k="Account Number" v={d.accountNumber} />}
+        {d.ifsc && <SlipRow k="IFSC" v={d.ifsc} />}
+        {d.adminUpiId && <SlipRow k="UPI ID" v={d.adminUpiId} />}
+        {d.senderUpiId && <SlipRow k="Sender UPI" v={d.senderUpiId} />}
+        {d.payoutDetails && Object.entries(d.payoutDetails).map(([k, v]) => v ? <SlipRow key={k} k={k} v={String(v)} /> : null)}
+      </div>
+
+      {/* Timeline (created → reviewer → admin). */}
+      <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Timeline</p>
+        <SlipRow k="Created By" v={`${d.merchant}${d.createdAt ? ` · ${formatDateTime(d.createdAt)}` : ''}`} />
+        {d.supervisorName && <SlipRow k="Supervisor" v={`${d.supervisorName}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
+        {d.managerName && <SlipRow k="Manager" v={`${d.managerName}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
+        {d.adminActionAt && <SlipRow k="Admin Action" v={formatDateTime(d.adminActionAt)} />}
+      </div>
+
+      {/* Deposit slip / proof submitted by the merchant. */}
+      {isDeposit && slips.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Deposit Slip</p>
+          <ProofGallery srcs={slips} />
+        </div>
+      )}
+
+      {/* Remarks history. */}
+      {d.remarksHistory && d.remarksHistory.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Remarks History</p>
+          {d.remarksHistory.map((r, i) => (
+            <div key={i} style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 10, marginBottom: 8 }}>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {r.user} — {r.action}</p>
+              <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{r.remark}</p>
+              <p style={{ margin: '2px 0 0', fontSize: 10, color: T.textMuted }}>{r.at}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', borderTop: `1px solid ${T.border}`, paddingTop: 14 }}>
+        <Btn variant="success" onClick={() => setAction('approve')}>✓ Approve</Btn>
+        <Btn variant="danger" onClick={() => setAction('reject')}>✕ Reject</Btn>
+        <Btn variant="secondary" onClick={() => setAction('resubmit')}>↻ Resubmit</Btn>
+        <Btn variant="ghost" onClick={onClose}>Close</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+// ─── Approvals Page (Supervisor → deposits · Manager → withdrawals/settlements) ──
+export const ApprovalsPage: React.FC<{ user: User }> = ({ user }) => {
+  const isManager = String(user.merchantRole || '').toUpperCase() === 'MANAGER';
+  const queueStatus = isManager ? 'MANAGER_REVIEW' : 'SUPERVISOR_REVIEW';
+  const [txns, setTxns] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [active, setActive] = useState<Transaction | null>(null);
+
+  // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard).
+  const reload = () => transactionAPI.getAllOverseer()
+    .then(rows => setTxns(rows.filter(t => t.status === queueStatus && t.merchant === user.name)))
+    .catch(() => setTxns([]));
+  useEffect(() => { reload().finally(() => setLoading(false)); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  usePoll(() => { if (!active) reload(); });
+
+  if (loading) return <LoadingScreen label="Loading approvals…" />;
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>{isManager ? 'Withdrawal Approvals' : 'Deposit Approvals'}</h2>
+        <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>
+          Requests awaiting your review. Approve to forward to Admin, or Reject / Resubmit — remarks are mandatory.
+        </p>
+      </div>
+      <Card>
+        {txns.length === 0 ? (
+          <p style={{ padding: 24, textAlign: 'center', color: T.textMuted, fontSize: 13 }}>No requests awaiting your review.</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: T.canvas }}>
+                  {['Reference', 'Member', 'Type', 'Amount', 'Status', 'Date & Time', 'Action'].map(h => (
+                    <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}` }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {txns.map(t => (
+                  <tr key={t.id} style={{ background: T.surface, borderBottom: `1px solid ${T.borderLight}` }}>
+                    <td style={{ padding: '11px 14px', fontWeight: 700, color: T.textMain }}>{t.ref}</td>
+                    <td style={{ padding: '11px 14px', color: T.textMuted }}>{memberLabel(t.memberId, t.member) || '—'}</td>
+                    <td style={{ padding: '11px 14px' }}>{typeLabel(t.type)}</td>
+                    <td style={{ padding: '11px 14px', fontWeight: 800, color: T.textMain, whiteSpace: 'nowrap' }}>{fmt(t.amount)}</td>
+                    <td style={{ padding: '11px 14px' }}><Badge status={t.status} type={t.type} /></td>
+                    <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{t.date} {t.time}</td>
+                    <td style={{ padding: '11px 14px' }}><Btn size="sm" onClick={() => setActive(t)}>Review</Btn></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      {active && <ReviewModal tx={active} isManager={isManager} onClose={() => setActive(null)} onDone={() => { setActive(null); reload(); }} />}
     </div>
   );
 };
@@ -1097,7 +1271,7 @@ export const RiskPage: React.FC<{ user: User }> = ({ user }) => (
 
 // ─── Transaction History ──────────────────────────────────────────────────────
 const MERCHANT_TYPES = ['DEPOSIT_REQUEST','WITHDRAWAL_REQUEST','SETTLEMENT_REQUEST','DEPOSIT','WITHDRAWAL','SETTLEMENT'];
-const MERCHANT_STATUSES = ['ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED','COMPLETED','CANCELLED'];
+const MERCHANT_STATUSES = ['ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','PENDING_APPROVAL','SUPERVISOR_REVIEW','MANAGER_REVIEW','SLIP_SUBMITTED','RESUBMITTED','REJECTED','DEPOSITED','COMPLETED','CANCELLED'];
 
 // Oversight merchant roles (Supervisor / Manager) get a read-only, system-wide
 // view of every merchant's transactions; regular merchants see only their own.

@@ -223,6 +223,11 @@ class RejectRequest(BaseModel):
     reason: str
 
 
+class RemarkRequest(BaseModel):
+    """Reviewer (Supervisor/Manager) action with mandatory free-text remarks."""
+    remark: str
+
+
 class BankAccountCreate(BaseModel):
     accountHolder: str
     accountNumber: str

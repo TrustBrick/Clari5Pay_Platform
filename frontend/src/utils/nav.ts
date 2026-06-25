@@ -8,6 +8,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'deposit', icon: '↓', label: 'Deposit Management' },
     { key: 'withdrawal', icon: '↑', label: 'Withdrawal Management' },
     { key: 'settlement', icon: '⇄', label: 'Settlement Management' },
+    { key: 'approvals', icon: '✓', label: 'Approvals' },
     { key: 'cancel', icon: '⊘', label: 'Cancel Request' },
     { key: 'transactions', icon: '≡', label: 'Transactions' },
     { key: 'reports', icon: '📊', label: 'Reports' },
@@ -52,6 +53,7 @@ export const PAGE_TITLES: Record<string, string> = {
   deposit: 'Deposit Management',
   withdrawal: 'Withdrawal Management',
   settlement: 'Settlement Management',
+  approvals: 'Approvals',
   cancel: 'Cancel Request',
   transactions: 'Transactions',
   reports: 'Reports',
@@ -83,8 +85,8 @@ export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
   DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  MANAGER: ['dashboard', 'transactions', 'templates', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  SUPERVISOR: ['dashboard', 'approvals', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  MANAGER: ['dashboard', 'approvals', 'transactions', 'templates', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
 };
 
 /**

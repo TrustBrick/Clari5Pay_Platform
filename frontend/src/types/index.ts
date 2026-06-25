@@ -71,7 +71,13 @@ export type TxStatus =
   | 'CANCELLED'
   | 'ACCOUNT_REQUESTED'
   | 'ACCOUNT_SUBMITTED'
-  | 'SLIP_SUBMITTED';
+  | 'SLIP_SUBMITTED'
+  // Supervisor (deposit) / Manager (withdrawal) review-gate workflow.
+  | 'PENDING_APPROVAL'
+  | 'SUPERVISOR_REVIEW'
+  | 'MANAGER_REVIEW'
+  | 'RESUBMITTED'
+  | 'DEPOSITED';
 
 export type TxType =
   | 'DEPOSIT'
@@ -119,7 +125,25 @@ export interface Transaction {
   cancelReason?: string | null;
   cancelledBy?: string | null;
   cancelledAt?: string | null;
+  // Review-gate workflow record (Supervisor/Manager → Admin).
+  approvedBy?: string | null;
+  processedBy?: string | null;
+  createdAt?: string | null;
+  supervisorName?: string | null;
+  supervisorActionAt?: string | null;
+  managerName?: string | null;
+  managerActionAt?: string | null;
+  adminActionAt?: string | null;
+  remarksHistory?: RemarkEntry[] | null;
   refPrefix?: string;
+}
+
+export interface RemarkEntry {
+  role: string;
+  user: string;
+  action: string;
+  remark: string;
+  at: string;
 }
 
 export interface Account {
@@ -188,10 +212,9 @@ export interface MerchantStats {
   withdrawalAmount: number;
   settlementCount: number;
   settlementAmount: number;
-  grossAmount: number;
-  commissionAmount: number;
-  netAmount: number;
-  available: number;
+  available: number;                  // Available Balance
+  availableBalance?: number;
+  netAvailableBalance?: number;       // Available Balance − Withdrawal Fees
 }
 
 export interface AdminUpi {
@@ -237,14 +260,11 @@ export interface Notification {
 }
 
 export interface BalanceSummary {
-  available: number;                  // = Net Available Withdrawal Amount (canonical display)
-  netAvailableBalance?: number;       // Deposits − Pay-In Fees − Settled
-  grossAvailableWithdrawal?: number;  // = Net Available Balance
-  netAvailableWithdrawal?: number;    // Gross Available Withdrawal − Pay-Out Fees
-  netAvailableSettlement?: number;    // = Net Available Withdrawal
+  available: number;                  // Available Balance = Completed Deposits − Deposit Fees
+  availableBalance?: number;          // explicit alias of `available`
+  netAvailableBalance?: number;       // Available Balance − Withdrawal Fees (withdrawal/settlement only)
   spendableLimit?: number;            // guard — validation only, never displayed
   runningBalance?: number;            // RB (reserved by pending requests)
-  grossAvailable?: number;            // legacy alias (= Net Available Withdrawal)
   maxSettleable?: number;
   maxWithdrawable?: number;           // spend limit net of the pay-out fee on a new withdrawal
   totalDeposit: number;
@@ -430,10 +450,8 @@ export interface ReportData {
     totalDepositAmount: number;
     totalWithdrawalAmount: number;
     totalSettlementAmount: number;
-    grossAmount: number;
-    commissionAmount?: number;   // staff-only — absent from the Merchant API payload
-    netAmount: number;
-    availableBalance: number;
+    availableBalance: number;          // Available Balance = Completed Deposits − Deposit Fees
+    netAvailableBalance: number;       // Available Balance − Withdrawal Fees
     totalTransactionAmount: number;
     activeMemberships: number;
     mostActiveMember: { memberId: string; memberName: string; count: number } | null;

@@ -44,6 +44,12 @@ class TxStatus(str, enum.Enum):
     ACCOUNT_REQUESTED = "ACCOUNT_REQUESTED"
     ACCOUNT_SUBMITTED = "ACCOUNT_SUBMITTED"
     SLIP_SUBMITTED = "SLIP_SUBMITTED"
+    # Supervisor (deposit) / Manager (withdrawal) review-gate workflow.
+    PENDING_APPROVAL = "PENDING_APPROVAL"      # slip/request submitted, awaiting reviewer pickup
+    SUPERVISOR_REVIEW = "SUPERVISOR_REVIEW"    # deposit assigned to a Supervisor
+    MANAGER_REVIEW = "MANAGER_REVIEW"          # withdrawal assigned to a Manager
+    RESUBMITTED = "RESUBMITTED"                # reviewer sent it back to the Data Operator
+    DEPOSITED = "DEPOSITED"                     # admin final-approved a deposit
 
 
 class AccountType(str, enum.Enum):
@@ -157,6 +163,14 @@ class Transaction(Base):
     approved_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     processed_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     agent_code: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # Supervisor (deposit) / Manager (withdrawal) review-gate workflow tracking.
+    # remarks_history is a JSON array of {role, user, action, remark, at} entries.
+    remarks_history: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    supervisor_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    supervisor_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    manager_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    manager_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    admin_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 

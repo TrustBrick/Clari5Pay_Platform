@@ -36,6 +36,14 @@ _NEW_COLUMNS = [
     ("transactions", "approved_by", "VARCHAR(128)"),
     ("transactions", "processed_by", "VARCHAR(128)"),
     ("transactions", "agent_code", "VARCHAR(16)"),
+    # Supervisor/Manager review-gate workflow: reviewer + admin actors/timestamps and
+    # a JSON remarks history ({role,user,action,remark,at}).
+    ("transactions", "remarks_history", "TEXT"),
+    ("transactions", "supervisor_name", "VARCHAR(128)"),
+    ("transactions", "supervisor_action_at", "TIMESTAMP"),
+    ("transactions", "manager_name", "VARCHAR(128)"),
+    ("transactions", "manager_action_at", "TIMESTAMP"),
+    ("transactions", "admin_action_at", "TIMESTAMP"),
     ("login_otps", "purpose", "VARCHAR(16) DEFAULT 'login' NOT NULL"),
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "upi_id", "VARCHAR(64)"),
@@ -79,6 +87,12 @@ _NEW_COLUMNS = [
 _NEW_ENUM_VALUES = [
     ("ACCOUNT_REQUESTED", "SLIP_SUBMITTED"),  # txstatus
     ("LOW", "CRITICAL"),                       # risklevel
+    # Supervisor/Manager review-gate workflow statuses (txstatus).
+    ("COMPLETED", "PENDING_APPROVAL"),
+    ("COMPLETED", "SUPERVISOR_REVIEW"),
+    ("COMPLETED", "MANAGER_REVIEW"),
+    ("COMPLETED", "RESUBMITTED"),
+    ("COMPLETED", "DEPOSITED"),
 ]
 
 

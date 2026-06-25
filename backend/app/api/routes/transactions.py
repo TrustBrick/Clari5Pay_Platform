@@ -5,10 +5,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi
-from app.core.deps import get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer
+from app.core.deps import (
+    get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer,
+    get_current_supervisor, get_current_manager,
+)
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
-    AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest,
+    AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest, RemarkRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
 
@@ -133,11 +136,15 @@ QR_VALIDITY_MINUTES = 15
 # Deposit types that are paid via UPI/QR (display UPI ID / QR only — never bank details).
 UPI_QR_TYPES = {"UPI", "QR"}
 
+# A deposit is "completed" when COMPLETED (legacy) or DEPOSITED (new admin final-approval).
+# Withdrawals/settlements complete as COMPLETED. This set is the completed-only basis for
+# every displayed/reported balance figure.
+_COMPLETED_STATUSES = {TxStatus.COMPLETED, TxStatus.DEPOSITED}
 # A request in any of these states is finished — it no longer reserves the running balance.
-# Everything else (ACCOUNT_REQUESTED / ACCOUNT_SUBMITTED / SLIP_SUBMITTED / PENDING /
-# ADMIN_APPROVED) is "in-flight" and counts toward RB.
+# Everything else (ACCOUNT_REQUESTED / ACCOUNT_SUBMITTED / SLIP_SUBMITTED / PENDING_APPROVAL /
+# SUPERVISOR_REVIEW / MANAGER_REVIEW / PENDING / ADMIN_APPROVED) is "in-flight" and counts toward RB.
 _TERMINAL_STATUSES = {
-    TxStatus.COMPLETED, TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED,
+    TxStatus.COMPLETED, TxStatus.DEPOSITED, TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED,
 }
 # Shown to the merchant when a withdrawal/settlement exceeds their available balance.
 INSUFFICIENT_BALANCE_MSG = (
@@ -158,30 +165,28 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
         select(Transaction).where(Transaction.merchant_id.in_(ids))
     )).scalars().all() if ids else []
 
-    def total(prefix: str, status: TxStatus | None = None) -> float:
+    def total(prefix: str, statuses: set[TxStatus] | None = None) -> float:
         return sum(t.amount for t in txns
-                   if t.type.value.startswith(prefix) and (status is None or t.status == status))
+                   if t.type.value.startswith(prefix) and (statuses is None or t.status in statuses))
 
     pay_in_rate = (user.pay_in_fee or 0) / 100
     pay_out_rate = (user.pay_out_fee or 0) / 100
-    # Completed-only basis for every figure below.
-    total_deposit = total("DEPOSIT", TxStatus.COMPLETED)
-    total_settled = total("SETTLEMENT", TxStatus.COMPLETED)
-    total_withdrawn = total("WITHDRAWAL", TxStatus.COMPLETED)
-    pay_in_fees = total_deposit * pay_in_rate
-    pay_out_fees = total_withdrawn * pay_out_rate
-    settlement_fees = total_settled * pay_out_rate   # used only by the spendable guard below
+    # Completed-only basis for every figure below. A completed deposit is COMPLETED (legacy)
+    # or DEPOSITED (new admin final-approval); withdrawals/settlements complete as COMPLETED.
+    total_deposit = total("DEPOSIT", _COMPLETED_STATUSES)
+    total_settled = total("SETTLEMENT", {TxStatus.COMPLETED})
+    total_withdrawn = total("WITHDRAWAL", {TxStatus.COMPLETED})
+    pay_in_fees = total_deposit * pay_in_rate         # Total Deposit (Pay-In) Fees
+    pay_out_fees = total_withdrawn * pay_out_rate     # Total Withdrawal (Pay-Out) Fees
+    settlement_fees = total_settled * pay_out_rate    # used only by the spendable guard below
 
     # ── Canonical balance formulas — SINGLE SOURCE OF TRUTH (completed only) ──
-    #   Total Net Available Balance      = Deposits − Pay-In Fees − Settled
-    #   Gross Available Withdrawal Amount = Total Net Available Balance
-    #   Net Available Withdrawal Amount   = Gross Available Withdrawal Amount − Pay-Out Fees
-    #   Net Available Settlement Amount   = Net Available Withdrawal Amount
+    #   Available Balance     = Total Completed Deposit Amount − Total Deposit Fees
+    #   Net Available Balance = Available Balance − Total Withdrawal Fees
+    #                           (shown ONLY for Withdrawal / Settlement)
     # These drive every displayed/reported balance across the app.
-    net_available_balance = total_deposit - pay_in_fees - total_settled
-    gross_available_withdrawal = net_available_balance
-    net_available_withdrawal = gross_available_withdrawal - pay_out_fees
-    net_available_settlement = net_available_withdrawal
+    available_balance = total_deposit - pay_in_fees
+    net_available_balance = available_balance - pay_out_fees
 
     # ── Spendable guard — used ONLY to validate new withdrawals/settlements ──
     # The displayed formulas above intentionally do NOT subtract completed withdrawals,
@@ -206,13 +211,10 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     withdrawal_count = sum(1 for t in txns if t.type.value.startswith("WITHDRAWAL"))
 
     return {
-        # Canonical displayed balance (new formulas) — used by EVERY display/report/export.
-        "available": net_available_withdrawal,          # = Net Available Withdrawal Amount
-        "netAvailableBalance": net_available_balance,
-        "grossAvailableWithdrawal": gross_available_withdrawal,
-        "netAvailableWithdrawal": net_available_withdrawal,
-        "netAvailableSettlement": net_available_settlement,
-        "grossAvailable": net_available_withdrawal,      # legacy alias (reports netAmount)
+        # Canonical displayed balances (new formulas) — used by EVERY display/report/export.
+        "available": available_balance,                 # Available Balance (shown everywhere)
+        "availableBalance": available_balance,           # explicit alias
+        "netAvailableBalance": net_available_balance,    # Withdrawal/Settlement only
         # Spendable guard — withdrawal/settlement VALIDATION ONLY (never displayed).
         "spendableLimit": spendable_limit,
         "runningBalance": running_balance,
@@ -238,6 +240,68 @@ async def notify_tx(db: AsyncSession, tx: Transaction, message: str, icon: str =
         recipients.add(merch.created_by)
     for uid in recipients:
         db.add(Notification(user_id=uid, message=message, icon=icon))
+
+
+async def _notify_merchant(db: AsyncSession, tx: Transaction, message: str, icon: str = "🔔") -> None:
+    """Notify only the originating merchant user (rejection / resubmission)."""
+    db.add(Notification(user_id=tx.merchant_id, message=message, icon=icon))
+
+
+async def _notify_admin(db: AsyncSession, tx: Transaction, message: str, icon: str = "🔔") -> None:
+    """Notify the admin who owns (created) this merchant — used when a reviewer forwards a
+    request for final approval."""
+    merch = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
+    if merch and merch.created_by:
+        db.add(Notification(user_id=merch.created_by, message=message, icon=icon))
+
+
+async def _notify_business_role(db: AsyncSession, tx: Transaction, role: str,
+                                message: str, icon: str = "🔔") -> None:
+    """Notify every MERCHANT user in the same business (shared name) holding the given
+    merchant_role — e.g. the Supervisors (deposits) or Managers (withdrawals) review queue."""
+    merch = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
+    if not merch:
+        return
+    rows = (await db.execute(
+        select(User).where(User.role == UserRole.MERCHANT, User.name == merch.name)
+    )).scalars().all()
+    for u in rows:
+        if str(u.merchant_role or "").upper() == role:
+            db.add(Notification(user_id=u.id, message=message, icon=icon))
+
+
+def _client_ip(request: Request | None) -> str | None:
+    """Best-effort client IP (honours a single X-Forwarded-For hop behind the proxy)."""
+    if request is None:
+        return None
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def _append_remark(tx: Transaction, *, role: str, user: str, action: str, remark: str) -> None:
+    """Append an entry to the transaction's JSON remarks history (review audit trail)."""
+    try:
+        history = json.loads(tx.remarks_history) if tx.remarks_history else []
+    except (ValueError, TypeError):
+        history = []
+    history.append({
+        "role": role, "user": user, "action": action,
+        "remark": (remark or "").strip(),
+        "at": _ist_now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    tx.remarks_history = json.dumps(history)
+
+
+async def _get_business_tx(tx_id: str, db: AsyncSession, reviewer: User) -> Transaction:
+    """Fetch a transaction and ensure it belongs to the reviewer's own business (shared name).
+    Used by the Supervisor/Manager review endpoints — they can only act on their business."""
+    tx = await _get_tx(tx_id, db)
+    merch = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
+    if not merch or merch.name != reviewer.name:
+        raise HTTPException(status_code=403, detail="This request is not in your review queue.")
+    return tx
 
 
 def _t(t: Transaction, full: bool = True) -> dict:
@@ -285,6 +349,13 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "cancelReason": t.cancel_reason,
         "cancelledBy": t.cancelled_by,
         "cancelledAt": (t.cancelled_at.isoformat() + "Z") if t.cancelled_at else None,
+        # ── Review-gate workflow record (Supervisor/Manager → Admin) ──
+        "supervisorName": t.supervisor_name,
+        "supervisorActionAt": (t.supervisor_action_at.isoformat() + "Z") if t.supervisor_action_at else None,
+        "managerName": t.manager_name,
+        "managerActionAt": (t.manager_action_at.isoformat() + "Z") if t.manager_action_at else None,
+        "adminActionAt": (t.admin_action_at.isoformat() + "Z") if t.admin_action_at else None,
+        "remarksHistory": (json.loads(t.remarks_history) if t.remarks_history else []),
     }
 
 
@@ -442,10 +513,7 @@ async def merchant_stats(
         )).scalars().all()
         def cnt(pfx: str) -> int:
             return sum(1 for t in txns if t.type.value.startswith(pfx))
-        # Analytics (staff view): Gross = business volume; Net = Gross − Commission.
-        # (The wallet/available figure comes from compute_balance below.)
-        gross = s["totalDeposit"] + s["totalWithdrawn"] + s["totalSettled"]
-        commission = s["payInFees"] + s["payOutFees"] + s["settlementFees"]
+        # Canonical balances drive Merchant Analytics (Gross/Net/Commission cards retired).
         out.append({
             "name": name,
             "merchantId": user.id,
@@ -460,10 +528,9 @@ async def merchant_stats(
             "withdrawalAmount": round(s["totalWithdrawn"], 2),
             "settlementCount": cnt("SETTLEMENT"),
             "settlementAmount": round(s["totalSettled"], 2),
-            "grossAmount": round(gross, 2),
-            "commissionAmount": round(commission, 2),
-            "netAmount": round(gross - commission, 2),
             "available": round(s["available"], 2),
+            "availableBalance": round(s["available"], 2),
+            "netAvailableBalance": round(s["netAvailableBalance"], 2),
         })
     out.sort(key=lambda r: r["name"].lower())
     return out
@@ -531,7 +598,7 @@ def _kind(t: Transaction) -> str | None:
 
 
 def _completed(t: Transaction) -> bool:
-    return t.status == TxStatus.COMPLETED
+    return t.status in _COMPLETED_STATUSES
 
 
 def _member_label(t: Transaction) -> str:
@@ -643,20 +710,10 @@ async def merchant_reports(
                   if (t.member_id or "").strip()
                   and t.created_at and t.created_at >= now - timedelta(days=30)}
 
-    # Financial roll-up (gross / net / available). Commission + the underlying fee figures
-    # are INTERNAL business info — never returned to a Merchant; only Admin / Super Admin
-    # receive them. Enforced server-side here, regardless of what the UI requests.
+    # Canonical balances — the SINGLE source of truth (compute_balance). Gross/Net/Commission
+    # summary cards have been retired in favour of Available Balance (everywhere) and Net
+    # Available Balance (withdrawal/settlement). Underlying fees stay available for internal math.
     bal = await compute_balance(db, current_user)
-    commission_amount = round(bal["payInFees"] + bal["payOutFees"] + bal["settlementFees"], 2)
-    include_commission = current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
-    # Two distinct calculations, by design:
-    #  • Analytics:  Gross Amount = business volume (deposits + withdrawals + settlements);
-    #                Net Amount   = Gross − Commission. (staff view)
-    #  • Wallet:     Available Balance = Net Available Withdrawal Amount (canonical balance).
-    # Commission is internal — merchants never receive it, so a merchant's Net Amount is the
-    # wallet figure (it must not reveal commission via Gross − Net).
-    gross_amount = round(bal["totalDeposit"] + bal["totalWithdrawn"] + bal["totalSettled"], 2)
-    net_amount = round(gross_amount - commission_amount, 2) if include_commission else round(bal["available"], 2)
 
     cards = {
         "totalTransactions": len(txns),
@@ -666,10 +723,8 @@ async def merchant_reports(
         "totalDepositAmount": kind_amount("deposit"),
         "totalWithdrawalAmount": kind_amount("withdrawal"),
         "totalSettlementAmount": kind_amount("settlement"),
-        "grossAmount": gross_amount,
-        # commissionAmount injected below for staff only (never for merchants).
-        "netAmount": net_amount,
         "availableBalance": round(bal["available"], 2),
+        "netAvailableBalance": round(bal["netAvailableBalance"], 2),
         "totalTransactionAmount": round(
             sum(t.amount for t in txns if _completed(t)), 2),
         "activeMemberships": len(active_30d),
@@ -682,9 +737,6 @@ async def merchant_reports(
             "date": str(largest_today.tx_date), "time": largest_today.tx_time,
         } if largest_today else None),
     }
-    # Commission stays out of the Merchant payload entirely (server-side enforced).
-    if include_commission:
-        cards["commissionAmount"] = commission_amount
 
     # ── Quick-report windows ──
     windows = {
@@ -915,6 +967,7 @@ async def create_deposit(
 @router.post("/withdrawal")
 async def create_withdrawal(
     data: WithdrawalCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -933,7 +986,8 @@ async def create_withdrawal(
         ref="TEMP",
         type=TxType.WITHDRAWAL_REQUEST,
         amount=data.amount,
-        status=TxStatus.ACCOUNT_REQUESTED,
+        # Withdrawal submitted → request pending approval, auto-assigned to the Manager review queue.
+        status=TxStatus.MANAGER_REVIEW,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
         tx_date=_ist_now().date(),
@@ -962,9 +1016,10 @@ async def create_withdrawal(
     elif _wd_mode == "UPI":
         await _save_member_upi(db, current_user, data.memberId, (data.payoutDetails or {}).get("upiId"))
     await db.flush()
+    await _notify_business_role(db, tx, "MANAGER", f"Withdrawal {tx.ref} from {tx.merchant_name} — awaiting your review", "↑")
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
-    await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount})", actor=current_user)
-    await record_audit(db, "WITHDRAWAL_REQUESTED", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount))
+    await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount}), assigned to Manager", actor=current_user)
+    await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
     await db.refresh(tx)
     return _t(tx)
 
@@ -972,6 +1027,7 @@ async def create_withdrawal(
 @router.post("/settlement")
 async def create_settlement(
     data: SettlementCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -990,7 +1046,8 @@ async def create_settlement(
         ref="TEMP",
         type=TxType.SETTLEMENT_REQUEST,
         amount=data.amount,
-        status=TxStatus.ACCOUNT_REQUESTED,
+        # Settlement submitted → request pending approval, auto-assigned to the Manager review queue.
+        status=TxStatus.MANAGER_REVIEW,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
         tx_date=_ist_now().date(),
@@ -1005,9 +1062,10 @@ async def create_settlement(
     prefix = current_user.settlement or "SET"
     tx.ref = _make_ref(prefix, tx.id)
     await db.flush()
+    await _notify_business_role(db, tx, "MANAGER", f"Settlement {tx.ref} from {tx.merchant_name} — awaiting your review", "⇄")
     await notify_tx(db, tx, f"Settlement {tx.ref} requested by {tx.merchant_name}", "⇄")
-    await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} requested settlement {tx.ref} ({tx.amount})", actor=current_user)
-    await record_audit(db, "SETTLEMENT_REQUESTED", actor=current_user, entity_type="settlement", entity_id=tx.ref, new=str(tx.amount))
+    await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} requested settlement {tx.ref} ({tx.amount}), assigned to Manager", actor=current_user)
+    await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="settlement", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
     await db.refresh(tx)
     return _t(tx)
 
@@ -1076,10 +1134,13 @@ async def account_submit(
 async def submit_slip(
     tx_id: str,
     data: SlipRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Merchant pays using the admin's details and submits proof (image(s) and/or reference)."""
+    """Merchant pays using the admin's details and submits the deposit slip (image(s) and/or
+    reference). The deposit then enters the Supervisor review gate (PENDING APPROVAL → auto-
+    assigned to the business's Supervisors → SUPERVISOR REVIEW)."""
     _proofs = _clean_proofs(data.merchantProofs, data.merchantProof)
     if not (_proofs or data.merchantRef):
         raise HTTPException(
@@ -1091,11 +1152,16 @@ async def submit_slip(
         tx.merchant_proof = _proofs[0]
         tx.merchant_proofs = json.dumps(_proofs)
     tx.merchant_ref = data.merchantRef
-    tx.status = TxStatus.SLIP_SUBMITTED
+    # Slip submitted → pending approval, auto-assigned to the Supervisor review queue.
+    tx.status = TxStatus.SUPERVISOR_REVIEW
     await db.flush()
+    # Notify the business's Supervisors that a deposit is awaiting their review.
+    await _notify_business_role(db, tx, "SUPERVISOR",
+                                f"{tx.ref}: deposit slip submitted by {tx.merchant_name} — awaiting your review", "🧾")
     await notify_tx(db, tx, f"{tx.ref}: payment slip submitted by {tx.merchant_name}", "🧾")
-    await log_event(db, "SLIP_SUBMITTED", f"{tx.ref}: slip submitted by {tx.merchant_name}", actor=current_user)
-    await record_audit(db, "SLIP_SUBMITTED", actor=current_user, entity_type=tx.type.value, entity_id=tx.ref, new="SLIP_SUBMITTED")
+    await log_event(db, "PENDING_APPROVAL", f"{tx.ref}: slip submitted by {tx.merchant_name}, assigned to Supervisor", actor=current_user)
+    await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type=tx.type.value,
+                       entity_id=tx.ref, new="SUPERVISOR_REVIEW", ip=_client_ip(request))
     await db.refresh(tx)
     return _t(tx)
 
@@ -1103,25 +1169,31 @@ async def submit_slip(
 @router.post("/{tx_id}/done")
 async def mark_done(
     tx_id: str,
+    request: Request,
     data: CompleteRequest | None = None,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """Complete a request. For deposits this is 'Mark Deposited'; for withdrawals/settlements the
-    admin attaches a payment receipt image (adminProof)."""
+    """Admin final approval. For deposits this is 'Mark Deposited' (→ DEPOSITED); for
+    withdrawals/settlements the admin attaches a payment receipt image and it → COMPLETED."""
     tx = await _get_tx(tx_id, db)
     if data and data.adminProof:
         tx.admin_proof = data.adminProof
     if data and data.adminUtr:
         tx.admin_utr = data.adminUtr
-    tx.status = TxStatus.COMPLETED
+    is_deposit = tx.type.value.startswith("DEPOSIT")
+    tx.status = TxStatus.DEPOSITED if is_deposit else TxStatus.COMPLETED
     tx.processed_by = actor.name
     tx.approved_by = tx.approved_by or actor.name
+    tx.admin_action_at = datetime.utcnow()
+    _append_remark(tx, role="ADMIN", user=actor.name, action="APPROVED",
+                   remark="Deposited" if is_deposit else "Completed")
     await db.flush()
-    label = "deposited" if tx.type.value.startswith("DEPOSIT") else "completed"
+    label = "deposited" if is_deposit else "completed"
     await notify_tx(db, tx, f"{tx.ref}: {label}", "✓")
-    await log_event(db, "COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
-    await record_audit(db, "COMPLETED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="COMPLETED")
+    await log_event(db, "TRANSACTION_COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
+    await record_audit(db, "ADMIN_APPROVED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
+                       new=tx.status.value, ip=_client_ip(request))
     await db.refresh(tx)
     return _t(tx)
 
@@ -1223,6 +1295,143 @@ async def regenerate_qr(
     return _t(tx)
 
 
+# ─── Supervisor (deposit) / Manager (withdrawal) review gate ──────────────────
+# Supervisors review deposits; Managers review withdrawals & settlements. Both can
+# Approve (→ forward to Admin as SLIP SUBMITTED), Reject (→ REJECTED) or Resubmit
+# (→ RESUBMITTED, back to the Data Operator). Remarks are mandatory on every action.
+_REVIEW_CONFIG = {
+    "SUPERVISOR": {
+        "prefixes": ("DEPOSIT",), "kind": "deposits", "label": "Supervisor",
+        "review_status": TxStatus.SUPERVISOR_REVIEW,
+        "name_attr": "supervisor_name", "time_attr": "supervisor_action_at",
+    },
+    "MANAGER": {
+        "prefixes": ("WITHDRAWAL", "SETTLEMENT"), "kind": "withdrawals", "label": "Manager",
+        "review_status": TxStatus.MANAGER_REVIEW,
+        "name_attr": "manager_name", "time_attr": "manager_action_at",
+    },
+}
+
+
+async def _reviewer_action(
+    db: AsyncSession, request: Request, tx_id: str, reviewer: User,
+    role: str, decision: str, remark: str,
+) -> dict:
+    remark = (remark or "").strip()
+    if not remark:
+        raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
+    remark = remark[:1000]
+    cfg = _REVIEW_CONFIG[role]
+    tx = await _get_business_tx(tx_id, db, reviewer)
+    if not tx.type.value.startswith(cfg["prefixes"]):
+        raise HTTPException(status_code=400, detail=f"{cfg['label']} review applies to {cfg['kind']} only.")
+    if tx.status != cfg["review_status"]:
+        raise HTTPException(status_code=400, detail=f"This request is not awaiting {cfg['label'].lower()} review.")
+
+    setattr(tx, cfg["name_attr"], reviewer.name)
+    setattr(tx, cfg["time_attr"], datetime.utcnow())
+
+    if decision == "approve":
+        action = "APPROVED"
+        tx.status = TxStatus.SLIP_SUBMITTED        # forwarded to Admin for final approval
+        _append_remark(tx, role=role, user=reviewer.name, action=action, remark=remark)
+        await db.flush()
+        await _notify_admin(db, tx, f"{tx.ref}: approved by {cfg['label']} {reviewer.name} — awaiting your final approval", "✅")
+        await _notify_merchant(db, tx, f"{tx.ref}: approved by {cfg['label']} — forwarded to Admin", "✅")
+    elif decision == "reject":
+        action = "REJECTED"
+        tx.status = TxStatus.REJECTED
+        tx.reject_reason = remark
+        _append_remark(tx, role=role, user=reviewer.name, action=action, remark=remark)
+        await db.flush()
+        await _notify_merchant(db, tx, f"{tx.ref}: rejected by {cfg['label']} — {remark}", "✕")
+    elif decision == "resubmit":
+        action = "RESUBMITTED"
+        tx.status = TxStatus.RESUBMITTED            # returned to the Data Operator
+        _append_remark(tx, role=role, user=reviewer.name, action=action, remark=remark)
+        await db.flush()
+        await _notify_merchant(db, tx, f"{tx.ref}: returned for resubmission by {cfg['label']} — {remark}", "↻")
+        await _notify_business_role(db, tx, "DEO", f"{tx.ref}: returned for correction by {cfg['label']} — {remark}", "↻")
+    else:
+        raise HTTPException(status_code=400, detail="Unknown review decision.")
+
+    await log_event(db, f"{role}_{action}",
+                    f"{tx.ref}: {action.lower()} by {cfg['label']} {reviewer.name} — {remark}", actor=reviewer)
+    await record_audit(db, f"{role}_{action}", actor=reviewer, entity_type=tx.type.value,
+                       entity_id=tx.ref, new=tx.status.value, reason=remark, ip=_client_ip(request))
+    await db.refresh(tx)
+    return _t(tx)
+
+
+@router.post("/{tx_id}/supervisor/approve")
+async def supervisor_approve(tx_id: str, data: RemarkRequest, request: Request,
+                             db: AsyncSession = Depends(get_db),
+                             reviewer: User = Depends(get_current_supervisor)):
+    return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "approve", data.remark)
+
+
+@router.post("/{tx_id}/supervisor/reject")
+async def supervisor_reject(tx_id: str, data: RemarkRequest, request: Request,
+                            db: AsyncSession = Depends(get_db),
+                            reviewer: User = Depends(get_current_supervisor)):
+    return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "reject", data.remark)
+
+
+@router.post("/{tx_id}/supervisor/resubmit")
+async def supervisor_resubmit(tx_id: str, data: RemarkRequest, request: Request,
+                              db: AsyncSession = Depends(get_db),
+                              reviewer: User = Depends(get_current_supervisor)):
+    return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "resubmit", data.remark)
+
+
+@router.post("/{tx_id}/manager/approve")
+async def manager_approve(tx_id: str, data: RemarkRequest, request: Request,
+                          db: AsyncSession = Depends(get_db),
+                          reviewer: User = Depends(get_current_manager)):
+    return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "approve", data.remark)
+
+
+@router.post("/{tx_id}/manager/reject")
+async def manager_reject(tx_id: str, data: RemarkRequest, request: Request,
+                         db: AsyncSession = Depends(get_db),
+                         reviewer: User = Depends(get_current_manager)):
+    return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "reject", data.remark)
+
+
+@router.post("/{tx_id}/manager/resubmit")
+async def manager_resubmit(tx_id: str, data: RemarkRequest, request: Request,
+                           db: AsyncSession = Depends(get_db),
+                           reviewer: User = Depends(get_current_manager)):
+    return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "resubmit", data.remark)
+
+
+def _viewer_role(user: User) -> str | None:
+    """Audit role label for a 'viewed' event — only the reviewers/admins the spec tracks."""
+    if user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        return "ADMIN"
+    mr = str(user.merchant_role or "").upper()
+    if user.role == UserRole.MERCHANT and mr in ("SUPERVISOR", "MANAGER"):
+        return mr
+    return None
+
+
+@router.post("/{tx_id}/view")
+async def record_view(
+    tx_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Record a '<role> Viewed' audit entry when a reviewer/admin opens a request's details.
+    No-op (not audited) for other roles. Called once when the review/detail modal opens."""
+    role = _viewer_role(current_user)
+    if role:
+        tx = await _get_tx(tx_id, db)
+        await record_audit(db, f"{role}_VIEWED", actor=current_user, entity_type=tx.type.value,
+                           entity_id=tx.ref, ip=_client_ip(request))
+    return {"ok": True}
+
+
 # ─── Legacy approval workflow (kept for backward compatibility) ────────────────
 @router.post("/{tx_id}/approve")
 async def approve_transaction(
@@ -1240,6 +1449,7 @@ async def approve_transaction(
 async def reject_transaction(
     tx_id: str,
     data: RejectRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
@@ -1249,11 +1459,13 @@ async def reject_transaction(
     tx = await _get_tx(tx_id, db)
     tx.status = TxStatus.REJECTED
     tx.reject_reason = data.reason.strip()
+    tx.admin_action_at = datetime.utcnow()
+    _append_remark(tx, role="ADMIN", user=actor.name, action="REJECTED", remark=tx.reject_reason)
     await db.flush()
     db.add(Notification(user_id=tx.merchant_id, message=f"{tx.ref} rejected — {tx.reject_reason}", icon="✕"))
-    await log_event(db, "REJECTED", f"{tx.ref} rejected by {actor.name} — reason: {tx.reject_reason}", actor=actor)
-    await record_audit(db, "REJECTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
-                       new="REJECTED", reason=tx.reject_reason)
+    await log_event(db, "ADMIN_REJECTED", f"{tx.ref} rejected by {actor.name} — reason: {tx.reject_reason}", actor=actor)
+    await record_audit(db, "ADMIN_REJECTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
+                       new="REJECTED", reason=tx.reject_reason, ip=_client_ip(request))
     await db.refresh(tx)
     return _t(tx)
 

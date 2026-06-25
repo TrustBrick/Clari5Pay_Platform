@@ -11,7 +11,7 @@ import { PORTAL } from './utils/portal';
 import {
   MerchantDashboard, DepositManagement, WithdrawalManagement, SettlementManagement,
   TransactionHistory, BalancePage, RiskPage, MerchantSupportChat, ProfilePage,
-  CancelRequestPage, TemplatesPage, NewsPage, ReportsPage,
+  CancelRequestPage, TemplatesPage, NewsPage, ReportsPage, ApprovalsPage,
 } from './pages/MerchantPages';
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
@@ -66,6 +66,7 @@ const App: React.FC = () => {
       deposit: <DepositManagement {...props} />,
       withdrawal: <WithdrawalManagement {...props} />,
       settlement: <SettlementManagement {...props} />,
+      approvals: <ApprovalsPage user={user} />,
       cancel: <CancelRequestPage {...props} />,
       transactions: <TransactionHistory {...props} />,
       reports: <ReportsPage {...props} />,

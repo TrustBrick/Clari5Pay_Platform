@@ -182,6 +182,20 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/done`, data ?? {});
     return res.data;
   },
+  // Supervisor (deposit) review-gate actions — remarks are mandatory.
+  supervisorReview: async (id: string, decision: 'approve' | 'reject' | 'resubmit', remark: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/supervisor/${decision}`, { remark });
+    return res.data;
+  },
+  // Manager (withdrawal/settlement) review-gate actions — remarks are mandatory.
+  managerReview: async (id: string, decision: 'approve' | 'reject' | 'resubmit', remark: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/manager/${decision}`, { remark });
+    return res.data;
+  },
+  // Record a "<role> Viewed" audit entry when a reviewer/admin opens a request's details.
+  recordView: async (id: string) => {
+    try { await api.post(`/api/transactions/${id}/view`); } catch { /* best-effort audit */ }
+  },
   cancel: async (id: string, reason: string) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/cancel`, { reason });
     return res.data;

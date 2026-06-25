@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, MERCHANT_ROLE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, rolesForProfile, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
@@ -18,10 +18,10 @@ import type { Transaction, User, Account, AccountBalance, MerchantBalance, Merch
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
-const REQUEST_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'COMPLETED', 'CANCELLED'];
+const REQUEST_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'PENDING_APPROVAL', 'SUPERVISOR_REVIEW', 'MANAGER_REVIEW', 'SLIP_SUBMITTED', 'RESUBMITTED', 'REJECTED', 'DEPOSITED', 'COMPLETED', 'CANCELLED'];
 
-// Active (pending) workflow statuses — anything not yet completed/cancelled.
-const ACTIVE_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'PENDING', 'ADMIN_APPROVED'];
+// Active (pending) workflow statuses — anything not yet completed/deposited/cancelled.
+const ACTIVE_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'PENDING_APPROVAL', 'SUPERVISOR_REVIEW', 'MANAGER_REVIEW', 'SLIP_SUBMITTED', 'RESUBMITTED', 'PENDING', 'ADMIN_APPROVED'];
 const isActive = (s: string) => ACTIVE_STATUSES.includes(s);
 
 const roleLabel = (r?: string | null) => merchantRoleLabel(r) || '—';
@@ -70,14 +70,20 @@ const RequestModal: React.FC<{
   const [riskConfirm, setRiskConfirm] = useState(false);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
   const [imgs, setImgs] = useState<{ adminProof?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
+  // Full record incl. proof images + the review-gate workflow trail; also records an
+  // "Admin Viewed" audit entry (the admin is opening the request).
+  const [record, setRecord] = useState<Transaction>(tx);
   useEffect(() => {
-    transactionAPI.getDetail(tx.id).then(d => setImgs({ adminProof: d.adminProof, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs })).catch(()=>{});
+    transactionAPI.getDetail(tx.id).then(d => { setImgs({ adminProof: d.adminProof, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs }); setRecord(d); }).catch(()=>{});
+    transactionAPI.recordView(tx.id);
   }, [tx.id]);
 
-  // Admin steps:
+  // Admin steps. Deposits reach the admin as SLIP_SUBMITTED only after Supervisor approval;
+  // withdrawals/settlements reach the admin as SLIP_SUBMITTED only after Manager approval
+  // (legacy withdrawals may still sit in ACCOUNT_REQUESTED — keep them payable).
   const chooseStep = canAct && isDeposit && tx.status === 'ACCOUNT_REQUESTED'; // pick account → auto PNG
   const depositDoneStep = canAct && isDeposit && tx.status === 'SLIP_SUBMITTED'; // review slip → Deposited
-  const payStep = canAct && !isDeposit && tx.status === 'ACCOUNT_REQUESTED'; // pay merchant → upload receipt → Completed
+  const payStep = canAct && !isDeposit && (tx.status === 'SLIP_SUBMITTED' || tx.status === 'ACCOUNT_REQUESTED'); // pay merchant → upload receipt → Completed
   const active = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED'].includes(tx.status);
   const canReject = canAct && active;
   const title = chooseStep ? 'Choose Account' : depositDoneStep ? 'Review Payment Slip' : payStep ? 'Pay & Complete' : 'Request Details';
@@ -275,6 +281,29 @@ const RequestModal: React.FC<{
         </div>
       )}
 
+      {/* Approval record — Created/Supervisor/Manager/Admin trail + remarks history. */}
+      {(record.supervisorName || record.managerName || record.approvedBy || record.processedBy || (record.remarksHistory && record.remarksHistory.length > 0)) && (
+        <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Approval Record</p>
+          <Row k="Created By" v={`${record.merchant}${record.createdAt ? ` · ${formatDateTime(record.createdAt)}` : ''}`} />
+          {record.supervisorName && <Row k="Supervisor" v={`${record.supervisorName}${record.supervisorActionAt ? ` · ${formatDateTime(record.supervisorActionAt)}` : ''}`} />}
+          {record.managerName && <Row k="Manager" v={`${record.managerName}${record.managerActionAt ? ` · ${formatDateTime(record.managerActionAt)}` : ''}`} />}
+          {record.processedBy && <Row k="Admin" v={`${record.processedBy}${record.adminActionAt ? ` · ${formatDateTime(record.adminActionAt)}` : ''}`} />}
+          {record.remarksHistory && record.remarksHistory.length > 0 && (
+            <div style={{ marginTop:8 }}>
+              <p style={{ fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Remarks History</p>
+              {record.remarksHistory.map((r, i) => (
+                <div key={i} style={{ borderLeft:`3px solid ${T.border}`,paddingLeft:10,marginBottom:8 }}>
+                  <p style={{ margin:0,fontSize:12,fontWeight:700,color:T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {r.user} — {r.action}</p>
+                  <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>{r.remark}</p>
+                  <p style={{ margin:'2px 0 0',fontSize:10,color:T.textMuted }}>{r.at}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {chooseStep && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <div style={{ display:'flex',gap:8,marginBottom:12 }}>
@@ -391,29 +420,30 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   // Pending = every active (in-flight) request: Account Requested, Account Submitted,
   // Slip Submitted, Pending. Only completed/cancelled are excluded.
   const pending = txns.filter(t => isActive(t.status));
-  const completed = txns.filter(t => t.status === 'COMPLETED');
+  const completed = txns.filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED');
   // Default view = pending; picking a status filters the full set (so completed/cancelled are reachable too).
   const base = status === 'ALL' ? pending : txns.filter(t => t.status === status);
   const filtered = base.filter(t => type === 'ALL' || t.type === type);
 
-  // Real-time figures (straight from DB records).
-  const completedTx = txns.filter(t => t.status === 'COMPLETED');
+  // Real-time figures (straight from DB records). A completed deposit is COMPLETED (legacy)
+  // or DEPOSITED (new admin final-approval).
+  const completedTx = txns.filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED');
   const feeMap: Record<number, { pin: number; pout: number }> = Object.fromEntries(
     merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
   );
   const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
-  // Gross = total money volume (deposits + withdrawals + settlements).
-  const grossAmount = sumType(completedTx, 'DEPOSIT') + sumType(completedTx, 'WITHDRAWAL') + sumType(completedTx, 'SETTLEMENT');
-  // Commission = fees the platform earns on completed deposits/withdrawals/settlements.
-  // Withdrawals and settlements both carry the pay-out fee.
-  const commissionAmount = completedTx.reduce((a, t) => {
+  // Canonical balances (mirror compute_balance): Available = Completed Deposits − Deposit Fees;
+  // Net Available = Available − Withdrawal Fees.
+  const depositFees = completedTx.reduce((a, t) => {
     const f = feeMap[t.merchantId];
-    if (!f) return a;
-    if (t.type.startsWith('DEPOSIT')) return a + t.amount * f.pin;
-    if (t.type.startsWith('WITHDRAWAL') || t.type.startsWith('SETTLEMENT')) return a + t.amount * f.pout;
-    return a;
+    return f && t.type.startsWith('DEPOSIT') ? a + t.amount * f.pin : a;
   }, 0);
-  const netAmount = grossAmount - commissionAmount;
+  const withdrawalFees = completedTx.reduce((a, t) => {
+    const f = feeMap[t.merchantId];
+    return f && t.type.startsWith('WITHDRAWAL') ? a + t.amount * f.pout : a;
+  }, 0);
+  const availableBalance = sumType(completedTx, 'DEPOSIT') - depositFees;
+  const netAvailableBalance = availableBalance - withdrawalFees;
   const depReqs = txns.filter(t => t.type.startsWith('DEPOSIT')).length;
   const wdReqs = txns.filter(t => t.type.startsWith('WITHDRAWAL')).length;
   const setReqs = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
@@ -424,8 +454,9 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
     return [
       { label: 'Requested', value: arr.filter(t => t.status === 'ACCOUNT_REQUESTED').length, color: T.warning },
       { label: 'Submitted', value: arr.filter(t => t.status === 'ACCOUNT_SUBMITTED').length, color: T.info },
+      { label: 'In Review', value: arr.filter(t => t.status === 'PENDING_APPROVAL' || t.status === 'SUPERVISOR_REVIEW' || t.status === 'MANAGER_REVIEW' || t.status === 'RESUBMITTED').length, color: T.warning },
       { label: 'Slip', value: arr.filter(t => t.status === 'SLIP_SUBMITTED').length, color: T.blue },
-      { label: 'Completed', value: arr.filter(t => t.status === 'COMPLETED').length, color: T.success },
+      { label: 'Completed', value: arr.filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED').length, color: T.success },
       { label: 'Rejected', value: arr.filter(t => t.status === 'REJECTED' || t.status === 'CANCELLED').length, color: T.danger },
     ];
   };
@@ -434,11 +465,10 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
 
   return (
     <div>
-      <div className="ad-stat-money" style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:14 }}>
+      <div className="ad-stat-money" style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:14 }}>
         <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
-        <StatCard icon="💹" label="Gross Amount" value={fmt(grossAmount)} sub="Deposits + Withdrawals + Settlements" color={T.success}/>
-        <StatCard icon="🧾" label="Commission Amount" value={fmt(commissionAmount)} sub="Pay In + Pay Out + Settlement Fees" color={T.info}/>
-        <StatCard icon="💰" label="Net Amount" value={fmt(netAmount)} sub="Gross − Commission" color={T.green}/>
+        <StatCard icon="💰" label="Available Balance" value={fmt(availableBalance)} sub="Completed Deposits − Deposit Fees" color={T.success}/>
+        <StatCard icon="◎" label="Net Available Balance" value={fmt(netAvailableBalance)} sub="Available Balance − Withdrawal Fees" color={T.green}/>
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(6,minmax(0,1fr))',gap:12,marginBottom:20 }}>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
@@ -529,8 +559,8 @@ export const AdminTransactionsPage: React.FC = () => {
 };
 
 // ─── Merchant Analytics (Admin + Super Admin) ───────────────────────────────────
-// One card per merchant business with deposit/withdrawal/settlement totals + gross/
-// commission/net/available. Backend scopes the merchant list by role (Admin → only
+// One card per merchant business with deposit/withdrawal/settlement totals + Available /
+// Net Available Balance. Backend scopes the merchant list by role (Admin → only
 // merchants they created; Super Admin → all). Card amounts are computed client-side
 // from completed transactions so the date-range filter visibly re-scopes them.
 const ANALYTICS_TABS: Array<{ pfx: 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT'; label: string }> = [
@@ -567,23 +597,24 @@ export const MerchantAnalyticsPage: React.FC = () => {
   const inRange = (t: Transaction) => (!from || (t.date || '') >= from) && (!to || (t.date || '') <= to);
   const merchTx = (name: string) => txns.filter(t => t.merchant === name);
 
-  // Card numbers: counts include all statuses in range; amounts + gross/commission/net
-  // use COMPLETED only (fees realise on completion). Available is the current pooled balance.
+  // Card numbers: counts include all statuses in range; amounts use COMPLETED/DEPOSITED only
+  // (fees realise on completion). Available/Net Available mirror the canonical balance formulas.
   const cardStats = (s: MerchantStats) => {
     const tx = merchTx(s.name).filter(inRange);
     const ofType = (pfx: string) => tx.filter(t => t.type.startsWith(pfx));
-    const done = (pfx: string) => ofType(pfx).filter(t => t.status === 'COMPLETED').reduce((a, t) => a + t.amount, 0);
+    const done = (pfx: string) => ofType(pfx)
+      .filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED')
+      .reduce((a, t) => a + t.amount, 0);
     const dep = done('DEPOSIT'), wd = done('WITHDRAWAL'), set = done('SETTLEMENT');
     const pin = (s.payInFee || 0) / 100, pout = (s.payOutFee || 0) / 100;
-    const commission = dep * pin + wd * pout + set * pout;
-    // Analytics: Gross = business volume; Net = Gross − Commission. (Distinct from the
-    // wallet/available balance, which uses the canonical balance formulas server-side.)
-    const gross = dep + wd + set;
+    // Available Balance = Completed Deposits − Deposit Fees; Net Available = Available − Withdrawal Fees.
+    const availableBalance = dep - dep * pin;
+    const netAvailableBalance = availableBalance - wd * pout;
     return {
       depositCount: ofType('DEPOSIT').length, depositAmount: dep,
       withdrawalCount: ofType('WITHDRAWAL').length, withdrawalAmount: wd,
       settlementCount: ofType('SETTLEMENT').length, settlementAmount: set,
-      gross, commission, net: gross - commission, available: s.available,
+      availableBalance, netAvailableBalance, available: s.available,
     };
   };
 
@@ -751,10 +782,8 @@ export const MerchantAnalyticsPage: React.FC = () => {
               ['Withdrawal Amount', fmt(c.withdrawalAmount)],
               ['Total Settlement Requests', String(c.settlementCount)],
               ['Settlement Amount', fmt(c.settlementAmount)],
-              ['Gross Amount', fmt(c.gross), T.success],
-              ['Commission Amount', fmt(c.commission), T.info],
-              ['Net Amount', fmt(c.net), T.blue],
-              ['Available Balance', fmt(c.available), T.green],
+              ['Available Balance', fmt(c.availableBalance), T.success],
+              ['Net Available Balance', fmt(c.netAvailableBalance), T.blue],
             ];
             return (
               <Card key={s.name} style={{ padding: 20, display: 'flex', flexDirection: 'column' }}>
@@ -867,8 +896,8 @@ export const AdminMerchantsPage: React.FC = () => {
               <Input label="Confirm Password" type="password" value={form.confirmPassword} onChange={e=>set('confirmPassword',e.target.value)} placeholder="Re-enter password" required/>
               {passwordMismatch && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
             </div>
-            <Sel label="Role Selection" value={form.merchantRole} onChange={e=>set('merchantRole',e.target.value)} required options={MERCHANT_ROLE_OPTIONS}/>
-            <Sel label="Profile Type" value={form.profile} onChange={e=>set('profile',e.target.value)} options={['Admin','User','Maker','Checker'].map(v=>({value:v,label:v}))}/>
+            <Sel label="Role Selection" value={form.merchantRole} onChange={e=>set('merchantRole',e.target.value)} required options={rolesForProfile(form.profile)}/>
+            <Sel label="Profile Type" value={form.profile} onChange={e=>{ const p=e.target.value; const opts=rolesForProfile(p); setForm(f=>({ ...f, profile:p, merchantRole: opts.some(o=>o.value===f.merchantRole) ? f.merchantRole : (opts[0]?.value || '') })); }} options={['Admin','User','Maker','Checker'].map(v=>({value:v,label:v}))}/>
             <Input label="Pay-In Code" value={form.payIn} onChange={e=>set('payIn',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. DEP (max 3 chars)" required/>
             <Input label="Pay-Out Code" value={form.payOut} onChange={e=>set('payOut',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. WIT" required/>
             <Input label="Settlement Code" value={form.settlement} onChange={e=>set('settlement',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. SET" required/>
@@ -1274,23 +1303,19 @@ export const SaDashboard: React.FC = () => {
     return { day: d.toLocaleDateString('en-IN', { weekday: 'short' }), deposit: onDay('DEPOSIT'), withdrawal: onDay('WITHDRAWAL') };
   });
 
-  // Platform-wide gross & commission (net), from completed deposit/withdrawal records across all merchants.
-  const completedTx = txns.filter(t => t.status === 'COMPLETED');
+  // Platform-wide canonical balances from completed deposit/withdrawal records across all merchants.
+  // A completed deposit is COMPLETED (legacy) or DEPOSITED (new admin final-approval).
+  const completedTx = txns.filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED');
   const feeMap: Record<number, { pin: number; pout: number }> = Object.fromEntries(
     merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
   );
   const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
   const totalDeposits = sumType(completedTx, 'DEPOSIT');
-  const totalWithdrawals = sumType(completedTx, 'WITHDRAWAL');
-  const totalSettlements = sumType(completedTx, 'SETTLEMENT');
   const payInFees = completedTx.filter(t => t.type.startsWith('DEPOSIT')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pin || 0), 0);
   const payOutFees = completedTx.filter(t => t.type.startsWith('WITHDRAWAL')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pout || 0), 0);
-  // Settlements carry the same pay-out fee as withdrawals.
-  const settlementFees = completedTx.filter(t => t.type.startsWith('SETTLEMENT')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pout || 0), 0);
-  const commissionAmount = payInFees + payOutFees + settlementFees;
-  // Gross = total money volume (deposits + withdrawals + settlements) — same as the admin dashboard.
-  const grossAmount = totalDeposits + totalWithdrawals + totalSettlements;
-  const netAmount = grossAmount - commissionAmount;
+  // Available Balance = Completed Deposits − Deposit Fees; Net Available = Available − Withdrawal Fees.
+  const availableBalance = totalDeposits - payInFees;
+  const netAvailableBalance = availableBalance - payOutFees;
 
   return (
     <div>
@@ -1301,13 +1326,11 @@ export const SaDashboard: React.FC = () => {
         <StatCard icon="✅" label="Active Admins" value={admins.filter(a=>a.active).length} color={T.info}/>
         <StatCard icon="📊" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
       </div>
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:20 }} className="sa-fin-grid">
-        <FinanceCard icon="💹" label="Gross Amount" value={grossAmount} color={T.success}
-          rows={[['Total Deposits', totalDeposits], ['Total Withdrawals', totalWithdrawals], ['Total Settlements', totalSettlements]]} />
-        <FinanceCard icon="🧾" label="Commission Amount" value={commissionAmount} color={T.info}
-          rows={[['Pay-In Fees', payInFees], ['Pay-Out Fees', payOutFees], ['Settlement Fees', settlementFees], ['Total Commission', commissionAmount]]} />
-        <FinanceCard icon="💰" label="Net Amount" value={netAmount} color={T.green}
-          rows={[['Gross Amount', grossAmount], ['Commission Amount', commissionAmount], ['Net (Gross − Commission)', netAmount]]} />
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:14,marginBottom:20 }} className="sa-fin-grid">
+        <FinanceCard icon="💰" label="Available Balance" value={availableBalance} color={T.success}
+          rows={[['Completed Deposits', totalDeposits], ['Deposit Fees', payInFees], ['Available Balance', availableBalance]]} />
+        <FinanceCard icon="◎" label="Net Available Balance" value={netAvailableBalance} color={T.green}
+          rows={[['Available Balance', availableBalance], ['Withdrawal Fees', payOutFees], ['Net Available Balance', netAvailableBalance]]} />
       </div>
       <style>{`@media(max-width:760px){.sa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}.sa-fin-grid{grid-template-columns:1fr!important;}}@media(max-width:460px){.sa-stat-grid{grid-template-columns:1fr!important;}}`}</style>
       <Card style={{ padding:22,marginBottom:20 }}>

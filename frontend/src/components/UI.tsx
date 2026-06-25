@@ -65,7 +65,7 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
 
 // ─── Badge ───────────────────────────────────────────────────────────────────
 // Statuses that are still "in flight" → their dot gently pulses to signal processing.
-const INFLIGHT_STATUSES = new Set(['PENDING','ADMIN_APPROVED','ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED']);
+const INFLIGHT_STATUSES = new Set(['PENDING','ADMIN_APPROVED','ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED','PENDING_APPROVAL','SUPERVISOR_REVIEW','MANAGER_REVIEW','RESUBMITTED']);
 export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: string }> = ({ status, type, viewerRole }) => {
   const s = statusStyle(status);
   return (

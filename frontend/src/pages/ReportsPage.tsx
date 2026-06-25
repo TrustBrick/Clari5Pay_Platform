@@ -522,7 +522,7 @@ const totalsOf = (rows: ReportRow[]) => {
 };
 
 // ── Filter-aware report export (Download PDF / Print) — includes the filtered table ──
-function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName: string, generatedBy: string, rangeLabel: string, autoPrint = true, showCommission = true) {
+function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName: string, generatedBy: string, rangeLabel: string, autoPrint = true) {
   const w = window.open('', '_blank', 'width=1180,height=820');
   if (!w) { alert('Please allow pop-ups to export the report.'); return; }
   const c = data.cards; const now = new Date().toLocaleString('en-IN'); const tot = totalsOf(rows);
@@ -543,7 +543,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
       <div class="meta">Transaction Report — CONFIDENTIAL<br>${esc(businessName)}<br>Generated: ${esc(now)} · By ${esc(generatedBy)}<br>Range: ${esc(rangeLabel)} · ${rows.length} transaction(s)</div></div>
     <h2>Summary</h2><div class="kpis">
       ${kpi('Total Deposits', fmt(c.totalDepositAmount))}${kpi('Total Withdrawals', fmt(c.totalWithdrawalAmount))}${kpi('Total Settlements', fmt(c.totalSettlementAmount))}
-      ${kpi('Gross Amount', fmt(c.grossAmount))}${showCommission ? kpi('Commission', fmt(c.commissionAmount ?? 0)) : ''}${kpi('Net Amount', fmt(c.netAmount))}${kpi('Available Balance', fmt(c.availableBalance))}</div>
+      ${kpi('Available Balance', fmt(c.availableBalance))}${kpi('Net Available Balance', fmt(c.netAvailableBalance))}</div>
     <h2>Transactions (filtered)</h2>
     <table><thead><tr><th>Reference</th><th>Membership - Member</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th><th>Processed By</th></tr></thead>
       <tbody>${body || '<tr><td colspan="10" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>'}</tbody>
@@ -577,9 +577,6 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
   );
 
   const c = data.cards;
-  // Commission is internal business info — only Admin / Super Admin see it (the Reports
-  // dashboard is Merchant-only today; this future-proofs the Admin/SA extension).
-  const isStaff = user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
   const statuses = Array.from(new Set(data.transactions.map(r => r.status)));
   const filtered = data.transactions.filter(r => matchesFilters(r, f));
   const tot = totalsOf(filtered);
@@ -607,9 +604,9 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
           <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Reports &amp; Analytics</h2>
           <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Financial intelligence dashboard — your memberships, transactions and reports.</p>
         </div>
-        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true, isStaff)}>📄 Download PDF</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true)}>📄 Download PDF</Btn>
         <Btn size="sm" variant="secondary" onClick={downloadExcel}>📊 Download Excel</Btn>
-        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true, isStaff)}>🖨 Print Report</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true)}>🖨 Print Report</Btn>
       </div>
 
       {/* 1 — Summary cards */}
@@ -617,10 +614,8 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
         {card('Total Deposits', c.totalDepositAmount, T.success)}
         {card('Total Withdrawals', c.totalWithdrawalAmount, T.danger)}
         {card('Total Settlements', c.totalSettlementAmount, T.blue)}
-        {card('Gross Amount', c.grossAmount, T.textMain)}
-        {isStaff && card('Commission Amount', c.commissionAmount ?? 0, T.warning)}
-        {card('Net Amount', c.netAmount, '#7c3aed')}
         {card('Available Balance', c.availableBalance, '#1d4ed8')}
+        {card('Net Available Balance', c.netAvailableBalance, '#7c3aed')}
       </div>
 
       {/* 2 — Report metadata */}
@@ -716,10 +711,8 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
           {meta('Total Deposits', <span style={{ color: T.success }}>{fmt(tot.deposits)}</span>)}
           {meta('Total Withdrawals', <span style={{ color: T.danger }}>{fmt(tot.withdrawals)}</span>)}
           {meta('Total Settlements', <span style={{ color: T.blue }}>{fmt(tot.settlements)}</span>)}
-          {meta('Gross Amount', fmt(c.grossAmount))}
-          {isStaff && meta('Commission Amount', <span style={{ color: T.warning }}>{fmt(c.commissionAmount ?? 0)}</span>)}
-          {meta('Net Amount', <span style={{ color: '#7c3aed' }}>{fmt(c.netAmount)}</span>)}
           {meta('Available Balance', <span style={{ color: '#1d4ed8' }}>{fmt(c.availableBalance)}</span>)}
+          {meta('Net Available Balance', <span style={{ color: '#7c3aed' }}>{fmt(c.netAvailableBalance)}</span>)}
         </div>
       </Card>
 

@@ -16,6 +16,12 @@ export const statusStyle = (s: TxStatus) => {
     ACCOUNT_REQUESTED: { color: T.warning, bg: T.warningBg },
     ACCOUNT_SUBMITTED: { color: T.info, bg: T.infoBg },
     SLIP_SUBMITTED: { color: T.blue, bg: T.infoBg },
+    // Supervisor (deposit) / Manager (withdrawal) review-gate workflow.
+    PENDING_APPROVAL: { color: T.warning, bg: T.warningBg },
+    SUPERVISOR_REVIEW: { color: T.blue, bg: T.infoBg },
+    MANAGER_REVIEW: { color: T.blue, bg: T.infoBg },
+    RESUBMITTED: { color: T.warning, bg: T.warningBg },
+    DEPOSITED: { color: T.success, bg: T.successBg },
   };
   return map[s] || { color: T.textMuted, bg: T.borderLight };
 };
@@ -62,13 +68,26 @@ export const MERCHANT_ROLE_LABELS: Record<string, string> = {
 export const merchantRoleLabel = (r?: string | null) =>
   r ? (MERCHANT_ROLE_LABELS[String(r).toUpperCase()] || r) : '';
 
-export const MERCHANT_ROLE_OPTIONS = [
+// Maker = data-entry operators; Checker = review/approval roles. The admin "Create
+// Merchant" form scopes the Roles dropdown to the selected Profile Type using these.
+export const MAKER_ROLE_OPTIONS = [
   { value: 'DEO', label: 'Data Operator' },
   { value: 'DEPOSIT_OPERATOR', label: 'Deposit Operator' },
   { value: 'WITHDRAWAL_OPERATOR', label: 'Withdrawal Operator' },
+];
+export const CHECKER_ROLE_OPTIONS = [
   { value: 'SUPERVISOR', label: 'Supervisor' },
   { value: 'MANAGER', label: 'Manager' },
 ];
+export const MERCHANT_ROLE_OPTIONS = [...MAKER_ROLE_OPTIONS, ...CHECKER_ROLE_OPTIONS];
+
+// Roles allowed for a given Profile Type. Maker → operator roles; Checker → review roles;
+// any other profile keeps the full list.
+export const rolesForProfile = (profile?: string | null) => {
+  if (profile === 'Maker') return MAKER_ROLE_OPTIONS;
+  if (profile === 'Checker') return CHECKER_ROLE_OPTIONS;
+  return MERCHANT_ROLE_OPTIONS;
+};
 
 // Unified "Membership Number - Member Name" label (number always first), e.g.
 // "MBR02703 - Satish Kumar". Falls back to whichever part exists. Used everywhere a

@@ -65,7 +65,7 @@ async def get_transactions_overseer(current_user: User = Depends(get_current_use
 
     Granted to Admins/Super Admins, and to MERCHANT users whose merchant_role is an
     oversight role (Supervisor / Manager). Used only for *viewing* — it never grants
-    the ability to act on (approve/reject/edit) a transaction.
+    the ability to complete (mark deposited / complete) a transaction.
     """
     if current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
         return current_user
@@ -75,3 +75,23 @@ async def get_transactions_overseer(current_user: User = Depends(get_current_use
     ):
         return current_user
     raise HTTPException(status_code=403, detail="Oversight access required")
+
+
+def _is_merchant_role(user: User, role: str) -> bool:
+    return user.role == UserRole.MERCHANT and str(user.merchant_role or "").upper() == role
+
+
+async def get_current_supervisor(current_user: User = Depends(get_current_user)) -> User:
+    """A MERCHANT user whose merchant_role is SUPERVISOR — the deposit review gate.
+    Supervisors review (approve/reject/resubmit) but never complete a transaction."""
+    if not _is_merchant_role(current_user, "SUPERVISOR"):
+        raise HTTPException(status_code=403, detail="Supervisor access required")
+    return current_user
+
+
+async def get_current_manager(current_user: User = Depends(get_current_user)) -> User:
+    """A MERCHANT user whose merchant_role is MANAGER — the withdrawal review gate.
+    Managers review (approve/reject/resubmit) but never complete a transaction."""
+    if not _is_merchant_role(current_user, "MANAGER"):
+        raise HTTPException(status_code=403, detail="Manager access required")
+    return current_user
