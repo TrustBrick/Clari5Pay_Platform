@@ -522,7 +522,7 @@ const totalsOf = (rows: ReportRow[]) => {
 };
 
 // ── Filter-aware report export (Download PDF / Print) — includes the filtered table ──
-function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName: string, generatedBy: string, rangeLabel: string, autoPrint = true) {
+function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName: string, generatedBy: string, rangeLabel: string, autoPrint = true, showCommission = true) {
   const w = window.open('', '_blank', 'width=1180,height=820');
   if (!w) { alert('Please allow pop-ups to export the report.'); return; }
   const c = data.cards; const now = new Date().toLocaleString('en-IN'); const tot = totalsOf(rows);
@@ -533,7 +533,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
     @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
     .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0052cc;padding-bottom:10px}
     .brand{font-size:22px;font-weight:800}.brand .b{color:#0052cc}.brand .g{color:#26d00c}.meta{margin-left:auto;text-align:right;font-size:11px;color:#4a5568;line-height:1.6}
-    h2{font-size:13px;margin:16px 0 8px;color:#0052cc}.kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+    h2{font-size:13px;margin:16px 0 8px;color:#0052cc}.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
     .kpi{border:1px solid #e2e8f0;border-radius:8px;padding:7px 9px}.kl{font-size:8.5px;text-transform:uppercase;letter-spacing:.04em;color:#64748b}.kv{font-size:13px;font-weight:800;margin-top:2px}
     table{width:100%;border-collapse:collapse;font-size:9.5px}th{background:#0a2540;color:#fff;text-align:left;padding:6px 7px;font-size:8.5px;text-transform:uppercase}
     td{padding:5px 7px;border-bottom:1px solid #e2e8f0}tr.alt td{background:#f5f8ff}.amt{text-align:right;font-weight:700}.mono{font-family:'Courier New',monospace}.nw{white-space:nowrap}
@@ -543,7 +543,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
       <div class="meta">Transaction Report — CONFIDENTIAL<br>${esc(businessName)}<br>Generated: ${esc(now)} · By ${esc(generatedBy)}<br>Range: ${esc(rangeLabel)} · ${rows.length} transaction(s)</div></div>
     <h2>Summary</h2><div class="kpis">
       ${kpi('Total Deposits', fmt(c.totalDepositAmount))}${kpi('Total Withdrawals', fmt(c.totalWithdrawalAmount))}${kpi('Total Settlements', fmt(c.totalSettlementAmount))}
-      ${kpi('Gross Amount', fmt(c.grossAmount))}${kpi('Commission', fmt(c.commissionAmount))}${kpi('Net Amount', fmt(c.netAmount))}${kpi('Available Balance', fmt(c.availableBalance))}</div>
+      ${kpi('Gross Amount', fmt(c.grossAmount))}${showCommission ? kpi('Commission', fmt(c.commissionAmount)) : ''}${kpi('Net Amount', fmt(c.netAmount))}${kpi('Available Balance', fmt(c.availableBalance))}</div>
     <h2>Transactions (filtered)</h2>
     <table><thead><tr><th>Reference</th><th>Membership - Member</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th><th>Processed By</th></tr></thead>
       <tbody>${body || '<tr><td colspan="10" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>'}</tbody>
@@ -577,6 +577,9 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
   );
 
   const c = data.cards;
+  // Commission is internal business info — only Admin / Super Admin see it (the Reports
+  // dashboard is Merchant-only today; this future-proofs the Admin/SA extension).
+  const isStaff = user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
   const statuses = Array.from(new Set(data.transactions.map(r => r.status)));
   const filtered = data.transactions.filter(r => matchesFilters(r, f));
   const tot = totalsOf(filtered);
@@ -604,9 +607,9 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
           <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Reports &amp; Analytics</h2>
           <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Financial intelligence dashboard — your memberships, transactions and reports.</p>
         </div>
-        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true)}>📄 Download PDF</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true, isStaff)}>📄 Download PDF</Btn>
         <Btn size="sm" variant="secondary" onClick={downloadExcel}>📊 Download Excel</Btn>
-        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true)}>🖨 Print Report</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true, isStaff)}>🖨 Print Report</Btn>
       </div>
 
       {/* 1 — Summary cards */}
@@ -615,7 +618,7 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
         {card('Total Withdrawals', c.totalWithdrawalAmount, T.danger)}
         {card('Total Settlements', c.totalSettlementAmount, T.blue)}
         {card('Gross Amount', c.grossAmount, T.textMain)}
-        {card('Commission Amount', c.commissionAmount, T.warning)}
+        {isStaff && card('Commission Amount', c.commissionAmount, T.warning)}
         {card('Net Amount', c.netAmount, '#7c3aed')}
         {card('Available Balance', c.availableBalance, '#1d4ed8')}
       </div>
@@ -714,7 +717,7 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
           {meta('Total Withdrawals', <span style={{ color: T.danger }}>{fmt(tot.withdrawals)}</span>)}
           {meta('Total Settlements', <span style={{ color: T.blue }}>{fmt(tot.settlements)}</span>)}
           {meta('Gross Amount', fmt(c.grossAmount))}
-          {meta('Commission Amount', <span style={{ color: T.warning }}>{fmt(c.commissionAmount)}</span>)}
+          {isStaff && meta('Commission Amount', <span style={{ color: T.warning }}>{fmt(c.commissionAmount)}</span>)}
           {meta('Net Amount', <span style={{ color: '#7c3aed' }}>{fmt(c.netAmount)}</span>)}
           {meta('Available Balance', <span style={{ color: '#1d4ed8' }}>{fmt(c.availableBalance)}</span>)}
         </div>
