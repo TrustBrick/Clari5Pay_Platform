@@ -1033,12 +1033,16 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
 };
 
 // ─── All Templates View (Manager — read-only consolidated list) ─────────────────
-export const TemplatesPage: React.FC<{ user: User }> = () => {
+export const TemplatesPage: React.FC<{ user: User }> = ({ user }) => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const reload = () => transactionAPI.getMine().then(setTxns).catch(()=>setTxns([]));
-  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  // Oversight roles (Manager/Supervisor) see every merchant's requests; others see their own.
+  const reload = () => {
+    const fn = isOverseerRole(user) ? transactionAPI.getAllOverseer : transactionAPI.getMine;
+    return fn().then(setTxns).catch(()=>setTxns([]));
+  };
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role, user.merchantRole]);
   usePoll(reload);
 
   return (
@@ -1090,6 +1094,11 @@ export const RiskPage: React.FC<{ user: User }> = ({ user }) => (
 const MERCHANT_TYPES = ['DEPOSIT_REQUEST','WITHDRAWAL_REQUEST','SETTLEMENT_REQUEST','DEPOSIT','WITHDRAWAL','SETTLEMENT'];
 const MERCHANT_STATUSES = ['ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED','COMPLETED','CANCELLED'];
 
+// Oversight merchant roles (Supervisor / Manager) get a read-only, system-wide
+// view of every merchant's transactions; regular merchants see only their own.
+const isOverseerRole = (user: User) =>
+  user.role === 'MERCHANT' && ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
+
 export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [search, setSearch] = useState('');
@@ -1098,11 +1107,16 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   const [loading, setLoading] = useState(true);
   const [slipTx, setSlipTx] = useState<Transaction | null>(null);
 
+  const overseer = isOverseerRole(user);
+
   const reload = () => {
-    const fn = user.role === 'MERCHANT' ? transactionAPI.getMine : transactionAPI.getAll;
+    // Supervisor/Manager → all transactions (read-only); merchant → own; admin → all.
+    const fn = overseer ? transactionAPI.getAllOverseer
+      : user.role === 'MERCHANT' ? transactionAPI.getMine
+      : transactionAPI.getAll;
     return fn().then(setTxns).catch(()=>setTxns([]));
   };
-  useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role]);
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role, user.merchantRole]);
   usePoll(() => { if (!slipTx) reload(); });
 
   const filtered = txns.filter(t => {
@@ -1114,7 +1128,8 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
     <>
     <Card>
       <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
-        <h3 style={{ margin:'0 0 12px',fontSize:14,fontWeight:800 }}>Transaction Ledger</h3>
+        <h3 style={{ margin:'0 0 12px',fontSize:14,fontWeight:800 }}>{overseer ? 'All Transactions' : 'Transaction Ledger'}</h3>
+        {overseer && <p style={{ margin:'-6px 0 12px',fontSize:11,color:T.textMuted }}>Read-only view of every merchant's transactions, newest first.</p>}
         <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
           <div style={{ position:'relative',flex:1,minWidth:180 }}>
             <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
@@ -1130,7 +1145,9 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
           <TxExportButton txns={filtered} title="Transaction Ledger" />
         </div>
       </div>
-      <TxTable loading={loading} txns={filtered} viewerRole={user.role} actionMode={user.role==='MERCHANT'?'merchant':'view'} onAction={(t)=>setSlipTx(t)}/>
+      <TxTable loading={loading} txns={filtered} viewerRole={user.role}
+        actionMode={overseer ? 'none' : (user.role==='MERCHANT'?'merchant':'view')}
+        onAction={overseer ? undefined : (t)=>setSlipTx(t)}/>
       <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
         <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {txns.length}</p>
       </div>

@@ -54,3 +54,24 @@ async def get_current_support(current_user: User = Depends(get_current_user)) ->
     if current_user.role != UserRole.SUPPORT_AGENT:
         raise HTTPException(status_code=403, detail="Support agent access required")
     return current_user
+
+
+# Merchant access roles allowed read-only oversight of the whole transaction feed.
+OVERSIGHT_MERCHANT_ROLES = ("SUPERVISOR", "MANAGER")
+
+
+async def get_transactions_overseer(current_user: User = Depends(get_current_user)) -> User:
+    """Read-only, system-wide transaction visibility.
+
+    Granted to Admins/Super Admins, and to MERCHANT users whose merchant_role is an
+    oversight role (Supervisor / Manager). Used only for *viewing* — it never grants
+    the ability to act on (approve/reject/edit) a transaction.
+    """
+    if current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        return current_user
+    if (
+        current_user.role == UserRole.MERCHANT
+        and str(current_user.merchant_role or "").upper() in OVERSIGHT_MERCHANT_ROLES
+    ):
+        return current_user
+    raise HTTPException(status_code=403, detail="Oversight access required")

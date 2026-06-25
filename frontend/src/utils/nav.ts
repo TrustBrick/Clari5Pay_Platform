@@ -84,7 +84,7 @@ export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
   DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   SUPERVISOR: ['dashboard', 'settlement', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  MANAGER: ['dashboard', 'templates', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  MANAGER: ['dashboard', 'transactions', 'templates', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
 };
 
 /**

@@ -91,6 +91,12 @@ export const transactionAPI = {
     const res = await api.get<Transaction[]>('/api/transactions/mine');
     return res.data;
   },
+  // Read-only, system-wide feed for oversight merchant roles (Supervisor / Manager).
+  // Returns every transaction (all types) newest-first; the backend enforces access.
+  getAllOverseer: async () => {
+    const res = await api.get<Transaction[]>('/api/transactions/all');
+    return res.data;
+  },
   // Full single transaction incl. proof/receipt images (lists omit those for speed).
   getDetail: async (id: string) => {
     const res = await api.get<Transaction>(`/api/transactions/${id}/detail`);

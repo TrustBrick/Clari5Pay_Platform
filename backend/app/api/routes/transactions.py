@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi
-from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
+from app.core.deps import get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
     AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest,
@@ -280,6 +280,20 @@ async def get_my_transactions(
         .where(Transaction.merchant_id == current_user.id)
         .order_by(Transaction.created_at.desc())
     )
+    return [_t(t, full=False) for t in result.scalars().all()]
+
+
+@router.get("/all")
+async def get_all_transactions_overseer(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_transactions_overseer),
+):
+    """Read-only, system-wide transaction feed for oversight roles (Supervisor /
+    Manager) and Admins/Super Admins. Newest first; every transaction type is
+    included (deposit, withdrawal, settlement, cancels and any future type), so the
+    Manager/Supervisor "All Transactions" view stays complete without code changes.
+    """
+    result = await db.execute(select(Transaction).order_by(Transaction.created_at.desc()))
     return [_t(t, full=False) for t in result.scalars().all()]
 
 
