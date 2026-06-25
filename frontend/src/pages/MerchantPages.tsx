@@ -5,7 +5,9 @@ import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen,
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
 import { TxExportButton } from '../components/TxExport';
+import TxSearchFilters from '../components/TxSearchFilters';
 import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI } from '../services/api';
+import type { TxQuery } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
@@ -1101,7 +1103,7 @@ const isOverseerRole = (user: User) =>
 
 export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   const [txns, setTxns] = useState<Transaction[]>([]);
-  const [search, setSearch] = useState('');
+  const [query, setQuery] = useState<TxQuery>({});   // server-side search + date filters
   const [type, setType] = useState('ALL');
   const [status, setStatus] = useState('ALL');
   const [loading, setLoading] = useState(true);
@@ -1111,18 +1113,18 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
 
   const reload = () => {
     // Supervisor/Manager → all transactions (read-only); merchant → own; admin → all.
+    // The applied search/date filters are sent server-side for performance.
     const fn = overseer ? transactionAPI.getAllOverseer
       : user.role === 'MERCHANT' ? transactionAPI.getMine
       : transactionAPI.getAll;
-    return fn().then(setTxns).catch(()=>setTxns([]));
+    return fn(query).then(setTxns).catch(()=>setTxns([]));
   };
-  useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role, user.merchantRole]);
+  // Refetch on mount, role change, and whenever the applied filters change.
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role, user.merchantRole, query]);
   usePoll(() => { if (!slipTx) reload(); });
 
-  const filtered = txns.filter(t => {
-    const ms = !search || t.ref.toLowerCase().includes(search.toLowerCase()) || t.merchant.toLowerCase().includes(search.toLowerCase());
-    return ms && (type === 'ALL' || t.type === type) && (status === 'ALL' || t.status === status);
-  });
+  // Type/status are lightweight client-side refinements on the server-filtered set.
+  const filtered = txns.filter(t => (type === 'ALL' || t.type === type) && (status === 'ALL' || t.status === status));
 
   return (
     <>
@@ -1130,12 +1132,8 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
       <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
         <h3 style={{ margin:'0 0 12px',fontSize:14,fontWeight:800 }}>{overseer ? 'All Transactions' : 'Transaction Ledger'}</h3>
         {overseer && <p style={{ margin:'-6px 0 12px',fontSize:11,color:T.textMuted }}>Read-only view of every merchant's transactions, newest first.</p>}
-        <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
-          <div style={{ position:'relative',flex:1,minWidth:180 }}>
-            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search reference or merchant..."
-              style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
-          </div>
+        <TxSearchFilters onApply={setQuery} onClear={()=>setQuery({})} />
+        <div style={{ display:'flex',gap:8,flexWrap:'wrap',marginTop:12 }}>
           <select value={type} onChange={e=>setType(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...MERCHANT_TYPES].map(v=><option key={v} value={v}>{v==='ALL'?'All Types':typeLabel(v)}</option>)}
           </select>

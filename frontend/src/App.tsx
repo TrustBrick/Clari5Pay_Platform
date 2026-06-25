@@ -4,6 +4,7 @@ import { T } from './utils/theme';
 import { PAGE_TITLES } from './utils/nav';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
+import SessionManager from './components/SessionManager';
 import LoginPage from './pages/LoginPage';
 import PortalChooser from './pages/PortalChooser';
 import { PORTAL } from './utils/portal';
@@ -93,6 +94,8 @@ const App: React.FC = () => {
 
   return (
     <>
+      {/* Inactivity session timeout (10 min) — active only while logged in. */}
+      <SessionManager />
       <style>{`
         *{margin:0;padding:0;box-sizing:border-box;}
         body{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:${T.canvas};}

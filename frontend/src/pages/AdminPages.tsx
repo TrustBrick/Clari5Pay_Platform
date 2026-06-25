@@ -6,10 +6,12 @@ import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
 import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
+import TxSearchFilters from '../components/TxSearchFilters';
 import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
+import type { TxQuery } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, AdminUpi } from '../types';
@@ -489,31 +491,25 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
 // ─── Admin All Transactions ─────────────────────────────────────────────────────
 export const AdminTransactionsPage: React.FC = () => {
   const [txns, setTxns] = useState<Transaction[]>([]);
-  const [search, setSearch] = useState('');
+  const [query, setQuery] = useState<TxQuery>({});   // server-side search + date filters
   const [type, setType] = useState('ALL');
   const [status, setStatus] = useState('ALL');
   const [loading, setLoading] = useState(true);
   const [active, setActive] = useState<Transaction | null>(null);
 
-  const reload = () => transactionAPI.getAll().then(setTxns).catch(()=>setTxns([]));
-  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  const reload = () => transactionAPI.getAll(query).then(setTxns).catch(()=>setTxns([]));
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, [query]);
   usePoll(() => { if (!active) reload(); });
 
-  const filtered = txns.filter(t => {
-    const ms = !search || t.ref.toLowerCase().includes(search.toLowerCase()) || t.merchant.toLowerCase().includes(search.toLowerCase());
-    return ms && (type === 'ALL' || t.type === type) && (status === 'ALL' || t.status === status);
-  });
+  // Type/status are client-side refinements on the server-filtered set.
+  const filtered = txns.filter(t => (type === 'ALL' || t.type === type) && (status === 'ALL' || t.status === status));
 
   return (
     <Card>
       <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
         <h3 style={{ margin:'0 0 12px',fontSize:14,fontWeight:800 }}>All Transactions</h3>
-        <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
-          <div style={{ position:'relative',flex:1,minWidth:180 }}>
-            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search reference or merchant..."
-              style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
-          </div>
+        <TxSearchFilters onApply={setQuery} onClear={()=>setQuery({})} />
+        <div style={{ display:'flex',gap:8,flexWrap:'wrap',marginTop:12 }}>
           <select value={type} onChange={e=>setType(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...REQUEST_TYPES].map(v=><option key={v} value={v}>{v==='ALL'?'All Types':typeLabel(v)}</option>)}
           </select>

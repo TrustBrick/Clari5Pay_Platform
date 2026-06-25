@@ -2,7 +2,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer
@@ -17,7 +17,8 @@ from app.api.routes.system_logs import log_event, record_audit
 # platform's operating timezone — even though the server clock runs in UTC. The
 # machine timestamp `created_at` stays UTC (used for ordering/analytics). IST observes
 # no DST, so a fixed +5:30 offset is always exact.
-IST = timezone(timedelta(hours=5, minutes=30))
+IST_OFFSET = timedelta(hours=5, minutes=30)
+IST = timezone(IST_OFFSET)
 
 
 def _ist_now() -> datetime:
@@ -271,12 +272,45 @@ def _t(t: Transaction, full: bool = True) -> dict:
     }
 
 
+# ─── Server-side search & date/time filtering (shared by every list endpoint) ───
+# Search matches the reference number OR the Membership ID (case-insensitive,
+# partial — exact terms are a subset of partial). Date/Date-time inputs are in IST
+# (the display timezone); created_at is naive UTC, so IST bounds are shifted -5:30
+# before comparison, keeping filter results consistent with the IST times shown.
+def _apply_tx_filters(stmt, search=None, date_from=None, date_to=None,
+                      datetime_from=None, datetime_to=None):
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        stmt = stmt.where(or_(Transaction.ref.ilike(like), Transaction.member_id.ilike(like)))
+    if date_from:
+        start_ist = datetime(date_from.year, date_from.month, date_from.day)
+        stmt = stmt.where(Transaction.created_at >= start_ist - IST_OFFSET)
+    if date_to:
+        # inclusive of the whole "to" day → strictly before the next IST midnight
+        end_ist = datetime(date_to.year, date_to.month, date_to.day) + timedelta(days=1)
+        stmt = stmt.where(Transaction.created_at < end_ist - IST_OFFSET)
+    if datetime_from:
+        df = datetime_from.replace(tzinfo=None)
+        stmt = stmt.where(Transaction.created_at >= df - IST_OFFSET)
+    if datetime_to:
+        dt = datetime_to.replace(tzinfo=None)
+        stmt = stmt.where(Transaction.created_at <= dt - IST_OFFSET)
+    return stmt
+
+
 @router.get("")
 async def get_all_transactions(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_admin),
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    datetime_from: datetime | None = None,
+    datetime_to: datetime | None = None,
 ):
-    result = await db.execute(select(Transaction).order_by(Transaction.created_at.desc()))
+    stmt = _apply_tx_filters(select(Transaction), search, date_from, date_to,
+                             datetime_from, datetime_to).order_by(Transaction.created_at.desc())
+    result = await db.execute(stmt)
     return [_t(t, full=False) for t in result.scalars().all()]
 
 
@@ -284,14 +318,19 @@ async def get_all_transactions(
 async def get_my_transactions(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    datetime_from: datetime | None = None,
+    datetime_to: datetime | None = None,
 ):
     if current_user.role != UserRole.MERCHANT:
         raise HTTPException(status_code=403, detail="Merchant only")
-    result = await db.execute(
-        select(Transaction)
-        .where(Transaction.merchant_id == current_user.id)
-        .order_by(Transaction.created_at.desc())
-    )
+    stmt = _apply_tx_filters(
+        select(Transaction).where(Transaction.merchant_id == current_user.id),
+        search, date_from, date_to, datetime_from, datetime_to,
+    ).order_by(Transaction.created_at.desc())
+    result = await db.execute(stmt)
     return [_t(t, full=False) for t in result.scalars().all()]
 
 
@@ -299,13 +338,21 @@ async def get_my_transactions(
 async def get_all_transactions_overseer(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_transactions_overseer),
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    datetime_from: datetime | None = None,
+    datetime_to: datetime | None = None,
 ):
     """Read-only, system-wide transaction feed for oversight roles (Supervisor /
     Manager) and Admins/Super Admins. Newest first; every transaction type is
     included (deposit, withdrawal, settlement, cancels and any future type), so the
     Manager/Supervisor "All Transactions" view stays complete without code changes.
+    Supports the same server-side search + date/time filters as the other lists.
     """
-    result = await db.execute(select(Transaction).order_by(Transaction.created_at.desc()))
+    stmt = _apply_tx_filters(select(Transaction), search, date_from, date_to,
+                             datetime_from, datetime_to).order_by(Transaction.created_at.desc())
+    result = await db.execute(stmt)
     return [_t(t, full=False) for t in result.scalars().all()]
 
 

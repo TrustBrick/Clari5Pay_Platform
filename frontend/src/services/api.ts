@@ -80,21 +80,50 @@ export const authAPI = {
     const res = await api.get<User>('/api/auth/me');
     return res.data;
   },
+  // Best-effort server-side logout (audit trail). Never throws — logout must not be
+  // blocked by a backend hiccup; the client clears its own session regardless.
+  // The token is passed explicitly so the call still carries auth even when the
+  // caller clears localStorage immediately afterwards.
+  logout: async (token?: string): Promise<void> => {
+    try {
+      await api.post('/api/auth/logout', null,
+        token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+    } catch { /* best-effort */ }
+  },
+};
+
+// Server-side transaction search/filter params. Keys match the backend query
+// params 1:1. Date inputs are IST (YYYY-MM-DD); datetime inputs are IST
+// (YYYY-MM-DDTHH:MM). Empty/blank values are stripped so blank inputs aren't sent.
+export interface TxQuery {
+  search?: string;
+  date_from?: string;
+  date_to?: string;
+  datetime_from?: string;
+  datetime_to?: string;
+}
+const cleanTxParams = (p?: TxQuery): Record<string, string> | undefined => {
+  if (!p) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(p)) {
+    if (v != null && String(v).trim() !== '') out[k] = String(v);
+  }
+  return Object.keys(out).length ? out : undefined;
 };
 
 export const transactionAPI = {
-  getAll: async (params?: { type?: string; status?: string; search?: string }) => {
-    const res = await api.get<Transaction[]>('/api/transactions', { params });
+  getAll: async (params?: TxQuery) => {
+    const res = await api.get<Transaction[]>('/api/transactions', { params: cleanTxParams(params) });
     return res.data;
   },
-  getMine: async () => {
-    const res = await api.get<Transaction[]>('/api/transactions/mine');
+  getMine: async (params?: TxQuery) => {
+    const res = await api.get<Transaction[]>('/api/transactions/mine', { params: cleanTxParams(params) });
     return res.data;
   },
   // Read-only, system-wide feed for oversight merchant roles (Supervisor / Manager).
   // Returns every transaction (all types) newest-first; the backend enforces access.
-  getAllOverseer: async () => {
-    const res = await api.get<Transaction[]>('/api/transactions/all');
+  getAllOverseer: async (params?: TxQuery) => {
+    const res = await api.get<Transaction[]>('/api/transactions/all', { params: cleanTxParams(params) });
     return res.data;
   },
   // Full single transaction incl. proof/receipt images (lists omit those for speed).

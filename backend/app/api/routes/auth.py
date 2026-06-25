@@ -212,6 +212,24 @@ async def otp_config(
     return {"enabled": data.enabled}
 
 
+@router.post("/logout")
+async def logout(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Best-effort logout hook for the client (called on manual logout and on the
+    inactivity timeout). Access tokens here are stateless JWTs, so they are not
+    server-side revoked — the client clears its own token/cookies/storage. This
+    endpoint records the event for the audit trail. Always returns 200 so a logout
+    is never blocked by a transient backend issue (the client ignores failures).
+    """
+    await log_event(db, "LOGOUT", f"{current_user.name} ({current_user.role.value}) signed out", actor=current_user)
+    await record_audit(db, "LOGOUT", actor=current_user, entity_type="user",
+                       entity_id=current_user.id, ip=_client_ip(request))
+    return {"status": "ok"}
+
+
 @router.post("/verify-otp")
 async def verify_otp(
     data: OtpVerifyRequest,

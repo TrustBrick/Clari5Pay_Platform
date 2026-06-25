@@ -6,6 +6,7 @@ import { PORTAL, PORTAL_NAME } from '../utils/portal';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { authAPI } from '../services/api';
+import { SESSION_EXPIRED_KEY } from '../components/SessionManager';
 import { passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import type { OtpChallenge } from '../types';
 
@@ -38,8 +39,19 @@ const LoginPage: React.FC = () => {
   // Resend OTP becomes available only after a 60-second cooldown.
   const [resendIn, setResendIn] = useState(0);
   const armResend = () => setResendIn(60);
+  // Inactivity-logout notice (set by SessionManager). Shown once, then cleared.
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   useEffect(() => { authAPI.otpStatus().then(s => setOtpEnabled(s.enabled)).catch(()=>{}); }, []);
+
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(SESSION_EXPIRED_KEY)) {
+        setSessionExpired(true);
+        sessionStorage.removeItem(SESSION_EXPIRED_KEY);
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -244,6 +256,8 @@ const LoginPage: React.FC = () => {
               <h2 style={{ fontSize:22,fontWeight:800,color:T.textMain,margin:'0 0 6px' }}>Welcome back</h2>
               <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>Sign in to the <b style={{ color:T.blue }}>{PORTAL_NAME[PORTAL]}</b></p>
             </div>
+
+            {sessionExpired && <div style={{ background:T.warningBg,border:`1px solid ${T.warning}40`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.warning,fontWeight:600 }}>⏳ Your session has expired due to 10 minutes of inactivity. Please log in again.</div>}
 
             {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}>⚠ {error}</div>}
 

@@ -72,12 +72,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const resendOtp = useCallback((otpToken: string) => authAPI.resendOtp(otpToken), []);
 
   const logout = useCallback(() => {
+    // Best-effort server-side logout (audit trail); pass the token explicitly since
+    // we clear storage immediately after. Fire-and-forget — never blocks logout.
+    const tok = token || localStorage.getItem('clari5pay_token') || undefined;
+    authAPI.logout(tok);
     setUser(null);
     setToken(null);
     setAuthToken(null);
-    localStorage.removeItem('clari5pay_user');
-    localStorage.removeItem('clari5pay_token');
-  }, []);
+    // Clear ALL client-side auth state: local + session storage and cookies.
+    try { localStorage.clear(); } catch { /* ignore */ }
+    try { sessionStorage.clear(); } catch { /* ignore */ }
+    try {
+      document.cookie.split(';').forEach((c) => {
+        const name = c.split('=')[0].trim();
+        if (name) document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+      });
+    } catch { /* ignore */ }
+  }, [token]);
 
   const updateUser = useCallback((patch: Partial<User>) => {
     setUser((prev) => {
