@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -11,6 +11,18 @@ from app.schemas.schemas import (
     AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
+
+
+# Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
+# platform's operating timezone — even though the server clock runs in UTC. The
+# machine timestamp `created_at` stays UTC (used for ordering/analytics). IST observes
+# no DST, so a fixed +5:30 offset is always exact.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _ist_now() -> datetime:
+    """Server-generated current time in IST (never the client's clock)."""
+    return datetime.now(IST)
 
 
 def _require_amount(amount: float) -> None:
@@ -777,8 +789,8 @@ async def create_deposit(
         status=TxStatus.SLIP_SUBMITTED if direct_review else TxStatus.ACCOUNT_REQUESTED,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
-        tx_date=date.today(),
-        tx_time=datetime.now().strftime("%H:%M:%S"),
+        tx_date=_ist_now().date(),
+        tx_time=_ist_now().strftime("%H:%M:%S"),
         deposit_type=data.depositType,
         member_name=data.memberName,
         member_id=data.memberId,
@@ -848,8 +860,8 @@ async def create_withdrawal(
         status=TxStatus.ACCOUNT_REQUESTED,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
-        tx_date=date.today(),
-        tx_time=datetime.now().strftime("%H:%M:%S"),
+        tx_date=_ist_now().date(),
+        tx_time=_ist_now().strftime("%H:%M:%S"),
         member_id=data.memberId,
         bank_name=data.bankName,
         account_holder=data.accountHolder,
@@ -905,8 +917,8 @@ async def create_settlement(
         status=TxStatus.ACCOUNT_REQUESTED,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
-        tx_date=date.today(),
-        tx_time=datetime.now().strftime("%H:%M:%S"),
+        tx_date=_ist_now().date(),
+        tx_time=_ist_now().strftime("%H:%M:%S"),
         member_id=data.memberId,
         merchant_proof=_proofs[0] if _proofs else None,
         merchant_proofs=json.dumps(_proofs) if _proofs else None,
@@ -971,8 +983,8 @@ async def account_submit(
     if ref and tx.member_id and ref.startswith("ACC"):
         db.add(AccountTransaction(
             reference_number=ref, member_id=tx.member_id,
-            transaction_reference_number=tx.ref, transaction_date=date.today(),
-            transaction_time=datetime.now().strftime("%H:%M:%S"),
+            transaction_reference_number=tx.ref, transaction_date=_ist_now().date(),
+            transaction_time=_ist_now().strftime("%H:%M:%S"),
         ))
     tx.status = TxStatus.ACCOUNT_SUBMITTED
     tx.approved_by = actor.name
