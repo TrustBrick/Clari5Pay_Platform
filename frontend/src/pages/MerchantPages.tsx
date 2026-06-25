@@ -12,7 +12,7 @@ import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { lookupIfsc, isValidIfsc, bankBadge, BANK_NAMES } from '../utils/ifsc';
-import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost } from '../types';
+import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry } from '../types';
 
 // The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
 export { ReportsPage } from './ReportsPage';
@@ -817,10 +817,11 @@ const ManagementPage: React.FC<{
   const [showForm, setShowForm] = useState(false);
   const [openMember, setOpenMember] = useState<string | null>(null);
   const [slipTx, setSlipTx] = useState<Transaction | null>(null);
+  const [detailTx, setDetailTx] = useState<Transaction | null>(null);
 
   const reload = () => transactionAPI.getMine().then(setTxns).catch(()=>setTxns([]));
   useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
-  usePoll(() => { if (!showForm && !slipTx) reload(); });
+  usePoll(() => { if (!showForm && !slipTx && !detailTx) reload(); });
 
   const mine = txns.filter(t => t.type.startsWith(prefix));
 
@@ -894,12 +895,15 @@ const ManagementPage: React.FC<{
               <p style={{ margin:0,fontSize:22,fontWeight:800,color:T.success }}>{fmt(active.items.reduce((a,t)=>a+t.amount,0))}</p>
             </div>
           </div>
-          <TxTable txns={active.items} actionMode="merchant" viewerRole="MERCHANT" onAction={(t)=>setSlipTx(t)}/>
+          <TxTable txns={active.items} actionMode="merchant" viewerRole="MERCHANT" onAction={(t, action)=> action==='slip' ? setSlipTx(t) : setDetailTx(t)}/>
         </Modal>
       )}
 
       {slipTx && (
         <MerchantSlipModal tx={slipTx} onClose={()=>setSlipTx(null)} onSubmitted={()=>{ setSlipTx(null); reload(); }}/>
+      )}
+      {detailTx && (
+        <TransactionDetailsModal tx={detailTx} viewerRole="MERCHANT" onClose={()=>setDetailTx(null)} />
       )}
     </div>
   );
@@ -959,6 +963,145 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
         <p style={{ fontSize:11,color:T.textMuted,margin:'14px 0 0' }}>Computed from completed transactions. Fees are applied at your configured rates.</p>
       </Card>
     </div>
+  );
+};
+
+// ─── Shared read-only Transaction Details modal ────────────────────────────────
+// Used by Merchants (their own completed transactions) and Supervisors/Managers (any
+// transaction, permanently — including after completion). Reuses SlipRow / ProofGallery /
+// Badge / TxExportButton. Read-only: no edit actions. Theme tokens => Light + Dark mode.
+const DetailSection: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <div style={{ marginBottom: 16 }}>
+    <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{title}</p>
+    <div style={{ background: T.canvas, borderRadius: 10, padding: 12 }}>{children}</div>
+  </div>
+);
+
+export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: string; onClose: () => void }> = ({ tx, viewerRole, onClose }) => {
+  const [d, setD] = useState<Transaction>(tx);
+  const [audit, setAudit] = useState<AuditLogEntry[]>([]);
+  // Full record (incl. slip images), audit history, and a "<role> Viewed" audit entry on open.
+  useEffect(() => {
+    transactionAPI.getDetail(tx.id).then(setD).catch(() => {});
+    transactionAPI.getAudit(tx.id).then(setAudit).catch(() => setAudit([]));
+    transactionAPI.recordView(tx.id);
+  }, [tx.id]);
+
+  const isDeposit = d.type.startsWith('DEPOSIT');
+  const isWithdrawal = d.type.startsWith('WITHDRAWAL');
+  const isSettlement = d.type.startsWith('SETTLEMENT');
+  const slips = (d.merchantProofs && d.merchantProofs.length) ? d.merchantProofs : (d.merchantProof ? [d.merchantProof] : []);
+  const created = d.createdAt ? formatDateTime(d.createdAt) : `${d.date} ${d.time}`;
+  const paymentMethod = d.depositType ? depositTypeLabel(d.depositType) : (d.payoutMode || '—');
+
+  // Timeline of status changes: creation + each recorded approval action.
+  const timeline: { label: string; who: string; at: string }[] = [
+    { label: 'Created', who: `${d.creatorUsername || d.merchant}`, at: created },
+    ...((d.remarksHistory || []).map(r => ({
+      label: r.action.charAt(0) + r.action.slice(1).toLowerCase(),
+      who: `${merchantRoleLabel(r.role) || r.role} · ${r.user}`, at: r.at,
+    }))),
+  ];
+
+  return (
+    <Modal title={`Transaction Details — ${d.ref}`} onClose={onClose} wide>
+      <DetailSection title="Transaction Information">
+        <SlipRow k="Reference Number" v={d.ref} />
+        <SlipRow k="Type" v={typeLabel(d.type)} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} viewerRole={viewerRole} />} />
+        <SlipRow k="Amount" v={fmt(d.amount)} />
+        <SlipRow k="Payment Method" v={paymentMethod} />
+        {d.riskLevel && <SlipRow k="Risk Level" v={d.riskLevel} />}
+        {d.highRisk && <SlipRow k="High Risk" v="Yes" />}
+        <SlipRow k="Created Date & Time" v={created} />
+      </DetailSection>
+
+      <DetailSection title="Merchant Information">
+        <SlipRow k="Merchant Name" v={d.merchant} />
+        {d.merchantCode && <SlipRow k="Merchant ID" v={d.merchantCode} />}
+        {d.creatorUsername && <SlipRow k="Merchant Username" v={d.creatorUsername} />}
+        {d.creatorRole && <SlipRow k="Merchant Role" v={merchantRoleLabel(d.creatorRole) || d.creatorRole} />}
+      </DetailSection>
+
+      {(d.memberId || d.member) && (
+        <DetailSection title="Member Information">
+          <SlipRow k="Membership - Member" v={memberLabel(d.memberId, d.member) || '—'} />
+        </DetailSection>
+      )}
+
+      <DetailSection title="Financial Information">
+        {isDeposit && <SlipRow k="Deposit Amount" v={fmt(d.amount)} />}
+        {isWithdrawal && <SlipRow k="Withdrawal Amount" v={fmt(d.amount)} />}
+        {isSettlement && <SlipRow k="Settlement Amount" v={fmt(d.amount)} />}
+      </DetailSection>
+
+      {(d.approvedBy || d.supervisorName || d.managerName || d.processedBy) && (
+        <DetailSection title="Approval Information">
+          {d.approvedBy && <SlipRow k="Approved By" v={d.approvedBy} />}
+          {d.supervisorName && <SlipRow k="Supervisor" v={`${d.supervisorName}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
+          {d.managerName && <SlipRow k="Manager" v={`${d.managerName}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
+          {d.processedBy && <SlipRow k="Processed By (Admin)" v={`${d.processedBy}${d.adminActionAt ? ` · ${formatDateTime(d.adminActionAt)}` : ''}`} />}
+        </DetailSection>
+      )}
+
+      <DetailSection title="Timeline">
+        {timeline.map((e, i) => (
+          <div key={i} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: i < timeline.length - 1 ? `1px solid ${T.borderLight}` : 'none' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: T.textMain, minWidth: 110 }}>{e.label}</span>
+            <span style={{ fontSize: 12, color: T.textMuted, flex: 1 }}>{e.who}</span>
+            <span style={{ fontSize: 11, color: T.textMuted, whiteSpace: 'nowrap' }}>{e.at}</span>
+          </div>
+        ))}
+      </DetailSection>
+
+      {(slips.length > 0 || d.adminProof) && (
+        <DetailSection title="Uploaded Documents / Slips">
+          {slips.length > 0 && (
+            <>
+              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>{isDeposit ? 'Deposit Slip' : 'Payment Proof'}{d.merchantRef ? ` · Ref ${d.merchantRef}` : ''}</p>
+              <ProofGallery srcs={slips} />
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                {slips.map((s, i) => <Btn key={i} size="sm" variant="ghost" onClick={() => downloadDataUrl(s, `slip-${d.ref}-${i + 1}.png`)}>⬇ Download Slip{slips.length > 1 ? ` ${i + 1}` : ''}</Btn>)}
+              </div>
+            </>
+          )}
+          {d.adminProof && (
+            <div style={{ marginTop: slips.length ? 12 : 0 }}>
+              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Payment Receipt</p>
+              <ProofGallery srcs={[d.adminProof]} />
+              <Btn size="sm" variant="ghost" style={{ marginTop: 8 }} onClick={() => downloadDataUrl(d.adminProof!, `receipt-${d.ref}.png`)}>⬇ Download Receipt</Btn>
+            </div>
+          )}
+        </DetailSection>
+      )}
+
+      {d.remarksHistory && d.remarksHistory.length > 0 && (
+        <DetailSection title="Remarks">
+          {d.remarksHistory.map((r, i) => (
+            <div key={i} style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 10, marginBottom: 8 }}>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {r.user} — {r.action}</p>
+              <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{r.remark}</p>
+              <p style={{ margin: '2px 0 0', fontSize: 10, color: T.textMuted }}>{r.at}</p>
+            </div>
+          ))}
+        </DetailSection>
+      )}
+
+      <DetailSection title="Audit History">
+        {audit.length === 0 ? <p style={{ fontSize: 12, color: T.textMuted, margin: 0 }}>No audit entries.</p> : audit.map(a => (
+          <div key={a.id} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${T.borderLight}`, fontSize: 12 }}>
+            <span style={{ fontWeight: 700, color: T.textMain, minWidth: 150 }}>{a.action}</span>
+            <span style={{ color: T.textMuted, flex: 1 }}>{a.username}{a.role ? ` (${a.role})` : ''}{a.reason ? ` — ${a.reason}` : ''}</span>
+            <span style={{ color: T.textMuted, whiteSpace: 'nowrap' }}>{formatDateTime(a.createdAt)}{a.ip ? ` · ${a.ip}` : ''}</span>
+          </div>
+        ))}
+      </DetailSection>
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', borderTop: `1px solid ${T.border}`, paddingTop: 14 }}>
+        <TxExportButton txns={[d]} title={`Transaction ${d.ref}`} />
+        <Btn variant="ghost" onClick={onClose}>Close</Btn>
+      </div>
+    </Modal>
   );
 };
 
@@ -1285,6 +1428,7 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   const [status, setStatus] = useState('ALL');
   const [loading, setLoading] = useState(true);
   const [slipTx, setSlipTx] = useState<Transaction | null>(null);
+  const [detailTx, setDetailTx] = useState<Transaction | null>(null);
 
   const overseer = isOverseerRole(user);
 
@@ -1298,7 +1442,7 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   };
   // Refetch on mount, role change, and whenever the applied filters change.
   useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role, user.merchantRole, query]);
-  usePoll(() => { if (!slipTx) reload(); });
+  usePoll(() => { if (!slipTx && !detailTx) reload(); });
 
   // Type/status are lightweight client-side refinements on the server-filtered set.
   const filtered = txns.filter(t => (type === 'ALL' || t.type === type) && (status === 'ALL' || t.status === status));
@@ -1321,14 +1465,17 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
         </div>
       </div>
       <TxTable loading={loading} txns={filtered} viewerRole={user.role}
-        actionMode={overseer ? 'none' : (user.role==='MERCHANT'?'merchant':'view')}
-        onAction={overseer ? undefined : (t)=>setSlipTx(t)}/>
+        actionMode={overseer ? 'view' : (user.role==='MERCHANT'?'merchant':'view')}
+        onAction={(t, action)=> action==='slip' ? setSlipTx(t) : setDetailTx(t)}/>
       <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
         <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {txns.length}</p>
       </div>
     </Card>
     {slipTx && (
       <MerchantSlipModal tx={slipTx} onClose={()=>setSlipTx(null)} onSubmitted={()=>{ setSlipTx(null); reload(); }}/>
+    )}
+    {detailTx && (
+      <TransactionDetailsModal tx={detailTx} viewerRole={user.role} onClose={()=>setDetailTx(null)} />
     )}
     </>
   );

@@ -116,6 +116,10 @@ class Transaction(Base):
     status: Mapped[TxStatus] = mapped_column(SAEnum(TxStatus), default=TxStatus.ACCOUNT_REQUESTED, nullable=False)
     merchant_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     merchant_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Permanent snapshot of the creating merchant user — kept on the row so historical
+    # records stay accurate even if the user's profile/role changes later.
+    creator_username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    creator_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     tx_date: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     tx_time: Mapped[str] = mapped_column(String(16), nullable=False)
 

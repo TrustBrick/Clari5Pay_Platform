@@ -196,6 +196,11 @@ export const transactionAPI = {
   recordView: async (id: string) => {
     try { await api.post(`/api/transactions/${id}/view`); } catch { /* best-effort audit */ }
   },
+  // Read-only audit history for a single transaction (owner merchant / Supervisor / Manager / admin).
+  getAudit: async (id: string) => {
+    const res = await api.get<AuditLogEntry[]>(`/api/transactions/${id}/audit`);
+    return res.data;
+  },
   cancel: async (id: string, reason: string) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/cancel`, { reason });
     return res.data;

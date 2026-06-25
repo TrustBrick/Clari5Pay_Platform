@@ -4,16 +4,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog
 from app.core.deps import (
     get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer,
-    get_current_supervisor, get_current_manager,
+    get_current_supervisor, get_current_manager, OVERSIGHT_MERCHANT_ROLES,
 )
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
     AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest, RemarkRequest,
 )
-from app.api.routes.system_logs import log_event, record_audit
+from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -315,6 +315,10 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "status": t.status,
         "merchantId": t.merchant_id,
         "merchant": t.merchant_name,
+        # Permanent creator snapshot (who created the request — name/code/username/role).
+        "creatorUsername": t.creator_username,
+        "creatorRole": t.creator_role,
+        "merchantCode": t.agent_code,
         "date": str(t.tx_date),
         "time": t.tx_time,
         "depositType": t.deposit_type,
@@ -443,17 +447,62 @@ async def get_all_transactions_overseer(
     return [_t(t, full=False) for t in result.scalars().all()]
 
 
+def _can_view_tx(tx: Transaction, user: User) -> bool:
+    """Who may open a transaction's full details / slips / audit (read-only):
+    Admins & Super Admins (any tx); oversight roles Supervisor/Manager (any tx, permanently,
+    even after completion); and the merchant who owns the transaction. Uploaded slips are never
+    hidden after completion — visibility here is purely read access, no edit rights."""
+    if user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        return True
+    if user.role == UserRole.MERCHANT:
+        if tx.merchant_id == user.id:
+            return True
+        if str(user.merchant_role or "").upper() in OVERSIGHT_MERCHANT_ROLES:
+            return True
+    return False
+
+
+async def _tx_with_view_access(tx_id: str, db: AsyncSession, user: User) -> Transaction:
+    tx = await _get_tx(tx_id, db)
+    if not _can_view_tx(tx, user):
+        raise HTTPException(status_code=403, detail="Not your transaction")
+    return tx
+
+
 @router.get("/{tx_id}/detail")
 async def get_transaction_detail(
     tx_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Full transaction incl. heavy image fields — fetched only when a single tx is opened."""
-    tx = await _get_tx(tx_id, db)
-    if current_user.role == UserRole.MERCHANT and tx.merchant_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not your transaction")
-    return _t(tx, full=True)
+    """Full transaction incl. heavy image fields (slips/receipts) — fetched when a single tx is
+    opened. Read-only for the owner merchant, oversight roles (Supervisor/Manager) and admins;
+    slips remain accessible permanently, including after completion."""
+    tx = await _tx_with_view_access(tx_id, db, current_user)
+    payload = _t(tx, full=True)
+    # Enrich with the creating merchant's risk level for the details view (not stored on the row).
+    creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
+    payload["riskLevel"] = (creator.risk.value if creator and creator.risk else None)
+    if creator:
+        payload["creatorUsername"] = tx.creator_username or creator.username
+        payload["creatorRole"] = tx.creator_role or creator.merchant_role
+        payload["merchantCode"] = tx.agent_code or creator.merchant_code
+    return payload
+
+
+@router.get("/{tx_id}/audit")
+async def get_transaction_audit(
+    tx_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Read-only audit history for a single transaction (chronological). Same view access as
+    the details endpoint — owner merchant, Supervisor/Manager and admins."""
+    tx = await _tx_with_view_access(tx_id, db, current_user)
+    rows = (await db.execute(
+        select(AuditLog).where(AuditLog.entity_id == tx.ref).order_by(AuditLog.created_at.asc())
+    )).scalars().all()
+    return [_audit_row(r) for r in rows]
 
 
 @router.get("/summary")
@@ -926,6 +975,8 @@ async def create_deposit(
         sender_upi_id=data.senderUpiId,
         deposit_details=json.dumps(data.depositDetails) if data.depositDetails else None,
         agent_code=current_user.merchant_code,
+        creator_username=current_user.username,
+        creator_role=current_user.merchant_role,
         merchant_proof=_proofs[0] if _proofs else None,
         merchant_proofs=json.dumps(_proofs) if _proofs else None,
         account_holder=data.accountHolder,
@@ -1004,6 +1055,8 @@ async def create_withdrawal(
         payout_mode=(data.payoutMode or "BANK").upper(),
         payout_details=json.dumps(data.payoutDetails) if data.payoutDetails else None,
         agent_code=current_user.merchant_code,
+        creator_username=current_user.username,
+        creator_role=current_user.merchant_role,
     )
     db.add(tx)
     await db.flush()
@@ -1056,6 +1109,8 @@ async def create_settlement(
         merchant_proof=_proofs[0] if _proofs else None,
         merchant_proofs=json.dumps(_proofs) if _proofs else None,
         agent_code=current_user.merchant_code,
+        creator_username=current_user.username,
+        creator_role=current_user.merchant_role,
     )
     db.add(tx)
     await db.flush()

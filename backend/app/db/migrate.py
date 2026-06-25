@@ -44,6 +44,9 @@ _NEW_COLUMNS = [
     ("transactions", "manager_name", "VARCHAR(128)"),
     ("transactions", "manager_action_at", "TIMESTAMP"),
     ("transactions", "admin_action_at", "TIMESTAMP"),
+    # Permanent creator snapshot (Merchant Username + Role at creation time).
+    ("transactions", "creator_username", "VARCHAR(64)"),
+    ("transactions", "creator_role", "VARCHAR(32)"),
     ("login_otps", "purpose", "VARCHAR(16) DEFAULT 'login' NOT NULL"),
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "upi_id", "VARCHAR(64)"),

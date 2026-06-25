@@ -125,6 +125,11 @@ export interface Transaction {
   cancelReason?: string | null;
   cancelledBy?: string | null;
   cancelledAt?: string | null;
+  // Permanent creator snapshot (stored at creation, survives later profile changes).
+  creatorUsername?: string | null;
+  creatorRole?: string | null;
+  merchantCode?: string | null;
+  riskLevel?: string | null;
   // Review-gate workflow record (Supervisor/Manager → Admin).
   approvedBy?: string | null;
   processedBy?: string | null;

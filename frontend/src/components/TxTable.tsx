@@ -24,13 +24,13 @@ const rowAction = (mode: ActionMode, status: string, type: string): { label: str
     if (isDeposit && status === 'ACCOUNT_REQUESTED') return { label: '🏦 Choose Account', action: 'manage', variant: 'primary' };
     if (isDeposit && status === 'SLIP_SUBMITTED') return { label: '✓ Mark Deposited', action: 'manage', variant: 'primary' };
     if (!isDeposit && (status === 'ACCOUNT_REQUESTED' || status === 'SLIP_SUBMITTED')) return { label: '💳 Pay & Complete', action: 'manage', variant: 'primary' };
-    return { label: '👁 View', action: 'view', variant: 'ghost' };
+    return { label: '👁 View Details', action: 'view', variant: 'ghost' };
   }
   if (mode === 'merchant') {
     // Slip upload: awaiting payment (ACCOUNT_SUBMITTED) or returned by a Supervisor (RESUBMITTED).
     if (isDeposit && status === 'ACCOUNT_SUBMITTED') return { label: '⇪ Pay / Submit Proof', action: 'slip', variant: 'primary' };
     if (isDeposit && status === 'RESUBMITTED') return { label: '↻ Re-submit Proof', action: 'slip', variant: 'primary' };
-    return { label: '👁 View', action: 'view', variant: 'ghost' };
+    return { label: '👁 View Details', action: 'view', variant: 'ghost' };
   }
   if (mode === 'view') return { label: '👁 View', action: 'view', variant: 'ghost' };
   return null;
