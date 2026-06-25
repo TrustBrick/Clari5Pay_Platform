@@ -4,6 +4,34 @@ import type { TxStatus } from '../types';
 export const fmt = (n: number) =>
   `INR ${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// ── Indian-numbering amount input formatting ──────────────────────────────────
+// Group a string of digits (integer part only) with Indian grouping: 1,00,00,000 style
+// (last 3 digits, then groups of 2).
+const groupIndianDigits = (digits: string): string => {
+  if (digits.length <= 3) return digits;
+  const last3 = digits.slice(-3);
+  const rest = digits.slice(0, -3);
+  return rest.replace(/\B(?=(\d\d)+(?!\d))/g, ',') + ',' + last3;
+};
+
+// Format an amount input string with Indian grouping in real time, preserving an
+// in-progress decimal (clamped to 2 places). Commas are display-only — recover the raw
+// numeric string for the API / parseFloat with parseIndianAmount(). Returns '' when empty.
+export const formatIndianAmountInput = (value: string): string => {
+  const cleaned = String(value ?? '').replace(/[^\d.]/g, '');
+  if (cleaned === '') return '';
+  const dot = cleaned.indexOf('.');
+  let intPart = (dot === -1 ? cleaned : cleaned.slice(0, dot)).replace(/^0+(?=\d)/, '');
+  const grouped = intPart === '' ? '0' : groupIndianDigits(intPart);
+  if (dot === -1) return grouped;
+  const decPart = cleaned.slice(dot + 1).replace(/\./g, '').slice(0, 2);
+  return `${grouped}.${decPart}`;
+};
+
+// Strip the display commas to recover the raw numeric string (for the backend / parseFloat).
+export const parseIndianAmount = (value: string): string =>
+  String(value ?? '').replace(/,/g, '').replace(/[^\d.]/g, '');
+
 export const statusStyle = (s: TxStatus) => {
   const map: Record<string, { color: string; bg: string }> = {
     PENDING: { color: T.warning, bg: T.warningBg },

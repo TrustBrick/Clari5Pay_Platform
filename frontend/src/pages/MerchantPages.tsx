@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDate, formatDateTime } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
@@ -489,7 +489,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
 
   const submit = async () => {
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
-    if(parseFloat(form.amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
+    if(parseFloat(parseIndianAmount(form.amount)) < 1){ showToast('Amount must be greater than 0.','error'); return; }
     if(isUpi && !senderUpi.includes('@')){ showToast('Enter a valid Sender UPI ID (name@bank)','error'); return; }
     if(isBankLike && (!bank.accountHolder||!bank.accountNumber)){ showToast('Select or add a bank account','error'); return; }
     if(isCash && (!details.village||!details.city||!details.mobile)){ showToast('Enter Village, City and Mobile Number','error'); return; }
@@ -499,7 +499,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     setLoading(true);
     try {
       await transactionAPI.createDeposit({
-        ...form, amount: parseFloat(form.amount), riskAnalysis,
+        ...form, amount: parseFloat(parseIndianAmount(form.amount)), riskAnalysis,
         ...(isBankLike ? {
           accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
           saveBankAccount: saveNew,
@@ -522,7 +522,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     <div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={DEPOSIT_TYPE_OPTIONS} required/>
-        <Input label="Amount (INR)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Min 1" required/>
+        <Input label="Amount (INR)" type="text" inputMode="decimal" value={form.amount} onChange={e=>set('amount',formatIndianAmountInput(e.target.value))} placeholder="Min 1" required/>
         <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" required/>
         <Input label="Membership ID" value={form.memberId} onChange={e=>setMemberId(e.target.value)} placeholder="e.g. MBR20240001" required/>
         {isBankLike && <>
@@ -642,16 +642,17 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const usingOther = destId === 'OTHER' || !hasSaved;
   const chosenSaved = savedDests.find(d => d.id === destId);
   const fields = MODE_FIELDS[mode];
+  const amountNum = parseFloat(parseIndianAmount(amount));
   const submit = async () => {
     if(!amount||!memberId){ showToast('Enter amount and Membership ID','error'); return; }
-    if(parseFloat(amount) < 1){ showToast('Amount must be greater than 0.','error'); return; }
-    if(parseFloat(amount) > maxWithdrawable + 0.01){ showToast('Insufficient Balance','error'); return; }
+    if(amountNum < 1){ showToast('Amount must be greater than 0.','error'); return; }
+    if(amountNum > maxWithdrawable + 0.01){ showToast('Insufficient Balance','error'); return; }
     if(hasSaved && !destId){ showToast('Select a withdrawal destination','error'); return; }
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
     setLoading(true);
     try {
-      const payload: Record<string, unknown> = { amount: parseFloat(amount), memberId, payoutMode: mode, payoutDetails: details };
+      const payload: Record<string, unknown> = { amount: amountNum, memberId, payoutMode: mode, payoutDetails: details };
       if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
       await transactionAPI.createWithdrawal(payload);
       fireConfetti();
@@ -682,7 +683,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         </p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Input label="Amount (INR)" type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="Min 1" required/>
+        <Input label="Amount (INR)" type="text" inputMode="decimal" value={amount} onChange={e=>setAmount(formatIndianAmountInput(e.target.value))} placeholder="Min 1" required/>
         <Input label="Membership ID" value={memberId} onChange={e=>setMemberId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="Alphanumeric (A-Z, 0-9)" required/>
       </div>
 
@@ -768,11 +769,12 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setNetAvailable(s.netAvailableBalance ?? s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
 
   const submit = async () => {
+    const amountNum = parseFloat(parseIndianAmount(form.amount));
     if(!form.amount){ showToast('Enter an amount','error'); return; }
-    if(parseFloat(form.amount) > maxSettleable + 0.01){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
+    if(amountNum > maxSettleable + 0.01){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.createSettlement({ amount: parseFloat(form.amount), memberId: form.memberId || undefined, proofs });
+      await transactionAPI.createSettlement({ amount: amountNum, memberId: form.memberId || undefined, proofs });
       fireConfetti();
       showToast('Settlement request submitted');
       onSubmitted?.();
@@ -794,7 +796,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         </p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Input label="Settlement Amount (INR)" type="number" value={form.amount} onChange={e=>set('amount',e.target.value)} placeholder="Enter amount" required/>
+        <Input label="Settlement Amount (INR)" type="text" inputMode="decimal" value={form.amount} onChange={e=>set('amount',formatIndianAmountInput(e.target.value))} placeholder="Enter amount" required/>
         <Input label="Membership ID" value={form.memberId} onChange={e=>set('memberId',e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="e.g. MBR20240001"/>
       </div>
       <MultiProofUpload values={proofs} onChange={setProofs}/>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { fmt, today, depositTypeLabel, memberLabel } from '../utils/helpers';
-import { downloadXlsx } from '../utils/xlsx';
+import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { transactionAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
@@ -28,7 +28,7 @@ const exportRowsXlsx = (rows: ReportRow[], filename: string) => {
       { header: 'Reference Number', get: r => r.ref },
       { header: 'Membership - Member', get: r => memberLabel(r.memberId, r.member), width: 28 },
       { header: 'Transaction Type', get: r => rtypeLabel(r) },
-      { header: 'Amount (INR)', get: r => Number(r.amount), width: 14 },
+      { header: 'Amount (INR)', get: r => Number(r.amount), width: 14, z: INR_NUMFMT },
       { header: 'Status', get: r => prettyStatusR(r.status) },
       { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
       { header: 'Cancellation Reason', get: r => r.cancelReason || '' },

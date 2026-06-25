@@ -6,8 +6,12 @@ import type { Transaction } from '../types';
 // Mirrors the existing print-to-PDF exports: build in the browser and download.
 // Header row + auto-fitted column widths (SheetJS community build can't style cells).
 
-export type Col<T> = { header: string; get: (row: T) => unknown; width?: number };
+export type Col<T> = { header: string; get: (row: T) => unknown; width?: number; z?: string };
 export type SheetDef<T = any> = { name: string; columns: Col<T>[]; rows: T[] };
+
+// Excel custom number format for Indian grouping (lakh/crore), e.g. 1,00,000.00.
+// Kept numeric so Excel can still sum — only the *display* uses Indian grouping.
+export const INR_NUMFMT = '#,##,##0.00';
 
 // Auto width: widest of header / cell content, padded, clamped to a sane range.
 const autoWidth = (header: string, cells: unknown[]): number => {
@@ -28,6 +32,15 @@ const buildSheet = <T,>(s: SheetDef<T>): XLSX.WorkSheet => {
   const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
   ws['!cols'] = s.columns.map((c, i) =>
     ({ wch: c.width ?? autoWidth(c.header, body.map(r => r[i])) }));
+  // Apply per-column number formats (e.g. Indian grouping on amounts). Number formats are
+  // honoured by the SheetJS community build (unlike cell styling), and keep cells numeric.
+  s.columns.forEach((c, ci) => {
+    if (!c.z) return;
+    for (let ri = 0; ri < body.length; ri++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: ri + 1, c: ci })];
+      if (cell && cell.t === 'n') cell.z = c.z;
+    }
+  });
   return ws;
 };
 
@@ -63,7 +76,7 @@ export const txnsToSheet = (rows: Transaction[], name = 'Transactions'): SheetDe
     { header: 'Membership - Member', get: t => memberLabel(t.memberId, t.member), width: 28 },
     { header: 'Merchant Name', get: t => t.merchant || '' },
     { header: 'Transaction Type', get: t => txnTypeLabel(t) },
-    { header: 'Amount (INR)', get: t => Number(t.amount), width: 14 },
+    { header: 'Amount (INR)', get: t => Number(t.amount), width: 14, z: INR_NUMFMT },
     { header: 'Status', get: t => prettyStatus(t.status) },
     { header: 'Date & Time', get: t => `${t.date || ''} ${t.time || ''}`.trim(), width: 20 },
     { header: 'Created By', get: t => t.merchant || '' },

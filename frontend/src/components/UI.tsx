@@ -139,12 +139,13 @@ export const Btn: React.FC<{
 export const Input: React.FC<{
   label?: string; type?: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   placeholder?: string; required?: boolean; hint?: string; icon?: string; style?: CSSProperties; list?: string;
-}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list }) => (
+  inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
+}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list, inputMode }) => (
   <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <div style={{ position:'relative' }}>
       {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',fontSize:16,color:T.textMuted }}>{icon}</span>}
-      <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list}
+      <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode}
         style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
         onFocus={e=>{e.target.style.borderColor=T.blue;e.target.style.boxShadow=`0 0 0 3px ${T.blue}18`;}}
         onBlur={e=>{e.target.style.borderColor=T.border;e.target.style.boxShadow='none';}}/>
