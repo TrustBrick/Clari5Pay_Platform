@@ -164,45 +164,61 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
 
     pay_in_rate = (user.pay_in_fee or 0) / 100
     pay_out_rate = (user.pay_out_fee or 0) / 100
+    # Completed-only basis for every figure below.
     total_deposit = total("DEPOSIT", TxStatus.COMPLETED)
-    pay_in_fees = total_deposit * pay_in_rate
     total_settled = total("SETTLEMENT", TxStatus.COMPLETED)
     total_withdrawn = total("WITHDRAWAL", TxStatus.COMPLETED)
-    # Withdrawals and settlements are both money leaving the wallet, so both carry the
-    # same pay-out fee (commission). Keeping a single rate guarantees they behave identically.
+    pay_in_fees = total_deposit * pay_in_rate
     pay_out_fees = total_withdrawn * pay_out_rate
-    settlement_fees = total_settled * pay_out_rate
-    # Net of all settled/completed movements (before reserving in-flight requests).
-    gross_available = (total_deposit - pay_in_fees
-                       - total_settled - settlement_fees
-                       - total_withdrawn - pay_out_fees)
+    settlement_fees = total_settled * pay_out_rate   # used only by the spendable guard below
 
-    # Running Balance (RB): in-flight (Pending) withdrawal + settlement amounts that are
-    # reserved the moment they're requested, until they complete or are rejected/cancelled.
-    # Both reserve the amount PLUS the pay-out fee, so the balance can't go negative once
-    # the fee is charged on completion.
+    # ── Canonical balance formulas — SINGLE SOURCE OF TRUTH (completed only) ──
+    #   Total Net Available Balance      = Deposits − Pay-In Fees − Settled
+    #   Gross Available Withdrawal Amount = Total Net Available Balance
+    #   Net Available Withdrawal Amount   = Gross Available Withdrawal Amount − Pay-Out Fees
+    #   Net Available Settlement Amount   = Net Available Withdrawal Amount
+    # These drive every displayed/reported balance across the app.
+    net_available_balance = total_deposit - pay_in_fees - total_settled
+    gross_available_withdrawal = net_available_balance
+    net_available_withdrawal = gross_available_withdrawal - pay_out_fees
+    net_available_settlement = net_available_withdrawal
+
+    # ── Spendable guard — used ONLY to validate new withdrawals/settlements ──
+    # The displayed formulas above intentionally do NOT subtract completed withdrawals,
+    # so they can't be used as the spend limit (a merchant could withdraw the same
+    # balance repeatedly). This conservative figure nets completed withdrawals +
+    # settlement fees and reserves in-flight (pending) requests so funds can never be
+    # over-drawn. It is never displayed.
     running_balance = 0.0
     for t in txns:
         if t.status in _TERMINAL_STATUSES:
             continue
         if t.type.value.startswith("WITHDRAWAL") or t.type.value.startswith("SETTLEMENT"):
             running_balance += t.amount * (1 + pay_out_rate)
-
-    # Available Balance (AB): reserves the running balance and never goes negative.
-    available = max(0.0, gross_available - running_balance)
-    # The most a NEW withdrawal/settlement can be: amount + pay-out fee must fit inside AB.
-    max_withdrawable = available / (1 + pay_out_rate) if pay_out_rate else available
+    true_wallet = (total_deposit - pay_in_fees
+                   - total_settled - settlement_fees
+                   - total_withdrawn - pay_out_fees)
+    spendable_limit = max(0.0, true_wallet - running_balance)
+    max_withdrawable = spendable_limit / (1 + pay_out_rate) if pay_out_rate else spendable_limit
     max_settleable = max_withdrawable
 
     deposit_count = sum(1 for t in txns if t.type.value.startswith("DEPOSIT"))
     withdrawal_count = sum(1 for t in txns if t.type.value.startswith("WITHDRAWAL"))
 
     return {
-        "available": available,              # AB — what can still be withdrawn/settled now
-        "runningBalance": running_balance,   # RB — reserved by pending requests
-        "grossAvailable": gross_available,   # before reserving pending
-        "maxSettleable": max_settleable,     # AB net of the pay-out fee on a new settlement
-        "maxWithdrawable": max_withdrawable, # AB net of the pay-out fee on a new withdrawal
+        # Canonical displayed balance (new formulas) — used by EVERY display/report/export.
+        "available": net_available_withdrawal,          # = Net Available Withdrawal Amount
+        "netAvailableBalance": net_available_balance,
+        "grossAvailableWithdrawal": gross_available_withdrawal,
+        "netAvailableWithdrawal": net_available_withdrawal,
+        "netAvailableSettlement": net_available_settlement,
+        "grossAvailable": net_available_withdrawal,      # legacy alias (reports netAmount)
+        # Spendable guard — withdrawal/settlement VALIDATION ONLY (never displayed).
+        "spendableLimit": spendable_limit,
+        "runningBalance": running_balance,
+        "maxSettleable": max_settleable,
+        "maxWithdrawable": max_withdrawable,
+        # Components.
         "totalDeposit": total_deposit,
         "payInFees": pay_in_fees,
         "totalSettled": total_settled,
@@ -426,8 +442,8 @@ async def merchant_stats(
         )).scalars().all()
         def cnt(pfx: str) -> int:
             return sum(1 for t in txns if t.type.value.startswith(pfx))
-        # Gross = total money volume (deposits + withdrawals + settlements).
-        gross = s["totalDeposit"] + s["totalWithdrawn"] + s["totalSettled"]
+        # Gross / Net Amount follow the canonical balance formulas (single source of truth).
+        gross = s["grossAvailableWithdrawal"]
         commission = s["payInFees"] + s["payOutFees"] + s["settlementFees"]
         out.append({
             "name": name,
@@ -445,7 +461,7 @@ async def merchant_stats(
             "settlementAmount": round(s["totalSettled"], 2),
             "grossAmount": round(gross, 2),
             "commissionAmount": round(commission, 2),
-            "netAmount": round(gross - commission, 2),
+            "netAmount": round(s["netAvailableWithdrawal"], 2),
             "available": round(s["available"], 2),
         })
     out.sort(key=lambda r: r["name"].lower())
@@ -631,7 +647,9 @@ async def merchant_reports(
     # receive them. Enforced server-side here, regardless of what the UI requests.
     bal = await compute_balance(db, current_user)
     commission_amount = round(bal["payInFees"] + bal["payOutFees"] + bal["settlementFees"], 2)
-    gross_amount = round(bal["totalDeposit"] + bal["totalWithdrawn"] + bal["totalSettled"], 2)
+    # Gross / Net Amount follow the canonical balance formulas (single source of truth):
+    #   Gross Amount = Gross Available Withdrawal Amount; Net Amount = Net Available Withdrawal Amount.
+    gross_amount = round(bal["grossAvailableWithdrawal"], 2)
     include_commission = current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
 
     cards = {
@@ -644,8 +662,8 @@ async def merchant_reports(
         "totalSettlementAmount": kind_amount("settlement"),
         "grossAmount": gross_amount,
         # commissionAmount injected below for staff only (never for merchants).
-        "netAmount": round(bal["grossAvailable"], 2),
-        "availableBalance": round(bal["available"], 2),
+        "netAmount": round(bal["netAvailableWithdrawal"], 2),
+        "availableBalance": round(bal["netAvailableWithdrawal"], 2),
         "totalTransactionAmount": round(
             sum(t.amount for t in txns if _completed(t)), 2),
         "activeMemberships": len(active_30d),
@@ -774,7 +792,10 @@ async def merchant_reports(
             f"Top 10 members contributed {round(top10 / total_vol * 100, 1)}% of total volume.")
 
     # ── Raw rows for client-side search, custom ranges, recent high-value & drill-down ──
-    # Running Available Balance after each transaction (replays completed txns chronologically).
+    # Running Available Balance after each transaction (replays completed txns
+    # chronologically). Mirrors the canonical formula so the final row reconciles to
+    # Net Available Withdrawal Amount: deposit adds net of pay-in fee, settlement
+    # subtracts its principal, withdrawal subtracts only its pay-out fee.
     pay_in_rate = (current_user.pay_in_fee or 0) / 100
     pay_out_rate = (current_user.pay_out_fee or 0) / 100
     running = 0.0
@@ -784,8 +805,10 @@ async def merchant_reports(
             k = _kind(t)
             if k == "deposit":
                 running += t.amount * (1 - pay_in_rate)
-            elif k in ("withdrawal", "settlement"):
-                running -= t.amount * (1 + pay_out_rate)
+            elif k == "settlement":
+                running -= t.amount
+            elif k == "withdrawal":
+                running -= t.amount * pay_out_rate
         bal_by_id[t.id] = round(running, 2)
 
     def _payment_method(t: Transaction):
@@ -897,7 +920,7 @@ async def create_withdrawal(
     summary = await compute_balance(db, current_user)
     pay_out_rate = (current_user.pay_out_fee or 0) / 100
     total_required = data.amount * (1 + pay_out_rate)
-    if total_required > summary["available"] + 1e-6:
+    if total_required > summary["spendableLimit"] + 1e-6:   # guard: never over-draw
         raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
     _proofs = _clean_proofs(data.proofs, data.proof)
     tx = Transaction(
@@ -954,7 +977,7 @@ async def create_settlement(
     summary = await compute_balance(db, current_user)
     pay_out_rate = (current_user.pay_out_fee or 0) / 100
     total_required = data.amount * (1 + pay_out_rate)
-    if total_required > summary["available"] + 1e-6:
+    if total_required > summary["spendableLimit"] + 1e-6:   # guard: never over-draw
         raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
     _proofs = _clean_proofs(data.proofs, data.proof)
     tx = Transaction(

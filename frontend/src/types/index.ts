@@ -237,11 +237,16 @@ export interface Notification {
 }
 
 export interface BalanceSummary {
-  available: number;          // AB
-  runningBalance?: number;    // RB (reserved by pending requests)
-  grossAvailable?: number;
+  available: number;                  // = Net Available Withdrawal Amount (canonical display)
+  netAvailableBalance?: number;       // Deposits − Pay-In Fees − Settled
+  grossAvailableWithdrawal?: number;  // = Net Available Balance
+  netAvailableWithdrawal?: number;    // Gross Available Withdrawal − Pay-Out Fees
+  netAvailableSettlement?: number;    // = Net Available Withdrawal
+  spendableLimit?: number;            // guard — validation only, never displayed
+  runningBalance?: number;            // RB (reserved by pending requests)
+  grossAvailable?: number;            // legacy alias (= Net Available Withdrawal)
   maxSettleable?: number;
-  maxWithdrawable?: number;   // AB net of the pay-out fee on a new withdrawal
+  maxWithdrawable?: number;           // spend limit net of the pay-out fee on a new withdrawal
   totalDeposit: number;
   payInFees: number;
   totalSettled: number;

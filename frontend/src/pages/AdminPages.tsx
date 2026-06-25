@@ -576,12 +576,16 @@ export const MerchantAnalyticsPage: React.FC = () => {
     const dep = done('DEPOSIT'), wd = done('WITHDRAWAL'), set = done('SETTLEMENT');
     const pin = (s.payInFee || 0) / 100, pout = (s.payOutFee || 0) / 100;
     const commission = dep * pin + wd * pout + set * pout;
-    const gross = dep + wd + set;   // total money volume
+    // Canonical balance formulas (single source of truth), scoped to the selected range:
+    //   Gross Available Withdrawal Amount = Deposits − Pay-In Fees − Settled
+    //   Net Available Withdrawal Amount   = Gross − Pay-Out Fees
+    const gross = dep - dep * pin - set;
+    const net = gross - wd * pout;
     return {
       depositCount: ofType('DEPOSIT').length, depositAmount: dep,
       withdrawalCount: ofType('WITHDRAWAL').length, withdrawalAmount: wd,
       settlementCount: ofType('SETTLEMENT').length, settlementAmount: set,
-      gross, commission, net: gross - commission, available: s.available,
+      gross, commission, net, available: s.available,
     };
   };
 

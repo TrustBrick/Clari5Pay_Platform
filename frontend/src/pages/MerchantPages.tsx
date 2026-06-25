@@ -909,36 +909,26 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
   useEffect(() => { reload(); }, []);
   usePoll(reload);
 
+  // Canonical balance — single source of truth from the backend (completed only):
+  //   Total Net Available Balance      = Deposits − Pay-In Fees − Settled
+  //   Gross Available Withdrawal Amount = Total Net Available Balance
+  //   Net Available Withdrawal Amount   = Gross Available Withdrawal Amount − Pay-Out Fees
+  //   Net Available Settlement Amount   = Net Available Withdrawal Amount
   const totalDeposit = s?.totalDeposit ?? 0;
   const payInFees = s?.payInFees ?? 0;
   const totalSettled = s?.totalSettled ?? 0;
-  const settlementFees = s?.settlementFees ?? 0;
-  const totalWithdrawn = s?.totalWithdrawn ?? 0;
   const payOutFees = s?.payOutFees ?? 0;
-  const reserved = s?.runningBalance ?? 0;                 // reserved by in-flight (pending) requests
-  const available = s?.available ?? 0;                     // spendable now (drives the withdrawal/settlement limit)
-
-  // Balance breakdown (deductions still include withdrawn + settlement fees so the
-  // figure can never be over-drawn — matches the server-side limit exactly):
-  //   Total Net Available Balance      = Deposits − Pay-In Fees − Settled − Settlement Fees
-  //   Gross Available Withdrawal Amount = Total Net Available Balance − Total Withdrawn
-  //   Net Available Withdrawal Amount   = Gross Available Withdrawal Amount − Pay-Out Fees (− Reserved)
-  //   Net Available Settlement Amount   = Net Available Withdrawal Amount
-  const netAvailableBalance = totalDeposit - payInFees - totalSettled - settlementFees;
-  const grossAvailableWithdrawal = netAvailableBalance - totalWithdrawn;
+  const netAvailableBalance = s?.netAvailableBalance ?? (totalDeposit - payInFees - totalSettled);
+  const grossAvailableWithdrawal = s?.grossAvailableWithdrawal ?? netAvailableBalance;
+  const available = s?.netAvailableWithdrawal ?? s?.available ?? 0;   // Net Available Withdrawal Amount
 
   const rows: Array<[string, number, string, boolean]> = [
     ['Total Deposit Amount', totalDeposit, T.success, false],
     ['Pay-In Fees', payInFees, T.danger, false],
     ['Total Settled Amount', totalSettled, T.warning, false],
-    ['Settlement Fees', settlementFees, T.danger, false],
     ['Total Net Available Balance', netAvailableBalance, T.textMain, true],
-    ['Total Withdrawn', totalWithdrawn, T.danger, false],
     ['Gross Available Withdrawal Amount', grossAvailableWithdrawal, T.textMain, true],
     ['Pay-Out Fees', payOutFees, T.danger, false],
-    ...(reserved > 0
-      ? [['Reserved (Pending Requests)', reserved, T.danger, false] as [string, number, string, boolean]]
-      : []),
     ['Net Available Withdrawal Amount', available, T.blue, true],
     ['Net Available Settlement Amount', available, T.success, true],
   ];
