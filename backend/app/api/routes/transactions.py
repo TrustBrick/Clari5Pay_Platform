@@ -442,8 +442,9 @@ async def merchant_stats(
         )).scalars().all()
         def cnt(pfx: str) -> int:
             return sum(1 for t in txns if t.type.value.startswith(pfx))
-        # Gross / Net Amount follow the canonical balance formulas (single source of truth).
-        gross = s["grossAvailableWithdrawal"]
+        # Analytics (staff view): Gross = business volume; Net = Gross − Commission.
+        # (The wallet/available figure comes from compute_balance below.)
+        gross = s["totalDeposit"] + s["totalWithdrawn"] + s["totalSettled"]
         commission = s["payInFees"] + s["payOutFees"] + s["settlementFees"]
         out.append({
             "name": name,
@@ -461,7 +462,7 @@ async def merchant_stats(
             "settlementAmount": round(s["totalSettled"], 2),
             "grossAmount": round(gross, 2),
             "commissionAmount": round(commission, 2),
-            "netAmount": round(s["netAvailableWithdrawal"], 2),
+            "netAmount": round(gross - commission, 2),
             "available": round(s["available"], 2),
         })
     out.sort(key=lambda r: r["name"].lower())
@@ -647,10 +648,15 @@ async def merchant_reports(
     # receive them. Enforced server-side here, regardless of what the UI requests.
     bal = await compute_balance(db, current_user)
     commission_amount = round(bal["payInFees"] + bal["payOutFees"] + bal["settlementFees"], 2)
-    # Gross / Net Amount follow the canonical balance formulas (single source of truth):
-    #   Gross Amount = Gross Available Withdrawal Amount; Net Amount = Net Available Withdrawal Amount.
-    gross_amount = round(bal["grossAvailableWithdrawal"], 2)
     include_commission = current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
+    # Two distinct calculations, by design:
+    #  • Analytics:  Gross Amount = business volume (deposits + withdrawals + settlements);
+    #                Net Amount   = Gross − Commission. (staff view)
+    #  • Wallet:     Available Balance = Net Available Withdrawal Amount (canonical balance).
+    # Commission is internal — merchants never receive it, so a merchant's Net Amount is the
+    # wallet figure (it must not reveal commission via Gross − Net).
+    gross_amount = round(bal["totalDeposit"] + bal["totalWithdrawn"] + bal["totalSettled"], 2)
+    net_amount = round(gross_amount - commission_amount, 2) if include_commission else round(bal["available"], 2)
 
     cards = {
         "totalTransactions": len(txns),
@@ -662,8 +668,8 @@ async def merchant_reports(
         "totalSettlementAmount": kind_amount("settlement"),
         "grossAmount": gross_amount,
         # commissionAmount injected below for staff only (never for merchants).
-        "netAmount": round(bal["netAvailableWithdrawal"], 2),
-        "availableBalance": round(bal["netAvailableWithdrawal"], 2),
+        "netAmount": net_amount,
+        "availableBalance": round(bal["available"], 2),
         "totalTransactionAmount": round(
             sum(t.amount for t in txns if _completed(t)), 2),
         "activeMemberships": len(active_30d),
