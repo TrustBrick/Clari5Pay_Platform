@@ -1,0 +1,562 @@
+# PSP Platform - Complete Functional Documentation
+
+# 1. Project Overview
+
+The PSP (Payment Service Provider) Platform is a centralized system used to manage merchant onboarding, deposits, withdrawals, settlements, transactions, approvals, and account management.
+
+The platform consists of multiple portals:
+
+1. Super Admin Portal
+2. Admin Portal
+3. Merchant Portal
+4. Deposit Operator Portal
+5. Withdrawal Operator Portal
+
+Each portal has different permissions and responsibilities.
+
+---
+
+# 2. User Roles
+
+## Super Admin
+
+Highest authority in the system.
+
+Responsibilities:
+
+* Create Admin accounts
+* View all Admins
+* View all Merchants
+* Monitor system activities
+* Reset Admin passwords
+* Activate/Deactivate Admins
+* View reports and audit logs
+
+The Super Admin does not process deposits or withdrawals.
+
+---
+
+## Admin
+
+Responsible for managing merchants and operational approvals.
+
+Responsibilities:
+
+* Create Merchant accounts
+* Manage Merchant profiles
+* Approve or reject merchant requests
+* Review deposits
+* Review withdrawals
+* View transaction history
+* Monitor merchant activities
+
+---
+
+## Merchant
+
+Uses the platform to perform transactions.
+
+Responsibilities:
+
+* Create deposit requests
+* Create withdrawal requests
+* View balances
+* View transaction history
+* View notifications
+* Manage profile
+
+---
+
+## Deposit Operator
+
+Responsible for handling incoming deposits.
+
+Responsibilities:
+
+* View deposit requests
+* Verify deposit payments
+* Manage QR payments
+* Verify UPI payments
+* Approve deposits
+
+---
+
+## Withdrawal Operator
+
+Responsible for processing withdrawal requests.
+
+Responsibilities:
+
+* View withdrawal requests
+* Verify withdrawal balance
+* Process payouts
+* Update withdrawal status
+
+---
+
+# 3. Super Admin Portal
+
+## Dashboard
+
+Displays:
+
+* Total Admins
+* Active Admins
+* Inactive Admins
+* Total Merchants
+* Total Deposits
+* Total Withdrawals
+* System Statistics
+
+---
+
+## Sidebar: Admin Management
+
+Purpose:
+Manage all Admin accounts.
+
+Features:
+
+* Create Admin
+* Edit Admin
+* Delete Admin
+* Activate Admin
+* Deactivate Admin
+* Reset Admin Password
+
+Overview Button Shows:
+
+* Admin Details
+* Creation Date
+* Creation Time
+* Total Merchants Created
+* Merchant Information
+
+---
+
+## Sidebar: Audit Logs
+
+Purpose:
+Track all major system activities.
+
+Examples:
+
+* Admin Created
+* Merchant Created
+* Password Changed
+* Deposit Approved
+* Withdrawal Approved
+
+Information Stored:
+
+* User
+* Action
+* Date
+* Time
+* Status
+
+---
+
+## Sidebar: Profile
+
+Purpose:
+Manage Super Admin profile.
+
+Features:
+
+* View Profile
+* Change Password
+* Update Personal Information
+
+---
+
+# 4. Admin Portal
+
+## Dashboard
+
+Displays:
+
+* Account Requested
+* Account Submitted
+* Slip Submitted
+* Pending Requests
+* Approved Requests
+* Rejected Requests
+* Deposit Statistics
+* Withdrawal Statistics
+
+Graphs should display live database data.
+
+---
+
+## Sidebar: Merchant Management
+
+Purpose:
+Manage Merchant accounts.
+
+Features:
+
+* Create Merchant
+* Edit Merchant
+* View Merchant
+* Activate Merchant
+* Deactivate Merchant
+
+Merchant Details:
+
+* Merchant ID
+* Business Name
+* Email
+* Phone Number
+* Fees
+* Settlement Information
+
+---
+
+## Sidebar: Deposit Requests
+
+Purpose:
+View merchant deposit requests.
+
+Workflow:
+
+Merchant Creates Deposit Request
+↓
+Admin Receives Request
+↓
+Admin Reviews Request
+↓
+Approve / Reject
+↓
+Status Updated
+
+Statuses:
+
+* Pending
+* Approved
+* Rejected
+
+---
+
+## Sidebar: Withdrawal Requests
+
+Purpose:
+Manage withdrawal requests.
+
+Workflow:
+
+Merchant Requests Withdrawal
+↓
+Admin Reviews Request
+↓
+Withdrawal Operator Processes
+↓
+Completed
+
+---
+
+## Sidebar: Transaction History
+
+Displays:
+
+* Deposits
+* Withdrawals
+* Settlements
+
+Filters:
+
+* Date
+* Merchant
+* Status
+* Amount
+
+---
+
+## Sidebar: Notifications
+
+Displays:
+
+* Deposit Updates
+* Withdrawal Updates
+* Approval Updates
+
+---
+
+## Sidebar: Profile
+
+Features:
+
+* View Profile
+* Change Password
+
+---
+
+# 5. Merchant Portal
+
+## Dashboard
+
+Displays:
+
+* Available Balance
+* Total Deposits
+* Total Withdrawals
+* Settlement Requests
+* Recent Transactions
+
+---
+
+## Sidebar: Deposit Request
+
+Purpose:
+Create deposit requests.
+
+Merchant Enters:
+
+* Amount
+* Deposit Type
+
+Options:
+
+* UPI
+* QR
+* IMPS
+* NEFT
+* RTGS
+
+If UPI Selected:
+
+* Show UPI ID Only
+
+If QR Selected:
+
+* Show QR Code Only
+
+QR Requirements:
+
+* Auto-fill Amount
+* Expire After 15 Minutes
+
+After Successful Payment:
+
+Status:
+Pending → Approved
+
+---
+
+## Sidebar: Withdrawal Request
+
+Purpose:
+Request withdrawal.
+
+Merchant Enters:
+
+* Amount
+* Bank Details
+
+System Checks:
+
+* Available Balance
+* Withdrawal Limits
+
+---
+
+## Sidebar: Transaction History
+
+Displays:
+
+* Deposits
+* Withdrawals
+* Settlements
+
+Features:
+
+* Search
+* Filters
+* Export
+
+---
+
+## Sidebar: Notifications
+
+Displays:
+
+* Deposit Status
+* Withdrawal Status
+* Approval Status
+
+---
+
+## Sidebar: Profile
+
+Features:
+
+* Update Profile
+* Change Password
+
+---
+
+# 6. Deposit Operator Portal
+
+## Dashboard
+
+Displays:
+
+* Pending Deposits
+* Approved Deposits
+* Rejected Deposits
+
+---
+
+## Sidebar: Deposit Verification
+
+Responsibilities:
+
+* Verify UPI Payments
+* Verify QR Payments
+* Verify Bank Transfers
+
+Actions:
+
+* Approve Deposit
+* Reject Deposit
+
+---
+
+## Sidebar: Deposit History
+
+Displays all processed deposits.
+
+---
+
+# 7. Withdrawal Operator Portal
+
+## Dashboard
+
+Displays:
+
+* Available Withdrawal Balance
+* Pending Withdrawals
+* Approved Withdrawals
+* Completed Withdrawals
+
+---
+
+## Sidebar: Withdrawal Requests
+
+Responsibilities:
+
+* View Withdrawal Requests
+* Verify Funds
+* Process Withdrawals
+
+Actions:
+
+* Approve
+* Reject
+* Complete
+
+---
+
+## Sidebar: Withdrawal History
+
+Displays all completed withdrawals.
+
+---
+
+# 8. Forgot Password Workflow
+
+User Clicks Forgot Password
+↓
+Enter Registered Email
+↓
+OTP Sent To Email
+↓
+Verify OTP
+↓
+Enter New Password
+↓
+Confirm Password
+↓
+Password Updated
+↓
+Login With New Password
+
+OTP Expiry:
+15 Minutes
+
+---
+
+# 9. Deposit Workflow
+
+Merchant Creates Deposit
+↓
+System Generates Reference ID
+↓
+Merchant Makes Payment
+↓
+Admin Reviews
+↓
+Deposit Operator Verifies
+↓
+Approved
+↓
+Balance Updated
+
+---
+
+# 10. Withdrawal Workflow
+
+Merchant Requests Withdrawal
+↓
+Admin Reviews
+↓
+Withdrawal Operator Processes
+↓
+Funds Released
+↓
+Completed
+
+---
+
+# 11. Reference Number Formats
+
+Deposits:
+DEP0000001
+
+Withdrawals:
+WDR0000001
+
+Settlements:
+SET0000001
+
+Rules:
+
+* Auto Generated
+* Unique
+* Sequential
+* Reset To 1 When All Data Is Deleted
+
+---
+
+# 12. Audit Logging
+
+Every major action must be recorded.
+
+Examples:
+
+* Login
+* Logout
+* Password Change
+* Password Reset
+* Merchant Creation
+* Admin Creation
+* Deposit Approval
+* Withdrawal Approval
+
+Each log stores:
+
+* User
+* Action
+* Timestamp
+* Module
+* Status

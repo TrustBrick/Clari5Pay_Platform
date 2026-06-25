@@ -1,0 +1,232 @@
+| Field                                 | Formula                                                   |
+| ------------------------------------- | --------------------------------------------------------- |
+| **Total Deposit Amount**              | All Deposits Sum                                          |
+| **Total Net Available Balance**       | Total Deposit Amount - Pay In Fees - Total Settled Amount |
+| **Gross Available Withdrawal Amount** | Total Net Available Balance                               |
+| **Net Available Withdrawal Amount**   | Gross Available Withdrawal Amount - Pay Out Fees          |
+| **Net Available Settlement Amount**   | Net Available Withdrawal Amount                           |
+
+
+
+superadmin 
+
+	in the audit log using api fetch the location like place or city where they belonging
+
+
+where we giving dropdown in phone number add all code all countrys 
+
+
+while login
+			add resend option when the otp send andin some cases the otp wont send so they need resend option while login in every portal and then byt it should happen after 1 min they get resend option then we send otp to them
+
+
+
+admin portal
+
+ in the admin where ever you found text as merchant replce it with Receiver
+in the admin in the all transaction name with Merchant Bank Details (pay here) change to Receiver Bank Details (pay here) and change the colour of this text 
+
+in the Pay the merchant using the bank details above, then upload your payment receipt to complete. change to Pay the Receiver using the bank details above, then upload your payment receipt to complete. 
+ 
+when admin pays to receiver capture the UTR number add UTR option when admin pays and then also img must share to receiver they can view img and UTR number to show receiver(merchant)
+
+
+
+
+
+in the admin portal in the dash board add different graph for withdrwal ,deposite and settlements they must fetch with all data 
+in the dash board we have gross and net amount and one more add commission amount and the calculations i have given to you in the above 
+
+		
+	in the dashboard change the Total Deposit Requests to NO.OF Deposit Requests and Total Withdrawal Requests to NO.OF Withdrawal Requests and Total Settlement Requests
+NO.OF Settlement Requests
+
+in the dash board add to filter status
+
+in the Account Management change add reference id in b/w name and status 
+
+
+
+When the merchant request for account for first first time we send a bank acc from the second time it should take same deposite details and if can change but what we send account details to merchant we send same details to that merchant its only depends on Member ID what id by that id we send same account details what merchant haves
+make it prirotiy to merchant (Member ID ) not for merchant for member id and then we onky send that bank details in case any issues of admin bank then we can choose other bank detils whay merchant haves
+
+
+MERCHANT portal 
+
+
+	in dashboard remove this Account Info
+Pay-In Code
+DEP
+Pay-Out Code
+WIT
+Fee Rate
+1.5%
+Profile
+Maker
+Risk Level
+LOW and remove action 
+
+
+		in the Deposit Management in the Deposit Request remove UTR Number and if they select upi and qr dont show bank details  if the select upi or qr dont show bank details if they select bank details they can add and show the last transcation account but here is the logic if one memerb id select the transaction only they have the already used bak details for it allows to different member id  i mean to say the one member if they entered th bank details that must shows only for that id only if other member id they dont get the bank account details for new member id they get add bank option 
+
+	for one member id that have have different account and for other member id they have different bank account and that bank account are store in memer id only that member id can see the bank details not with other member id 
+
+
+while deposite amount when merchant pays for details the UTR number make mandatory to fill and proof also
+
+
+Member bhargavi1 — Deposit History
+✕
+Total Deposit Requests
+
+3
+
+Total Amount
+
+₹3,00,001.00
+
+Reference Number	Merchant Name	Member ID	Type	Amount	Date	Status	Action
+DEP0000003	Nexus Fintech	bhargavi1	Deposit Request	₹2,00,000.00	2026-06-18 08:24:36	
+Deposited	👁 View
+DEP0000002	Nexus Fintech	bhargavi1	Deposit Request	₹1,00,000.00	2026-06-18 08:23:26	
+Account Requested	👁 View
+DEP0000001	Nexus Fintech	bhargavi1	Deposit Request	₹1.00	2026-06-18 07:53:38	
+Rejected	👁 View
+ for this detail i getting to side a so make it some large to view all in once it happens when merchant click on action view history then also with with draw
+
+for 
+
+news
+
+		for news add four section in the back end the news back end people can post the news with img and  make a localhost different for news they can add news they have permission to add
+
+
+in the deposite 
+		it happen when admin share the bank details if they select upi
+
+			when the admin sends upi id they can able to copy it by the merchant and in that copy the upi id  
+			if they want to share they can share with QR,upi id and Reference Number ex: DEP0000003
+
+
+
+
+
+
+
+
+where ever we get ₹ replace it with INR
+
+
+
+in the merchant 
+
+		where ever you find admin change it to agent 
+
+in the merchant in deposite Member satish1 — Deposit History Awaiting details from admin. for Awaiting details from admin. change it  to awating updates from agent
+
+
+
+settlement 
+
+	in the settlemet in the dashboard add available balance and that must fectch to in this Request Settlement
+✕
+Available Balance
+
+₹0.00
+
+Settlement Amount (INR ₹) *
+₹
+Enter amount
+Member ID
+e.g. MBR20240001
+Proof Document / Image
+No file chosen
+Submit Settlement Request →
+
+
+
+and change the text Request Settlement to Settlement Request
+
+
+in the withdrawls 
+
+ 	 when the merchant want to withdrawl the merchant want to select mode in which transation he need Payout Modes
+1. Bank Transfer
+
+Form Fields Required:
+
+IFSC
+A/C (Account Number)
+
+Response Required:
+
+UTR Number
+Slip (Transaction Receipt)
+2. UPI
+
+Form Fields Required:
+
+UPI ID
+
+Response Required:
+
+UTR Number
+Slip (Transaction Receipt)
+3. Cash
+
+Form Fields Required:
+
+Village
+City
+Mobile Number
+Toll Free Number
+
+Response Required:
+
+Image (Proof/Image Upload)
+4. Crypto (USDT)
+
+Form Fields Required:
+
+Wallet Address
+Network (TRC20)
+
+Response Required:
+
+Hash ID (Transaction Hash)
+
+
+| Payout Mode   | Input Fields                                   | Response/Proof   |
+| ------------- | ---------------------------------------------- | ---------------- |
+| Bank Transfer | IFSC, Account Number                           | UTR Number, Slip |
+| UPI           | UPI ID                                         | UTR Number, Slip |
+| Cash          | Village, City, Mobile Number, Toll Free Number | Image            |
+| Crypto (USDT) | Wallet Address, Network (TRC20)                | Hash ID          |
+
+
+
+resposese is nothing after payment the admin uploads details of proof of that payment
+
+and the modes must drop down that is modes and when they select mode that details must apperare  input fields  and then he sends to admin
+
+
+
+https://github.com/praveenpuglia/indian-banks/blob/main/README.md 
+ Exact the detail in the bank details when they click on bank name show the full bank name with logo and if they entered IFSC code auto fill the branch name using that IFSC code which matches same  were every we enter in this bank details add this feature make sure the logo of bank and IFSC code with brach must be same 
+The bank name they can type and they get drop down for bank details 
+Use this feature every were  , where we need bank details 
+
+Where the phone number entered they can only enter 10 digits not more then that
+
+
+
+
+
+
+
+
+
+
+
+
+

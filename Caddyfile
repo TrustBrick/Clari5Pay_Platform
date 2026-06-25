@@ -1,0 +1,35 @@
+# Automatic HTTPS (Let's Encrypt) for Win365Jackpot.
+# Caddy fetches + renews TLS certs on its own and redirects HTTP -> HTTPS.
+# Each domain reverse-proxies to its own frontend nginx container (same codebase,
+# built per role), which serves the SPA and proxies /api (+ the chat WebSocket)
+# to the shared backend. WebSockets pass through.
+
+# Merchant portal.
+win365jackpot.com {
+    encode zstd gzip
+    reverse_proxy frontend-merchant:3000
+}
+
+# Admin portal.
+admin.win365jackpot.com {
+    encode zstd gzip
+    reverse_proxy frontend-admin:3000
+}
+
+# Super Admin portal.
+sa.win365jackpot.com {
+    encode zstd gzip
+    reverse_proxy frontend-sa:3000
+}
+
+# Combined entry — a chooser that routes users to their portal.
+app.win365jackpot.com {
+    encode zstd gzip
+    reverse_proxy frontend:3000
+}
+
+# Customer Support agent portal.
+support.win365jackpot.com {
+    encode zstd gzip
+    reverse_proxy support:3002
+}

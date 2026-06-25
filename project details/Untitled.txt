@@ -1,0 +1,99 @@
+
+add system logs in data create a sperate table for this logs 
+
+
+admin portal --
+		merchant sidebar
+
+					in the Merchant Management in the table add role in between mail id and username it will define when admin create merchant depends on it
+						ex role : data operator ,supervier , manager 
+		Account Management
+					
+					in the status the admin can make toggle to ACTIVE/INACTIVE
+
+		Dashboard(
+				Requests · Account Requested
+							when the merchant ask for account details ,the admin can choise account when is there in account managent  give him drop to see how 		many account available and the admin select one account which there in Account Management
+		when the details
+		
+		so the admin dont send any img dor merchant auto generate a img (png) and send to the merchant when admin click on account then it must happen
+
+		when the merchant request for withdrawl the status must show submitted to user and for admin show as pending when admin click on pending the merchant enter account details 		to admin merchant send to admin the account details the admin do payment using the merchant send details account details and the admin send the proof of payment via img and 		the send to merchant the status becames completed
+
+		so here while withdraw request the status must be in admin pending and completed  
+		so here while withdraw request the status must be in merchant  submitted and completed  
+		this status also belomging to All Transactions
+	
+	in the dashboard the container of Account Requested change to total Requests
+	in the dashboard the container of Account Submitted change to completed and in the backend it should update as when the withdral and deposite happen completely till end add count by increasing
+
+
+
+
+	Dashboard
+			Account Submitted the when that withdral or happen its not updating there check on update how many completed as
+		so here while withdraw request the status must be in admin pending and completed  
+		so here while withdraw request the status must be in merchant  submitted and completed  
+		this status also belomging to All Transactions 
+		in the dashboard the container of Account Submitted change to completed and in the backend it should update as when the withdral and deposite happen completely till end add count by increasing  
+
+ 		Requests · Account Requested
+				Action must like while coming to deposite in the end coming completed change to Deposited and the remaining are good let it be same 
+	
+
+(UPI ID
+e.g. merchant@bank (merchant selected UPI)
+Bank Details) 
+ remove this filed in while the admin when the merchant ask for bank detail to admin  just add when the merchant ask for account details ,the admin can choise account when is there in account managent  give him drop to see how many account available and the admin select one account which there in Account Management
+		when the details
+		
+		so the admin dont send any img dor merchant auto generate a img (png) and send to the merchant when admin click on account then it must happen
+
+
+--merchant 
+
+Dashboard
+
+	Available Balance in this section when admin approve the request of merchant the its not updating  check this data when he deposite when the process complete it must update the total Available Balance
+	▲ 8.4% vs last week remove this in Available Balance
+
+	in the section of total deposites change it to no.of deposits in the result must show the total count of deposite 
+	in the section of Withdrawals change it to no.of Withdrawals in the result must show the total count of Withdrawals 
+when the merchant request for withdrawal the status must show submitted to user and for admin show as pending when admin click on pending the merchant enter account details 		to admin merchant send to admin the account details the admin do payment using the merchant send details account details and the admin send the proof of payment via img and 		the send to merchant the status becomes completed
+
+		so here while withdraw request the status must be in admin pending and completed  
+		so here while withdraw request the status must be in merchant  submitted and completed  
+		this status also belonging to All Transactions
+
+in the dashboard it must only pending one and account requested  remove from others in only dashboard
+
+
+Withdrawal Management in the if they want to withdraw the amount they must have available balance if they enter above the available balaece pop upp a message the total available balacw insufficient try again don't make action of withdrawal
+
+if they have suffient balace in available balance then the merchant enter the amount and bank details that will reflect on admin and then using those info that admin make an make and upload receipt to merchant and the merchant can view the receipt uploaded by admin 
+
+in the withdrawl and deposite the status are different
+	FunctionStatusRoleDeposit RequestAccount RequestedUser, AdminDeposit RequestAccount SubmittedUser, AdminDeposit RequestSlip SubmittedUser, AdminDeposit RequestDepositedUser, AdminWithdraw RequestSubmittedUserWithdraw RequestPendingAdminWithdraw RequestCompletedUser, AdminSettlement RequestSubmittedUserSettlement RequestPendingAdminSettlement RequestCompletedUser, Admin
+Summary:
+
+Deposit Request has 4 statuses, all accessible by both User and Admin
+Withdraw Request has 3 statuses — Submitted (User only), Pending (Admin only), Completed (both)
+Settlement Request has 3 statuses — Submitted (User only), Pending (Admin only), Completed (both)
+
+and the available balance must update if the merchant roles different but if they belongs to same business name the available must be same for there this is main update it
+
+▲ 8.4% vs last week   remove this from evry where
+ 
+
+super admin 
+
+	 the monthly values must been calculate by the amount of deposte and withdrwal so don't add default value and
+
+▲ 8.4% vs last week   remove this from evry portal
+
+
+add web hooks to auto refresh  in every portal
+
+
+
+

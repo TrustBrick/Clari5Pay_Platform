@@ -1,0 +1,269 @@
+# Clari5Pay Platform – Additional Security & System Enhancement Requirements
+
+## 1. Real-Time OTP Generation and Validation for Forgot Password
+
+Implement real-time OTP generation and validation for the Forgot Password feature. The functionality should work on a local machine and allow users to securely receive and verify OTPs before resetting their passwords.
+
+(Use the OTP requirements already defined.)
+
+---
+
+## 2. Account Lockout Protection
+
+Requirements:
+
+1. If a user enters an incorrect password 5 consecutive times:
+
+   * Lock the account for 15 minutes.
+   * Display an appropriate message.
+   * Record the event in Audit Logs.
+
+2. Allow administrators to unlock accounts manually.
+
+3. Record:
+
+   * Failed Login Attempts
+   * Account Locked
+   * Account Unlocked
+
+---
+
+## 3. Change Password Validation
+
+Requirements:
+
+1. Add Current Password, New Password, and Confirm Password fields.
+
+2. Validate:
+
+   * Current password is correct.
+   * New password and Confirm Password match.
+   * Password meets complexity requirements.
+
+3. Password Policy:
+
+   * Minimum 8 characters.
+   * At least 1 uppercase letter.
+   * At least 1 lowercase letter.
+   * At least 1 number.
+   * At least 1 special character.
+
+4. Store password history and prevent reuse of the last 5 passwords.
+
+---
+
+## 4. Audit Log Enhancements
+
+Requirements:
+
+1. Create a centralized Audit Log table.
+
+2. Record:
+
+   * Admin Creation
+   * Merchant Creation
+   * Merchant Updates
+   * Login
+   * Logout
+   * Password Changes
+   * OTP Requests
+   * OTP Verification
+   * Deposits
+   * Withdrawals
+   * Settlements
+   * Account Approvals
+   * Account Rejections
+
+3. Store:
+
+   * User ID
+   * Username
+   * Role
+   * Action
+   * Timestamp
+   * IP Address
+   * Device Information
+
+---
+
+## 5. Loading Screen Implementation
+
+Requirements:
+
+1. Every page must display a loading screen.
+
+2. While loading:
+
+   * Fetch all required data.
+   * Display the company logo.
+   * Prevent partial rendering.
+
+3. Display page only after all API calls complete.
+
+---
+
+## 6. Auto Refresh System
+
+Requirements:
+
+1. Dashboard data should refresh automatically every 30 seconds.
+
+2. Refresh:
+
+   * Deposits
+   * Withdrawals
+   * Merchant Requests
+   * Settlements
+   * Notifications
+
+3. Avoid full-page refreshes.
+
+---
+
+## 7. Notification Center
+
+Requirements:
+
+1. Create an in-app notification system.
+
+2. Notify users for:
+
+   * Deposit Approval
+   * Deposit Rejection
+   * Withdrawal Approval
+   * Withdrawal Rejection
+   * Password Change
+   * OTP Verification
+   * Merchant Approval
+
+3. Support unread counts.
+
+---
+
+## 8. Email Notification Service
+
+Requirements:
+
+1. Send real emails for:
+
+   * Forgot Password OTP
+   * Password Changed
+   * Merchant Created
+   * Merchant Approved
+   * Merchant Rejected
+   * Deposit Approved
+   * Withdrawal Approved
+
+2. Maintain email delivery logs.
+
+---
+
+## 9. Dashboard Accuracy
+
+Requirements:
+
+1. Dashboard graphs must display real database values.
+
+2. Remove hardcoded values.
+
+3. Show:
+
+   * Account Requested
+   * Account Submitted
+   * Slip Submitted
+   * Pending
+   * Approved
+   * Rejected
+
+4. Graphs must update automatically.
+
+---
+
+## 10. Reference Number Management
+
+Requirements:
+
+1. Generate unique reference numbers automatically.
+
+Examples:
+
+* DEP0000001
+* WDR0000001
+* STL0000001
+
+2. Prevent duplicate reference numbers.
+
+3. Maintain sequence consistency even after server restart.
+
+4. Record generation events in Audit Logs.
+
+---
+
+## 11. Merchant Document Management
+
+Requirements:
+
+1. Allow merchants to upload:
+
+   * KYC Documents
+   * Bank Statements
+   * ID Proofs
+
+2. Validate:
+
+   * File Type
+   * File Size
+
+3. Maintain upload history.
+
+4. Allow admins to download and review documents.
+
+---
+
+## 12. Security Improvements
+
+Requirements:
+
+1. Implement JWT token expiration.
+
+2. Enable refresh token mechanism.
+
+3. Encrypt sensitive information.
+
+4. Add API rate limiting.
+
+5. Protect against brute-force attacks.
+
+6. Implement role-based access control across all portals.
+
+---
+
+## 13. Database Backup and Recovery
+
+Requirements:
+
+1. Automatic database backup scheduling.
+
+2. Restore functionality.
+
+3. Backup activity logging.
+
+4. Backup download option for Super Admin.
+
+---
+
+## 14. Real-Time Activity Monitoring
+
+Requirements:
+
+1. Display active users.
+
+2. Show currently logged-in Admins and Merchants.
+
+3. Track:
+
+   * Login Time
+   * Last Activity
+   * Session Duration
+
+4. Auto-expire inactive sessions.

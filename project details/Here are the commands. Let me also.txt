@@ -1,0 +1,93 @@
+Here are the commands. Let me also run the "view all data" one so you can see it working against your current DB (read-only).
+That command works against your live DB. Here's the full set you asked for.
+1. View all tables
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "\dt"
+Your 7 tables: users, transactions, account_master, account_transaction, notifications, system_logs, support_messages.
+
+
+2. View the data in every table (readable summary)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT '--- USERS ---' AS section; SELECT id, username, role, name, email, active, merchant_role FROM users ORDER BY id; SELECT '--- TRANSACTIONS ---'; SELECT id, ref, type, amount, status, merchant_name FROM transactions ORDER BY id; SELECT '--- ACCOUNT_MASTER ---'; SELECT id, reference_number, account_name, bank_name, status FROM account_master ORDER BY id; SELECT '--- ACCOUNT_TRANSACTION ---'; SELECT * FROM account_transaction ORDER BY id; SELECT '--- NOTIFICATIONS ---'; SELECT id, user_id, message, read FROM notifications ORDER BY id; SELECT '--- SYSTEM_LOGS ---'; SELECT id, actor_name, action, detail FROM system_logs ORDER BY id DESC; SELECT '--- SUPPORT_MESSAGES ---'; SELECT id, merchant_id, sender, content FROM support_messages ORDER BY id;"
+I used trimmed columns on purpose — transactions/notifications hold huge base64 image strings (admin_proof, merchant_proof) and users holds the password hash, which would flood the screen.
+
+
+3. View ALL columns of ONE table (full row, easy to read)
+The -x flag prints each row vertically (key: value), so long values don't wrap badly:
+docker exec clari5pay_db psql -U postgres -d clari5pay -x -c "SELECT * FROM transactions ORDER BY id;"
+Swap transactions for any table name.
+4. Delete all data except the super admin
+Runs in one atomic transaction; the WHERE role <> 'SUPER_ADMIN' guard means the super admin is never touched. Order matters (foreign keys):
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "DELETE FROM account_transaction; DELETE FROM transactions; DELETE FROM support_messages; DELETE FROM notifications; DELETE FROM system_logs; DELETE FROM account_master; DELETE FROM users WHERE role <> 'SUPER_ADMIN';"
+
+
+This wipes all transactions, accounts, notifications, logs, support messages, and every admin/merchant — leaving only superadmin / pass123.
+Heads-up from the data above: you currently have an admin merchant1 (name "priya", deactivated) and one account ACC0000001 — both will be removed by command #4. Run it whenever you want a clean slate.
+
+See all tables
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "\dt"
+
+View users
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT id, username, role, name, email, phone, active, created_by FROM users;"
+
+View transactions
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT id, ref, type, amount, status, merchant_name, member_id, admin_ref, tx_date FROM transactions;"
+
+View account_master (bank accounts)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT reference_number, account_name, account_number, ifsc_code, bank_name, branch, account_type, status FROM account_master;"
+
+View account_transaction (account ↔ merchant links)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT reference_number, member_id, transaction_reference_number, transaction_date FROM account_transaction;"
+
+Want ALL columns of a table? Use *:
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT * FROM users;"
+
+Wide output hard to read? Add -x to flip rows into a vertical, one-field-per-line layout:
+docker exec clari5pay_db psql -U postgres -d clari5pay -x -c "SELECT * FROM users;"
+
+
+0. One-time setup (enables bcrypt hashing — re-run after any down -v)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+
+➕ ADD an admin
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "INSERT INTO users (username, hashed_password, role, email, name, phone, active, created, created_at) VALUES ('admin2', crypt('pass123', gen_salt('bf')), 'ADMIN', 'admin2@clari5pay.io', 'Admin Two', '9000000002', true, CURRENT_DATE, now());"
+➕ ADD a merchant (linked to an existing admin)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "INSERT INTO users (username, hashed_password, role, email, name, phone, active, created, created_at, created_by, pay_in, pay_out, settlement, pay_in_fee, pay_out_fee, balance, risk, profile, merchant_role) VALUES ('merchantx', crypt('pass123', gen_salt('bf')), 'MERCHANT', 'merchantx@clari5pay.io', 'Merchant X', '9000000010', true, CURRENT_DATE, now(), (SELECT id FROM users WHERE username='admin2'), 'MDP', 'MWI', 'MST', 1.5, 1.2, 0, 'LOW', 'Maker', 'DEO');"
+
+➖ REMOVE one user by username (super-admin is protected)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "DELETE FROM transactions WHERE merchant_id=(SELECT id FROM users WHERE username='merchantx' AND role<>'SUPER_ADMIN'); DELETE FROM support_messages WHERE merchant_id=(SELECT id FROM users WHERE username='merchantx' AND role<>'SUPER_ADMIN'); DELETE FROM notifications WHERE user_id=(SELECT id FROM users WHERE username='merchantx' AND role<>'SUPER_ADMIN'); DELETE FROM users WHERE username='merchantx' AND role<>'SUPER_ADMIN';"
+
+➖ REMOVE all admins + merchants (clear everything, keep only super-admin)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "DELETE FROM transactions; DELETE FROM support_messages; DELETE FROM notifications WHERE user_id IN (SELECT id FROM users WHERE role<>'SUPER_ADMIN'); DELETE FROM users WHERE role<>'SUPER_ADMIN';"
+
+🔎 List current users (find usernames)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT id, username, role, active FROM users ORDER BY id;"
+
+See all tables
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "\dt"
+
+View users
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT id, username, role, name, email, phone, active, created_by FROM users;"
+
+View transactions
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT id, ref, type, amount, status, merchant_name, member_id, admin_ref, tx_date FROM transactions;"
+
+View account_master (bank accounts)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT reference_number, account_name, account_number, ifsc_code, bank_name, branch, account_type, status FROM account_master;"
+
+View account_transaction (account ↔ merchant links)
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT reference_number, member_id, transaction_reference_number, transaction_date FROM account_transaction;"
+
+Want ALL columns of a table? Use *:
+docker exec clari5pay_db psql -U postgres -d clari5pay -c "SELECT * FROM users;"
+
+Wide output hard to read? Add -x to flip rows into a vertical, one-field-per-line layout:
+docker exec clari5pay_db psql -U postgres -d clari5pay -x -c "SELECT * FROM users;"
+
+
+
+
+
+
+
+
+
+

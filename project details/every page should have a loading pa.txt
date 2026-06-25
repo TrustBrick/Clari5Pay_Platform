@@ -1,0 +1,244 @@
+every page should have a loading page, and in the loading page it should fetch all the details of all the details in that particular page, and while its in the loading state please display the company logo while loading.
+
+create a table in the database for audit logs, in that table i want every major action to be recorded, for example every transactions and every creation of merchant and every creation of admin and changing of passwords, etc. i want a detailed audit log recorded in the audit log table in the database, i want the time and date of that particular action as well.	
+
+
+
+
+after login the landing page it should always must show dashboard
+
+ we need to capture The UTR number from both deposte and withdraw side 
+
+
+merchant portal 
+	in Deposit Management Total in the between of Amount and Action add status which show status of deposit
+	in Withdrawal Management Total in the between of Amount and Action add status which show status of Withdrawal
+
+
+in superadmin portal ---
+
+		when superadmin create admin i need a pop up with free text and the superadmin enter why superadmin create admin 	
+		when superadmin wants to deactivate and activate i need a pop up with free text and the superadmin enter why superadmin want to deactivate and activate 
+
+in system logs in details add who created admin (superadmin is creating so it must show superadmin role and name of superadmin
+
+
+
+
+
+
+
+in admin portal ---
+--------dashboard 
+in the admin dash board we want the cards for gross amount, net amount ,total deposite request , total withdrawl request , total settlement request and i need separate graph for each and very accurate 
+(gross amount - what the overall amount done by admin and calculate with deposte amd withdraw if deposite + add withdraw means - its is calculate by overll all withdrwal and deposite )
+(net amount - how much the admin get commission cut off amount will apper here )
+(total deposite request - how much depoite happen with the hands of admin  )
+(total withdrawl request - how much withdrawl happen with the hands of admin  )
+
+
+
+
+
+
+
+		in the dash board in between of merchant name and type add member id to read it clearly
+
+in Pending Requests when in Type of Deposit Request or Withdrawal Request or settlement request when they view the detail add option to admin to reject  can when we reject pop up a box and the admin write the message why we reject your request that will show in merchant notifications 
+
+
+
+--------in the merchants
+		in the Merchant Management the Balance is not updating it must show how many available balace the details in that Balance the admin can view how much the merchant carrying in there available balance
+
+	when admin wants to deactivate and activate i need a pop up with free text and the admin enter why admin want to deactivate and activate for merchant 
+	
+--------in the Create Merchant Account
+		in the Risk Level add one more type called critical 
+the merchant send mess while deposite that must show when the admin see the details of merchant 
+when the merchant ask for deposite in the merchant when they deposite add a free text box and that mess must show to the admin  and its not mandatory 
+
+
+
+
+MERCHNAT PORTAL
+
+
+in the top right where the profile indicates mention there the role of merchant what they are Dataoperrator or data operator Deposite or data operator Withdraw or superviser or manager what they are belongs to role 
+
+while calculating the deposite can make 0 and negative values and withdraw also the amount not less then 1 it can be 1 or above not below amount like 0 and -1 not allowed display the less than 0 is not accepted 
+
+
+
+----dashboard  
+		add separate graph for withdraw and deposite 
+				for withdraw like graph  submitted and completed for withdraw and it must accurate 
+
+----- in the deposit
+
+	
+
+	 in the Deposit Management
+				in the between of  Total Deposit Requests and Total Amount add status we are not getting weather completed or not so i need it 
+when merchant ask bank details to admin then the account details is send by admin in that the auto img generator becoming crop in brach details so adjust it full to view clearly about bank details and when merchant send the receipt we can download that img like how they download  and remove refernce id of bank that dont show to merchant its our so no need
+
+in the merchant when they deposite add a free text box and that mess must show to the admin  and its not mandatory 
+
+make sure the admin bank details must be full clear 
+
+
+and 
+
+
+			  when merchant clicks Request Deposit change that to deposite request  and in that after entering details of deposite add check box of Risk analysis if they click of risk analysis we do analysis for that deposite and if not selected we dont do analysis for risk 
+	in the below before risk analysis the merchant enter the bank details of there users that we gonna do payment with this account they fill account number ifsc code ,branch ,account holder name  the merchant will update this details to admin that we gonna do the payment using this details and in the withdral add one portion of select bank then this details will reflect measn when merchant give bank details it will store and they can use there bank details without typing everything they can select the bank details in deposite and withdral i will define it now eposit Type *
+
+UPI
+Amount (INR ₹) *
+₹
+0.00
+Member Name *
+Full name
+Member ID *
+e.g. MBR20240001
+Segment
+
+Segment A
+Profile
+ after entering this details the merchant  enter bank details and the second time we will give option to select the bank details if they want to add bank details they can click on add bank details the merchant enter account number ifsc code ,branch ,account holder name add that and from next that data will capture and it will show for next payment so here the merchant can add bank details and he can send the details what the select that account only send to the admin and the admin do the payment to that account which is shared by merchant 
+
+ 
+
+AND after this add check box of risk analysis which i said above 
+
+--- in the Transactions
+ make action what he do in Withdrawal Management and Deposit Management give that permission in traction also 
+where every it location dont make it blank also in settelemts also in superviser
+
+
+
+----- in the WITHDRAWL
+
+		when merchant clicks Request WITHDRAWL change that to WITHDRAWL request
+
+	when merchant request for withdrawl the bank detail which available which is entered in deposite not in admin data dont mix admin data and merchant for bank accounts and they select the bank details the admin do payment to that account if they want to add bank details they can add bank details and give them option of add bank details if they enter new bank details they dont select it what they entered that sends to admin and in back that data is stored in bank details 
+
+After you submit, the admin will send payment details. You then pay and upload your slip from the Action button.(remove this text from withdrawl only from withdral section )
+
+
+
+here is the main thing we have four differnct role 
+1) dataopertaor the DO can do withdrawls and deposite work this filed theey have ⬡
+Dashboard
+↓
+Deposit Management
+↑
+Withdrawal Management
+⊘
+Cancel Request
+≡
+Transactions
+◉
+Profile
+
+
+2) data operator Deposite  
+(in the dashboard the details dont show avaliable balance for this role no record should there in this deposite he is totaly about to deposite )	
+show No. of Deposits and Pending Requests
+
+ and the graph must be one that repersent about only Deposite in the Pending Requests
+also there should be only Deposite
+in trancations also
+
+
+he can only do the Deposite  
+Dashboard
+↓
+Deposit Management
+↑
+
+⊘
+Cancel Request
+≡
+Transactions of only Deposite
+◉
+Profile
+
+3)data operator Withdraw 
+
+(in the dashboard the details dont show avaliable balance for this role no record should there in this Withdraw he is totaly about to Withdraw )	
+show No. of Withdraw and Pending Requests
+
+ and the graph must be one that repersent about only Available Balance in the Pending Requests
+also there should be only Withdraw
+in trancations also Withdraw
+
+he can only do the Withdraw  
+
+Dashboard
+↓
+
+Withdrawal Management
+⊘
+Cancel Request
+≡
+Transactions of only Withdraw
+◉
+Profile
+
+4) superviser 
+he can only do the settlements
+
+
+(in the dashboard the details dont show avaliable balance for this role no record should there in this settlements he is totaly about to settlements )	
+show No. of settlements and Pending Requests
+
+ and the graph must be one that repersent about only Available Balance in the Pending Requests
+also there should be only settlements
+in trancations also settlements
+
+whats there in present superviser let it be
+
+
+
+5) manager 
+
+he can view all of them but no action what is present we have let it be 
+
+
+so iam gonna say that accounding to role they have only that permission to do 
+
+
+important
+
+
+for login page if the login id or password wrong  up of if user name wrong show username and password wrong if only password wrong show only password is incorrect
+
+for actions of every activaion or deactivation pop up  a note there will create a table for that note and store and in system logs and in audit logs must show reason 
+the note is just like reason for activaion or deactivation  pop up name with reason and activaion or deactivation
+
+if admin reject the payment or withdraw or settlements when admin clicks on reject just pop up name of reason why you are reject and reject it
+
+
+in the Account Management also if they inactive or active pop up the reason and then inactive or active
+
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+		
+
+
+
+

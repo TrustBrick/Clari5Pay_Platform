@@ -1,0 +1,1 @@
+remove DB_ADMIN_GUIDE.md and dont upload the Queris.md

@@ -1,0 +1,14 @@
+admin 
+	-Account Management
+			add available balance(AB) the merchant deposite the amount in that bank which selected by admin in that account calculate how much it deposited in the account that available balance is and if the other merchant pays like that that account should be calculate indivalus
+
+
+
+
+
+
+
+
+
+in Settlement Management
+		when user enter the amount it should not be high then available balance

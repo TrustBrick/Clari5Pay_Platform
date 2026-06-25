@@ -1,0 +1,99 @@
+CREATE TYPE profile_type_enum AS ENUM (
+    'Admin',
+    'User',
+    'Maker',
+    'Checker'
+);
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE create_merchants (
+
+    username VARCHAR(20) NOT NULL UNIQUE,
+    password VARCHAR(30) NOT NULL,
+    email_id VARCHAR(50) NOT NULL,
+
+    -- BLOCK 1
+    pay_in_fees DECIMAL(10,2) DEFAULT 0.00,
+    pay_out_fees DECIMAL(10,2) DEFAULT 0.00,
+
+    -- BLOCK 2
+    pay_in_code VARCHAR(3) NOT NULL,
+    pay_out_code VARCHAR(3) NOT NULL,
+    settlement_code VARCHAR(3) NOT NULL,
+
+    -- BLOCK 3
+    profile_type profile_type_enum NOT NULL,
+
+    -- BLOCK 4
+    created_date DATE NOT NULL,
+    created_time TIME NOT NULL,
+
+    -- BLOCK 5
+    created_by VARCHAR(20) NOT NULL
+);
+
+INSERT INTO create_merchants (
+    username,
+    password,
+    email_id,
+    pay_in_fees,
+    pay_out_fees,
+    pay_in_code,
+    pay_out_code,
+    settlement_code,
+    profile_type,
+    created_date,
+    created_time,
+    created_by
+)
+VALUES (
+    'merchant001',
+    'Pass@123',
+    'merchant001@gmail.com',
+    2.50,
+    1.50,
+    'DEP',
+    'WDL',
+    'SET',
+    'User',
+    CURRENT_DATE,
+    CURRENT_TIME,
+    'admin'
+);
+
+INSERT INTO create_merchants (
+    username,
+    password,
+    email_id,
+    pay_in_code,
+    pay_out_code,
+    settlement_code,
+    profile_type,
+    created_date,
+    created_time,
+    created_by
+)
+VALUES (
+    'john',
+    crypt('MyPassword123', gen_salt('bf')),
+    'john@test.com',
+    'USD',
+    'USD',
+    'USD',
+    'Admin',
+    CURRENT_DATE,
+    CURRENT_TIME,
+    'admin'
+);
+ALTER TABLE create_merchants
+ALTER COLUMN password TYPE VARCHAR(100);
+select * from create_merchants;
+
+-- for login 
+SELECT
+    username,
+    email_id
+    
+FROM create_merchants
+WHERE username = 'john'
+AND password = crypt('MyPassword123', password);
