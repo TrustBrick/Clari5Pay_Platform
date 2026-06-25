@@ -103,9 +103,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
         {/* Brand */}
         <div style={{ padding:'20px 18px 14px',borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ display:'flex',justifyContent:'center',marginBottom:8 }}>
-            <div style={{ transform:'scale(0.6)',transformOrigin:'center',marginTop:-28,marginBottom:-28 }}>
-              <Logo size="sm" dark/>
-            </div>
+            <Logo size="sm" dark/>
           </div>
           <div style={{ textAlign:'center',marginTop:4 }}>
             <span style={{ background:'rgba(0,82,204,0.25)',border:'1px solid rgba(0,82,204,0.4)',color:'#7eb8ff',fontSize:10,fontWeight:700,padding:'2px 10px',borderRadius:20,letterSpacing:'0.08em' }}>

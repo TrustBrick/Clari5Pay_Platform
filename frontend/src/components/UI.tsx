@@ -26,37 +26,38 @@ export const CountUp: React.FC<{
   return <>{format(display)}</>;
 };
 
-// ─── Logo ────────────────────────────────────────────────────────────────────
+// ─── Logo (vertical lockup: shield above the wordmark + tagline) ───────────────
 export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ size = 'md', dark = false }) => {
-  const scale = size === 'sm' ? 0.38 : size === 'lg' ? 0.7 : 0.5;
-  // The shield icon is the brand image (public/logo-mark.png, transparent); the wordmark +
-  // tagline stay as text so their colours adapt on dark backgrounds (navy "pay"/tagline → light).
-  // On dark backgrounds the navy "pay" + grey tagline are invisible — switch them to light.
-  // Applied via the `style` prop (CSS), so var() resolves and flips with the theme.
+  // Rendered width (~25% larger than the old horizontal mark). maxWidth keeps it responsive.
+  const W = size === 'sm' ? 150 : size === 'lg' ? 290 : 200;
+  // The shield is the brand image (public/logo-mark.png, transparent → works on any bg);
+  // the wordmark + tagline stay as SVG text so their colours adapt in dark mode.
   // `dark` = rendered on a dark brand splash (login/chooser/sidebar) → force light ink.
   const clari = dark ? '#4d9fff' : '#0052cc';
   const pay = dark ? '#ffffff' : 'var(--c5-text-main)';
-  const tag = dark ? 'rgba(255,255,255,0.6)' : 'var(--c5-text-muted)';
-  // Inline styles (not shared CSS classes) so multiple logos on one page don't clash.
+  const tag = dark ? 'rgba(255,255,255,0.65)' : 'var(--c5-text-muted)';
   const F = "'Montserrat','Segoe UI',Arial,sans-serif";
-  const sClari = { fontFamily: F, fontWeight: 700, fill: clari, fontSize: '56px', letterSpacing: '-1px' } as const;
-  const s5 = { fontFamily: F, fontWeight: 700, fill: '#26d00c', fontSize: '62px' } as const;
-  const sPay = { fontFamily: F, fontWeight: 700, fill: pay, fontSize: '56px', letterSpacing: '-1px' } as const;
-  const sTag = { fontFamily: "'Segoe UI',Arial,sans-serif", fontWeight: 500, fill: tag, fontSize: '13.5px', letterSpacing: '0.5px' } as const;
+  const sClari = { fontFamily: F, fontWeight: 800, fill: clari, fontSize: '52px', letterSpacing: '-1px' } as const;
+  const s5 = { fontFamily: F, fontWeight: 800, fill: '#26d00c', fontSize: '58px' } as const;
+  const sPay = { fontFamily: F, fontWeight: 800, fill: pay, fontSize: '52px', letterSpacing: '-1px' } as const;
+  const sTag = { fontFamily: "'Segoe UI',Arial,sans-serif", fontWeight: 500, fill: tag, fontSize: '15px', letterSpacing: '0.3px' } as const;
   return (
-    <svg viewBox="0 0 650 220" style={{ width: 650 * scale, height: 220 * scale, maxWidth: '100%' }}>
-      <image href="/logo-mark.png" x="15" y="32" width="160" height="160" preserveAspectRatio="xMidYMid meet" />
-      <g transform="translate(195,122)">
-        <text x="0" y="0">
-          <tspan style={sClari}>clari</tspan>
-          <tspan style={s5}>5</tspan>
-          <tspan style={sPay}>pay</tspan>
-        </text>
-      </g>
-      <g transform="translate(195,155)">
-        <line x1="0" y1="-5" x2="25" y2="-5" stroke="#0052cc" strokeWidth="2" strokeLinecap="round"/>
-        <text x="35" y="0" style={sTag}>Secure Payments. Prevent Fraud.</text>
-        <line x1="285" y1="-5" x2="310" y2="-5" stroke="#26d00c" strokeWidth="2" strokeLinecap="round"/>
+    <svg viewBox="0 0 320 300" width={W} height={W * 300 / 320}
+      style={{ maxWidth: '100%', height: 'auto', display: 'block' }}
+      role="img" aria-label="Clari5Pay — Secure Payments. Prevent Fraud.">
+      {/* Shield, centred on top */}
+      <image href="/logo-mark.png" x="97" y="2" width="126" height="126" preserveAspectRatio="xMidYMid meet" />
+      {/* Wordmark, centred below the shield */}
+      <text x="160" y="208" textAnchor="middle">
+        <tspan style={sClari}>clari</tspan>
+        <tspan style={s5}>5</tspan>
+        <tspan style={sPay}>pay</tspan>
+      </text>
+      {/* Tagline with flanking accent dashes */}
+      <g transform="translate(160,244)">
+        <line x1="-150" y1="-5" x2="-126" y2="-5" stroke="#0052cc" strokeWidth="2" strokeLinecap="round" />
+        <text x="0" y="0" textAnchor="middle" style={sTag}>Secure Payments. Prevent Fraud.</text>
+        <line x1="126" y1="-5" x2="150" y2="-5" stroke="#26d00c" strokeWidth="2" strokeLinecap="round" />
       </g>
     </svg>
   );

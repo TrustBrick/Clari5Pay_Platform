@@ -44,9 +44,12 @@ const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => 
       <div style={{ position: 'absolute', top: 18, right: 18 }}><ThemeToggle /></div>
       <div style={{ background: T.surface, borderRadius: 20, padding: 'clamp(24px, 5vw, 40px)', width: 'min(380px, 100%)', boxSizing: 'border-box', boxShadow: '0 24px 80px rgba(0,0,0,0.35)' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <img src="/logo-mark.png" alt="Clari5Pay" style={{ height: 64, width: 'auto', display: 'block', margin: '0 auto 12px' }} />
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.textMain }}>Clari5Pay Support</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13, color: T.textMuted }}>Customer Support Portal</p>
+          <img src="/logo-mark.png" alt="Clari5Pay" style={{ height: 84, width: 'auto', display: 'block', margin: '0 auto 8px' }} />
+          <div style={{ fontFamily: "'Montserrat','Segoe UI',Arial,sans-serif", fontWeight: 800, fontSize: 30, letterSpacing: '-1px', lineHeight: 1 }}>
+            <span style={{ color: '#0052cc' }}>clari</span><span style={{ color: '#26d00c' }}>5</span><span style={{ color: T.textMain }}>pay</span>
+          </div>
+          <p style={{ margin: '6px 0 0', fontSize: 12, color: T.textMuted, letterSpacing: '0.3px' }}>Secure Payments. Prevent Fraud.</p>
+          <p style={{ margin: '10px 0 0', fontSize: 13, fontWeight: 700, color: T.textMain }}>Customer Support Portal</p>
         </div>
         {error && <div style={{ background: 'rgba(220,38,38,0.1)', color: T.danger, padding: '10px 14px', borderRadius: 10, fontSize: 12, marginBottom: 14, fontWeight: 600 }}>⚠ {error}</div>}
         <Field label="Username" value={username} onChange={setUsername} placeholder="support1" />
