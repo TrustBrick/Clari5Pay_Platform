@@ -176,17 +176,24 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     total_deposit = total("DEPOSIT", _COMPLETED_STATUSES)
     total_settled = total("SETTLEMENT", {TxStatus.COMPLETED})
     total_withdrawn = total("WITHDRAWAL", {TxStatus.COMPLETED})
-    pay_in_fees = total_deposit * pay_in_rate         # Total Deposit (Pay-In) Fees
-    pay_out_fees = total_withdrawn * pay_out_rate     # Total Withdrawal (Pay-Out) Fees
-    settlement_fees = total_settled * pay_out_rate    # used only by the spendable guard below
+    pay_in_fees = total_deposit * pay_in_rate         # Total Deposit (Pay-In) Commission
+    pay_out_fees = total_withdrawn * pay_out_rate     # Total Withdrawal (Pay-Out) Commission
+    settlement_fees = total_settled * pay_out_rate    # Total Settlement (Pay-Out) Commission
 
-    # ── Canonical balance formulas — SINGLE SOURCE OF TRUTH (completed only) ──
-    #   Available Balance     = Total Completed Deposit Amount − Total Deposit Fees
-    #   Net Available Balance = Available Balance − Total Withdrawal Fees
-    #                           (shown ONLY for Withdrawal / Settlement)
-    # These drive every displayed/reported balance across the app.
-    available_balance = total_deposit - pay_in_fees
-    net_available_balance = available_balance - pay_out_fees
+    # ── Canonical financial-summary formulas — SINGLE SOURCE OF TRUTH (completed only) ──
+    # These three figures drive every displayed/reported/exported balance across the whole
+    # platform (every portal, API, dashboard, report and export reads them):
+    #   Commission (per leg)    = the merchant's pay-in (deposit) / pay-out (withdrawal &
+    #                             settlement) fee on that leg's completed amount
+    #   Total Commission        = Deposit Commission + Withdrawal Commission + Settlement Commission
+    #   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
+    #   Available Balance       = Total Available Balance − Deposit Commission
+    deposit_commission = pay_in_fees
+    withdrawal_commission = pay_out_fees
+    settlement_commission = settlement_fees
+    total_commission = deposit_commission + withdrawal_commission + settlement_commission
+    total_available_balance = total_deposit - total_withdrawn - total_settled
+    available_balance = total_available_balance - deposit_commission
 
     # ── Spendable guard — used ONLY to validate new withdrawals/settlements ──
     # The displayed formulas above intentionally do NOT subtract completed withdrawals,
@@ -211,22 +218,27 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     withdrawal_count = sum(1 for t in txns if t.type.value.startswith("WITHDRAWAL"))
 
     return {
-        # Canonical displayed balances (new formulas) — used by EVERY display/report/export.
-        "available": available_balance,                 # Available Balance (shown everywhere)
-        "availableBalance": available_balance,           # explicit alias
-        "netAvailableBalance": net_available_balance,    # Withdrawal/Settlement only
+        # ── Canonical financial-summary figures (new formulas) — read by EVERY
+        #    portal / API / dashboard / report / export so values match everywhere. ──
+        "totalAvailableBalance": total_available_balance,   # Card 1 — Total Available Balance
+        "available": available_balance,                     # Card 3 — Available Balance (shown everywhere)
+        "availableBalance": available_balance,              # explicit alias of `available`
+        "depositCommission": deposit_commission,
+        "withdrawalCommission": withdrawal_commission,
+        "settlementCommission": settlement_commission,
+        "totalCommission": total_commission,                # Card 2 — Total Commission Amount
         # Spendable guard — withdrawal/settlement VALIDATION ONLY (never displayed).
         "spendableLimit": spendable_limit,
         "runningBalance": running_balance,
         "maxSettleable": max_settleable,
         "maxWithdrawable": max_withdrawable,
-        # Components.
+        # Components / breakdown rows.
         "totalDeposit": total_deposit,
-        "payInFees": pay_in_fees,
-        "totalSettled": total_settled,
-        "settlementFees": settlement_fees,
         "totalWithdrawn": total_withdrawn,
+        "totalSettled": total_settled,
+        "payInFees": pay_in_fees,
         "payOutFees": pay_out_fees,
+        "settlementFees": settlement_fees,
         "depositCount": deposit_count,
         "withdrawalCount": withdrawal_count,
     }
@@ -594,7 +606,8 @@ async def merchant_stats(
         )).scalars().all()
         def cnt(pfx: str) -> int:
             return sum(1 for t in txns if t.type.value.startswith(pfx))
-        # Canonical balances drive Merchant Analytics (Gross/Net/Commission cards retired).
+        # Canonical balances (compute_balance) drive Merchant Analytics — the three
+        # financial-summary figures shown on the Admin / Super Admin cards.
         out.append({
             "name": name,
             "merchantId": user.id,
@@ -609,9 +622,14 @@ async def merchant_stats(
             "withdrawalAmount": round(s["totalWithdrawn"], 2),
             "settlementCount": cnt("SETTLEMENT"),
             "settlementAmount": round(s["totalSettled"], 2),
+            # New financial-summary figures (single source of truth).
+            "totalAvailableBalance": round(s["totalAvailableBalance"], 2),
             "available": round(s["available"], 2),
             "availableBalance": round(s["available"], 2),
-            "netAvailableBalance": round(s["netAvailableBalance"], 2),
+            "depositCommission": round(s["depositCommission"], 2),
+            "withdrawalCommission": round(s["withdrawalCommission"], 2),
+            "settlementCommission": round(s["settlementCommission"], 2),
+            "totalCommission": round(s["totalCommission"], 2),
         })
     out.sort(key=lambda r: r["name"].lower())
     return out
@@ -791,9 +809,9 @@ async def merchant_reports(
                   if (t.member_id or "").strip()
                   and t.created_at and t.created_at >= now - timedelta(days=30)}
 
-    # Canonical balances — the SINGLE source of truth (compute_balance). Gross/Net/Commission
-    # summary cards have been retired in favour of Available Balance (everywhere) and Net
-    # Available Balance (withdrawal/settlement). Underlying fees stay available for internal math.
+    # Canonical balances — the SINGLE source of truth (compute_balance). The three
+    # financial-summary figures (Total Available Balance, Total Commission Amount,
+    # Available Balance) and their breakdown components are read straight from here.
     bal = await compute_balance(db, current_user)
 
     cards = {
@@ -804,8 +822,13 @@ async def merchant_reports(
         "totalDepositAmount": kind_amount("deposit"),
         "totalWithdrawalAmount": kind_amount("withdrawal"),
         "totalSettlementAmount": kind_amount("settlement"),
+        # New financial-summary figures (single source of truth — compute_balance).
+        "totalAvailableBalance": round(bal["totalAvailableBalance"], 2),
         "availableBalance": round(bal["available"], 2),
-        "netAvailableBalance": round(bal["netAvailableBalance"], 2),
+        "depositCommission": round(bal["depositCommission"], 2),
+        "withdrawalCommission": round(bal["withdrawalCommission"], 2),
+        "settlementCommission": round(bal["settlementCommission"], 2),
+        "totalCommission": round(bal["totalCommission"], 2),
         "totalTransactionAmount": round(
             sum(t.amount for t in txns if _completed(t)), 2),
         "activeMemberships": len(active_30d),

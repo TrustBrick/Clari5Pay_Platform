@@ -543,7 +543,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
       <div class="meta">Transaction Report — CONFIDENTIAL<br>${esc(businessName)}<br>Generated: ${esc(now)} · By ${esc(generatedBy)}<br>Range: ${esc(rangeLabel)} · ${rows.length} transaction(s)</div></div>
     <h2>Summary</h2><div class="kpis">
       ${kpi('Total Deposits', fmt(c.totalDepositAmount))}${kpi('Total Withdrawals', fmt(c.totalWithdrawalAmount))}${kpi('Total Settlements', fmt(c.totalSettlementAmount))}
-      ${kpi('Available Balance', fmt(c.availableBalance))}${kpi('Net Available Balance', fmt(c.netAvailableBalance))}</div>
+      ${kpi('Available Balance', fmt(c.availableBalance))}</div>
     <h2>Transactions (filtered)</h2>
     <table><thead><tr><th>Reference</th><th>Membership - Member</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th><th>Processed By</th></tr></thead>
       <tbody>${body || '<tr><td colspan="10" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>'}</tbody>
@@ -640,7 +640,6 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
         {card('Total Withdrawals', c.totalWithdrawalAmount, T.danger)}
         {card('Total Settlements', c.totalSettlementAmount, T.blue)}
         {card('Available Balance', c.availableBalance, '#1d4ed8')}
-        {card('Net Available Balance', c.netAvailableBalance, '#7c3aed')}
       </div>
 
       {/* 2 — Report metadata */}
@@ -740,7 +739,6 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
           {meta('Total Withdrawals', <span style={{ color: T.danger }}>{fmt(tot.withdrawals)}</span>)}
           {meta('Total Settlements', <span style={{ color: T.blue }}>{fmt(tot.settlements)}</span>)}
           {meta('Available Balance', <span style={{ color: '#1d4ed8' }}>{fmt(c.availableBalance)}</span>)}
-          {meta('Net Available Balance', <span style={{ color: '#7c3aed' }}>{fmt(c.netAvailableBalance)}</span>)}
         </div>
       </Card>
 

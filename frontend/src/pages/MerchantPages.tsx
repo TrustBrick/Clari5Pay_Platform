@@ -595,7 +595,6 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [mode, setMode] = useState('BANK');
   const [details, setDetails] = useState<Record<string,string>>({});
   const [available, setAvailable] = useState(0);
-  const [netAvailable, setNetAvailable] = useState(0);
   const [maxWithdrawable, setMaxWithdrawable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -609,7 +608,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     else { setDestId(`bank-${row.id}`); setMode('BANK'); setDetails({ accountHolder: row.accountHolder || '', accountNumber: row.accountNumber || '', ifsc: row.ifsc || '', bank: row.bankName || '', branch: row.branch || '' }); }
   };
 
-  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setNetAvailable(s.netAvailableBalance ?? s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); }).catch(()=>{}); }, []);
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); }).catch(()=>{}); }, []);
 
   // Load this member's saved withdrawal destinations (bank accounts + UPIs), member-scoped.
   useEffect(() => {
@@ -673,13 +672,9 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
             <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 2px',textTransform:'uppercase',letterSpacing:'0.06em',fontWeight:800 }}>Available Balance</p>
             <p style={{ fontSize:26,fontWeight:800,color:T.blue,margin:0 }}>{fmt(available)}</p>
           </div>
-          <div>
-            <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 2px',textTransform:'uppercase',letterSpacing:'0.06em',fontWeight:800 }}>Net Available Balance</p>
-            <p style={{ fontSize:26,fontWeight:800,color:T.success,margin:0 }}>{fmt(netAvailable)}</p>
-          </div>
         </div>
         <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>
-          Net Available Balance = Available Balance − Total Withdrawal Fees. Max you can withdraw after fees: <b>{fmt(maxWithdrawable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
+          Max you can withdraw after fees: <b>{fmt(maxWithdrawable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
         </p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
@@ -760,13 +755,12 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [form, setForm] = useState({ amount:'', memberId:'' });
   const [proofs, setProofs] = useState<string[]>([]);
   const [available, setAvailable] = useState(0);
-  const [netAvailable, setNetAvailable] = useState(0);
   const [maxSettleable, setMaxSettleable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
-  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setNetAvailable(s.netAvailableBalance ?? s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
 
   const submit = async () => {
     const amountNum = parseFloat(parseIndianAmount(form.amount));
@@ -790,8 +784,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.grad3,borderRadius:14,padding:20,marginBottom:18,textAlign:'center' }}>
         <p style={{ fontSize:11,color:'rgba(255,255,255,0.6)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Available Balance</p>
         <p style={{ fontSize:30,fontWeight:800,color:'#fff',margin:0 }}>{fmt(available)}</p>
-        <p style={{ fontSize:12,color:'rgba(255,255,255,0.85)',margin:'10px 0 0',fontWeight:700 }}>Net Available Balance: {fmt(netAvailable)}</p>
-        <p style={{ fontSize:11,color:'rgba(255,255,255,0.75)',margin:'6px 0 0' }}>
+        <p style={{ fontSize:11,color:'rgba(255,255,255,0.75)',margin:'10px 0 0' }}>
           Max you can settle after fees: <b>{fmt(maxSettleable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
         </p>
       </div>
@@ -928,20 +921,22 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
   usePoll(reload);
 
   // Canonical balance — single source of truth from the backend (completed only):
-  //   Available Balance     = Total Completed Deposit Amount − Total Deposit Fees
-  //   Net Available Balance = Available Balance − Total Withdrawal Fees
+  //   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
+  //   Available Balance       = Total Available Balance − Deposit Commission
   const totalDeposit = s?.totalDeposit ?? 0;
-  const payInFees = s?.payInFees ?? 0;
-  const payOutFees = s?.payOutFees ?? 0;
-  const available = s?.available ?? (totalDeposit - payInFees);                   // Available Balance
-  const netAvailableBalance = s?.netAvailableBalance ?? (available - payOutFees); // Net Available Balance
+  const totalWithdrawn = s?.totalWithdrawn ?? 0;
+  const totalSettled = s?.totalSettled ?? 0;
+  const depositCommission = s?.depositCommission ?? 0;
+  const totalAvailableBalance = s?.totalAvailableBalance ?? (totalDeposit - totalWithdrawn - totalSettled);
+  const available = s?.available ?? (totalAvailableBalance - depositCommission);  // Available Balance
 
   const rows: Array<[string, number, string, boolean]> = [
-    ['Total Completed Deposit Amount', totalDeposit, T.success, false],
-    ['Total Deposit Fees', payInFees, T.danger, false],
-    ['Available Balance', available, T.textMain, true],
-    ['Total Withdrawal Fees', payOutFees, T.danger, false],
-    ['Net Available Balance', netAvailableBalance, T.blue, true],
+    ['Total Deposits', totalDeposit, T.success, false],
+    ['Total Withdrawals', totalWithdrawn, T.danger, false],
+    ['Total Settlements', totalSettled, T.danger, false],
+    ['Total Available Balance', totalAvailableBalance, T.textMain, true],
+    ['Deposit Commission', depositCommission, T.danger, false],
+    ['Available Balance', available, T.blue, true],
   ];
 
   return (

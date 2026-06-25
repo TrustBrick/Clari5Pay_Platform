@@ -217,9 +217,14 @@ export interface MerchantStats {
   withdrawalAmount: number;
   settlementCount: number;
   settlementAmount: number;
-  available: number;                  // Available Balance
+  // New financial-summary figures (single source of truth — backend compute_balance):
+  totalAvailableBalance: number;      // Total Deposits − Total Withdrawals − Total Settlements
+  available: number;                  // Available Balance = Total Available Balance − Deposit Commission
   availableBalance?: number;
-  netAvailableBalance?: number;       // Available Balance − Withdrawal Fees
+  depositCommission: number;
+  withdrawalCommission: number;
+  settlementCommission: number;
+  totalCommission: number;            // Deposit + Withdrawal + Settlement commission
 }
 
 export interface AdminUpi {
@@ -265,9 +270,14 @@ export interface Notification {
 }
 
 export interface BalanceSummary {
-  available: number;                  // Available Balance = Completed Deposits − Deposit Fees
+  // New financial-summary figures (single source of truth — backend compute_balance):
+  totalAvailableBalance: number;      // Total Deposits − Total Withdrawals − Total Settlements
+  available: number;                  // Available Balance = Total Available Balance − Deposit Commission
   availableBalance?: number;          // explicit alias of `available`
-  netAvailableBalance?: number;       // Available Balance − Withdrawal Fees (withdrawal/settlement only)
+  depositCommission: number;          // pay-in fee on completed deposits
+  withdrawalCommission: number;       // pay-out fee on completed withdrawals
+  settlementCommission: number;       // pay-out fee on completed settlements
+  totalCommission: number;            // Deposit + Withdrawal + Settlement commission
   spendableLimit?: number;            // guard — validation only, never displayed
   runningBalance?: number;            // RB (reserved by pending requests)
   maxSettleable?: number;
@@ -455,8 +465,13 @@ export interface ReportData {
     totalDepositAmount: number;
     totalWithdrawalAmount: number;
     totalSettlementAmount: number;
-    availableBalance: number;          // Available Balance = Completed Deposits − Deposit Fees
-    netAvailableBalance: number;       // Available Balance − Withdrawal Fees
+    // New financial-summary figures (single source of truth — backend compute_balance):
+    totalAvailableBalance: number;     // Total Deposits − Total Withdrawals − Total Settlements
+    availableBalance: number;          // Available Balance = Total Available Balance − Deposit Commission
+    depositCommission: number;
+    withdrawalCommission: number;
+    settlementCommission: number;
+    totalCommission: number;           // Deposit + Withdrawal + Settlement commission
     totalTransactionAmount: number;
     activeMemberships: number;
     mostActiveMember: { memberId: string; memberName: string; count: number } | null;

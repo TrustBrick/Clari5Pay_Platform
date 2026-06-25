@@ -432,18 +432,23 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
     merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
   );
   const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
-  // Canonical balances (mirror compute_balance): Available = Completed Deposits − Deposit Fees;
-  // Net Available = Available − Withdrawal Fees.
-  const depositFees = completedTx.reduce((a, t) => {
+  // Canonical financial-summary figures (mirror backend compute_balance, completed only):
+  //   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
+  //   Commission (per leg)    = pay-in (deposit) / pay-out (withdrawal & settlement) fee
+  //   Available Balance       = Total Available Balance − Deposit Commission
+  const totalDepositsAmt = sumType(completedTx, 'DEPOSIT');
+  const totalWithdrawnAmt = sumType(completedTx, 'WITHDRAWAL');
+  const totalSettledAmt = sumType(completedTx, 'SETTLEMENT');
+  const commission = (pfx: string, rate: 'pin' | 'pout') => completedTx.reduce((a, t) => {
     const f = feeMap[t.merchantId];
-    return f && t.type.startsWith('DEPOSIT') ? a + t.amount * f.pin : a;
+    return f && t.type.startsWith(pfx) ? a + t.amount * f[rate] : a;
   }, 0);
-  const withdrawalFees = completedTx.reduce((a, t) => {
-    const f = feeMap[t.merchantId];
-    return f && t.type.startsWith('WITHDRAWAL') ? a + t.amount * f.pout : a;
-  }, 0);
-  const availableBalance = sumType(completedTx, 'DEPOSIT') - depositFees;
-  const netAvailableBalance = availableBalance - withdrawalFees;
+  const depositCommission = commission('DEPOSIT', 'pin');
+  const withdrawalCommission = commission('WITHDRAWAL', 'pout');
+  const settlementCommission = commission('SETTLEMENT', 'pout');
+  const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
+  const totalAvailableBalance = totalDepositsAmt - totalWithdrawnAmt - totalSettledAmt;
+  const availableBalance = totalAvailableBalance - depositCommission;
   const depReqs = txns.filter(t => t.type.startsWith('DEPOSIT')).length;
   const wdReqs = txns.filter(t => t.type.startsWith('WITHDRAWAL')).length;
   const setReqs = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
@@ -466,11 +471,15 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   return (
     <div>
       <div className="ad-stat-money" style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:14 }}>
-        <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
-        <StatCard icon="💰" label="Available Balance" value={fmt(availableBalance)} sub="Completed Deposits − Deposit Fees" color={T.success}/>
-        <StatCard icon="◎" label="Net Available Balance" value={fmt(netAvailableBalance)} sub="Available Balance − Withdrawal Fees" color={T.green}/>
+        <FinanceCard icon="💰" label="Total Available Balance" value={totalAvailableBalance} color={T.success}
+          rows={[['Total Deposits', totalDepositsAmt], ['Total Withdrawals', totalWithdrawnAmt], ['Total Settlements', totalSettledAmt]]} />
+        <FinanceCard icon="％" label="Total Commission Amount" value={totalCommission} color={T.warning}
+          rows={[['Deposit Commission', depositCommission], ['Withdrawal Commission', withdrawalCommission], ['Settlement Commission', settlementCommission], ['Total Commission', totalCommission]]} />
+        <FinanceCard icon="◎" label="Available Balance" value={availableBalance} color={T.green}
+          rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Available Balance', availableBalance]]} />
       </div>
-      <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(6,minmax(0,1fr))',gap:12,marginBottom:20 }}>
+      <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:12,marginBottom:20 }}>
+        <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
         <StatCard icon="⧗" label="Pending" value={pending.length} color={T.warning}/>
         <StatCard icon="↓" label="No. of Deposit Requests" value={depReqs} color={T.blue}/>
@@ -607,14 +616,22 @@ export const MerchantAnalyticsPage: React.FC = () => {
       .reduce((a, t) => a + t.amount, 0);
     const dep = done('DEPOSIT'), wd = done('WITHDRAWAL'), set = done('SETTLEMENT');
     const pin = (s.payInFee || 0) / 100, pout = (s.payOutFee || 0) / 100;
-    // Available Balance = Completed Deposits − Deposit Fees; Net Available = Available − Withdrawal Fees.
-    const availableBalance = dep - dep * pin;
-    const netAvailableBalance = availableBalance - wd * pout;
+    // Canonical financial-summary figures (mirror compute_balance, completed only):
+    //   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
+    //   Commission (per leg)    = pay-in (deposit) / pay-out (withdrawal & settlement) fee
+    //   Available Balance       = Total Available Balance − Deposit Commission
+    const depositCommission = dep * pin;
+    const withdrawalCommission = wd * pout;
+    const settlementCommission = set * pout;
+    const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
+    const totalAvailableBalance = dep - wd - set;
+    const availableBalance = totalAvailableBalance - depositCommission;
     return {
       depositCount: ofType('DEPOSIT').length, depositAmount: dep,
       withdrawalCount: ofType('WITHDRAWAL').length, withdrawalAmount: wd,
       settlementCount: ofType('SETTLEMENT').length, settlementAmount: set,
-      availableBalance, netAvailableBalance, available: s.available,
+      depositCommission, withdrawalCommission, settlementCommission, totalCommission,
+      totalAvailableBalance, availableBalance,
     };
   };
 
@@ -782,8 +799,9 @@ export const MerchantAnalyticsPage: React.FC = () => {
               ['Withdrawal Amount', fmt(c.withdrawalAmount)],
               ['Total Settlement Requests', String(c.settlementCount)],
               ['Settlement Amount', fmt(c.settlementAmount)],
-              ['Available Balance', fmt(c.availableBalance), T.success],
-              ['Net Available Balance', fmt(c.netAvailableBalance), T.blue],
+              ['Total Available Balance', fmt(c.totalAvailableBalance), T.success],
+              ['Total Commission Amount', fmt(c.totalCommission), T.warning],
+              ['Available Balance', fmt(c.availableBalance), T.blue],
             ];
             return (
               <Card key={s.name} style={{ padding: 20, display: 'flex', flexDirection: 'column' }}>
@@ -1310,12 +1328,18 @@ export const SaDashboard: React.FC = () => {
     merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
   );
   const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
+  const commission = (pfx: string, rate: 'pin' | 'pout') =>
+    completedTx.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.[rate] || 0), 0);
   const totalDeposits = sumType(completedTx, 'DEPOSIT');
-  const payInFees = completedTx.filter(t => t.type.startsWith('DEPOSIT')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pin || 0), 0);
-  const payOutFees = completedTx.filter(t => t.type.startsWith('WITHDRAWAL')).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.pout || 0), 0);
-  // Available Balance = Completed Deposits − Deposit Fees; Net Available = Available − Withdrawal Fees.
-  const availableBalance = totalDeposits - payInFees;
-  const netAvailableBalance = availableBalance - payOutFees;
+  const totalWithdrawn = sumType(completedTx, 'WITHDRAWAL');
+  const totalSettled = sumType(completedTx, 'SETTLEMENT');
+  const depositCommission = commission('DEPOSIT', 'pin');
+  const withdrawalCommission = commission('WITHDRAWAL', 'pout');
+  const settlementCommission = commission('SETTLEMENT', 'pout');
+  const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
+  // Total Available Balance = Deposits − Withdrawals − Settlements; Available Balance = − Deposit Commission.
+  const totalAvailableBalance = totalDeposits - totalWithdrawn - totalSettled;
+  const availableBalance = totalAvailableBalance - depositCommission;
 
   return (
     <div>
@@ -1326,11 +1350,13 @@ export const SaDashboard: React.FC = () => {
         <StatCard icon="✅" label="Active Admins" value={admins.filter(a=>a.active).length} color={T.info}/>
         <StatCard icon="📊" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
       </div>
-      <div style={{ display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:14,marginBottom:20 }} className="sa-fin-grid">
-        <FinanceCard icon="💰" label="Available Balance" value={availableBalance} color={T.success}
-          rows={[['Completed Deposits', totalDeposits], ['Deposit Fees', payInFees], ['Available Balance', availableBalance]]} />
-        <FinanceCard icon="◎" label="Net Available Balance" value={netAvailableBalance} color={T.green}
-          rows={[['Available Balance', availableBalance], ['Withdrawal Fees', payOutFees], ['Net Available Balance', netAvailableBalance]]} />
+      <div style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:20 }} className="sa-fin-grid">
+        <FinanceCard icon="💰" label="Total Available Balance" value={totalAvailableBalance} color={T.success}
+          rows={[['Total Deposits', totalDeposits], ['Total Withdrawals', totalWithdrawn], ['Total Settlements', totalSettled]]} />
+        <FinanceCard icon="％" label="Total Commission Amount" value={totalCommission} color={T.warning}
+          rows={[['Deposit Commission', depositCommission], ['Withdrawal Commission', withdrawalCommission], ['Settlement Commission', settlementCommission], ['Total Commission', totalCommission]]} />
+        <FinanceCard icon="◎" label="Available Balance" value={availableBalance} color={T.green}
+          rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Available Balance', availableBalance]]} />
       </div>
       <style>{`@media(max-width:760px){.sa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}.sa-fin-grid{grid-template-columns:1fr!important;}}@media(max-width:460px){.sa-stat-grid{grid-template-columns:1fr!important;}}`}</style>
       <Card style={{ padding:22,marginBottom:20 }}>
