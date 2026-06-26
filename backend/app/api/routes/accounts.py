@@ -8,7 +8,7 @@ from app.models.models import AccountMaster, AccountTransaction, AdminUpi, Trans
 from app.core.deps import get_current_admin
 from app.schemas.schemas import AccountCreate, ReasonRequest
 from app.api.routes.system_logs import log_event, record_audit
-from app.api.routes.transactions import compute_balance
+from app.api.routes.transactions import compute_balance, _COMPLETED_STATUSES
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -17,7 +17,7 @@ def _monthly_average_balance(biz_txns: list[Transaction], pay_in_rate: float, pa
     """Monthly Average Balance: the average of the daily end-of-day settled balance across
     the current calendar month (reconstructed from completed transactions — always accurate,
     no nightly job to miss). Floored at 0."""
-    completed = [t for t in biz_txns if t.status == TxStatus.COMPLETED]
+    completed = [t for t in biz_txns if t.status in _COMPLETED_STATUSES]
     if not completed:
         return 0.0
     today = date.today()
@@ -80,17 +80,20 @@ async def account_balances(
     upi_dep: dict[str, float] = defaultdict(float)
     acct_wd: dict[str, float] = defaultdict(float)
     acct_st: dict[str, float] = defaultdict(float)
+    # Only completed transactions affect an account's balance. A deposit completes as COMPLETED
+    # (legacy) or DEPOSITED (new admin final-approval); withdrawals/settlements complete as COMPLETED.
     for t in txns:
-        if t.status != TxStatus.COMPLETED:
-            continue
         ty = t.type.value
-        if ty.startswith("DEPOSIT") and t.admin_ref:
-            dep[t.admin_ref][t.merchant_name] += t.amount
-            (upi_dep if t.admin_upi_id else bank_dep)[t.admin_ref] += t.amount
-        elif ty.startswith("WITHDRAWAL") and t.member_id in member_acct:
-            acct_wd[member_acct[t.member_id]] += t.amount
-        elif ty.startswith("SETTLEMENT") and t.member_id in member_acct:
-            acct_st[member_acct[t.member_id]] += t.amount
+        if ty.startswith("DEPOSIT"):
+            if t.status in _COMPLETED_STATUSES and t.admin_ref:
+                dep[t.admin_ref][t.merchant_name] += t.amount
+                (upi_dep if t.admin_upi_id else bank_dep)[t.admin_ref] += t.amount
+        elif ty.startswith("WITHDRAWAL"):
+            if t.status == TxStatus.COMPLETED and t.member_id in member_acct:
+                acct_wd[member_acct[t.member_id]] += t.amount
+        elif ty.startswith("SETTLEMENT"):
+            if t.status == TxStatus.COMPLETED and t.member_id in member_acct:
+                acct_st[member_acct[t.member_id]] += t.amount
 
     out = []
     for a in accounts:
