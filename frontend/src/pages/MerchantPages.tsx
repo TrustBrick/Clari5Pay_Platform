@@ -387,6 +387,10 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
     cards = <>{balanceCard}<StatCard icon="↑" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>{pendingCard}</>;
   } else if (role === 'SUPERVISOR') {
     cards = <>{balanceCard}<StatCard icon="⇄" label="No. of Settlements" value={<CountUp value={settlementCount} />} color={T.info} onClick={()=>go('settlement')}/>{pendingCard}</>;
+  } else if (role === 'MANAGER') {
+    // Approval-only role: no direct Deposit/Withdrawal creation entry. Balance is view-only;
+    // the withdrawals card opens the Approvals (review) queue, not a creation page.
+    cards = <>{balanceCard}<StatCard icon="↑" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('approvals')}/>{pendingCard}</>;
   } else {
     cards = <>
       {balanceCard}
@@ -413,6 +417,8 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
       <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:16,marginBottom:22 }}>
         {cards}
       </div>
+      {/* Deposit/Withdrawal "tap to manage" shortcuts — hidden for the approval-only Manager. */}
+      {role !== 'MANAGER' && (
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:22 }}>
         <Card className="c5-hover-lift" onClick={()=>go('deposit')} style={{ padding:22,cursor:'pointer' }}>
           <div style={{ marginBottom:14 }}>
@@ -429,6 +435,7 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
           <StatusChart data={withdrawalGraph}/>
         </Card>
       </div>
+      )}
       <div style={{ marginBottom:22 }}>
         <Card style={{ padding:22 }}>
           <div style={{ padding:'2px 0 14px' }}><h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Pending Requests</h3></div>

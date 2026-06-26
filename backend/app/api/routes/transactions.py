@@ -148,6 +148,16 @@ def _make_ref(prefix: str, tx_id: int) -> str:
     return f"{prefix}{str(tx_id).zfill(7)}"
 
 
+def _forbid_manager_create(user: User) -> None:
+    """A Manager is an approval-only (Checker) role: they review/approve assigned withdrawal
+    requests and may never initiate a direct deposit / withdrawal / settlement."""
+    if str(user.merchant_role or "").upper() == "MANAGER":
+        raise HTTPException(
+            status_code=403,
+            detail="Managers can only review and approve assigned withdrawal requests, not create transactions.",
+        )
+
+
 async def compute_balance(db: AsyncSession, user: User) -> dict:
     """Available balance + counts, aggregated across all merchant users sharing a business name."""
     ids = (await db.execute(
@@ -1032,6 +1042,7 @@ async def create_deposit(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _forbid_manager_create(current_user)
     _require_amount(data.amount)
     data.memberId = normalize_member_id(data.memberId)
     # Membership lookup + capture rule (shared service): existing ID keeps its name,
@@ -1105,6 +1116,7 @@ async def create_withdrawal(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _forbid_manager_create(current_user)
     _require_amount(data.amount)
     # Block withdrawals whose amount + pay-out fee exceeds the Available Balance (which
     # already reserves in-flight requests), so the balance can never go negative.
@@ -1170,6 +1182,7 @@ async def create_settlement(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _forbid_manager_create(current_user)
     _require_amount(data.amount)
     # Block settlements whose amount + pay-out fee exceeds the Available Balance (exactly the
     # same rule as withdrawals), so the balance can never go negative once the fee is charged.
