@@ -477,7 +477,8 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   const settlementCommission = commission('SETTLEMENT', 'pout');
   const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
   const totalAvailableBalance = totalDepositsAmt - totalWithdrawnAmt - totalSettledAmt;
-  const availableBalance = totalAvailableBalance - depositCommission;
+  const payoutFee = withdrawalCommission + settlementCommission;
+  const availableBalance = totalAvailableBalance - depositCommission - payoutFee;
   const depReqs = txns.filter(t => t.type.startsWith('DEPOSIT')).length;
   const wdReqs = txns.filter(t => t.type.startsWith('WITHDRAWAL')).length;
   const setReqs = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
@@ -505,7 +506,7 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
         <FinanceCard icon="％" label="Total Commission Amount" value={totalCommission} color={T.warning}
           rows={[['Deposit Commission', depositCommission], ['Withdrawal Commission', withdrawalCommission], ['Settlement Commission', settlementCommission], ['Total Commission', totalCommission]]} />
         <FinanceCard icon="◎" label="Available Balance" value={availableBalance} color={T.green}
-          rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Available Balance', availableBalance]]} />
+          rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Pay-Out Fee', payoutFee], ['Available Balance', availableBalance]]} />
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:12,marginBottom:20 }}>
         <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
@@ -649,19 +650,21 @@ export const MerchantAnalyticsPage: React.FC = () => {
     // Canonical financial-summary figures (mirror compute_balance, completed only):
     //   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
     //   Commission (per leg)    = pay-in (deposit) / pay-out (withdrawal & settlement) fee
-    //   Available Balance       = Total Available Balance − Deposit Commission
+    //   Pay-Out Fee             = Withdrawal Commission + Settlement Commission
+    //   Available Balance       = Total Available Balance − Deposit Commission − Pay-Out Fee
     const depositCommission = dep * pin;
     const withdrawalCommission = wd * pout;
     const settlementCommission = set * pout;
     const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
     const totalAvailableBalance = dep - wd - set;
-    const availableBalance = totalAvailableBalance - depositCommission;
+    const payoutFee = withdrawalCommission + settlementCommission;
+    const availableBalance = totalAvailableBalance - depositCommission - payoutFee;
     return {
       depositCount: ofType('DEPOSIT').length, depositAmount: dep,
       withdrawalCount: ofType('WITHDRAWAL').length, withdrawalAmount: wd,
       settlementCount: ofType('SETTLEMENT').length, settlementAmount: set,
       depositCommission, withdrawalCommission, settlementCommission, totalCommission,
-      totalAvailableBalance, availableBalance,
+      totalAvailableBalance, payoutFee, availableBalance,
     };
   };
 
@@ -1367,9 +1370,12 @@ export const SaDashboard: React.FC = () => {
   const withdrawalCommission = commission('WITHDRAWAL', 'pout');
   const settlementCommission = commission('SETTLEMENT', 'pout');
   const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
-  // Total Available Balance = Deposits − Withdrawals − Settlements; Available Balance = − Deposit Commission.
+  // Total Available Balance = Deposits − Withdrawals − Settlements
+  // Pay-Out Fee = Withdrawal Commission + Settlement Commission
+  // Available Balance = Total Available Balance − Deposit Commission − Pay-Out Fee
   const totalAvailableBalance = totalDeposits - totalWithdrawn - totalSettled;
-  const availableBalance = totalAvailableBalance - depositCommission;
+  const payoutFee = withdrawalCommission + settlementCommission;
+  const availableBalance = totalAvailableBalance - depositCommission - payoutFee;
 
   return (
     <div>
@@ -1386,7 +1392,7 @@ export const SaDashboard: React.FC = () => {
         <FinanceCard icon="％" label="Total Commission Amount" value={totalCommission} color={T.warning}
           rows={[['Deposit Commission', depositCommission], ['Withdrawal Commission', withdrawalCommission], ['Settlement Commission', settlementCommission], ['Total Commission', totalCommission]]} />
         <FinanceCard icon="◎" label="Available Balance" value={availableBalance} color={T.green}
-          rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Available Balance', availableBalance]]} />
+          rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Pay-Out Fee', payoutFee], ['Available Balance', availableBalance]]} />
       </div>
       <style>{`@media(max-width:760px){.sa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}.sa-fin-grid{grid-template-columns:1fr!important;}}@media(max-width:460px){.sa-stat-grid{grid-template-columns:1fr!important;}}`}</style>
       <Card style={{ padding:22,marginBottom:20 }}>

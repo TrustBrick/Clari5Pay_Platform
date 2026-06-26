@@ -951,13 +951,17 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
 
   // Canonical balance — single source of truth from the backend (completed only):
   //   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
-  //   Available Balance       = Total Available Balance − Deposit Commission
+  //   Pay-Out Fee             = Withdrawal Commission + Settlement Commission
+  //   Available Balance       = Total Available Balance − Deposit Commission − Pay-Out Fee
   const totalDeposit = s?.totalDeposit ?? 0;
   const totalWithdrawn = s?.totalWithdrawn ?? 0;
   const totalSettled = s?.totalSettled ?? 0;
   const depositCommission = s?.depositCommission ?? 0;
+  const withdrawalCommission = s?.withdrawalCommission ?? 0;
+  const settlementCommission = s?.settlementCommission ?? 0;
+  const payoutFee = s?.payoutFee ?? (withdrawalCommission + settlementCommission);
   const totalAvailableBalance = s?.totalAvailableBalance ?? (totalDeposit - totalWithdrawn - totalSettled);
-  const available = s?.available ?? (totalAvailableBalance - depositCommission);  // Available Balance
+  const available = s?.available ?? (totalAvailableBalance - depositCommission - payoutFee);
 
   const rows: Array<[string, number, string, boolean]> = [
     ['Total Deposits', totalDeposit, T.success, false],
@@ -965,6 +969,7 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
     ['Total Settlements', totalSettled, T.danger, false],
     ['Total Available Balance', totalAvailableBalance, T.textMain, true],
     ['Deposit Commission', depositCommission, T.danger, false],
+    ['Pay-Out Fee', payoutFee, T.danger, false],
     ['Available Balance', available, T.blue, true],
   ];
 

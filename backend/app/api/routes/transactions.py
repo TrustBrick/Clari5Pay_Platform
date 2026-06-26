@@ -179,20 +179,20 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     #                             settlement) fee on that leg's completed amount
     #   Total Commission        = Deposit Commission + Withdrawal Commission + Settlement Commission
     #   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
-    #   Available Balance       = Total Available Balance − Deposit Commission
+    #   Pay-Out Fee             = Withdrawal Commission + Settlement Commission
+    #   Available Balance       = Total Available Balance − Deposit Commission − Pay-Out Fee
     deposit_commission = pay_in_fees
     withdrawal_commission = pay_out_fees
     settlement_commission = settlement_fees
     total_commission = deposit_commission + withdrawal_commission + settlement_commission
     total_available_balance = total_deposit - total_withdrawn - total_settled
-    available_balance = total_available_balance - deposit_commission
+    payout_fee = withdrawal_commission + settlement_commission   # Total Pay-Out Fee
+    available_balance = total_available_balance - deposit_commission - payout_fee
 
     # ── Spendable guard — used ONLY to validate new withdrawals/settlements ──
-    # The displayed formulas above intentionally do NOT subtract completed withdrawals,
-    # so they can't be used as the spend limit (a merchant could withdraw the same
-    # balance repeatedly). This conservative figure nets completed withdrawals +
-    # settlement fees and reserves in-flight (pending) requests so funds can never be
-    # over-drawn. It is never displayed.
+    # The displayed available_balance already accounts for all completed fees (pay-in +
+    # pay-out). The spendable limit further deducts in-flight (pending) requests so funds
+    # can never be over-drawn. It is never displayed.
     running_balance = 0.0
     for t in txns:
         if t.status in _TERMINAL_STATUSES:
@@ -219,6 +219,7 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
         "withdrawalCommission": withdrawal_commission,
         "settlementCommission": settlement_commission,
         "totalCommission": total_commission,                # Card 2 — Total Commission Amount
+        "payoutFee": payout_fee,                            # withdrawal + settlement commission (Pay-Out Fee)
         # Spendable guard — withdrawal/settlement VALIDATION ONLY (never displayed).
         "spendableLimit": spendable_limit,
         "runningBalance": running_balance,
@@ -657,6 +658,7 @@ async def merchant_stats(
             "withdrawalCommission": round(s["withdrawalCommission"], 2),
             "settlementCommission": round(s["settlementCommission"], 2),
             "totalCommission": round(s["totalCommission"], 2),
+            "payoutFee": round(s["payoutFee"], 2),
         })
     out.sort(key=lambda r: r["name"].lower())
     return out
@@ -853,6 +855,7 @@ async def merchant_reports(
         "withdrawalCommission": round(bal["withdrawalCommission"], 2),
         "settlementCommission": round(bal["settlementCommission"], 2),
         "totalCommission": round(bal["totalCommission"], 2),
+        "payoutFee": round(bal["payoutFee"], 2),
         "totalTransactionAmount": round(
             sum(t.amount for t in txns if _completed(t)), 2),
         "activeMemberships": len(active_30d),
