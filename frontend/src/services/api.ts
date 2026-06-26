@@ -238,6 +238,14 @@ export const transactionAPI = {
     const res = await api.get<ReportData>('/api/transactions/reports');
     return res.data;
   },
+  // Admin Reports — same payload as merchant reports but system-wide. Pass a business name
+  // to scope to one merchant; omit it for the consolidated all-merchants view.
+  adminReports: async (merchant?: string) => {
+    const res = await api.get<ReportData>('/api/transactions/admin-reports', {
+      params: merchant ? { merchant } : undefined,
+    });
+    return res.data;
+  },
 };
 
 export const riskAPI = {

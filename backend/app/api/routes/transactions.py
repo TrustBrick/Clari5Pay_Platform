@@ -836,24 +836,19 @@ def _pct_change(curr: float, prev: float) -> float | None:
     return round((curr - prev) / prev * 100, 1)
 
 
-@router.get("/reports")
-async def merchant_reports(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Full analytics payload for the merchant Reports module — summary cards, time-window
-    quick reports, membership analytics, leaderboards, transaction intelligence, daily trends
-    and auto-generated business insights. Strictly scoped to the caller's own business pool."""
-    if current_user.role != UserRole.MERCHANT:
-        raise HTTPException(status_code=403, detail="Merchant only")
-
-    ids = (await db.execute(
-        select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
-    )).scalars().all()
-    txns = (await db.execute(
-        select(Transaction).where(Transaction.merchant_id.in_(ids))
-    )).scalars().all() if ids else []
-
+def _build_report_payload(
+    txns: list[Transaction],
+    bal: dict,
+    rates_by_business: dict[str, tuple[float, float]],
+    business_by_mid: dict[int, str],
+) -> dict:
+    """Build the full Reports analytics payload from a transaction set + canonical balance
+    figures. SINGLE source of truth shared by the merchant Reports (own business) and the
+    admin Reports (all merchants, or one selected merchant): both feed it the same
+    compute_balance-derived figures, so the numbers are identical everywhere. The
+    rates_by_business / business_by_mid maps let the running Available Balance column use each
+    business's own pay-in / pay-out fee rates (so a consolidated all-merchants view stays
+    correct across merchants with different fee structures)."""
     now = datetime.utcnow()
     today = date.today()
     yesterday = today - timedelta(days=1)
@@ -900,11 +895,10 @@ async def merchant_reports(
                   if (t.member_id or "").strip()
                   and t.created_at and t.created_at >= now - timedelta(days=30)}
 
-    # Canonical balances — the SINGLE source of truth (compute_balance). The three
-    # financial-summary figures (Total Available Balance, Total Commission Amount,
-    # Available Balance) and their breakdown components are read straight from here.
-    bal = await compute_balance(db, current_user)
-
+    # Canonical balances — the SINGLE source of truth (compute_balance / compute_global_
+    # summary), passed in by the caller. The three financial-summary figures (Total Available
+    # Balance, Total Commission Amount, Available Balance) and their breakdown components are
+    # read straight from here, so merchant and admin Reports always reconcile.
     cards = {
         "totalTransactions": len(txns),
         "totalDeposits": kind_count("deposit"),
@@ -1049,12 +1043,15 @@ async def merchant_reports(
     # Running Available Balance after each transaction (replays completed txns
     # chronologically). Mirrors the canonical formula so the final row reconciles to
     # Net Available Withdrawal Amount: deposit adds net of pay-in fee, settlement
-    # subtracts its principal, withdrawal subtracts only its pay-out fee.
-    pay_in_rate = (current_user.pay_in_fee or 0) / 100
-    pay_out_rate = (current_user.pay_out_fee or 0) / 100
-    running = 0.0
+    # subtracts its principal, withdrawal subtracts only its pay-out fee. The running
+    # balance is kept per-business (using that business's own fee rates) so a consolidated
+    # all-merchants view stays correct across merchants with different fee structures.
+    running_by_biz: dict[str, float] = {}
     bal_by_id: dict[int, float] = {}
     for t in sorted(txns, key=lambda x: (x.created_at or datetime.min)):
+        biz = business_by_mid.get(t.merchant_id, "")
+        pay_in_rate, pay_out_rate = rates_by_business.get(biz, (0.0, 0.0))
+        running = running_by_biz.get(biz, 0.0)
         if _completed(t):
             k = _kind(t)
             if k == "deposit":
@@ -1063,6 +1060,7 @@ async def merchant_reports(
                 running -= t.amount
             elif k == "withdrawal":
                 running -= t.amount * pay_out_rate
+        running_by_biz[biz] = running
         bal_by_id[t.id] = round(running, 2)
 
     def _payment_method(t: Transaction):
@@ -1070,6 +1068,7 @@ async def merchant_reports(
 
     rows = [{
         "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
+        "business": business_by_mid.get(t.merchant_id, ""),
         "type": _kind(t), "depositType": t.deposit_type, "amount": round(t.amount, 2), "status": t.status.value,
         "date": str(t.tx_date), "time": t.tx_time,
         "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
@@ -1089,6 +1088,71 @@ async def merchant_reports(
         "intelligence": intelligence, "trends": trends, "insights": insights,
         "transactions": rows,
     }
+
+
+@router.get("/reports")
+async def merchant_reports(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Full analytics payload for the merchant Reports module — summary cards, time-window
+    quick reports, membership analytics, leaderboards, transaction intelligence, daily trends
+    and auto-generated business insights. Strictly scoped to the caller's own business pool."""
+    if current_user.role != UserRole.MERCHANT:
+        raise HTTPException(status_code=403, detail="Merchant only")
+
+    ids = (await db.execute(
+        select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
+    )).scalars().all()
+    txns = (await db.execute(
+        select(Transaction).where(Transaction.merchant_id.in_(ids))
+    )).scalars().all() if ids else []
+
+    bal = await compute_balance(db, current_user)
+    rates = ((current_user.pay_in_fee or 0) / 100, (current_user.pay_out_fee or 0) / 100)
+    return _build_report_payload(
+        txns, bal,
+        rates_by_business={current_user.name: rates},
+        business_by_mid={i: current_user.name for i in ids},
+    )
+
+
+@router.get("/admin-reports")
+async def admin_reports(
+    merchant: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """System-wide Reports for Admins / Super Admins — the SAME analytics payload as the
+    merchant Reports module, but spanning every merchant. With no `merchant` filter it is a
+    consolidated view across all merchant businesses (financial-summary cards from
+    compute_global_summary). With `merchant`=<business name> it is scoped to that one
+    business (compute_balance) — identical to what that merchant sees in their own portal.
+    Reuses the exact same _build_report_payload computation (no duplicated report logic)."""
+    merchant_users = (await db.execute(
+        select(User).where(User.role == UserRole.MERCHANT)
+    )).scalars().all()
+    business_by_mid = {u.id: u.name for u in merchant_users}
+    # One representative + fee-rate pair per business (merchants sharing a name pool one balance).
+    rep: dict[str, User] = {}
+    rates_by_business: dict[str, tuple[float, float]] = {}
+    for u in merchant_users:
+        rep.setdefault(u.name, u)
+        rates_by_business.setdefault(u.name, ((u.pay_in_fee or 0) / 100, (u.pay_out_fee or 0) / 100))
+
+    if merchant:
+        if merchant not in rep:
+            raise HTTPException(status_code=404, detail="Merchant not found")
+        ids = [u.id for u in merchant_users if u.name == merchant]
+        bal = await compute_balance(db, rep[merchant])
+    else:
+        ids = [u.id for u in merchant_users]
+        bal = await compute_global_summary(db)
+
+    txns = (await db.execute(
+        select(Transaction).where(Transaction.merchant_id.in_(ids))
+    )).scalars().all() if ids else []
+    return _build_report_payload(txns, bal, rates_by_business, business_by_mid)
 
 
 @router.post("/deposit")

@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { T } from '../utils/theme';
 import { fmt, today, depositTypeLabel, memberLabel } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
-import { transactionAPI } from '../services/api';
+import { transactionAPI, userAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
@@ -484,10 +484,12 @@ interface RFilters {
   ref: string; memberId: string; memberName: string; combined: string; agentCode: string;
   approvedBy: string; processedBy: string; type: string; status: string; method: string;
   riskLevel: string; minA: string; maxA: string; exactA: string; datePreset: string; from: string; to: string;
+  business: string;   // admin Reports only — client-side business-name filter (all-merchants view)
 }
 const EMPTY_FILTERS: RFilters = {
   ref: '', memberId: '', memberName: '', combined: '', agentCode: '', approvedBy: '', processedBy: '',
   type: '', status: '', method: '', riskLevel: '', minA: '', maxA: '', exactA: '', datePreset: 'all', from: '', to: '',
+  business: '',
 };
 
 const rowTs = (r: ReportRow) => r.createdAt ? new Date(r.createdAt).getTime() : new Date(`${r.date}T${r.time || '00:00:00'}Z`).getTime();
@@ -508,6 +510,7 @@ const inDateWindow = (r: ReportRow, preset: string, from: string, to: string): b
 const matchesFilters = (r: ReportRow, f: RFilters): boolean => {
   const inc = (v: string | null | undefined, q: string) => !q || (v || '').toLowerCase().includes(q.toLowerCase());
   return inc(r.ref, f.ref) && inc(r.memberId, f.memberId) && inc(r.member, f.memberName)
+    && inc(r.business, f.business)
     && (!f.combined || memberLabel(r.memberId, r.member).toLowerCase().includes(f.combined.toLowerCase()))
     && inc(r.agentCode, f.agentCode) && inc(r.approvedBy, f.approvedBy) && inc(r.processedBy, f.processedBy)
     && (!f.type || r.type === f.type) && (!f.status || r.status === f.status)
@@ -555,8 +558,23 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
   if (autoPrint) setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
 }
 
-export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
-  const [data, setData] = useState<ReportData | null>(null);
+// ── Reusable Reports view ──
+// Shared by the Merchant Reports (own business) and the Admin Reports (all merchants, or one
+// selected merchant). The financial/analytics payload always comes from the backend
+// (single source of truth) — this component only renders + applies client-side filters.
+interface ReportsViewProps {
+  data: ReportData | null;
+  reload: () => Promise<void> | void;
+  businessName: string;     // shown as "Merchant Name" + used in PDF/Excel titles
+  generatedBy: string;
+  subtitle?: string;
+  merchantSelector?: React.ReactNode;   // admin: scope dropdown rendered in the header
+  showBusinessFilter?: boolean;         // admin all-merchants: enables the Business Name filter
+}
+
+const ReportsView: React.FC<ReportsViewProps> = ({
+  data, reload, businessName, generatedBy, subtitle, merchantSelector, showBusinessFilter,
+}) => {
   const [profileId, setProfileId] = useState<string | null>(null);
   // `draft` is bound to the filter inputs; `f` is the *applied* filter set that
   // actually drives the table, summary/footer totals, count and exports. Editing a
@@ -566,9 +584,6 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
   const [applying, setApplying] = useState(false);
   const [genAt] = useState(() => new Date());
   const toast = useToast();
-  const reload = () => transactionAPI.reports().then(setData).catch(() => {});
-  useEffect(() => { reload(); }, []);
-  usePoll(reload, 30000);
   const set = (k: keyof RFilters, v: string) => setDraft(p => ({ ...p, [k]: v }));
 
   // Apply Filters — pull a fresh server snapshot (the existing reports API), then
@@ -627,11 +642,12 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 16 }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Reports &amp; Analytics</h2>
-          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Financial intelligence dashboard — your memberships, transactions and reports.</p>
+          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{subtitle || 'Financial intelligence dashboard — your memberships, transactions and reports.'}</p>
         </div>
-        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true)}>📄 Download PDF</Btn>
+        {merchantSelector}
+        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}>📄 Download PDF</Btn>
         <Btn size="sm" variant="secondary" onClick={downloadExcel}>📊 Download Excel</Btn>
-        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, user.name, user.name, rangeLabel, true)}>🖨 Print Report</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}>🖨 Print Report</Btn>
       </div>
 
       {/* 1 — Summary cards */}
@@ -645,8 +661,8 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
       {/* 2 — Report metadata */}
       <Card style={{ padding: '14px 18px', marginBottom: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 14 }}>
-          {meta('Merchant Name', user.name)}
-          {meta('Generated By', user.name)}
+          {meta('Merchant Name', businessName)}
+          {meta('Generated By', generatedBy)}
           {meta('Generated Date & Time', genAt.toLocaleString('en-IN'))}
           {meta('Selected Date Range', rangeLabel)}
         </div>
@@ -665,6 +681,7 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
           </div>
         )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
+          {showBusinessFilter && <Input label="Business Name" value={draft.business} onChange={e => set('business', e.target.value)} placeholder="Merchant business" />}
           <Input label="Reference Number" value={draft.ref} onChange={e => set('ref', e.target.value)} />
           <Input label="Membership Number" value={draft.memberId} onChange={e => set('memberId', e.target.value)} />
           <Input label="Member Name" value={draft.memberName} onChange={e => set('memberName', e.target.value)} />
@@ -756,5 +773,49 @@ export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
       </Card>
       <div style={{ height: 24 }} />
     </div>
+  );
+};
+
+// ── Merchant Reports page (own business) ──
+export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
+  const [data, setData] = useState<ReportData | null>(null);
+  const reload = () => transactionAPI.reports().then(setData).catch(() => {});
+  useEffect(() => { reload(); }, []);
+  usePoll(reload, 30000);
+  return <ReportsView data={data} reload={reload} businessName={user.name} generatedBy={user.name} />;
+};
+
+// ── Admin Reports page (all merchants, or one selected merchant) ──
+// Same module/UI as the merchant Reports, but system-wide. The Merchant selector re-scopes
+// the whole report server-side (cards, charts, analytics, table) using the SAME backend
+// calculation, so a single merchant's figures here match exactly what that merchant sees.
+export const AdminReportsPage: React.FC<{ user: User }> = ({ user }) => {
+  const [data, setData] = useState<ReportData | null>(null);
+  const [merchant, setMerchant] = useState('');         // '' = all merchants
+  const [businesses, setBusinesses] = useState<string[]>([]);
+  const reload = useCallback(
+    () => transactionAPI.adminReports(merchant || undefined).then(setData).catch(() => {}),
+    [merchant],
+  );
+  // Distinct merchant business names for the scope dropdown (system-wide).
+  useEffect(() => {
+    userAPI.getMerchants()
+      .then(ms => setBusinesses(Array.from(new Set(ms.map(m => m.name))).sort((a, b) => a.localeCompare(b))))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { setData(null); reload(); }, [reload]);
+  usePoll(reload, 30000);
+
+  const selector = (
+    <Sel label="Merchant" value={merchant} onChange={e => setMerchant(e.target.value)} style={{ marginBottom: 0, minWidth: 220 }}
+      options={[{ value: '', label: 'All Merchants' }, ...businesses.map(b => ({ value: b, label: b }))]} />
+  );
+  return (
+    <ReportsView
+      data={data} reload={reload}
+      businessName={merchant || 'All Merchants'} generatedBy={user.name}
+      subtitle="System-wide financial intelligence — all merchants, transactions and reports."
+      merchantSelector={selector} showBusinessFilter={!merchant}
+    />
   );
 };

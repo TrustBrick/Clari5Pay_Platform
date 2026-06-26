@@ -461,6 +461,7 @@ export interface ReportRow {
   ref: string;
   memberId: string | null;
   member: string;
+  business?: string | null;   // merchant business name (admin Reports — all-merchants view)
   type: 'deposit' | 'withdrawal' | 'settlement' | null;
   depositType?: string | null;
   amount: number;

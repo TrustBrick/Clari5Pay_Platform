@@ -13,6 +13,7 @@ import {
   TransactionHistory, BalancePage, RiskPage, MerchantSupportChat, ProfilePage,
   CancelRequestPage, TemplatesPage, NewsPage, ReportsPage, ApprovalsPage,
 } from './pages/MerchantPages';
+import { AdminReportsPage } from './pages/ReportsPage';
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
   SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage,
@@ -90,6 +91,7 @@ const App: React.FC = () => {
       'admin-dashboard': <AdminDashboard {...props} />,
       'admin-merchants': <AdminMerchantsPage />,
       'admin-analytics': <MerchantAnalyticsPage />,
+      'admin-reports': <AdminReportsPage {...props} />,
       'admin-transactions': <AdminTransactionsPage />,
       'admin-accounts': <AdminAccountsPage />,
       'sa-dashboard': <SaDashboard />,
