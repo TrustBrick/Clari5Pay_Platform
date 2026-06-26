@@ -203,6 +203,7 @@ class AccountSubmitRequest(BaseModel):
     adminRef: Optional[str] = None
     adminProof: Optional[str] = None
     adminBankDetails: Optional[str] = None
+    adminBankImage: Optional[str] = None   # custom bank-details image (overrides the auto card)
     adminUpiId: Optional[str] = None
 
 

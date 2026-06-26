@@ -191,9 +191,9 @@ export const MerchantSlipModal: React.FC<{
   const [ref, setRef] = useState('');
   const [loading, setLoading] = useState(false);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
-  const [imgs, setImgs] = useState<{ adminProof?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
+  const [imgs, setImgs] = useState<{ adminProof?: string | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
   useEffect(() => {
-    transactionAPI.getDetail(tx.id).then(d => setImgs({ adminProof: d.adminProof, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs })).catch(()=>{});
+    transactionAPI.getDetail(tx.id).then(d => setImgs({ adminProof: d.adminProof, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs })).catch(()=>{});
   }, [tx.id]);
 
   // Full account/payment details as shareable text (copy-all / share).
@@ -243,19 +243,14 @@ export const MerchantSlipModal: React.FC<{
     ? 'UTR number and proof attached — ready to submit.'
     : 'Both the UTR number and a payment proof image are required.';
 
-  const hasAdminDetails = !!(imgs.adminProof || tx.adminBankDetails);
+  // A custom uploaded image overrides the auto-generated card for this transaction.
+  const bankImageSrc = imgs.adminBankImage || null;
+  const hasImage = !!(bankImageSrc || imgs.adminProof);
+  const hasAdminDetails = !!(bankImageSrc || imgs.adminProof || tx.adminBankDetails || tx.hasAdminBankImage);
+  // Security: bank-detail fields are NOT copyable/exportable as text — only the image (if any) can be saved.
   const downloadDetails = () => {
-    if (imgs.adminProof) {
-      downloadDataUrl(imgs.adminProof, `account-details-${tx.ref}.png`);
-    } else if (tx.adminBankDetails) {
-      const lines = [
-        `Clari5Pay — Payment Details for ${tx.ref}`,
-        `Amount: ${fmt(tx.amount)}`,
-        tx.adminBankDetails,
-        tx.adminUpiId ? `UPI ID: ${tx.adminUpiId}` : '',
-      ].filter(Boolean).join('\n');
-      downloadText(lines, `account-details-${tx.ref}.txt`);
-    }
+    const img = bankImageSrc || imgs.adminProof;
+    if (img) downloadDataUrl(img, `bank-details-${tx.ref}.png`);
   };
 
   return (
@@ -297,27 +292,21 @@ export const MerchantSlipModal: React.FC<{
           {tx.adminBankDetails && (
             <div style={{ marginTop:8 }}>
               <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Bank Details</p>
-              <p style={{ fontSize:13,color:T.textMain,margin:0,whiteSpace:'pre-line',lineHeight:1.6 }}>{tx.adminBankDetails}</p>
+              {/* Security: bank-detail fields cannot be copied/selected (UPI ID stays copyable above). */}
+              <p onCopy={e=>e.preventDefault()} style={{ fontSize:13,color:T.textMain,margin:0,whiteSpace:'pre-line',lineHeight:1.6,userSelect:'none',WebkitUserSelect:'none',MozUserSelect:'none' }}>{tx.adminBankDetails}</p>
             </div>
           )}
-          {!tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof &&
+          {!tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof && !bankImageSrc && !tx.hasAdminBankImage &&
             <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting updates from Agent.</p>}
         </div>
 
-        {imgs.adminProof && <img src={imgs.adminProof} alt="Admin details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
-        {hasAdminDetails && (
+        {/* A custom uploaded image overrides the auto-generated card; otherwise show the auto card PNG. */}
+        {bankImageSrc
+          ? <img src={bankImageSrc} alt="Bank details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />
+          : imgs.adminProof && <img src={imgs.adminProof} alt="Admin details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+        {hasImage && (
           <div style={{ marginTop:10 }}>
-            <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
-              {(tx.adminBankDetails || tx.adminUpiId) && (
-                <>
-                  <Btn size="sm" variant="ghost" onClick={()=>copy(detailsText, 'All details')}>⧉ Copy All Details</Btn>
-                  <Btn size="sm" variant="ghost" onClick={shareAll}>↗ Share</Btn>
-                </>
-              )}
-              <Btn size="sm" variant="ghost" onClick={downloadDetails}>
-                ⬇ Download {tx.type.startsWith('DEPOSIT') ? 'Account Details' : 'Receipt'}
-              </Btn>
-            </div>
+            <Btn size="sm" variant="ghost" onClick={downloadDetails}>⬇ Download Bank Details Image</Btn>
           </div>
         )}
       </div>
@@ -1091,7 +1080,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         ))}
       </DetailSection>
 
-      {(slips.length > 0 || d.adminProof) && (
+      {(slips.length > 0 || d.adminProof || d.adminBankImage) && (
         <DetailSection title="Uploaded Documents / Slips">
           {slips.length > 0 && (
             <>
@@ -1101,6 +1090,13 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
                 {slips.map((s, i) => <Btn key={i} size="sm" variant="ghost" onClick={() => downloadDataUrl(s, `slip-${d.ref}-${i + 1}.png`)}>⬇ Download Slip{slips.length > 1 ? ` ${i + 1}` : ''}</Btn>)}
               </div>
             </>
+          )}
+          {d.adminBankImage && (
+            <div style={{ marginTop: slips.length ? 12 : 0 }}>
+              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Bank Details Image</p>
+              <ProofGallery srcs={[d.adminBankImage]} />
+              <Btn size="sm" variant="ghost" style={{ marginTop: 8 }} onClick={() => downloadDataUrl(d.adminBankImage!, `bank-details-${d.ref}.png`)}>⬇ Download Bank Details Image</Btn>
+            </div>
           )}
           {d.adminProof && (
             <div style={{ marginTop: slips.length ? 12 : 0 }}>

@@ -109,6 +109,8 @@ export interface Transaction {
   merchantProofs?: string[] | null;
   merchantRef?: string | null;
   adminProof?: string | null;
+  adminBankImage?: string | null;     // admin custom bank-details image (detail fetch only)
+  hasAdminBankImage?: boolean;        // lightweight flag present in list payloads
   adminRef?: string | null;
   adminBankDetails?: string | null;
   adminUpiId?: string | null;

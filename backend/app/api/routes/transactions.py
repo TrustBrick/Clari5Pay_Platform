@@ -104,6 +104,23 @@ def _clean_proofs(proofs: list[str] | None, single: str | None = None) -> list[s
     return items
 
 
+# Admin custom Bank-Details image — JPG / JPEG / PNG / WEBP only.
+_ALLOWED_BANK_IMG_PREFIXES = (
+    "data:image/jpeg", "data:image/jpg", "data:image/png", "data:image/webp",
+)
+BANK_IMG_TYPE_MSG = "Unsupported image type. Allowed: JPG, JPEG, PNG, WEBP."
+
+
+def _validate_bank_image(img: str | None) -> str | None:
+    """Validate the admin's uploaded bank-details image (data URL). Returns it unchanged."""
+    if not img:
+        return None
+    head = img[:64].lower()
+    if head.startswith("data:") and not head.startswith(_ALLOWED_BANK_IMG_PREFIXES):
+        raise HTTPException(status_code=400, detail=BANK_IMG_TYPE_MSG)
+    return img
+
+
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
 # A generated UPI/QR payment code stays valid for this long before it must be regenerated.
@@ -320,6 +337,8 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "merchantProofs": (json.loads(t.merchant_proofs) if t.merchant_proofs else None) if full else None,
         "merchantRef": t.merchant_ref,
         "adminProof": t.admin_proof if full else None,
+        "adminBankImage": t.admin_bank_image if full else None,   # heavy image — detail fetch only
+        "hasAdminBankImage": bool(t.admin_bank_image),            # lightweight flag for list payloads
         "adminRef": t.admin_ref,
         "adminBankDetails": t.admin_bank_details,
         "adminUpiId": t.admin_upi_id,
@@ -1214,14 +1233,21 @@ async def account_submit(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """Admin selects a managed account, the app sends its details/image, status → Account Submitted."""
-    if not (data.adminBankDetails or data.adminUpiId or data.adminProof):
+    """Admin selects a managed account, the app sends its details/image, status → Account Submitted.
+    If the admin uploads a custom bank-details image, it overrides the auto-generated card for
+    this transaction (the structured bank details are not stored/shown)."""
+    if not (data.adminBankDetails or data.adminUpiId or data.adminProof or data.adminBankImage):
         raise HTTPException(
             status_code=400,
             detail="Select an account to send",
         )
     tx = await _get_tx(tx_id, db)
-    tx.admin_bank_details = data.adminBankDetails
+    if data.adminBankImage:
+        # Custom image becomes the official bank details — skip the auto-generated card.
+        tx.admin_bank_image = _validate_bank_image(data.adminBankImage)
+        tx.admin_bank_details = None
+    else:
+        tx.admin_bank_details = data.adminBankDetails
     tx.admin_upi_id = data.adminUpiId
     if data.adminProof:
         tx.admin_proof = data.adminProof
@@ -1233,6 +1259,7 @@ async def account_submit(
         if upi_row and upi_row.account_ref:
             ref = upi_row.account_ref
         tx.admin_bank_details = None  # a UPI send doesn't also expose bank details
+        tx.admin_bank_image = None    # nor a bank-details image
     tx.admin_ref = ref
     # Remember which managed account served this Member ID (drives reuse + per-account reporting).
     if ref and tx.member_id and ref.startswith("ACC"):

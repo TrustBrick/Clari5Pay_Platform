@@ -63,18 +63,19 @@ const RequestModal: React.FC<{
   const [linkedUpis, setLinkedUpis] = useState<AdminUpi[]>([]);
   const [upiId, setUpiId] = useState('');
   const [receipt, setReceipt] = useState<string | null>(null);
+  const [bankImage, setBankImage] = useState<string | null>(null);   // optional custom bank-details image
   const [payUtr, setPayUtr] = useState('');
   const [saving, setSaving] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
   const [riskConfirm, setRiskConfirm] = useState(false);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
-  const [imgs, setImgs] = useState<{ adminProof?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
+  const [imgs, setImgs] = useState<{ adminProof?: string | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
   // Full record incl. proof images + the review-gate workflow trail; also records an
   // "Admin Viewed" audit entry (the admin is opening the request).
   const [record, setRecord] = useState<Transaction>(tx);
   useEffect(() => {
-    transactionAPI.getDetail(tx.id).then(d => { setImgs({ adminProof: d.adminProof, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs }); setRecord(d); }).catch(()=>{});
+    transactionAPI.getDetail(tx.id).then(d => { setImgs({ adminProof: d.adminProof, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs }); setRecord(d); }).catch(()=>{});
     transactionAPI.recordView(tx.id);
   }, [tx.id]);
 
@@ -149,20 +150,34 @@ const RequestModal: React.FC<{
     if (f) setReceipt(await fileToDataUrl(f));
   };
 
+  // Optional custom Bank-Details image (JPG/JPEG/PNG/WEBP). When set, it overrides the auto card.
+  const BANK_IMG_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  const onBankImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (!BANK_IMG_TYPES.includes(f.type)) { showToast('Allowed image types: JPG, JPEG, PNG, WEBP', 'error'); return; }
+    setBankImage(await fileToDataUrl(f));
+  };
+
   const sendAccount = async () => {
     const acc = accounts.find(a => a.referenceNumber === accountRef);
-    if (!acc) { showToast('Select an account', 'error'); return; }
+    if (!acc && !bankImage) { showToast('Select an account or upload a bank details image', 'error'); return; }
     setSaving(true);
     try {
-      const png = accountToPng(acc);
-      const summary = [
-        `Account Name: ${acc.accountName}`,
-        `Bank: ${acc.bankName}`,
-        `A/C: ${acc.accountNumber}`,
-        `IFSC: ${acc.ifscCode}`,
-        `Branch: ${acc.branch}`,
-      ].join('\n');
-      await transactionAPI.submitAccount(tx.id, { adminProof: png, adminBankDetails: summary, adminRef: acc.referenceNumber });
+      if (bankImage) {
+        // Custom image becomes the official bank details — the auto card is not generated.
+        await transactionAPI.submitAccount(tx.id, { adminBankImage: bankImage, adminRef: acc?.referenceNumber });
+      } else {
+        const png = accountToPng(acc!);
+        const summary = [
+          `Account Name: ${acc!.accountName}`,
+          `Bank: ${acc!.bankName}`,
+          `A/C: ${acc!.accountNumber}`,
+          `IFSC: ${acc!.ifscCode}`,
+          `Branch: ${acc!.branch}`,
+        ].join('\n');
+        await transactionAPI.submitAccount(tx.id, { adminProof: png, adminBankDetails: summary, adminRef: acc!.referenceNumber });
+      }
       showToast(`${tx.ref} — account details sent`);
       onDone?.(); onClose();
     } catch { showToast('Failed to send account', 'error'); }
@@ -231,13 +246,15 @@ const RequestModal: React.FC<{
           {isDeposit ? (
             <>
               <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Account Sent</p>
-              {(tx.adminBankDetails || tx.adminUpiId || tx.adminRef) ? (
+              {(tx.adminBankDetails || tx.adminUpiId || tx.adminRef || tx.hasAdminBankImage) ? (
                 <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12 }}>
                   {tx.adminUpiId && <Row k="UPI ID" v={tx.adminUpiId} />}
                   {tx.adminBankDetails && <p style={{ margin:0,whiteSpace:'pre-line',lineHeight:1.6,color:T.textMain,fontWeight:600 }}>{tx.adminBankDetails}</p>}
+                  {tx.hasAdminBankImage && !tx.adminBankDetails && <p style={{ margin:0,color:T.textMuted }}>Custom bank details image sent.</p>}
                 </div>
               ) : <div style={{ padding:24,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>Not sent yet</div>}
               {imgs.adminProof && <img src={imgs.adminProof} alt="Account details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+              {imgs.adminBankImage && <img src={imgs.adminBankImage} alt="Bank details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
             </>
           ) : (
             <>
@@ -319,8 +336,20 @@ const RequestModal: React.FC<{
                 <p style={{ fontSize:11,color:T.success,margin:'-8px 0 10px',fontWeight:600 }}>↻ Reused from Member {tx.memberId}'s previous deposit — change it if needed.</p>
               )}
               <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>A PNG of the selected account is auto-generated and sent to the merchant.</p>
+              {/* Optional: upload a custom bank-details image. When set, it overrides the auto card. */}
+              <div style={{ marginBottom:12,paddingTop:12,borderTop:`1px solid ${T.borderLight}` }}>
+                <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6 }}>Upload Bank Details Image (optional)</p>
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={onBankImage} style={{ fontSize:12 }} />
+                {bankImage && (
+                  <div style={{ marginTop:8 }}>
+                    <img src={bankImage} alt="Bank details preview" style={{ display:'block',maxWidth:'100%',maxHeight:180,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,background:T.canvas }} />
+                    <Btn size="sm" variant="ghost" style={{ marginTop:6 }} onClick={()=>setBankImage(null)}>✕ Remove Image</Btn>
+                  </div>
+                )}
+                <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>JPG, JPEG, PNG or WEBP. Re-select to replace. If uploaded, this image is sent instead of the auto-generated card.</p>
+              </div>
               <div style={{ display:'flex',gap:10 }}>
-                <Btn onClick={sendAccount} disabled={saving||!accountRef}>{saving ? 'Sending...' : '🏦 Send Account'}</Btn>
+                <Btn onClick={sendAccount} disabled={saving||(!accountRef && !bankImage)}>{saving ? 'Sending...' : (bankImage ? '🖼 Send Bank Details Image' : '🏦 Send Account')}</Btn>
                 <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
               </div>
             </>

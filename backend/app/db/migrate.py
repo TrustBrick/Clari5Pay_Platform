@@ -20,6 +20,7 @@ _NEW_COLUMNS = [
     ("users", "merchant_code", "VARCHAR(16)"),
     ("transactions", "merchant_ref", "VARCHAR(64)"),
     ("transactions", "admin_bank_details", "TEXT"),
+    ("transactions", "admin_bank_image", "TEXT"),
     ("transactions", "admin_upi_id", "VARCHAR(64)"),
     ("transactions", "utr", "VARCHAR(64)"),
     ("transactions", "notes", "TEXT"),

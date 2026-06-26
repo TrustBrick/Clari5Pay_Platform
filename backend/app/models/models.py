@@ -156,6 +156,7 @@ class Transaction(Base):
     admin_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # admin-uploaded bank-details image (data URL)
     admin_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # admin reference number
     admin_bank_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # admin manually-entered bank details
+    admin_bank_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # admin custom bank-details image (data URL) — overrides the auto card
     admin_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)   # admin UPI ID (when merchant chose UPI)
     admin_utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)       # agent's payment UTR (withdrawal/settlement payout)
     payout_mode: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)     # withdrawal: BANK / UPI / CASH / CRYPTO

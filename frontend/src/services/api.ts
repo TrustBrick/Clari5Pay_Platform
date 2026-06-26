@@ -173,7 +173,7 @@ export const transactionAPI = {
   },
   submitAccount: async (
     id: string,
-    data: { adminRef?: string; adminProof?: string; adminBankDetails?: string; adminUpiId?: string },
+    data: { adminRef?: string; adminProof?: string; adminBankDetails?: string; adminBankImage?: string; adminUpiId?: string },
   ) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/account-submit`, data);
     return res.data;
