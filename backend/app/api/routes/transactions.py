@@ -2,7 +2,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, case
+from sqlalchemy import select, or_, case, text
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog
 from app.core.deps import (
@@ -144,8 +144,20 @@ INSUFFICIENT_BALANCE_MSG = (
 )
 
 
-def _make_ref(prefix: str, tx_id: int) -> str:
-    return f"{prefix}{str(tx_id).zfill(7)}"
+# Independent per-type reference sequences (Postgres). Each transaction type draws its number
+# from its OWN sequence, so the three types are numbered independently — DEP000001, WIT000001,
+# SET000001 — regardless of creation order. The sequences are created in db/migrate.py and are
+# reset per-type when transaction data is cleared. nextval is concurrency-safe; a cancelled /
+# rejected request still consumes its number (gaps are expected and fine).
+_REF_SEQUENCES = {"DEP": "deposit_ref_seq", "WIT": "withdrawal_ref_seq", "SET": "settlement_ref_seq"}
+
+
+async def _next_ref(db: AsyncSession, kind: str) -> str:
+    """Next reference number for a transaction type. `kind` is "DEP", "WIT" or "SET". Pulls the
+    next value from that type's own sequence and formats it 6-digit zero-padded, e.g. DEP000001."""
+    seq = _REF_SEQUENCES[kind]
+    n = (await db.execute(text(f"SELECT nextval('{seq}')"))).scalar_one()
+    return f"{kind}{str(n).zfill(6)}"
 
 
 def _forbid_manager_create(user: User) -> None:
@@ -1202,8 +1214,7 @@ async def create_deposit(
     )
     db.add(tx)
     await db.flush()
-    prefix = current_user.pay_in or "DEP"
-    tx.ref = _make_ref(prefix, tx.id)
+    tx.ref = await _next_ref(db, "DEP")
     if data.saveBankAccount:
         await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName, member_id=data.memberId)
     # Remember the merchant's sender UPI for this member (first one becomes the default).
@@ -1277,8 +1288,7 @@ async def create_withdrawal(
     )
     db.add(tx)
     await db.flush()
-    prefix = current_user.pay_out or "WIT"
-    tx.ref = _make_ref(prefix, tx.id)
+    tx.ref = await _next_ref(db, "WIT")
     # Remember this member's payout details so they auto-fill on the next withdrawal.
     _wd_mode = (data.payoutMode or "BANK").upper()
     if _wd_mode == "BANK" and data.accountNumber:
@@ -1334,8 +1344,7 @@ async def create_settlement(
     )
     db.add(tx)
     await db.flush()
-    prefix = current_user.settlement or "SET"
-    tx.ref = _make_ref(prefix, tx.id)
+    tx.ref = await _next_ref(db, "SET")
     await db.flush()
     await _notify_business_role(db, tx, "MANAGER", f"Settlement {tx.ref} from {tx.merchant_name} — awaiting your review", "⇄")
     await notify_tx(db, tx, f"Settlement {tx.ref} requested by {tx.merchant_name}", "⇄")

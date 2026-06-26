@@ -107,6 +107,11 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             await conn.execute(
                 text(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}')
             )
+        # Independent per-type transaction-reference sequences (DEP/WIT/SET → DEP000001 …).
+        # Created once; each is reset to 1 when transaction data is cleared. START WITH 1 so a
+        # fresh database's first transaction of each type is …000001.
+        for seq in ("deposit_ref_seq", "withdrawal_ref_seq", "settlement_ref_seq"):
+            await conn.execute(text(f"CREATE SEQUENCE IF NOT EXISTS {seq} START WITH 1"))
         # Backfill created_at from the legacy created date for existing rows.
         await conn.execute(
             text("UPDATE users SET created_at = created::timestamp WHERE created_at IS NULL")
