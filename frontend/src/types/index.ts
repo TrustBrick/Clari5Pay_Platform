@@ -230,6 +230,23 @@ export interface MerchantStats {
   payoutFee?: number;                 // withdrawalCommission + settlementCommission (Total Pay-Out Fee)
 }
 
+// Platform-wide financial summary — the SINGLE source of truth shared by the Admin and
+// Super Admin dashboard finance cards (backend /global-summary → compute_global_summary).
+// Identical for every admin: these are system-wide totals, not per-admin values.
+export interface GlobalSummary {
+  totalAvailableBalance: number;
+  totalDeposit: number;
+  totalWithdrawn: number;
+  totalSettled: number;
+  depositCommission: number;
+  withdrawalCommission: number;
+  settlementCommission: number;
+  totalCommission: number;
+  payoutFee: number;
+  available: number;
+  availableBalance: number;
+}
+
 export interface AdminUpi {
   id: number;
   label: string;

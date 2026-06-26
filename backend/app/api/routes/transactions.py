@@ -247,6 +247,49 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     }
 
 
+async def compute_global_summary(db: AsyncSession) -> dict:
+    """Platform-wide financial summary — the SINGLE source of truth for every Admin /
+    Super Admin dashboard. Aggregates the canonical compute_balance figures across EVERY
+    merchant business (grouped by shared business name), so all dashboards consume one
+    identical system-wide total regardless of which admin is logged in. These are
+    system-wide financial summaries, never per-admin values. Completed-only basis — see
+    compute_balance for the canonical formulas."""
+    merchants = (await db.execute(
+        select(User).where(User.role == UserRole.MERCHANT)
+    )).scalars().all()
+    # One representative per business — merchants sharing a name pool one balance, so each
+    # business is counted exactly once (same pooling as compute_balance / merchant-stats).
+    rep: dict[str, User] = {}
+    for m in merchants:
+        rep.setdefault(m.name, m)
+
+    keys = ("totalDeposit", "totalWithdrawn", "totalSettled",
+            "depositCommission", "withdrawalCommission", "settlementCommission",
+            "totalCommission", "totalAvailableBalance", "payoutFee", "available")
+    agg = {k: 0.0 for k in keys}
+    for user in rep.values():
+        s = await compute_balance(db, user)
+        for k in keys:
+            agg[k] += s[k]
+
+    return {
+        # Card 1 — Total Available Balance + its breakdown rows
+        "totalAvailableBalance": round(agg["totalAvailableBalance"], 2),
+        "totalDeposit": round(agg["totalDeposit"], 2),
+        "totalWithdrawn": round(agg["totalWithdrawn"], 2),
+        "totalSettled": round(agg["totalSettled"], 2),
+        # Card 2 — Total Commission Amount + its breakdown rows
+        "depositCommission": round(agg["depositCommission"], 2),
+        "withdrawalCommission": round(agg["withdrawalCommission"], 2),
+        "settlementCommission": round(agg["settlementCommission"], 2),
+        "totalCommission": round(agg["totalCommission"], 2),
+        # Card 3 — Available Balance + its breakdown rows
+        "payoutFee": round(agg["payoutFee"], 2),
+        "available": round(agg["available"], 2),
+        "availableBalance": round(agg["available"], 2),
+    }
+
+
 async def notify_tx(db: AsyncSession, tx: Transaction, message: str, icon: str = "🔔") -> None:
     """Notify both the merchant and (if any) the admin who created them about a tx event."""
     recipients = {tx.merchant_id}
@@ -596,6 +639,18 @@ async def my_summary(
     if current_user.role != UserRole.MERCHANT:
         raise HTTPException(status_code=403, detail="Merchant only")
     return await compute_balance(db, current_user)
+
+
+@router.get("/global-summary")
+async def global_summary(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Platform-wide financial summary (single source of truth). Returns the same
+    system-wide totals for every Admin and Super Admin — the dashboard finance cards
+    consume this so all admins see identical figures. Updates immediately as transactions
+    complete because it is recomputed from current transaction data on every call."""
+    return await compute_global_summary(db)
 
 
 @router.get("/merchant-balances")

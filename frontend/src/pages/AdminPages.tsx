@@ -14,7 +14,7 @@ import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLo
 import type { TxQuery } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, AdminUpi } from '../types';
+import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
@@ -434,14 +434,14 @@ const RequestModal: React.FC<{
 export const AdminDashboard: React.FC<{ user: User }> = () => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [merchants, setMerchants] = useState<User[]>([]);
-  const [stats, setStats] = useState<MerchantStats[]>([]);
+  const [summary, setSummary] = useState<GlobalSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [type, setType] = useState('ALL');
   const [status, setStatus] = useState('ALL');
   const [active, setActive] = useState<Transaction | null>(null);
 
-  const reload = () => Promise.all([transactionAPI.getAll(), userAPI.getMerchants(), transactionAPI.merchantStats()])
-    .then(([t,m,s]) => { setTxns(t); setMerchants(m); setStats(s); })
+  const reload = () => Promise.all([transactionAPI.getAll(), userAPI.getMerchants(), transactionAPI.globalSummary()])
+    .then(([t,m,s]) => { setTxns(t); setMerchants(m); setSummary(s); })
     .catch(() => {});
 
   useEffect(() => { reload().finally(() => setLoading(false)); }, []);
@@ -456,20 +456,20 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   const filtered = base.filter(t => type === 'ALL' || t.type === type);
 
   // Canonical financial-summary figures — the SINGLE source of truth (backend
-  // compute_balance), aggregated across this admin's merchant businesses. Each business's
-  // value is the same one shown in every other portal, so the Available Balance matches
-  // everywhere. (Per-business amounts/commissions are completed-only; see compute_balance.)
-  const sumStat = (k: keyof MerchantStats) => stats.reduce((a, s) => a + (Number(s[k]) || 0), 0);
-  const totalDepositsAmt = sumStat('depositAmount');
-  const totalWithdrawnAmt = sumStat('withdrawalAmount');
-  const totalSettledAmt = sumStat('settlementAmount');
-  const depositCommission = sumStat('depositCommission');
-  const withdrawalCommission = sumStat('withdrawalCommission');
-  const settlementCommission = sumStat('settlementCommission');
-  const totalCommission = sumStat('totalCommission');
-  const totalAvailableBalance = sumStat('totalAvailableBalance');
-  const payoutFee = sumStat('payoutFee');
-  const availableBalance = sumStat('available');
+  // /global-summary → compute_global_summary). These are system-wide platform totals,
+  // identical for every Admin (not scoped to the logged-in admin's own merchants), so the
+  // finance cards match across all admin accounts and every other portal. Recomputed from
+  // current transaction data on each poll, so they update as transactions complete.
+  const totalDepositsAmt = summary?.totalDeposit ?? 0;
+  const totalWithdrawnAmt = summary?.totalWithdrawn ?? 0;
+  const totalSettledAmt = summary?.totalSettled ?? 0;
+  const depositCommission = summary?.depositCommission ?? 0;
+  const withdrawalCommission = summary?.withdrawalCommission ?? 0;
+  const settlementCommission = summary?.settlementCommission ?? 0;
+  const totalCommission = summary?.totalCommission ?? 0;
+  const totalAvailableBalance = summary?.totalAvailableBalance ?? 0;
+  const payoutFee = summary?.payoutFee ?? 0;
+  const availableBalance = summary?.available ?? 0;
   const depReqs = txns.filter(t => t.type.startsWith('DEPOSIT')).length;
   const wdReqs = txns.filter(t => t.type.startsWith('WITHDRAWAL')).length;
   const setReqs = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
@@ -500,7 +500,7 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
           rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Pay-Out Fee', payoutFee], ['Available Balance', availableBalance]]} />
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:12,marginBottom:20 }}>
-        <StatCard icon="🏪" label="My Merchants" value={merchants.length} color={T.blue}/>
+        <StatCard icon="🏪" label="Total Merchants" value={merchants.length} color={T.blue}/>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
         <StatCard icon="⧗" label="Pending" value={pending.length} color={T.warning}/>
         <StatCard icon="↓" label="No. of Deposit Requests" value={depReqs} color={T.blue}/>
@@ -1323,11 +1323,11 @@ export const SaDashboard: React.FC = () => {
   const [merchants, setMerchants] = useState<User[]>([]);
   const [admins, setAdmins] = useState<User[]>([]);
   const [txns, setTxns] = useState<Transaction[]>([]);
-  const [stats, setStats] = useState<MerchantStats[]>([]);
+  const [summary, setSummary] = useState<GlobalSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const reload = () => Promise.all([userAPI.getMerchants(), userAPI.getAdmins(), transactionAPI.getAll(), transactionAPI.merchantStats()])
-    .then(([m,a,t,s]) => { setMerchants(m); setAdmins(a); setTxns(t); setStats(s); })
+  const reload = () => Promise.all([userAPI.getMerchants(), userAPI.getAdmins(), transactionAPI.getAll(), transactionAPI.globalSummary()])
+    .then(([m,a,t,s]) => { setMerchants(m); setAdmins(a); setTxns(t); setSummary(s); })
     .catch(()=>{});
   useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
   usePoll(reload);
@@ -1344,19 +1344,19 @@ export const SaDashboard: React.FC = () => {
   });
 
   // Platform-wide canonical balances — the SINGLE source of truth (backend
-  // compute_balance), summed across every merchant business so the figures match the
-  // per-business values shown in every other portal (completed-only; see compute_balance).
-  const sumStat = (k: keyof MerchantStats) => stats.reduce((a, s) => a + (Number(s[k]) || 0), 0);
-  const totalDeposits = sumStat('depositAmount');
-  const totalWithdrawn = sumStat('withdrawalAmount');
-  const totalSettled = sumStat('settlementAmount');
-  const depositCommission = sumStat('depositCommission');
-  const withdrawalCommission = sumStat('withdrawalCommission');
-  const settlementCommission = sumStat('settlementCommission');
-  const totalCommission = sumStat('totalCommission');
-  const totalAvailableBalance = sumStat('totalAvailableBalance');
-  const payoutFee = sumStat('payoutFee');
-  const availableBalance = sumStat('available');
+  // /global-summary → compute_global_summary), the exact same system-wide totals the Admin
+  // dashboard shows. Recomputed from current transaction data on each poll (completed-only;
+  // see compute_balance for the canonical formulas).
+  const totalDeposits = summary?.totalDeposit ?? 0;
+  const totalWithdrawn = summary?.totalWithdrawn ?? 0;
+  const totalSettled = summary?.totalSettled ?? 0;
+  const depositCommission = summary?.depositCommission ?? 0;
+  const withdrawalCommission = summary?.withdrawalCommission ?? 0;
+  const settlementCommission = summary?.settlementCommission ?? 0;
+  const totalCommission = summary?.totalCommission ?? 0;
+  const totalAvailableBalance = summary?.totalAvailableBalance ?? 0;
+  const payoutFee = summary?.payoutFee ?? 0;
+  const availableBalance = summary?.available ?? 0;
 
   return (
     <div>

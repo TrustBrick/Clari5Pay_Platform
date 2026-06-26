@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -219,6 +219,11 @@ export const transactionAPI = {
   },
   merchantStats: async () => {
     const res = await api.get<MerchantStats[]>('/api/transactions/merchant-stats');
+    return res.data;
+  },
+  // Platform-wide financial summary — single source of truth, identical for every admin.
+  globalSummary: async () => {
+    const res = await api.get<GlobalSummary>('/api/transactions/global-summary');
     return res.data;
   },
   recheck: async (id: string, reason?: string) => {
