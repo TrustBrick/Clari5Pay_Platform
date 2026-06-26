@@ -434,13 +434,14 @@ const RequestModal: React.FC<{
 export const AdminDashboard: React.FC<{ user: User }> = () => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [merchants, setMerchants] = useState<User[]>([]);
+  const [stats, setStats] = useState<MerchantStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [type, setType] = useState('ALL');
   const [status, setStatus] = useState('ALL');
   const [active, setActive] = useState<Transaction | null>(null);
 
-  const reload = () => Promise.all([transactionAPI.getAll(), userAPI.getMerchants()])
-    .then(([t,m]) => { setTxns(t); setMerchants(m); })
+  const reload = () => Promise.all([transactionAPI.getAll(), userAPI.getMerchants(), transactionAPI.merchantStats()])
+    .then(([t,m,s]) => { setTxns(t); setMerchants(m); setStats(s); })
     .catch(() => {});
 
   useEffect(() => { reload().finally(() => setLoading(false)); }, []);
@@ -454,31 +455,21 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   const base = status === 'ALL' ? pending : txns.filter(t => t.status === status);
   const filtered = base.filter(t => type === 'ALL' || t.type === type);
 
-  // Real-time figures (straight from DB records). A completed deposit is COMPLETED (legacy)
-  // or DEPOSITED (new admin final-approval).
-  const completedTx = txns.filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED');
-  const feeMap: Record<number, { pin: number; pout: number }> = Object.fromEntries(
-    merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
-  );
-  const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
-  // Canonical financial-summary figures (mirror backend compute_balance, completed only):
-  //   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
-  //   Commission (per leg)    = pay-in (deposit) / pay-out (withdrawal & settlement) fee
-  //   Available Balance       = Total Available Balance − Deposit Commission
-  const totalDepositsAmt = sumType(completedTx, 'DEPOSIT');
-  const totalWithdrawnAmt = sumType(completedTx, 'WITHDRAWAL');
-  const totalSettledAmt = sumType(completedTx, 'SETTLEMENT');
-  const commission = (pfx: string, rate: 'pin' | 'pout') => completedTx.reduce((a, t) => {
-    const f = feeMap[t.merchantId];
-    return f && t.type.startsWith(pfx) ? a + t.amount * f[rate] : a;
-  }, 0);
-  const depositCommission = commission('DEPOSIT', 'pin');
-  const withdrawalCommission = commission('WITHDRAWAL', 'pout');
-  const settlementCommission = commission('SETTLEMENT', 'pout');
-  const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
-  const totalAvailableBalance = totalDepositsAmt - totalWithdrawnAmt - totalSettledAmt;
-  const payoutFee = withdrawalCommission + settlementCommission;
-  const availableBalance = totalAvailableBalance - depositCommission - payoutFee;
+  // Canonical financial-summary figures — the SINGLE source of truth (backend
+  // compute_balance), aggregated across this admin's merchant businesses. Each business's
+  // value is the same one shown in every other portal, so the Available Balance matches
+  // everywhere. (Per-business amounts/commissions are completed-only; see compute_balance.)
+  const sumStat = (k: keyof MerchantStats) => stats.reduce((a, s) => a + (Number(s[k]) || 0), 0);
+  const totalDepositsAmt = sumStat('depositAmount');
+  const totalWithdrawnAmt = sumStat('withdrawalAmount');
+  const totalSettledAmt = sumStat('settlementAmount');
+  const depositCommission = sumStat('depositCommission');
+  const withdrawalCommission = sumStat('withdrawalCommission');
+  const settlementCommission = sumStat('settlementCommission');
+  const totalCommission = sumStat('totalCommission');
+  const totalAvailableBalance = sumStat('totalAvailableBalance');
+  const payoutFee = sumStat('payoutFee');
+  const availableBalance = sumStat('available');
   const depReqs = txns.filter(t => t.type.startsWith('DEPOSIT')).length;
   const wdReqs = txns.filter(t => t.type.startsWith('WITHDRAWAL')).length;
   const setReqs = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
@@ -646,25 +637,22 @@ export const MerchantAnalyticsPage: React.FC = () => {
       .filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED')
       .reduce((a, t) => a + t.amount, 0);
     const dep = done('DEPOSIT'), wd = done('WITHDRAWAL'), set = done('SETTLEMENT');
-    const pin = (s.payInFee || 0) / 100, pout = (s.payOutFee || 0) / 100;
-    // Canonical financial-summary figures (mirror compute_balance, completed only):
-    //   Total Available Balance = Total Deposits − Total Withdrawals − Total Settlements
-    //   Commission (per leg)    = pay-in (deposit) / pay-out (withdrawal & settlement) fee
-    //   Pay-Out Fee             = Withdrawal Commission + Settlement Commission
-    //   Available Balance       = Total Available Balance − Deposit Commission − Pay-Out Fee
-    const depositCommission = dep * pin;
-    const withdrawalCommission = wd * pout;
-    const settlementCommission = set * pout;
-    const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
-    const totalAvailableBalance = dep - wd - set;
-    const payoutFee = withdrawalCommission + settlementCommission;
-    const availableBalance = totalAvailableBalance - depositCommission - payoutFee;
+    // Deposit/Withdrawal/Settlement counts & amounts stay date-scoped (the analytics
+    // breakdown honours the date filter). The canonical balance figures — Total Available
+    // Balance, Commission, Pay-Out Fee and Available Balance — come straight from the
+    // backend compute_balance (single source of truth, all-time per business), so the
+    // Available Balance shown here is identical to every other portal for the same business.
     return {
       depositCount: ofType('DEPOSIT').length, depositAmount: dep,
       withdrawalCount: ofType('WITHDRAWAL').length, withdrawalAmount: wd,
       settlementCount: ofType('SETTLEMENT').length, settlementAmount: set,
-      depositCommission, withdrawalCommission, settlementCommission, totalCommission,
-      totalAvailableBalance, payoutFee, availableBalance,
+      depositCommission: s.depositCommission,
+      withdrawalCommission: s.withdrawalCommission,
+      settlementCommission: s.settlementCommission,
+      totalCommission: s.totalCommission,
+      totalAvailableBalance: s.totalAvailableBalance,
+      payoutFee: s.payoutFee ?? (s.withdrawalCommission + s.settlementCommission),
+      availableBalance: s.availableBalance ?? s.available,
     };
   };
 
@@ -1335,10 +1323,11 @@ export const SaDashboard: React.FC = () => {
   const [merchants, setMerchants] = useState<User[]>([]);
   const [admins, setAdmins] = useState<User[]>([]);
   const [txns, setTxns] = useState<Transaction[]>([]);
+  const [stats, setStats] = useState<MerchantStats[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const reload = () => Promise.all([userAPI.getMerchants(), userAPI.getAdmins(), transactionAPI.getAll()])
-    .then(([m,a,t]) => { setMerchants(m); setAdmins(a); setTxns(t); })
+  const reload = () => Promise.all([userAPI.getMerchants(), userAPI.getAdmins(), transactionAPI.getAll(), transactionAPI.merchantStats()])
+    .then(([m,a,t,s]) => { setMerchants(m); setAdmins(a); setTxns(t); setStats(s); })
     .catch(()=>{});
   useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
   usePoll(reload);
@@ -1354,28 +1343,20 @@ export const SaDashboard: React.FC = () => {
     return { day: d.toLocaleDateString('en-IN', { weekday: 'short' }), deposit: onDay('DEPOSIT'), withdrawal: onDay('WITHDRAWAL') };
   });
 
-  // Platform-wide canonical balances from completed deposit/withdrawal records across all merchants.
-  // A completed deposit is COMPLETED (legacy) or DEPOSITED (new admin final-approval).
-  const completedTx = txns.filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED');
-  const feeMap: Record<number, { pin: number; pout: number }> = Object.fromEntries(
-    merchants.map(m => [m.id, { pin: (m.payInFee || 0) / 100, pout: (m.payOutFee || 0) / 100 }])
-  );
-  const sumType = (arr: Transaction[], pfx: string) => arr.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount, 0);
-  const commission = (pfx: string, rate: 'pin' | 'pout') =>
-    completedTx.filter(t => t.type.startsWith(pfx)).reduce((a, t) => a + t.amount * (feeMap[t.merchantId]?.[rate] || 0), 0);
-  const totalDeposits = sumType(completedTx, 'DEPOSIT');
-  const totalWithdrawn = sumType(completedTx, 'WITHDRAWAL');
-  const totalSettled = sumType(completedTx, 'SETTLEMENT');
-  const depositCommission = commission('DEPOSIT', 'pin');
-  const withdrawalCommission = commission('WITHDRAWAL', 'pout');
-  const settlementCommission = commission('SETTLEMENT', 'pout');
-  const totalCommission = depositCommission + withdrawalCommission + settlementCommission;
-  // Total Available Balance = Deposits − Withdrawals − Settlements
-  // Pay-Out Fee = Withdrawal Commission + Settlement Commission
-  // Available Balance = Total Available Balance − Deposit Commission − Pay-Out Fee
-  const totalAvailableBalance = totalDeposits - totalWithdrawn - totalSettled;
-  const payoutFee = withdrawalCommission + settlementCommission;
-  const availableBalance = totalAvailableBalance - depositCommission - payoutFee;
+  // Platform-wide canonical balances — the SINGLE source of truth (backend
+  // compute_balance), summed across every merchant business so the figures match the
+  // per-business values shown in every other portal (completed-only; see compute_balance).
+  const sumStat = (k: keyof MerchantStats) => stats.reduce((a, s) => a + (Number(s[k]) || 0), 0);
+  const totalDeposits = sumStat('depositAmount');
+  const totalWithdrawn = sumStat('withdrawalAmount');
+  const totalSettled = sumStat('settlementAmount');
+  const depositCommission = sumStat('depositCommission');
+  const withdrawalCommission = sumStat('withdrawalCommission');
+  const settlementCommission = sumStat('settlementCommission');
+  const totalCommission = sumStat('totalCommission');
+  const totalAvailableBalance = sumStat('totalAvailableBalance');
+  const payoutFee = sumStat('payoutFee');
+  const availableBalance = sumStat('available');
 
   return (
     <div>
