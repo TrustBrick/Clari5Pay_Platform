@@ -153,7 +153,7 @@ docker compose -f docker-compose.prod.yml exec backend python -m app.db.seed
 # run on the EC2; pipes a dump straight into the Mumbai DB (no files on disk)
 docker run --rm postgres:16-alpine sh -c '
   PGPASSWORD="STOCKHOLM_MASTER_PW" pg_dump \
-    -h clari5pay.c76auiocst4e.eu-north-1.rds.amazonaws.com -U postgres -d postgres \
+    -h <STOCKHOLM_RDS_ENDPOINT> -U postgres -d postgres \
     --no-owner --no-privileges --clean --if-exists \
   | PGPASSWORD="MUMBAI_MASTER_PW" psql \
     -h <MUMBAI_RDS_ENDPOINT> -U postgres -d postgres'

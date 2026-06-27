@@ -20,7 +20,7 @@ services:
     environment:
       # Database lives in AWS RDS (username + password). For LOCAL runs, edit
       # backend/.env instead — this block is only used when you run via Docker.
-      DATABASE_URL: postgresql+asyncpg://postgres:PASTE_YOUR_RDS_MASTER_PASSWORD@database-1-instance-1.c76auiocst4e.eu-north-1.rds.amazonaws.com:5432/postgres
+      DATABASE_URL: postgresql+asyncpg://postgres:PASTE_YOUR_RDS_MASTER_PASSWORD@your-rds-endpoint.<region>.rds.amazonaws.com:5432/postgres
       DB_SSL: "true"
       USE_IAM_AUTH: "false"
       REDIS_URL: redis://redis:6379

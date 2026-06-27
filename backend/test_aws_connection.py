@@ -5,7 +5,7 @@ Run:  python test_aws_connection.py
 """
 import psycopg2
 
-HOST     = "clari5pay.c76auiocst4e.eu-north-1.rds.amazonaws.com"
+HOST     = "your-rds-endpoint.<region>.rds.amazonaws.com"
 PORT     = 5432
 DBNAME   = "postgres"
 USER     = "postgres"
