@@ -4,32 +4,49 @@
 # built per role), which serves the SPA and proxies /api (+ the chat WebSocket)
 # to the shared backend. WebSockets pass through.
 
+# Caddy is the internet edge, so {http.request.remote.host} is the real client's TCP
+# address. Overwrite any client-supplied X-Forwarded-For with it, so a forged header can't
+# spoof the client IP that downstream rate-limiting / audit logging rely on.
+(realclientip) {
+	header_up X-Forwarded-For {http.request.remote.host}
+}
+
 # Merchant portal.
 win365jackpot.com {
 	encode zstd gzip
-	reverse_proxy frontend-merchant:3000
+	reverse_proxy frontend-merchant:3000 {
+		import realclientip
+	}
 }
 
 # Admin portal.
 admin.win365jackpot.com {
 	encode zstd gzip
-	reverse_proxy frontend-admin:3000
+	reverse_proxy frontend-admin:3000 {
+		import realclientip
+	}
 }
 
 # Super Admin portal.
 sa.win365jackpot.com {
 	encode zstd gzip
-	reverse_proxy frontend-sa:3000
+	reverse_proxy frontend-sa:3000 {
+		import realclientip
+	}
 }
 
 # Combined entry — a chooser that routes users to their portal.
 app.win365jackpot.com {
 	encode zstd gzip
-	reverse_proxy frontend:3000
+	reverse_proxy frontend:3000 {
+		import realclientip
+	}
 }
 
 # Customer Support agent portal.
 support.win365jackpot.com {
 	encode zstd gzip
-	reverse_proxy support:3002
+	reverse_proxy support:3002 {
+		import realclientip
+	}
 }
