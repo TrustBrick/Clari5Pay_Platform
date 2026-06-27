@@ -1311,8 +1311,8 @@ async def create_settlement(
         ref="TEMP",
         type=TxType.SETTLEMENT_REQUEST,
         amount=data.amount,
-        # Settlement submitted → request pending approval, auto-assigned to the Manager review queue.
-        status=TxStatus.MANAGER_REVIEW,
+        # Settlement submitted → request pending approval, auto-assigned to the Supervisor review queue.
+        status=TxStatus.SUPERVISOR_REVIEW,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
         tx_date=_ist_now().date(),
@@ -1329,9 +1329,9 @@ async def create_settlement(
     await db.flush()
     tx.ref = await _next_ref(db, "SET")
     await db.flush()
-    await _notify_business_role(db, tx, "MANAGER", f"Settlement {tx.ref} from {tx.merchant_name} — awaiting your review", "⇄")
+    await _notify_business_role(db, tx, "SUPERVISOR", f"Settlement {tx.ref} from {tx.merchant_name} — awaiting your review", "⇄")
     await notify_tx(db, tx, f"Settlement {tx.ref} requested by {tx.merchant_name}", "⇄")
-    await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} requested settlement {tx.ref} ({tx.amount}), assigned to Manager", actor=current_user)
+    await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} requested settlement {tx.ref} ({tx.amount}), assigned to Supervisor", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="settlement", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
     await db.refresh(tx)
     return _t(tx)
@@ -1570,18 +1570,18 @@ async def regenerate_qr(
     return _t(tx)
 
 
-# ─── Supervisor (deposit) / Manager (withdrawal) review gate ──────────────────
-# Supervisors review deposits; Managers review withdrawals & settlements. Both can
+# ─── Supervisor (deposit / settlement) / Manager (withdrawal) review gate ─────
+# Supervisors review deposits & settlements; Managers review withdrawals. Both can
 # Approve (→ forward to Admin as SLIP SUBMITTED), Reject (→ REJECTED) or Resubmit
 # (→ RESUBMITTED, back to the Data Operator). Remarks are mandatory on every action.
 _REVIEW_CONFIG = {
     "SUPERVISOR": {
-        "prefixes": ("DEPOSIT",), "kind": "deposits", "label": "Supervisor",
+        "prefixes": ("DEPOSIT", "SETTLEMENT"), "kind": "deposits & settlements", "label": "Supervisor",
         "review_status": TxStatus.SUPERVISOR_REVIEW,
         "name_attr": "supervisor_name", "time_attr": "supervisor_action_at",
     },
     "MANAGER": {
-        "prefixes": ("WITHDRAWAL", "SETTLEMENT"), "kind": "withdrawals", "label": "Manager",
+        "prefixes": ("WITHDRAWAL",), "kind": "withdrawals", "label": "Manager",
         "review_status": TxStatus.MANAGER_REVIEW,
         "name_attr": "manager_name", "time_attr": "manager_action_at",
     },

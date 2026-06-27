@@ -34,15 +34,11 @@ const LoginPage: React.FC = () => {
   const [code, setCode] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [shake, setShake] = useState(false);
-  // OTP on/off toggle (testing aid)
-  const [otpEnabled, setOtpEnabled] = useState(true);
   // Resend OTP becomes available only after a 60-second cooldown.
   const [resendIn, setResendIn] = useState(0);
   const armResend = () => setResendIn(60);
   // Inactivity-logout notice (set by SessionManager). Shown once, then cleared.
   const [sessionExpired, setSessionExpired] = useState(false);
-
-  useEffect(() => { authAPI.otpStatus().then(s => setOtpEnabled(s.enabled)).catch(()=>{}); }, []);
 
   useEffect(() => {
     try {
@@ -58,18 +54,6 @@ const LoginPage: React.FC = () => {
     const id = setInterval(() => setResendIn(s => (s <= 1 ? 0 : s - 1)), 1000);
     return () => clearInterval(id);
   }, [resendIn]);
-
-  const toggleOtp = async () => {
-    const next = !otpEnabled;
-    setOtpEnabled(next); // optimistic
-    try {
-      await authAPI.setOtpEnabled(next);
-      showToast(`Login OTP ${next ? 'enabled' : 'disabled'}`);
-    } catch {
-      setOtpEnabled(!next);
-      showToast('Could not change OTP setting', 'error');
-    }
-  };
 
   const handleLogin = async () => {
     setError('');
@@ -274,19 +258,6 @@ const LoginPage: React.FC = () => {
             <Btn size="lg" full onClick={handleLogin} disabled={isLoading||!username||!password}>
               {isLoading?'Authenticating...':'Sign In →'}
             </Btn>
-
-            {/* OTP on/off toggle (testing aid) */}
-            <div style={{ marginTop:18,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:T.canvas,borderRadius:10,border:`1px solid ${T.border}` }}>
-              <div>
-                <p style={{ margin:0,fontSize:12,fontWeight:700,color:T.textMain }}>Login OTP</p>
-                <p style={{ margin:0,fontSize:11,color:T.textMuted }}>{otpEnabled ? 'On — verify with email code' : 'Off — password only'}</p>
-              </div>
-              <div onClick={toggleOtp} role="switch" aria-checked={otpEnabled}
-                style={{ width:46,height:26,borderRadius:13,background:otpEnabled?T.success:T.border,position:'relative',cursor:'pointer',transition:'background 0.2s',flexShrink:0 }}>
-                <div style={{ position:'absolute',top:3,left:otpEnabled?23:3,width:20,height:20,borderRadius:'50%',background:'#fff',boxShadow:'0 1px 3px rgba(0,0,0,0.3)',transition:'left 0.2s' }}/>
-              </div>
-            </div>
-
           </>
         ) : (
           <>

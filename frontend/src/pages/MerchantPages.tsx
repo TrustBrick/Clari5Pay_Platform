@@ -946,8 +946,12 @@ export const DepositManagement: React.FC<{ user: User }> = ({ user }) =>
 export const WithdrawalManagement: React.FC<{ user: User }> = ({ user }) =>
   <ManagementPage user={user} title="Withdrawal Management" prefix="WITHDRAWAL" requestLabel="Withdrawal Request" noun="Withdrawal" FormComp={WithdrawalForm}/>;
 
-export const SettlementManagement: React.FC<{ user: User }> = ({ user }) =>
-  <ManagementPage user={user} title="Settlement Management" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm}/>;
+export const SettlementManagement: React.FC<{ user: User }> = ({ user }) => {
+  // Supervisors don't create settlements — they review the ones their operators submit.
+  // Their Settlement Management page is the settlement approval queue (Approve / Reject / Resubmit).
+  if (String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR') return <ApprovalsPage user={user} kind="SETTLEMENT" />;
+  return <ManagementPage user={user} title="Settlement Management" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm}/>;
+};
 
 // ─── Balance Page ─────────────────────────────────────────────────────────────
 export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
@@ -1259,17 +1263,24 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
   );
 };
 
-// ─── Approvals Page (Supervisor → deposits · Manager → withdrawals/settlements) ──
-export const ApprovalsPage: React.FC<{ user: User }> = ({ user }) => {
+// ─── Approvals Page (Supervisor → deposits & settlements · Manager → withdrawals) ──
+// `kind` scopes the queue to one request type. Defaulted from the reviewer's role
+// (Supervisor → deposits, Manager → withdrawals); the Supervisor's Settlement
+// Management page passes kind="SETTLEMENT" to show settlement requests on their own page.
+export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT' }> = ({ user, kind }) => {
   const isManager = String(user.merchantRole || '').toUpperCase() === 'MANAGER';
   const queueStatus = isManager ? 'MANAGER_REVIEW' : 'SUPERVISOR_REVIEW';
+  const filterPrefix = kind || (isManager ? 'WITHDRAWAL' : 'DEPOSIT');
+  const heading = filterPrefix === 'SETTLEMENT' ? 'Settlement Approvals'
+    : filterPrefix === 'WITHDRAWAL' ? 'Withdrawal Approvals' : 'Deposit Approvals';
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [active, setActive] = useState<Transaction | null>(null);
 
-  // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard).
+  // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard)
+  // and to this page's request type so each queue shows only its own kind of request.
   const reload = () => transactionAPI.getAllOverseer()
-    .then(rows => setTxns(rows.filter(t => t.status === queueStatus && t.merchant === user.name)))
+    .then(rows => setTxns(rows.filter(t => t.status === queueStatus && t.merchant === user.name && t.type.startsWith(filterPrefix))))
     .catch(() => setTxns([]));
   useEffect(() => { reload().finally(() => setLoading(false)); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => { if (!active) reload(); });
@@ -1279,7 +1290,7 @@ export const ApprovalsPage: React.FC<{ user: User }> = ({ user }) => {
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>{isManager ? 'Withdrawal Approvals' : 'Deposit Approvals'}</h2>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>{heading}</h2>
         <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>
           Requests awaiting your review. Approve to forward to Admin, or Reject / Resubmit — remarks are mandatory.
         </p>

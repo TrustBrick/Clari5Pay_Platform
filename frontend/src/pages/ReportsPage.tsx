@@ -558,6 +558,222 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
   if (autoPrint) setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
 }
 
+// ─── Treasury Report & Agent Ledger Report ──────────────────────────────────────
+// Two focused report types layered on top of the existing Reports module. They reuse the
+// same advanced-filter set (the already-`filtered` rows), the same xlsx helper and the same
+// print-to-PDF mechanism — only the columns/derivation differ.
+
+// Transaction Method label for a report row (UPI, Bank Transfer, QR, Cash, IMPS, …).
+const methodLabel = (r: ReportRow) => (r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—');
+
+// Generic CSV download (Excel-friendly: UTF-8 BOM + CRLF, quotes escaped).
+function downloadCsv(filename: string, headers: string[], rows: Array<Array<string | number>>) {
+  const esc = (v: string | number) => {
+    const s = String(v ?? '');
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [headers, ...rows].map(r => r.map(esc).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename.endsWith('.csv') ? filename : `${filename}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Print-to-PDF for a simple columnar report (shared by Treasury & Agent Ledger).
+// `aligns[i] === 'r'` right-aligns that column (amounts). Same brand/letterhead as the
+// existing filtered-report PDF so all exports look consistent.
+function printColumnarReport(opts: {
+  title: string; businessName: string; generatedBy: string; rangeLabel: string;
+  headers: string[]; rows: Array<Array<string | number>>; aligns?: Array<'l' | 'r'>;
+  footerNote?: string; autoPrint?: boolean;
+}) {
+  const { title, businessName, generatedBy, rangeLabel, headers, rows, aligns, footerNote, autoPrint = true } = opts;
+  const w = window.open('', '_blank', 'width=1180,height=820');
+  if (!w) { alert('Please allow pop-ups to export the report.'); return; }
+  const now = new Date().toLocaleString('en-IN');
+  const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
+  const thead = headers.map((h, i) => `<th${aligns?.[i] === 'r' ? ' style="text-align:right"' : ''}>${esc(h)}</th>`).join('');
+  const body = rows.map((r, ri) => `<tr class="${ri % 2 ? 'alt' : ''}">${r.map((c, i) => `<td class="${aligns?.[i] === 'r' ? 'amt' : ''}">${esc(c)}</td>`).join('')}</tr>`).join('');
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay ${esc(title)}</title><style>
+    @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
+    .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0052cc;padding-bottom:10px}
+    .brand{font-size:22px;font-weight:800}.brand .b{color:#0052cc}.brand .g{color:#26d00c}.meta{margin-left:auto;text-align:right;font-size:11px;color:#4a5568;line-height:1.6}
+    h2{font-size:14px;margin:16px 0 8px;color:#0052cc}
+    table{width:100%;border-collapse:collapse;font-size:9.5px}th{background:#0a2540;color:#fff;text-align:left;padding:6px 7px;font-size:8.5px;text-transform:uppercase}
+    td{padding:5px 7px;border-bottom:1px solid #e2e8f0}tr.alt td{background:#f5f8ff}.amt{text-align:right;font-weight:700}
+    footer{margin-top:14px;font-size:9px;color:#9ca3af;text-align:center}
+  </style></head><body>
+    <div class="head"><span class="brand"><span class="b">clari</span><span class="g">5</span>pay</span>
+      <div class="meta">${esc(title)} — CONFIDENTIAL<br>${esc(businessName)}<br>Generated: ${esc(now)} · By ${esc(generatedBy)}<br>Range: ${esc(rangeLabel)} · ${rows.length} row(s)</div></div>
+    <h2>${esc(title)}</h2>
+    <table><thead><tr>${thead}</tr></thead>
+      <tbody>${body || `<tr><td colspan="${headers.length}" style="text-align:center;padding:24px;color:#9ca3af">No rows match the selected filters.</td></tr>`}</tbody>
+    </table>
+    <footer>Clari5Pay — confidential. ${esc(footerNote || 'Generated from live platform data, honouring the selected filters.')}</footer>
+  </body></html>`);
+  w.document.close(); w.focus();
+  if (autoPrint) setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
+}
+
+// Shared export toolbar (PDF / Excel / CSV / Print) for the focused reports.
+const ReportExportBar: React.FC<{ count: number; onPdf: () => void; onExcel: () => void; onCsv: () => void; onPrint: () => void }> =
+  ({ count, onPdf, onExcel, onCsv, onPrint }) => (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+      <Btn size="sm" variant="secondary" onClick={onPdf}>📄 Download PDF</Btn>
+      <Btn size="sm" variant="secondary" onClick={onExcel}>📊 Download Excel</Btn>
+      <Btn size="sm" variant="secondary" onClick={onCsv}>🧾 Download CSV</Btn>
+      <Btn size="sm" variant="secondary" onClick={onPrint}>🖨 Print Report</Btn>
+      <span style={{ fontSize: 12, color: T.textMuted }}>{count} row(s)</span>
+    </div>
+  );
+
+// ── Treasury Report: completed transactions only, in a fixed eight-column layout ──
+const TREASURY_HEADERS = ['Unique Transaction Reference', 'Member Name', 'Membership ID', 'Date & Time', 'Approver', 'Operator', 'Transaction Amount', 'Transaction Method'];
+const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
+  ({ rows, businessName, generatedBy, rangeLabel }) => {
+    const toast = useToast();
+    const data = rows.filter(r => r.completed);
+    const cell = (r: ReportRow): Array<string | number> => [
+      r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(),
+      r.approvedBy || '—', r.processedBy || '—', r.amount, methodLabel(r),
+    ];
+    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), r.approvedBy || '', r.processedBy || '', r.amount, methodLabel(r)]);
+    const pdfRows = data.map(r => { const c = cell(r); c[6] = fmt(r.amount); return c; });
+    const onExcel = () => {
+      downloadXlsx(`clari5pay-treasury-${today()}.xlsx`, [{
+        name: 'Treasury Report',
+        columns: [
+          { header: 'Unique Transaction Reference', get: r => r.ref, width: 22 },
+          { header: 'Member Name', get: r => r.member || '', width: 22 },
+          { header: 'Membership ID', get: r => r.memberId || '' },
+          { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
+          { header: 'Approver', get: r => r.approvedBy || '' },
+          { header: 'Operator', get: r => r.processedBy || '' },
+          { header: 'Transaction Amount', get: r => Number(r.amount), width: 16, z: INR_NUMFMT },
+          { header: 'Transaction Method', get: r => methodLabel(r) },
+        ],
+        rows: data,
+      }]);
+      toast.showToast(`Treasury — ${data.length} rows`);
+    };
+    const onPdf = (autoPrint: boolean) => printColumnarReport({
+      title: 'Treasury Report', businessName, generatedBy, rangeLabel,
+      headers: TREASURY_HEADERS, rows: pdfRows, aligns: ['l', 'l', 'l', 'l', 'l', 'l', 'r', 'l'],
+      footerNote: 'Completed transactions only. Honours the selected filters.', autoPrint,
+    });
+    return (
+      <div>
+        <RSectionTitle note="Completed transactions only — approver, operator, amount and method per transaction.">🏦 Treasury Report</RSectionTitle>
+        <ReportExportBar count={data.length} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={() => downloadCsv(`clari5pay-treasury-${today()}.csv`, TREASURY_HEADERS, csvRows)} onPrint={() => onPdf(true)} />
+        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
+          <div style={{ overflowX: 'auto', maxHeight: 560 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: T.canvas }}>{TREASURY_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: i === 6 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {data.length === 0 && <tr><td colSpan={8} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No completed transactions match the selected filters.</td></tr>}
+                {data.slice(0, 500).map(r => (
+                  <tr key={r.ref} className="c5-row-hover">
+                    <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{r.ref}</td>
+                    <td style={{ ...tdR, fontWeight: 600 }}>{r.member || '—'}</td>
+                    <td style={tdR}>{r.memberId || '—'}</td>
+                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
+                    <td style={tdR}>{r.approvedBy || '—'}</td>
+                    <td style={tdR}>{r.processedBy || '—'}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
+                    <td style={tdR}>{methodLabel(r)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+// ── Agent Ledger Report: completed transactions in chronological order, with a
+// sequential running balance (Opening + Deposits − Withdrawals − Settlements). ──
+const LEDGER_HEADERS = ['Date', 'Time', 'Description', 'Transaction Reference', 'Amount', 'Running Balance'];
+const signed = (n: number) => `${n >= 0 ? '+' : '−'}${fmt(Math.abs(n))}`;
+const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
+  ({ rows, businessName, generatedBy, rangeLabel }) => {
+    const toast = useToast();
+    // Completed transactions, oldest first; deposits add, withdrawals & settlements subtract.
+    const ledger = (() => {
+      const completed = rows.filter(r => r.completed).slice().sort((a, b) => rowTs(a) - rowTs(b));
+      let bal = 0;   // opening balance
+      return completed.map(r => {
+        const delta = r.type === 'deposit' ? r.amount : -r.amount;
+        bal += delta;
+        return { date: r.date, time: r.time, description: `${RTYPE_LABEL[r.type || ''] || 'Transaction'} — ${memberLabel(r.memberId, r.member)}`, ref: r.ref, amount: delta, balance: bal };
+      });
+    })();
+    const closing = ledger.length ? ledger[ledger.length - 1].balance : 0;
+    const csvRows: Array<Array<string | number>> = [['', '', 'Opening Balance', '', 0, 0], ...ledger.map(l => [l.date, l.time, l.description, l.ref, l.amount, l.balance])];
+    const pdfRows: Array<Array<string | number>> = [['—', '—', 'Opening Balance', '—', fmt(0), fmt(0)], ...ledger.map(l => [l.date, l.time, l.description, l.ref, signed(l.amount), fmt(l.balance)])];
+    const onExcel = () => {
+      downloadXlsx(`clari5pay-agent-ledger-${today()}.xlsx`, [{
+        name: 'Agent Ledger',
+        columns: [
+          { header: 'Date', get: (l: typeof ledger[number]) => l.date },
+          { header: 'Time', get: l => l.time },
+          { header: 'Description', get: l => l.description, width: 32 },
+          { header: 'Transaction Reference', get: l => l.ref, width: 22 },
+          { header: 'Amount', get: l => Number(l.amount), width: 16, z: INR_NUMFMT },
+          { header: 'Running Balance', get: l => Number(l.balance), width: 18, z: INR_NUMFMT },
+        ],
+        rows: ledger,
+      }]);
+      toast.showToast(`Agent Ledger — ${ledger.length} rows`);
+    };
+    const onPdf = (autoPrint: boolean) => printColumnarReport({
+      title: 'Agent Ledger Report', businessName, generatedBy, rangeLabel,
+      headers: LEDGER_HEADERS, rows: pdfRows, aligns: ['l', 'l', 'l', 'l', 'r', 'r'],
+      footerNote: `Opening balance ${fmt(0)} · Closing balance ${fmt(closing)}. Honours the selected filters.`, autoPrint,
+    });
+    return (
+      <div>
+        <RSectionTitle note="Completed transactions in chronological order. Running Balance = Opening + Deposits − Withdrawals − Settlements.">📒 Agent Ledger Report</RSectionTitle>
+        <ReportExportBar count={ledger.length} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={() => downloadCsv(`clari5pay-agent-ledger-${today()}.csv`, LEDGER_HEADERS, csvRows)} onPrint={() => onPdf(true)} />
+        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
+          <div style={{ overflowX: 'auto', maxHeight: 560 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: T.canvas }}>{LEDGER_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: i >= 4 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                <tr style={{ background: T.canvas }}>
+                  <td style={tdR} /><td style={tdR} />
+                  <td style={{ ...tdR, fontWeight: 700, color: T.textMuted }}>Opening Balance</td>
+                  <td style={tdR} /><td style={{ ...tdR, textAlign: 'right' }}>—</td>
+                  <td style={{ ...tdR, textAlign: 'right', fontWeight: 800 }}>{fmt(0)}</td>
+                </tr>
+                {ledger.length === 0 && <tr><td colSpan={6} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No completed transactions match the selected filters.</td></tr>}
+                {ledger.slice(0, 500).map((l, idx) => (
+                  <tr key={`${l.ref}-${idx}`} className="c5-row-hover">
+                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{l.date}</td>
+                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{l.time}</td>
+                    <td style={tdR}>{l.description}</td>
+                    <td style={{ ...tdR, fontFamily: 'monospace', color: T.blue }}>{l.ref}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 700, color: l.amount >= 0 ? T.success : T.danger }}>{signed(l.amount)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 800 }}>{fmt(l.balance)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        <Card style={{ padding: '14px 18px', marginBottom: 18, borderTop: `3px solid ${T.blue}` }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 14 }}>
+            <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>Opening Balance</span><span style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{fmt(0)}</span></div>
+            <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>Entries</span><span style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{ledger.length}</span></div>
+            <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>Closing Balance</span><span style={{ fontSize: 15, fontWeight: 800, color: closing >= 0 ? T.success : T.danger }}>{fmt(closing)}</span></div>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
 // ── Reusable Reports view ──
 // Shared by the Merchant Reports (own business) and the Admin Reports (all merchants, or one
 // selected merchant). The financial/analytics payload always comes from the backend
@@ -576,6 +792,9 @@ const ReportsView: React.FC<ReportsViewProps> = ({
   data, reload, businessName, generatedBy, subtitle, merchantSelector, showBusinessFilter,
 }) => {
   const [profileId, setProfileId] = useState<string | null>(null);
+  // Which report the page is showing: the full analytics dashboard (default), or one of the
+  // two focused report types. All three share the same advanced filters + applied filter set.
+  const [reportType, setReportType] = useState<'full' | 'treasury' | 'ledger'>('full');
   // `draft` is bound to the filter inputs; `f` is the *applied* filter set that
   // actually drives the table, summary/footer totals, count and exports. Editing a
   // field only updates the draft — nothing filters until "Apply Filters" is pressed.
@@ -645,9 +864,18 @@ const ReportsView: React.FC<ReportsViewProps> = ({
           <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{subtitle || 'Financial intelligence dashboard — your memberships, transactions and reports.'}</p>
         </div>
         {merchantSelector}
-        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}>📄 Download PDF</Btn>
-        <Btn size="sm" variant="secondary" onClick={downloadExcel}>📊 Download Excel</Btn>
-        <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}>🖨 Print Report</Btn>
+        {reportType === 'full' && <>
+          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}>📄 Download PDF</Btn>
+          <Btn size="sm" variant="secondary" onClick={downloadExcel}>📊 Download Excel</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}>🖨 Print Report</Btn>
+        </>}
+      </div>
+
+      {/* Report-type selector — Full dashboard · Treasury Report · Agent Ledger Report */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        {([['full', '📊 Full Report'], ['treasury', '🏦 Treasury Report'], ['ledger', '📒 Agent Ledger Report']] as const).map(([k, label]) => (
+          <button key={k} className="c5-btn" onClick={() => setReportType(k)} style={pill(reportType === k)}>{label}</button>
+        ))}
       </div>
 
       {/* 1 — Summary cards */}
@@ -706,6 +934,11 @@ const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
       </Card>
 
+      {/* Focused report types (Treasury / Agent Ledger) — same filters, same exports */}
+      {reportType === 'treasury' && <TreasuryReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
+      {reportType === 'ledger' && <AgentLedgerReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
+
+      {reportType === 'full' && <>
       {/* 4 — Membership analytics */}
       <RSectionTitle>👥 Membership Analytics</RSectionTitle>
       <MembersTab data={data} onPick={setProfileId} />
@@ -771,6 +1004,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
           </div>
         ))}
       </Card>
+      </>}
       <div style={{ height: 24 }} />
     </div>
   );

@@ -96,6 +96,7 @@ const App: React.FC = () => {
       'admin-accounts': <AdminAccountsPage />,
       'sa-dashboard': <SaDashboard />,
       'sa-analytics': <MerchantAnalyticsPage />,
+      'sa-reports': <AdminReportsPage {...props} />,
       'sa-admins': <SaAdminsPage />,
       'sa-news': <NewsPage {...props} />,
       'sa-logs': <SystemLogsPage />,

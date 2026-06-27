@@ -16,8 +16,50 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick }) => {
   const [items, setItems] = useState<Notification[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
 
+  // ── New-notification chime ────────────────────────────────────────────────
+  // One preloaded <audio> shared across the app; we chime once per poll cycle when a
+  // notification id we haven't seen before appears. IDs already seen never replay, so the
+  // sound never repeats while a notification stays unread.
+  const chimeRef = useRef<HTMLAudioElement | null>(null);
+  const chimePrimed = useRef(false);        // true once the user has interacted (autoplay unlock)
+  const seenIds = useRef<Set<Notification['id']>>(new Set());
+  const baselineDone = useRef(false);       // skip the chime for whatever already exists on first load
+
+  const playChime = useCallback(() => {
+    const a = chimeRef.current;
+    if (!a || !chimePrimed.current) return; // respect browser autoplay policy
+    try { a.currentTime = 0; void a.play().catch(() => {}); } catch { /* ignore */ }
+  }, []);
+
   const load = useCallback(() => {
-    notificationAPI.list().then(setItems).catch(() => {});
+    notificationAPI.list().then((list) => {
+      setItems(list);
+      const fresh = list.some((n) => !seenIds.current.has(n.id));
+      list.forEach((n) => seenIds.current.add(n.id));
+      if (!baselineDone.current) { baselineDone.current = true; return; } // don't chime for pre-existing
+      if (fresh) playChime();
+    }).catch(() => {});
+  }, [playChime]);
+
+  // Preload the sound once and unlock playback on the user's first interaction (browsers
+  // block audio until then). Priming during the gesture keeps later chimes instant.
+  useEffect(() => {
+    const a = new Audio('/notification.mp3');
+    a.preload = 'auto';
+    chimeRef.current = a;
+    const unlock = () => {
+      chimePrimed.current = true;
+      a.muted = true;
+      a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => { a.muted = false; });
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
   }, []);
 
   // Initial load + light polling so actions across the app show up.

@@ -59,8 +59,11 @@ export const statusStyle = (s: TxStatus) => {
 // Withdrawal/Settlement: Submitted (merchant) / Pending (admin) → Completed.
 export const statusLabel = (status: string, type?: string, viewerRole?: string): string => {
   const isDeposit = !!type && type.startsWith('DEPOSIT');
+  const isSettlement = !!type && type.startsWith('SETTLEMENT');
   const isWithdrawOrSettle = !!type && (type.startsWith('WITHDRAWAL') || type.startsWith('SETTLEMENT'));
   if (status === 'COMPLETED') return isDeposit ? 'Deposited' : 'Completed';
+  // A settlement forwarded to Admin (after Supervisor approval) reads "Settlement Submitted".
+  if (status === 'SLIP_SUBMITTED' && isSettlement) return 'Settlement Submitted';
   if (status === 'ACCOUNT_REQUESTED' && isWithdrawOrSettle) {
     return viewerRole === 'MERCHANT' ? 'Submitted' : 'Pending';
   }
