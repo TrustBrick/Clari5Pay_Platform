@@ -284,6 +284,7 @@ class LoginOtp(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)   # successfully used
     consumed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)   # used or invalidated (single-use)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)        # wrong-code guesses (locks at MAX_OTP_ATTEMPTS)
 
 
 class PasswordHistory(Base):

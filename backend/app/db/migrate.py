@@ -49,6 +49,7 @@ _NEW_COLUMNS = [
     ("transactions", "creator_username", "VARCHAR(64)"),
     ("transactions", "creator_role", "VARCHAR(32)"),
     ("login_otps", "purpose", "VARCHAR(16) DEFAULT 'login' NOT NULL"),
+    ("login_otps", "attempts", "INTEGER DEFAULT 0 NOT NULL"),
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "upi_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "is_default", "BOOLEAN DEFAULT FALSE NOT NULL"),

@@ -11,6 +11,10 @@ from app.core.security import verify_password, create_access_token, decode_token
 from app.core.passwords import assert_password_allowed, set_password
 from app.core.deps import get_current_user
 from app.core.email import send_otp_email, mask_email
+from app.core.ratelimit import rate_limit
+
+# Max wrong OTP guesses on a single code before it is invalidated (user must resend).
+MAX_OTP_ATTEMPTS = 5
 from app.schemas.schemas import (
     OtpVerifyRequest, OtpResendRequest, OtpConfigRequest,
     ForgotPasswordRequest, VerifyResetOtpRequest, ResetPasswordRequest,
@@ -121,7 +125,7 @@ def _user_to_out(u: User) -> dict:
     }
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(rate_limit(30, 60, "login"))])
 async def login(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -230,7 +234,7 @@ async def logout(
     return {"status": "ok"}
 
 
-@router.post("/verify-otp")
+@router.post("/verify-otp", dependencies=[Depends(rate_limit(20, 60, "verify-otp"))])
 async def verify_otp(
     data: OtpVerifyRequest,
     request: Request,
@@ -249,6 +253,16 @@ async def verify_otp(
     )).scalars().first()
 
     if not row or row.otp != code:
+        # Count the wrong guess; invalidate the code once too many are made (forces a resend).
+        if row:
+            row.attempts = (row.attempts or 0) + 1
+            if row.attempts >= MAX_OTP_ATTEMPTS:
+                row.consumed = True
+                await record_audit(db, "OTP_FAILED", actor=user, entity_type="user", entity_id=user.id,
+                                   reason="too many incorrect attempts", ip=ip)
+                await log_event(db, "OTP_LOCKED", f"OTP locked after {MAX_OTP_ATTEMPTS} wrong tries for {user.name}", actor=user)
+                await db.commit()
+                raise HTTPException(status_code=429, detail="Too many incorrect attempts. Please resend a new code.")
         await record_audit(db, "OTP_FAILED", actor=user, entity_type="user", entity_id=user.id,
                            reason="incorrect code", ip=ip)
         await log_event(db, "OTP_FAILED", f"Incorrect OTP for {user.name}", actor=user)
@@ -277,7 +291,7 @@ async def verify_otp(
     }
 
 
-@router.post("/resend-otp")
+@router.post("/resend-otp", dependencies=[Depends(rate_limit(5, 300, "resend-otp"))])
 async def resend_otp(
     data: OtpResendRequest,
     request: Request,
@@ -289,7 +303,7 @@ async def resend_otp(
 
 
 # ─── Forgot Password (Email OTP) ───────────────────────────────────────────────
-@router.post("/forgot-password")
+@router.post("/forgot-password", dependencies=[Depends(rate_limit(5, 300, "forgot-password"))])
 async def forgot_password(
     data: ForgotPasswordRequest,
     request: Request,
@@ -308,7 +322,7 @@ async def forgot_password(
     return await _issue_otp(db, user, _client_ip(request), purpose="reset")
 
 
-@router.post("/verify-reset-otp")
+@router.post("/verify-reset-otp", dependencies=[Depends(rate_limit(20, 60, "verify-reset-otp"))])
 async def verify_reset_otp(
     data: VerifyResetOtpRequest,
     request: Request,
@@ -326,6 +340,15 @@ async def verify_reset_otp(
     )).scalars().first()
 
     if not row or row.otp != code:
+        if row:
+            row.attempts = (row.attempts or 0) + 1
+            if row.attempts >= MAX_OTP_ATTEMPTS:
+                row.consumed = True
+                await record_audit(db, "OTP_FAILED", actor=user, entity_type="user", entity_id=user.id,
+                                   reason="too many incorrect reset attempts", ip=ip)
+                await log_event(db, "OTP_LOCKED", f"Reset OTP locked after {MAX_OTP_ATTEMPTS} wrong tries for {user.name}", actor=user)
+                await db.commit()
+                raise HTTPException(status_code=429, detail="Too many incorrect attempts. Please request a new code.")
         await record_audit(db, "OTP_FAILED", actor=user, entity_type="user", entity_id=user.id,
                            reason="incorrect reset code", ip=ip)
         await db.commit()
@@ -344,7 +367,7 @@ async def verify_reset_otp(
     return {"confirmedToken": confirmed}
 
 
-@router.post("/reset-password")
+@router.post("/reset-password", dependencies=[Depends(rate_limit(20, 60, "reset-password"))])
 async def reset_password(
     data: ResetPasswordRequest,
     request: Request,
