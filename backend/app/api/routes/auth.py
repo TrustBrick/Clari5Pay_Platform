@@ -184,15 +184,16 @@ async def login(
         user.locked_until = None
         await db.flush()
 
-    # OTP applies to Super Admin / Admin / Merchant when the OTP toggle is ON.
-    # Support agents (separate support portal) always use the direct-login flow.
-    otp_on = await _otp_enabled(db)
-    if user.role == UserRole.SUPPORT_AGENT or not otp_on:
+    # OTP is mandatory for every successful login (Super Admin / Admin / Merchant) — there is
+    # no toggle to disable it. Support agents use the separate support portal's direct-login
+    # flow (that portal has no OTP screen), so they remain exempt by design.
+    if user.role == UserRole.SUPPORT_AGENT:
         token = create_access_token({"sub": str(user.id)})
         await log_event(db, "LOGIN", f"{user.name} ({user.role.value}) signed in", actor=user)
         await record_audit(db, "LOGIN", actor=user, entity_type="user", entity_id=user.id, ip=ip)
         return {"access_token": token, "token_type": "bearer", "user": _user_to_out(user)}
 
+    # Valid credentials → always generate + email an OTP and move to the verification step.
     return await _issue_otp(db, user, ip)
 
 
