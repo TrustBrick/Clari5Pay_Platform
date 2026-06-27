@@ -16,6 +16,7 @@ from app.db.session import get_db
 from app.models.models import Transaction, TxStatus, User, UserRole, MerchantBankAccount
 from app.models.cyber import CyberComplaint
 from app.core.deps import get_current_user
+from app.core.uploads import validate_upload, IMAGE_PDF_TYPES
 from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/risk", tags=["risk"])
@@ -346,6 +347,7 @@ async def create_complaint(
     docs = data.get("documents") or []
     if len(docs) > MAX_DOCS:
         raise HTTPException(status_code=400, detail=f"You can attach at most {MAX_DOCS} documents.")
+    docs = [validate_upload(d, allowed=IMAGE_PDF_TYPES, label="document") for d in docs if d]
 
     submit = bool(data.get("submit"))
     if submit:

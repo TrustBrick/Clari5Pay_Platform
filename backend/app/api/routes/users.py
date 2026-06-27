@@ -7,6 +7,7 @@ from app.models.models import User, UserRole, Notification
 from app.core.security import get_password_hash, verify_password
 from app.core.passwords import assert_password_allowed, set_password
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
+from app.core.uploads import validate_upload, IMAGE_TYPES
 from app.schemas.schemas import (
     ChangePasswordRequest, ProfileUpdateRequest, ReasonRequest, AdminResetPasswordRequest,
 )
@@ -296,8 +297,8 @@ async def update_profile(
         current_user.email = data.email
 
     if data.avatar is not None:
-        # Empty string clears the picture; a data URL sets it.
-        current_user.avatar = data.avatar or None
+        # Empty string clears the picture; a data URL sets it (validated for type + size).
+        current_user.avatar = validate_upload(data.avatar, allowed=IMAGE_TYPES, label="profile picture") or None
 
     await db.flush()
     await db.refresh(current_user)

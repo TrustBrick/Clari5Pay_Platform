@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import BlogPost, User
 from app.core.deps import get_current_user, get_current_admin
+from app.core.uploads import validate_upload, IMAGE_TYPES
 from app.schemas.schemas import BlogIn, BlogStatusIn
 from app.api.routes.system_logs import log_event, record_audit
 
@@ -99,7 +100,7 @@ async def create_blog(
         category=data.category or "Announcements",
         short_description=data.short_description,
         content=data.content or "",
-        cover_image=data.cover_image,
+        cover_image=validate_upload(data.cover_image, allowed=IMAGE_TYPES, label="cover image"),
         status=status,
         author_id=admin.id,
         author_name=admin.name,
@@ -131,7 +132,7 @@ async def update_blog(
     p.short_description = data.short_description
     p.content = data.content or ""
     if data.cover_image is not None:
-        p.cover_image = data.cover_image or None
+        p.cover_image = validate_upload(data.cover_image, allowed=IMAGE_TYPES, label="cover image") or None
     p.publish_date = data.publish_date
     new_status = "PUBLISHED" if data.status == "PUBLISHED" else "DRAFT"
     if new_status == "PUBLISHED" and p.status != "PUBLISHED":

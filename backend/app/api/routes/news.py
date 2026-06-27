@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import News, User
 from app.core.deps import get_current_user, get_current_super_admin
+from app.core.uploads import validate_upload, IMAGE_TYPES
 from app.schemas.schemas import NewsIn
 from app.api.routes.system_logs import log_event, record_audit
 
@@ -87,7 +88,7 @@ async def create_news(
         category=data.category or data.section or "Announcements",
         title=data.title.strip(),
         body=data.body or "",
-        image=data.image,
+        image=validate_upload(data.image, allowed=IMAGE_TYPES, label="news image"),
         author_name=actor.name,
         published=data.published,
         featured=data.featured,
@@ -118,7 +119,7 @@ async def update_news(
     n.title = data.title.strip() or n.title
     n.body = data.body
     if data.image is not None:
-        n.image = data.image or None
+        n.image = validate_upload(data.image, allowed=IMAGE_TYPES, label="news image") or None
     n.published = data.published
     n.featured = data.featured
     n.priority = data.priority or "Normal"

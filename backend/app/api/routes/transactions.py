@@ -15,6 +15,7 @@ from app.schemas.schemas import (
 )
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
+from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -80,45 +81,27 @@ async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> 
     ))
 
 
-# Shown when a request's member name doesn't match the name already on file for that ID.
-# Proof/slip upload limits (mirrored on the frontend).
+# Proof/slip upload limits (mirrored on the frontend). Per-file MIME + size validation is
+# centralised in app.core.uploads.validate_upload.
 MAX_PROOFS = 3
 PROOF_LIMIT_MSG = "You can upload a maximum of 3 proof/slip files per request."
-PROOF_TYPE_MSG = "Unsupported file type. Allowed: JPG, JPEG, PNG, PDF."
-_ALLOWED_PROOF_PREFIXES = (
-    "data:image/jpeg", "data:image/jpg", "data:image/png", "data:application/pdf",
-)
 
 
 def _clean_proofs(proofs: list[str] | None, single: str | None = None) -> list[str]:
-    """Validate uploaded proofs: at most 3 files, each a JPG/JPEG/PNG/PDF. Returns the list."""
+    """Validate uploaded proofs: at most 3 files, each a JPG/JPEG/PNG/PDF within the size limit."""
     items = [p for p in (proofs or []) if p]
     if not items and single:
         items = [single]
     if len(items) > MAX_PROOFS:
         raise HTTPException(status_code=400, detail=PROOF_LIMIT_MSG)
     for p in items:
-        head = p[:64].lower()
-        if head.startswith("data:") and not head.startswith(_ALLOWED_PROOF_PREFIXES):
-            raise HTTPException(status_code=400, detail=PROOF_TYPE_MSG)
+        validate_upload(p, allowed=IMAGE_PDF_TYPES, label="proof/slip file")
     return items
 
 
-# Admin custom Bank-Details image — JPG / JPEG / PNG / WEBP only.
-_ALLOWED_BANK_IMG_PREFIXES = (
-    "data:image/jpeg", "data:image/jpg", "data:image/png", "data:image/webp",
-)
-BANK_IMG_TYPE_MSG = "Unsupported image type. Allowed: JPG, JPEG, PNG, WEBP."
-
-
 def _validate_bank_image(img: str | None) -> str | None:
-    """Validate the admin's uploaded bank-details image (data URL). Returns it unchanged."""
-    if not img:
-        return None
-    head = img[:64].lower()
-    if head.startswith("data:") and not head.startswith(_ALLOWED_BANK_IMG_PREFIXES):
-        raise HTTPException(status_code=400, detail=BANK_IMG_TYPE_MSG)
-    return img
+    """Validate the admin's uploaded bank-details image (JPG/JPEG/PNG/WEBP, size-limited)."""
+    return validate_upload(img, allowed=IMAGE_TYPES, label="bank-details image")
 
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
@@ -1394,7 +1377,7 @@ async def account_submit(
         tx.admin_bank_details = data.adminBankDetails
     tx.admin_upi_id = data.adminUpiId
     if data.adminProof:
-        tx.admin_proof = data.adminProof
+        tx.admin_proof = validate_upload(data.adminProof, allowed=IMAGE_TYPES, label="bank-details image")
     ref = data.adminRef
     # A sent UPI always belongs to a receiving account → credit that parent account so its
     # deposits (bank + UPI) roll up together. No QR is generated.
@@ -1470,7 +1453,7 @@ async def mark_done(
     withdrawals/settlements the admin attaches a payment receipt image and it → COMPLETED."""
     tx = await _get_tx(tx_id, db)
     if data and data.adminProof:
-        tx.admin_proof = data.adminProof
+        tx.admin_proof = validate_upload(data.adminProof, allowed=IMAGE_TYPES, label="payment receipt")
     if data and data.adminUtr:
         tx.admin_utr = data.adminUtr
     is_deposit = tx.type.value.startswith("DEPOSIT")
