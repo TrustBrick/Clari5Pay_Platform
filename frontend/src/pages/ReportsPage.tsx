@@ -629,18 +629,16 @@ const ReportExportBar: React.FC<{ count: number; onPdf: () => void; onExcel: () 
     </div>
   );
 
-// ── Treasury Report: completed transactions only, in a fixed eight-column layout ──
-const TREASURY_HEADERS = ['Unique Transaction Reference', 'Member Name', 'Membership ID', 'Date & Time', 'Approver', 'Operator', 'Transaction Amount', 'Transaction Method'];
+// ── Treasury Report: all transactions in their current status (narrow with the Status
+// filter). Nine columns — the spec's eight plus a Status column for treasury visibility. ──
+const TREASURY_HEADERS = ['Unique Transaction Reference', 'Member Name', 'Membership ID', 'Date & Time', 'Status', 'Approver', 'Operator', 'Transaction Amount', 'Transaction Method'];
+const TREASURY_ALIGNS: Array<'l' | 'r'> = ['l', 'l', 'l', 'l', 'l', 'l', 'l', 'r', 'l'];
 const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
   ({ rows, businessName, generatedBy, rangeLabel }) => {
     const toast = useToast();
-    const data = rows.filter(r => r.completed);
-    const cell = (r: ReportRow): Array<string | number> => [
-      r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(),
-      r.approvedBy || '—', r.processedBy || '—', r.amount, methodLabel(r),
-    ];
-    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), r.approvedBy || '', r.processedBy || '', r.amount, methodLabel(r)]);
-    const pdfRows = data.map(r => { const c = cell(r); c[6] = fmt(r.amount); return c; });
+    const data = rows;   // all transactions honouring the advanced filters (incl. Status)
+    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy || '', r.processedBy || '', r.amount, methodLabel(r)]);
+    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy || '—', r.processedBy || '—', fmt(r.amount), methodLabel(r)]);
     const onExcel = () => {
       downloadXlsx(`clari5pay-treasury-${today()}.xlsx`, [{
         name: 'Treasury Report',
@@ -649,6 +647,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
           { header: 'Member Name', get: r => r.member || '', width: 22 },
           { header: 'Membership ID', get: r => r.memberId || '' },
           { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
+          { header: 'Status', get: r => prettyStatusR(r.status) },
           { header: 'Approver', get: r => r.approvedBy || '' },
           { header: 'Operator', get: r => r.processedBy || '' },
           { header: 'Transaction Amount', get: r => Number(r.amount), width: 16, z: INR_NUMFMT },
@@ -660,25 +659,26 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
     };
     const onPdf = (autoPrint: boolean) => printColumnarReport({
       title: 'Treasury Report', businessName, generatedBy, rangeLabel,
-      headers: TREASURY_HEADERS, rows: pdfRows, aligns: ['l', 'l', 'l', 'l', 'l', 'l', 'r', 'l'],
-      footerNote: 'Completed transactions only. Honours the selected filters.', autoPrint,
+      headers: TREASURY_HEADERS, rows: pdfRows, aligns: TREASURY_ALIGNS,
+      footerNote: 'All transactions in their current status. Honours the selected filters.', autoPrint,
     });
     return (
       <div>
-        <RSectionTitle note="Completed transactions only — approver, operator, amount and method per transaction.">🏦 Treasury Report</RSectionTitle>
+        <RSectionTitle note="All transactions in their current status (use the Status filter to narrow) — status, approver, operator, amount and method per transaction.">🏦 Treasury Report</RSectionTitle>
         <ReportExportBar count={data.length} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={() => downloadCsv(`clari5pay-treasury-${today()}.csv`, TREASURY_HEADERS, csvRows)} onPrint={() => onPdf(true)} />
         <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
           <div style={{ overflowX: 'auto', maxHeight: 560 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ background: T.canvas }}>{TREASURY_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: i === 6 ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
+              <thead><tr style={{ background: T.canvas }}>{TREASURY_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: TREASURY_ALIGNS[i] === 'r' ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
               <tbody>
-                {data.length === 0 && <tr><td colSpan={8} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No completed transactions match the selected filters.</td></tr>}
+                {data.length === 0 && <tr><td colSpan={TREASURY_HEADERS.length} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No transactions match the selected filters.</td></tr>}
                 {data.slice(0, 500).map(r => (
                   <tr key={r.ref} className="c5-row-hover">
                     <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{r.ref}</td>
                     <td style={{ ...tdR, fontWeight: 600 }}>{r.member || '—'}</td>
                     <td style={tdR}>{r.memberId || '—'}</td>
                     <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
+                    <td style={tdR}>{prettyStatusR(r.status)}</td>
                     <td style={tdR}>{r.approvedBy || '—'}</td>
                     <td style={tdR}>{r.processedBy || '—'}</td>
                     <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
@@ -731,11 +731,11 @@ const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: string; gen
     const onPdf = (autoPrint: boolean) => printColumnarReport({
       title: 'Agent Ledger Report', businessName, generatedBy, rangeLabel,
       headers: LEDGER_HEADERS, rows: pdfRows, aligns: ['l', 'l', 'l', 'l', 'r', 'r'],
-      footerNote: `Opening balance ${fmt(0)} · Closing balance ${fmt(closing)}. Honours the selected filters.`, autoPrint,
+      footerNote: `Running Balance = Opening + Deposits − Withdrawals − Settlements (shared Total Available Balance, no commission). Closing ${fmt(closing)}. Honours the selected filters.`, autoPrint,
     });
     return (
       <div>
-        <RSectionTitle note="Completed transactions in chronological order. Running Balance = Opening + Deposits − Withdrawals − Settlements.">📒 Agent Ledger Report</RSectionTitle>
+        <RSectionTitle note="Completed transactions in chronological order. Running Balance = Opening + Deposits − Withdrawals − Settlements — the shared Total Available Balance formula (no commission deducted).">📒 Agent Ledger Report</RSectionTitle>
         <ReportExportBar count={ledger.length} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={() => downloadCsv(`clari5pay-agent-ledger-${today()}.csv`, LEDGER_HEADERS, csvRows)} onPrint={() => onPdf(true)} />
         <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
           <div style={{ overflowX: 'auto', maxHeight: 560 }}>
@@ -767,7 +767,7 @@ const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: string; gen
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 14 }}>
             <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>Opening Balance</span><span style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{fmt(0)}</span></div>
             <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>Entries</span><span style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{ledger.length}</span></div>
-            <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>Closing Balance</span><span style={{ fontSize: 15, fontWeight: 800, color: closing >= 0 ? T.success : T.danger }}>{fmt(closing)}</span></div>
+            <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>Closing Balance (Total Available)</span><span style={{ fontSize: 15, fontWeight: 800, color: closing >= 0 ? T.success : T.danger }}>{fmt(closing)}</span></div>
           </div>
         </Card>
       </div>
