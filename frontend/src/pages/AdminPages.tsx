@@ -48,6 +48,7 @@ const RequestModal: React.FC<{
 }> = ({ tx, canAct, onClose, onDone }) => {
   const { showToast } = useToast();
   const isDeposit = tx.type.startsWith('DEPOSIT');
+  const isSettlement = tx.type.startsWith('SETTLEMENT');
   const depType = (tx.depositType || '').toUpperCase();
   const isCashDeposit = isDeposit && depType === 'CASH';   // "Request Additional Information" workflow
   // Withdrawal payout mode drives what proof the agent must capture (Crypto → Hash; Cash → image only).
@@ -398,7 +399,7 @@ const RequestModal: React.FC<{
           <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 10px' }}>Pay the Receiver using the details above, then record the proof below. It's shared with the Receiver.</p>
           {needUtr && <Input label={isCryptoPayout ? 'Transaction Hash (Hash ID)' : 'UTR Number'} value={payUtr} onChange={e=>setPayUtr(e.target.value)} placeholder={isCryptoPayout ? 'On-chain transaction hash' : 'Bank UTR / payment reference'} required/>}
           {needReceipt && <>
-            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{isCashPayout ? 'Proof Image' : 'Payment Receipt'}<span style={{ color:T.danger }}> *</span></label>
+            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{isSettlement ? 'Settlement Proof (Image or PDF)' : isCashPayout ? 'Proof Image' : 'Payment Receipt'}<span style={{ color:T.danger }}> *</span></label>
             <input type="file" accept="image/*,.pdf" onChange={onReceipt} style={{ fontSize:12 }} />
             {receipt && <img src={receipt} alt="Receipt" style={{ width:'auto',maxWidth:240,maxHeight:200,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,margin:'12px 0',background:T.canvas }} />}
           </>}

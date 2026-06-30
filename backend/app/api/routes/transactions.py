@@ -1452,11 +1452,22 @@ async def mark_done(
     """Admin final approval. For deposits this is 'Mark Deposited' (→ DEPOSITED); for
     withdrawals/settlements the admin attaches a payment receipt image and it → COMPLETED."""
     tx = await _get_tx(tx_id, db)
-    if data and data.adminProof:
-        tx.admin_proof = validate_upload(data.adminProof, allowed=IMAGE_TYPES, label="payment receipt")
-    if data and data.adminUtr:
-        tx.admin_utr = data.adminUtr
     is_deposit = tx.type.value.startswith("DEPOSIT")
+    is_settlement = tx.type.value.startswith("SETTLEMENT")
+    # Settlement final approval requires BOTH a UTR number and a settlement proof (image or PDF):
+    # the admin cannot complete a settlement without them. Deposits/withdrawals keep prior behaviour.
+    if is_settlement:
+        if not (data and (data.adminUtr or "").strip()):
+            raise HTTPException(status_code=400, detail="UTR Number is required to complete a settlement.")
+        if not (data and data.adminProof):
+            raise HTTPException(status_code=400, detail="Settlement proof (image or PDF) is required to complete a settlement.")
+    if data and data.adminProof:
+        # Settlement proof also accepts PDF; other payment receipts remain image-only.
+        proof_allowed = IMAGE_PDF_TYPES if is_settlement else IMAGE_TYPES
+        tx.admin_proof = validate_upload(data.adminProof, allowed=proof_allowed,
+                                         label="settlement proof" if is_settlement else "payment receipt")
+    if data and data.adminUtr:
+        tx.admin_utr = data.adminUtr.strip()
     tx.status = TxStatus.DEPOSITED if is_deposit else TxStatus.COMPLETED
     tx.processed_by = actor.name
     tx.approved_by = tx.approved_by or actor.name
