@@ -223,6 +223,17 @@ def _format(message: str, tx: Optional["Transaction"] = None) -> str:
     return "\n".join(lines)
 
 
+def _template_param(text: str) -> str:
+    """Meta rejects template body parameters that contain newlines, tabs or >4 consecutive
+    spaces. Flatten the enriched multi-line message into a single valid parameter so a simple
+    one-variable ({{1}}) approved template works. A production template with discrete variables
+    (Business / Amount / Status …) is preferable — see the deploy notes — but this keeps the
+    single-parameter path Meta-valid rather than latently rejected."""
+    s = re.sub(r"\s*[\r\n]+\s*", " · ", text or "")
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.strip(" ·")
+
+
 def _extract_message_id(provider: str, body: dict) -> Optional[str]:
     try:
         if provider == "meta":
@@ -250,7 +261,7 @@ async def _send(phone: str, body: str) -> tuple[bool, Optional[str], str]:
                 "template": {
                     "name": settings.WHATSAPP_TEMPLATE,
                     "language": {"code": settings.WHATSAPP_LANG or "en"},
-                    "components": [{"type": "body", "parameters": [{"type": "text", "text": body}]}],
+                    "components": [{"type": "body", "parameters": [{"type": "text", "text": _template_param(body)}]}],
                 },
             }
         else:
@@ -273,6 +284,21 @@ async def _send(phone: str, body: str) -> tuple[bool, Optional[str], str]:
     except Exception:
         msg_id = None
     return ok, msg_id, f"{r.status_code} {r.text[:500]}"
+
+
+# Exceptions that mean the request never reached the provider (connection never established), so
+# no message could have been created — safe to retry without risking a duplicate. A ReadTimeout /
+# protocol error, by contrast, means the request WAS sent and the response was lost: the provider
+# may already have accepted it, so we must NOT retry those.
+_RETRYABLE_EXC = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+
+def _status_code(resp: Optional[str]) -> Optional[int]:
+    """Leading HTTP status from the '<code> <text>' provider-response string."""
+    try:
+        return int((resp or "").split(" ", 1)[0])
+    except (ValueError, IndexError, AttributeError):
+        return None
 
 
 async def _deliver(user_id: int, message: str) -> None:
@@ -307,10 +333,19 @@ async def _deliver(user_id: int, message: str) -> None:
                         reason = None
                         break
                     reason = resp
-                except Exception as e:                      # network/timeout — retry
+                    code = _status_code(resp)
+                    # Only 429/5xx are transient (no message created). A 4xx is a deterministic
+                    # rejection (bad number, not allow-listed, bad template) — retrying can't help
+                    # and would only risk a duplicate, so stop.
+                    if not (code == 429 or (code is not None and code >= 500)):
+                        break
+                except _RETRYABLE_EXC as e:                  # never reached provider → safe to retry
                     resp, reason = None, repr(e)
+                except Exception as e:                       # request may have been delivered (e.g.
+                    resp, reason = None, repr(e)             # read timeout) — do NOT retry (dedupe)
+                    break
                 if i < attempts - 1:
-                    await asyncio.sleep(0.5 * (i + 1))      # simple backoff
+                    await asyncio.sleep(0.5 * (i + 1))       # simple backoff
             db.add(WhatsAppLog(
                 user_id=user.id, username=user.username,
                 role=str(user.merchant_role or user.role.value), phone=user.phone,
