@@ -50,6 +50,7 @@ class ProfileUpdateRequest(BaseModel):
     new_password: Optional[str] = None
     current_password: Optional[str] = None
     avatar: Optional[str] = None
+    whatsappEnabled: Optional[bool] = None   # "Receive WhatsApp Notifications" preference
 
 
 # ─── Auth Schemas ─────────────────────────────────────────────────────────────

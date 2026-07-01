@@ -10,8 +10,8 @@ import TxSearchFilters from '../components/TxSearchFilters';
 import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery, ReceiptImage } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
-import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
-import type { TxQuery } from '../services/api';
+import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI } from '../services/api';
+import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi } from '../types';
@@ -1826,6 +1826,163 @@ export const AuditLogsPage: React.FC = () => {
         </div>
         <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {logs.length}</p>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+// ─── Admin → WhatsApp Settings (dedicated console) ──────────────────────────────
+const WA_ROLE_LABELS: Record<string, string> = {
+  ADMIN: 'Admin', SUPERVISOR: 'Supervisor', MANAGER: 'Manager', MERCHANT: 'Merchant',
+  DATA_OPERATOR: 'Data Operator', DEPOSIT_OPERATOR: 'Deposit Operator', WITHDRAWAL_OPERATOR: 'Withdrawal Operator',
+};
+const WA_EVENT_LABELS: Record<string, string> = {
+  DEPOSIT: 'Deposit', WITHDRAWAL: 'Withdrawal', SETTLEMENT: 'Settlement', MERCHANT_CREATED: 'Merchant Created',
+  USER_CREATED: 'User Created', ACCOUNT_ASSIGNED: 'Account Assigned', PASSWORD_CHANGED: 'Password Changed',
+  LOGIN_ALERTS: 'Login Alerts', SECURITY_ALERTS: 'Security Alerts', OTHER: 'Other',
+};
+
+export const WhatsAppSettingsPage: React.FC = () => {
+  const { showToast } = useToast();
+  const [cfg, setCfg] = useState<WhatsappSettings | null>(null);
+  const [roles, setRoles] = useState<Record<string, boolean>>({});
+  const [events, setEvents] = useState<Record<string, boolean>>({});
+  const [stats, setStats] = useState<WhatsappStats | null>(null);
+  const [logs, setLogs] = useState<WhatsappLog[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  const load = () => {
+    whatsappAPI.getSettings().then(s => { setCfg(s); setRoles(s.roles); setEvents(s.events); }).catch(() => {});
+    whatsappAPI.getStats().then(setStats).catch(() => {});
+    whatsappAPI.getLogs(100).then(setLogs).catch(() => setLogs([]));
+  };
+  useEffect(load, []);
+
+  const save = async () => {
+    setSaving(true);
+    try { const r = await whatsappAPI.setSettings({ roles, events }); setRoles(r.roles); setEvents(r.events); showToast('WhatsApp settings saved'); }
+    catch { showToast('Failed to save settings', 'error'); }
+    finally { setSaving(false); }
+  };
+  const sendTest = async () => {
+    setTesting(true);
+    try { const r = await whatsappAPI.sendTest(); showToast(r.ok ? 'Test WhatsApp sent' : (r.reason || 'Test failed'), r.ok ? undefined : 'error'); load(); }
+    catch (e: any) { showToast(e?.response?.data?.detail || 'Test failed', 'error'); }
+    finally { setTesting(false); }
+  };
+
+  const connected = !!cfg?.configured;
+  const statCard = (label: string, value: React.ReactNode, color: string) => (
+    <Card style={{ padding: '14px 16px', borderTop: `3px solid ${color}` }}>
+      <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
+      <p style={{ margin: 0, fontSize: 22, fontWeight: 800, color }}>{value}</p>
+    </Card>
+  );
+  const toggleGrid = (keys: string[], state: Record<string, boolean>, setState: (f: (r: Record<string, boolean>) => Record<string, boolean>) => void, labels: Record<string, string>) => (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(210px,1fr))', gap: 10 }}>
+      {keys.map(k => (
+        <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: `1px solid ${T.border}`, borderRadius: 10, cursor: 'pointer', background: T.surface }}>
+          <input type="checkbox" checked={!!state[k]} onChange={() => setState(r => ({ ...r, [k]: !r[k] }))} style={{ width: 16, height: 16 }} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: T.textMain }}>{labels[k] || k}</span>
+        </label>
+      ))}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>WhatsApp Settings</h2>
+        <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Manage the WhatsApp notification integration. In-app notifications are always delivered regardless of these settings.</p>
+      </div>
+
+      {/* Provider / Connection */}
+      <Card style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>Provider Configuration</h3>
+          <span style={{ fontSize: 11, fontWeight: 800, padding: '4px 12px', borderRadius: 20, background: connected ? T.successBg : T.warningBg, color: connected ? T.success : T.warning }}>
+            {connected ? '● Connected' : '● Not Connected'}
+          </span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 14 }}>
+          {([
+            ['Provider', cfg?.provider ? (cfg.provider === 'meta' ? 'Meta Cloud API' : cfg.provider) : '—'],
+            ['Business Number', cfg?.businessNumber || '—'],
+            ['Business Account ID', cfg?.businessAccountId || '—'],
+            ['Phone Number ID', cfg?.phoneIdSet ? '✓ Set' : '—'],
+            ['Message Template', cfg?.templateSet ? '✓ Set' : 'Not set'],
+            ['Webhook (delivery/read)', cfg?.webhookConfigured ? '✓ Configured' : '—'],
+          ] as [string, string][]).map(([k, v]) => (
+            <div key={k}>
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>{k}</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: T.textMain }}>{v}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
+          <Btn size="sm" onClick={sendTest} disabled={testing || !connected}>{testing ? 'Sending…' : '📤 Send Test WhatsApp'}</Btn>
+          <span style={{ fontSize: 11, color: T.textMuted }}>Credentials are configured on the server (env) for security. Sends to your registered number.</span>
+        </div>
+      </Card>
+
+      {/* Statistics */}
+      <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 12, marginBottom: 16 }}>
+        {statCard('Sent Today', stats?.sentToday ?? 0, T.blue)}
+        {statCard('Delivered', stats?.delivered ?? 0, T.success)}
+        {statCard('Read', stats?.read ?? 0, T.info)}
+        {statCard('Failed', stats?.failed ?? 0, T.danger)}
+        {statCard('Pending', stats?.pending ?? 0, T.warning)}
+        {statCard('Success Rate', `${stats?.successRate ?? 0}%`, T.success)}
+      </div>
+
+      {/* Notification (role) + Event settings */}
+      <Card style={{ padding: 20, marginBottom: 16 }}>
+        <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 800 }}>Notification Settings — Roles</h3>
+        <p style={{ fontSize: 12, color: T.textMuted, margin: '0 0 12px' }}>Which roles also receive their notifications on WhatsApp.</p>
+        {toggleGrid(cfg?.roleKeys || Object.keys(roles), roles, setRoles, WA_ROLE_LABELS)}
+        <h3 style={{ margin: '22px 0 12px', fontSize: 14, fontWeight: 800 }}>Event Settings</h3>
+        <p style={{ fontSize: 12, color: T.textMuted, margin: '0 0 12px' }}>Which events trigger a WhatsApp message.</p>
+        {toggleGrid(cfg?.eventKeys || Object.keys(events), events, setEvents, WA_EVENT_LABELS)}
+        <div style={{ marginTop: 16 }}>
+          <Btn onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Settings'}</Btn>
+        </div>
+      </Card>
+
+      {/* Delivery Logs */}
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>Delivery Logs</h3>
+          <Btn size="sm" variant="ghost" onClick={load}>↻ Refresh</Btn>
+        </div>
+        <div style={{ overflowX: 'auto', maxHeight: 460 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: T.canvas }}>
+                {['User', 'Role', 'Phone', 'Event', 'Message ID', 'Status', 'Delivery', 'Retries', 'Sent', 'Failure'].map(h => (
+                  <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: `2px solid ${T.border}` }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {logs.length === 0 && <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: T.textMuted }}>No WhatsApp deliveries yet.</td></tr>}
+              {logs.map(l => (
+                <tr key={l.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
+                  <td style={{ padding: '9px 12px', fontWeight: 700, color: T.textMain }}>{l.user || '—'}</td>
+                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.role || '—'}</td>
+                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.phone || '—'}</td>
+                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.type || '—'}</td>
+                  <td style={{ padding: '9px 12px', color: T.textMuted, fontFamily: 'monospace', fontSize: 11, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.messageId || ''}>{l.messageId || '—'}</td>
+                  <td style={{ padding: '9px 12px', fontWeight: 700, color: l.status === 'SENT' ? T.success : T.danger }}>{l.status}</td>
+                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.deliveryStatus || '—'}</td>
+                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.retryCount}</td>
+                  <td style={{ padding: '9px 12px', color: T.textMuted, whiteSpace: 'nowrap' }}>{l.sentAt ? formatDateTime(l.sentAt) : '—'}</td>
+                  <td style={{ padding: '9px 12px', color: T.textMuted, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.failureReason || ''}>{l.failureReason || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </Card>
     </div>

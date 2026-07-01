@@ -45,9 +45,36 @@ class Settings(BaseSettings):
     )
     SMTP_TLS: bool = True
 
+    # ── WhatsApp notifications (internal users: Admin / Supervisor / Manager) ──
+    # Provider-agnostic. When WHATSAPP_PROVIDER + WHATSAPP_TOKEN are set, in-app
+    # notifications for eligible internal users are ALSO delivered to their phone.
+    # Empty by default → feature inert (in-app notifications always still work).
+    #   provider "meta"   → Meta WhatsApp Cloud API (WHATSAPP_TOKEN = access token,
+    #                       WHATSAPP_PHONE_ID = phone-number ID). Business-initiated
+    #                       messages need an approved template (WHATSAPP_TEMPLATE) —
+    #                       free text only reaches users inside the 24h session window.
+    #   provider "twilio" → Twilio (WHATSAPP_TOKEN = auth token, WHATSAPP_ACCOUNT_SID,
+    #                       WHATSAPP_PHONE_ID = the from "whatsapp:+…" number).
+    WHATSAPP_PROVIDER: str = ""          # "meta" | "twilio" | "" (disabled)
+    WHATSAPP_API_URL: str = ""           # optional base-URL override
+    WHATSAPP_TOKEN: str = ""             # Meta access token / Twilio auth token
+    WHATSAPP_PHONE_ID: str = ""          # Meta phone-number ID / Twilio from-number
+    WHATSAPP_ACCOUNT_SID: str = ""       # Twilio account SID (unused for Meta)
+    WHATSAPP_TEMPLATE: str = ""          # approved template name (Meta) — optional
+    WHATSAPP_LANG: str = "en"            # template language code (Meta)
+    WHATSAPP_RETRIES: int = 2            # retry attempts on a failed send
+    WHATSAPP_COMPANY_NAME: str = "Clari5Pay"
+    WHATSAPP_VERIFY_TOKEN: str = ""      # Meta webhook verification token (delivery/read receipts)
+    WHATSAPP_BUSINESS_NUMBER: str = ""   # display-only: the connected Business sender number
+    WHATSAPP_BUSINESS_ACCOUNT_ID: str = ""  # Meta WABA id (display / future template mgmt)
+
     @property
     def email_configured(self) -> bool:
         return bool(self.SMTP_HOST)
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        return bool(self.WHATSAPP_PROVIDER and self.WHATSAPP_TOKEN)
 
     class Config:
         env_file = ".env"

@@ -420,7 +420,7 @@ export const userAPI = {
     const res = await api.post('/api/users/change-password', data);
     return res.data;
   },
-  updateProfile: async (data: { email?: string; new_password?: string; current_password?: string; avatar?: string }) => {
+  updateProfile: async (data: { email?: string; new_password?: string; current_password?: string; avatar?: string; whatsappEnabled?: boolean }) => {
     const res = await api.patch<User>('/api/users/me', data);
     return res.data;
   },
@@ -439,6 +439,28 @@ export const notificationAPI = {
     const res = await api.delete('/api/notifications');
     return res.data;
   },
+};
+
+export interface WhatsappSettings {
+  configured: boolean; provider: string | null; businessNumber: string | null; businessAccountId: string | null;
+  phoneIdSet: boolean; templateSet: boolean; webhookConfigured: boolean;
+  roles: Record<string, boolean>; roleKeys: string[];
+  events: Record<string, boolean>; eventKeys: string[];
+}
+export interface WhatsappStats { sentToday: number; delivered: number; read: number; failed: number; pending: number; total: number; successRate: number }
+export interface WhatsappLog {
+  id: number; user: string | null; role: string | null; phone: string | null; type: string | null;
+  message: string; status: string; deliveryStatus: string | null; messageId: string | null;
+  retryCount: number; provider: string | null; failureReason: string | null;
+  sentAt: string | null; deliveredAt: string | null; readAt: string | null;
+}
+export const whatsappAPI = {
+  getSettings: async () => (await api.get<WhatsappSettings>('/api/whatsapp/settings')).data,
+  setSettings: async (body: { roles?: Record<string, boolean>; events?: Record<string, boolean> }) =>
+    (await api.put<{ roles: Record<string, boolean>; events: Record<string, boolean> }>('/api/whatsapp/settings', body)).data,
+  getStats: async () => (await api.get<WhatsappStats>('/api/whatsapp/stats')).data,
+  sendTest: async () => (await api.post<{ ok: boolean; messageId: string | null; reason: string | null }>('/api/whatsapp/test')).data,
+  getLogs: async (limit = 100) => (await api.get<WhatsappLog[]>('/api/whatsapp/logs', { params: { limit } })).data,
 };
 
 export const systemLogAPI = {

@@ -30,6 +30,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'risk-mgmt', icon: '🛡️', label: 'Risk Management' },
     { key: 'complaints', icon: '🚨', label: 'Complaint Management' },
     { key: 'news', icon: '📰', label: 'News' },
+    { key: 'admin-whatsapp', icon: '💬', label: 'WhatsApp Settings' },
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
   SUPER_ADMIN: [
@@ -73,6 +74,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'admin-reports': 'Reports',
   'admin-transactions': 'All Transactions',
   'admin-accounts': 'Account Management',
+  'admin-whatsapp': 'WhatsApp Settings',
   'sa-dashboard': 'Platform Overview',
   'sa-admins': 'Admin Management',
   'sa-analytics': 'Merchant Analytics',

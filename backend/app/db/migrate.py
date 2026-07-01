@@ -18,6 +18,7 @@ _NEW_COLUMNS = [
     ("users", "locked_until", "TIMESTAMP"),
     ("users", "avatar", "TEXT"),
     ("users", "merchant_code", "VARCHAR(16)"),
+    ("users", "whatsapp_enabled", "BOOLEAN DEFAULT TRUE NOT NULL"),
     ("transactions", "merchant_ref", "VARCHAR(64)"),
     ("transactions", "admin_bank_details", "TEXT"),
     ("transactions", "admin_bank_image", "TEXT"),

@@ -17,7 +17,7 @@ import { AdminReportsPage } from './pages/ReportsPage';
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
   SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage,
-  MerchantAnalyticsPage,
+  MerchantAnalyticsPage, WhatsAppSettingsPage,
 } from './pages/AdminPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
@@ -99,6 +99,7 @@ const App: React.FC = () => {
       'admin-reports': <AdminReportsPage {...props} />,
       'admin-transactions': <AdminTransactionsPage />,
       'admin-accounts': <AdminAccountsPage />,
+      'admin-whatsapp': <WhatsAppSettingsPage />,
       'sa-dashboard': <SaDashboard />,
       'sa-analytics': <MerchantAnalyticsPage />,
       'sa-reports': <AdminReportsPage {...props} />,

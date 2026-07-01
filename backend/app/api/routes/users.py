@@ -34,6 +34,7 @@ def _u(u: User) -> dict:
         "balance": u.balance, "risk": u.risk, "profile": u.profile,
         "merchantRole": u.merchant_role,
         "merchantCode": u.merchant_code,
+        "whatsappEnabled": bool(u.whatsapp_enabled),
     }
 
 
@@ -299,6 +300,10 @@ async def update_profile(
     if data.avatar is not None:
         # Empty string clears the picture; a data URL sets it (validated for type + size).
         current_user.avatar = validate_upload(data.avatar, allowed=IMAGE_TYPES, label="profile picture") or None
+
+    if data.whatsappEnabled is not None:
+        # Per-user "Receive WhatsApp Notifications" preference (in-app notifications are unaffected).
+        current_user.whatsapp_enabled = bool(data.whatsappEnabled)
 
     await db.flush()
     await db.refresh(current_user)

@@ -1648,8 +1648,11 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState({ email:user.email, current:'', next:'', confirm:'' });
   const [avatar, setAvatar] = useState<string | null>(user.avatar || null);
+  const [waEnabled, setWaEnabled] = useState(user.whatsappEnabled !== false);
   const [saving, setSaving] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  // WhatsApp notifications apply to internal users only (Admin / Supervisor / Manager).
+  const waEligible = user.role === 'ADMIN' || (user.role === 'MERCHANT' && ['SUPERVISOR','MANAGER'].includes(String(user.merchantRole||'').toUpperCase()));
 
   const onAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -1658,7 +1661,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
     setAvatar(await fileToDataUrl(f));
   };
 
-  const openEdit = () => { setForm({ email:user.email, current:'', next:'', confirm:'' }); setAvatar(user.avatar || null); setEdit(true); };
+  const openEdit = () => { setForm({ email:user.email, current:'', next:'', confirm:'' }); setAvatar(user.avatar || null); setWaEnabled(user.whatsappEnabled !== false); setEdit(true); };
 
   const save = async () => {
     if(form.next && form.next !== form.confirm){ showToast('Passwords do not match','error'); return; }
@@ -1670,8 +1673,9 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
         new_password: form.next || undefined,
         current_password: form.current || undefined,
         avatar: avatarChanged ? (avatar || '') : undefined,
+        whatsappEnabled: waEligible && waEnabled !== (user.whatsappEnabled !== false) ? waEnabled : undefined,
       });
-      updateUser({ email: updated.email, avatar: updated.avatar });
+      updateUser({ email: updated.email, avatar: updated.avatar, whatsappEnabled: updated.whatsappEnabled });
       showToast('Profile updated successfully');
       setEdit(false);
       setForm(f => ({ ...f, current:'', next:'', confirm:'' }));
@@ -1742,6 +1746,21 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
             <Input label="Confirm New Password" type="password" value={form.confirm} onChange={e=>set('confirm',e.target.value)} placeholder="Re-enter new password"/>
             {form.next && <p style={{ fontSize:11,color:T.textMuted,margin:'-6px 0 0' }}>At least 8 characters with an uppercase letter, a lowercase letter, a number and a special character.</p>}
           </div>
+          {waEligible && (
+            <div style={{ borderTop:`1px solid ${T.border}`,margin:'4px 0 14px',paddingTop:14 }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Notifications</p>
+              <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',background:T.canvas,borderRadius:10,border:`1px solid ${T.border}` }}>
+                <div>
+                  <p style={{ margin:0,fontSize:13,fontWeight:700,color:T.textMain }}>Receive WhatsApp Notifications</p>
+                  <p style={{ margin:'2px 0 0',fontSize:11,color:T.textMuted }}>{user.phone ? `Sent to ${user.phone}` : 'Add a phone number to receive these'}</p>
+                </div>
+                <div onClick={()=>setWaEnabled(v=>!v)} role="switch" aria-checked={waEnabled}
+                  style={{ width:46,height:26,borderRadius:13,background:waEnabled?T.success:T.border,position:'relative',cursor:'pointer',transition:'background 0.2s',flexShrink:0 }}>
+                  <div style={{ position:'absolute',top:3,left:waEnabled?23:3,width:20,height:20,borderRadius:'50%',background:'#fff',boxShadow:'0 1px 3px rgba(0,0,0,0.3)',transition:'left 0.2s' }}/>
+                </div>
+              </div>
+            </div>
+          )}
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={save} disabled={saving}>{saving?'Saving...':'Save Changes'}</Btn>
             <Btn variant="secondary" onClick={()=>setEdit(false)}>Cancel</Btn>

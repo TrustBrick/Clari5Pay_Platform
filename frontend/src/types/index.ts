@@ -27,6 +27,7 @@ export interface User {
   profile?: string;
   merchantRole?: MerchantRole | string | null;
   merchantCode?: string | null;   // serial Merchant ID, e.g. MID000001
+  whatsappEnabled?: boolean;       // "Receive WhatsApp Notifications" preference (internal users)
   // Super Admin monitoring
   merchantCount?: number;
 }

@@ -100,6 +100,8 @@ class User(Base):
     balance: Mapped[Optional[float]] = mapped_column(Float, default=0.0, nullable=True)
     risk: Mapped[Optional[RiskLevel]] = mapped_column(SAEnum(RiskLevel), nullable=True)
     profile: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # Per-user preference: also deliver notifications to WhatsApp (internal users only). Default on.
+    whatsapp_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     transactions: Mapped[list["Transaction"]] = relationship(
         "Transaction", back_populates="merchant_user", foreign_keys="Transaction.merchant_id"
@@ -326,6 +328,30 @@ class Notification(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     icon: Mapped[str] = mapped_column(String(8), default="🔔", nullable=False)
     read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class WhatsAppLog(Base):
+    """Delivery log for the WhatsApp notification integration — one row per attempt."""
+    __tablename__ = "whatsapp_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    notification_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="PENDING")  # SENT / FAILED / SKIPPED (send result)
+    provider: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    provider_response: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    failure_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Provider message id + delivery-receipt tracking (populated by the provider webhook).
+    message_id: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    delivery_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)  # sent / delivered / read / failed
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
