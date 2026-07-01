@@ -43,6 +43,9 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (page.startsWith('sa-') || page.startsWith('admin-')) return false;
   // A Manager is an approval-only role — block direct Deposit/Withdrawal/Settlement creation.
   if (String(user.merchantRole || '').toUpperCase() === 'MANAGER' && MANAGER_BLOCKED_PAGES.includes(page)) return false;
+  // A Supervisor manages only Settlement Requests — no Deposit/Withdrawal pages, even by
+  // direct/stale access (they fall back to the Dashboard).
+  if (String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR' && (page === 'deposit' || page === 'withdrawal')) return false;
   // Settlement Requests is a Supervisor-only page — only Supervisors create settlements.
   if (page === 'settlement') return String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR';
   return true;

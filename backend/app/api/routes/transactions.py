@@ -143,13 +143,15 @@ async def _next_ref(db: AsyncSession, kind: str) -> str:
     return f"{kind}{str(n).zfill(6)}"
 
 
-def _forbid_manager_create(user: User) -> None:
-    """A Manager is an approval-only (Checker) role: they review/approve assigned withdrawal
-    requests and may never initiate a direct deposit / withdrawal / settlement."""
-    if str(user.merchant_role or "").upper() == "MANAGER":
+def _forbid_checker_create(user: User) -> None:
+    """Supervisors and Managers are approval-only (Checker) roles — they may never initiate a
+    direct deposit or withdrawal. (A Supervisor creates settlements via the settlement endpoint;
+    a Manager creates nothing.)"""
+    role = str(user.merchant_role or "").upper()
+    if role in ("SUPERVISOR", "MANAGER"):
         raise HTTPException(
             status_code=403,
-            detail="Managers can only review and approve assigned withdrawal requests, not create transactions.",
+            detail=f"{role.title()}s cannot create deposit or withdrawal requests.",
         )
 
 
@@ -1156,7 +1158,7 @@ async def create_deposit(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _forbid_manager_create(current_user)
+    _forbid_checker_create(current_user)
     _require_amount(data.amount)
     data.memberId = normalize_member_id(data.memberId)
     # Membership lookup + capture rule (shared service): existing ID keeps its name,
@@ -1229,7 +1231,7 @@ async def create_withdrawal(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _forbid_manager_create(current_user)
+    _forbid_checker_create(current_user)
     _require_amount(data.amount)
     # Block withdrawals whose amount + pay-out fee exceeds the Available Balance (which
     # already reserves in-flight requests), so the balance can never go negative.
