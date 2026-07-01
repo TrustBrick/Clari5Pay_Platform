@@ -130,13 +130,36 @@ const ProofThumb: React.FC<{ src: string }> = ({ src }) => {
   return <img src={src} alt="proof" style={{ width:64,height:64,objectFit:'cover',borderRadius:8,border:`1px solid ${T.border}` }} />;
 };
 
-// Read-only viewer for submitted proofs (images shown inline; PDFs as a download chip).
+// ─── Standardized receipt / slip / proof image container ────────────────────────
+// ONE shared container for every payment receipt / slip / proof image in every Request
+// Details / review modal across all portals. The layout — size, padding, radius, margin,
+// background, border, centering and object-fit: contain scaling — is identical everywhere;
+// only the theme colours change between Light and Dark (they come from T.*, which adapts).
+// The image is always centered and shown in full (never cropped or stretched); a PDF shows
+// a download tile in the same box; with no source it shows a placeholder in the same box.
+const RECEIPT_BOX: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  width: '100%', height: 240, padding: 12, marginTop: 8, boxSizing: 'border-box',
+  borderRadius: 12, border: `1px solid ${T.border}`, background: T.canvas, overflow: 'hidden',
+};
+export const ReceiptImage: React.FC<{ src?: string | null; alt?: string }> = ({ src, alt = 'Receipt' }) => {
+  const isPdf = !!src && src.startsWith('data:application/pdf');
+  return (
+    <div style={RECEIPT_BOX}>
+      {!src
+        ? <span style={{ fontSize: 12, color: T.textMuted }}>No image uploaded</span>
+        : isPdf
+          ? <a href={src} download={`${alt}.pdf`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, fontSize: 15, fontWeight: 800, color: T.danger, textDecoration: 'none' }}>PDF<span style={{ fontSize: 10, color: T.textMuted }}>Open / Download ⬇</span></a>
+          : <img src={src} alt={alt} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', margin: '0 auto' }} />}
+    </div>
+  );
+};
+
+// Read-only viewer for one or more submitted proofs/slips/receipts — each rendered in the
+// shared ReceiptImage container, so every image looks identical across the application.
 export const ProofGallery: React.FC<{ srcs: string[] }> = ({ srcs }) => (
-  <div style={{ display:'flex',gap:10,flexWrap:'wrap',marginTop:8 }}>
-    {srcs.map((src, i) => src.startsWith('data:application/pdf')
-      ? <a key={i} href={src} download={`proof-${i + 1}.pdf`} style={{ display:'flex',width:90,height:110,borderRadius:8,border:`1px solid ${T.border}`,alignItems:'center',justifyContent:'center',flexDirection:'column',gap:4,fontSize:12,fontWeight:800,color:T.danger,background:T.canvas,textDecoration:'none' }}>PDF<span style={{ fontSize:9,color:T.textMuted }}>#{i + 1} ⬇</span></a>
-      : <img key={i} src={src} alt={`proof ${i + 1}`} style={{ maxHeight:160,maxWidth:'48%',objectFit:'contain',borderRadius:8,border:`1px solid ${T.border}` }} />
-    )}
+  <div>
+    {srcs.map((src, i) => <ReceiptImage key={i} src={src} alt={`proof-${i + 1}`} />)}
   </div>
 );
 
@@ -302,8 +325,8 @@ export const MerchantSlipModal: React.FC<{
 
         {/* A custom uploaded image overrides the auto-generated card; otherwise show the auto card PNG. */}
         {bankImageSrc
-          ? <img src={bankImageSrc} alt="Bank details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />
-          : imgs.adminProof && <img src={imgs.adminProof} alt="Admin details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+          ? <ReceiptImage src={bankImageSrc} alt="Bank details" />
+          : imgs.adminProof && <ReceiptImage src={imgs.adminProof} alt="Admin details" />}
         {hasImage && (
           <div style={{ marginTop:10 }}>
             <Btn size="sm" variant="ghost" onClick={downloadDetails}>⬇ Download Bank Details Image</Btn>
@@ -772,7 +795,6 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const { showToast } = useToast();
   const [form, setForm] = useState({ amount:'', memberId:'', memberName:'' });
   const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
-  const [proofs, setProofs] = useState<string[]>([]);
   const [available, setAvailable] = useState(0);
   const [maxSettleable, setMaxSettleable] = useState(0);
   const [rb, setRb] = useState(0);
@@ -803,7 +825,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(amountNum > maxSettleable + 0.01){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.createSettlement({ amount: amountNum, memberId: form.memberId || undefined, memberName: form.memberName.trim() || undefined, proofs });
+      await transactionAPI.createSettlement({ amount: amountNum, memberId: form.memberId || undefined, memberName: form.memberName.trim() || undefined });
       fireConfetti();
       showToast('Settlement request submitted');
       onSubmitted?.();
@@ -828,7 +850,9 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         <Input label="Membership ID" value={form.memberId} onChange={e=>set('memberId',e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="e.g. MBR20240001"/>
         <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined}/>
       </div>
-      <MultiProofUpload values={proofs} onChange={setProofs}/>
+      <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
+        No proof needed — after the Admin approves, they enter the UTR number and upload the settlement proof, which you can then view.
+      </div>
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount}>{loading?'Submitting...':'Submit Settlement Request →'}</Btn>
     </div>
   );
@@ -946,12 +970,11 @@ export const DepositManagement: React.FC<{ user: User }> = ({ user }) =>
 export const WithdrawalManagement: React.FC<{ user: User }> = ({ user }) =>
   <ManagementPage user={user} title="Withdrawal Management" prefix="WITHDRAWAL" requestLabel="Withdrawal Request" noun="Withdrawal" FormComp={WithdrawalForm}/>;
 
-export const SettlementManagement: React.FC<{ user: User }> = ({ user }) => {
-  // Supervisors don't create settlements — they review the ones their operators submit.
-  // Their Settlement Management page is the settlement approval queue (Approve / Reject / Resubmit).
-  if (String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR') return <ApprovalsPage user={user} kind="SETTLEMENT" />;
-  return <ManagementPage user={user} title="Settlement Management" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm}/>;
-};
+// Settlement Requests is a Supervisor-only page (App.tsx gates access): the Supervisor
+// creates settlement requests, views their own submitted requests + status, and submits
+// them straight to the Admin (Supervisor → Admin → Completed; no intermediate approval).
+export const SettlementManagement: React.FC<{ user: User }> = ({ user }) =>
+  <ManagementPage user={user} title="Settlement Requests" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm}/>;
 
 // ─── Balance Page ─────────────────────────────────────────────────────────────
 export const BalancePage: React.FC<{ user: User }> = ({ user }) => {

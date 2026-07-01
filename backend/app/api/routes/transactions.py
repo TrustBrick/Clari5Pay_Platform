@@ -1294,7 +1294,10 @@ async def create_settlement(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _forbid_manager_create(current_user)
+    # Only a Supervisor may create/submit settlement requests. The flow is
+    # Supervisor → Admin → Completed (no intermediate approval).
+    if str(current_user.merchant_role or "").upper() != "SUPERVISOR":
+        raise HTTPException(status_code=403, detail="Only a Supervisor can create settlement requests.")
     _require_amount(data.amount)
     # Block settlements whose amount + pay-out fee exceeds the Available Balance (exactly the
     # same rule as withdrawals), so the balance can never go negative once the fee is charged.
@@ -1306,32 +1309,36 @@ async def create_settlement(
     total_required = data.amount * (1 + pay_out_rate)
     if total_required > summary["spendableLimit"] + 1e-6:   # guard: never over-draw
         raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
-    _proofs = _clean_proofs(data.proofs, data.proof)
+    # No supervisor-supplied proof on a settlement — the only authoritative settlement proof
+    # is the one the Admin uploads at completion (together with the mandatory UTR number).
     tx = Transaction(
         ref="TEMP",
         type=TxType.SETTLEMENT_REQUEST,
         amount=data.amount,
-        # Settlement submitted → request pending approval, auto-assigned to the Supervisor review queue.
-        status=TxStatus.SUPERVISOR_REVIEW,
+        # Supervisor submits → forwarded straight to the Admin for final approval (no
+        # intermediate review gate). Supervisor → Admin → Completed.
+        status=TxStatus.SLIP_SUBMITTED,
         merchant_id=current_user.id,
         merchant_name=current_user.name,
         tx_date=_ist_now().date(),
         tx_time=_ist_now().strftime("%H:%M:%S"),
         member_id=data.memberId,
         member_name=member_name,
-        merchant_proof=_proofs[0] if _proofs else None,
-        merchant_proofs=json.dumps(_proofs) if _proofs else None,
         agent_code=current_user.merchant_code,
         creator_username=current_user.username,
         creator_role=current_user.merchant_role,
+        # The submitting Supervisor is recorded on the request (its history shows the
+        # Supervisor name + submission time, then the Admin name + approval time).
+        supervisor_name=current_user.name,
+        supervisor_action_at=datetime.utcnow(),
     )
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "SET")
     await db.flush()
-    await _notify_business_role(db, tx, "SUPERVISOR", f"Settlement {tx.ref} from {tx.merchant_name} — awaiting your review", "⇄")
-    await notify_tx(db, tx, f"Settlement {tx.ref} requested by {tx.merchant_name}", "⇄")
-    await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} requested settlement {tx.ref} ({tx.amount}), assigned to Supervisor", actor=current_user)
+    await _notify_admin(db, tx, f"Settlement {tx.ref} from {tx.merchant_name} — awaiting your approval", "⇄")
+    await notify_tx(db, tx, f"Settlement {tx.ref} submitted by {tx.merchant_name}", "⇄")
+    await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} submitted settlement {tx.ref} ({tx.amount}) to Admin", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="settlement", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
     await db.refresh(tx)
     return _t(tx)
@@ -1581,13 +1588,14 @@ async def regenerate_qr(
     return _t(tx)
 
 
-# ─── Supervisor (deposit / settlement) / Manager (withdrawal) review gate ─────
-# Supervisors review deposits & settlements; Managers review withdrawals. Both can
-# Approve (→ forward to Admin as SLIP SUBMITTED), Reject (→ REJECTED) or Resubmit
-# (→ RESUBMITTED, back to the Data Operator). Remarks are mandatory on every action.
+# ─── Supervisor (deposit) / Manager (withdrawal) review gate ──────────────────
+# Supervisors review deposits; Managers review withdrawals. Both can Approve (→ forward
+# to Admin as SLIP SUBMITTED), Reject (→ REJECTED) or Resubmit (→ RESUBMITTED, back to the
+# Data Operator). Remarks are mandatory on every action. Settlements do NOT pass through
+# this gate — the Supervisor creates them and they go straight to the Admin.
 _REVIEW_CONFIG = {
     "SUPERVISOR": {
-        "prefixes": ("DEPOSIT", "SETTLEMENT"), "kind": "deposits & settlements", "label": "Supervisor",
+        "prefixes": ("DEPOSIT",), "kind": "deposits", "label": "Supervisor",
         "review_status": TxStatus.SUPERVISOR_REVIEW,
         "name_attr": "supervisor_name", "time_attr": "supervisor_action_at",
     },

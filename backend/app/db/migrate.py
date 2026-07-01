@@ -148,12 +148,12 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "FROM blog_posts b "
             "WHERE NOT EXISTS (SELECT 1 FROM news n WHERE n.title = b.title)"
         ))
-        # Settlements are now reviewed by the Supervisor (previously the Manager). Re-home any
-        # in-flight settlement still sitting in the Manager review queue to the Supervisor queue
-        # so it stays actionable. Idempotent: a no-op once every settlement has been re-homed.
+        # Settlements are now created by the Supervisor and go straight to the Admin (no review
+        # gate). Move any in-flight settlement still sitting in a Supervisor/Manager review queue
+        # to the Admin queue (SLIP_SUBMITTED) so it stays actionable. Idempotent once drained.
         await conn.execute(text(
-            "UPDATE transactions SET status = 'SUPERVISOR_REVIEW' "
-            "WHERE status::text = 'MANAGER_REVIEW' AND type::text LIKE 'SETTLEMENT%'"
+            "UPDATE transactions SET status = 'SLIP_SUBMITTED' "
+            "WHERE status::text IN ('SUPERVISOR_REVIEW', 'MANAGER_REVIEW') AND type::text LIKE 'SETTLEMENT%'"
         ))
 
     # ── Enum values (ALTER TYPE ... ADD VALUE must run outside a txn block) ──

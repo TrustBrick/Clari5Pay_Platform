@@ -8,7 +8,7 @@ import TxTable from '../components/TxTable';
 import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
 import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
-import { ProofGallery } from './MerchantPages';
+import { ProofGallery, ReceiptImage } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI } from '../services/api';
 import type { TxQuery } from '../services/api';
@@ -254,8 +254,8 @@ const RequestModal: React.FC<{
                   {tx.hasAdminBankImage && !tx.adminBankDetails && <p style={{ margin:0,color:T.textMuted }}>Custom bank details image sent.</p>}
                 </div>
               ) : <div style={{ padding:24,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>Not sent yet</div>}
-              {imgs.adminProof && <img src={imgs.adminProof} alt="Account details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
-              {imgs.adminBankImage && <img src={imgs.adminBankImage} alt="Bank details" style={{ display:'block',width:'100%',height:'auto',objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,marginTop:10,background:T.canvas }} />}
+              {imgs.adminProof && <ReceiptImage src={imgs.adminProof} alt="Account details" />}
+              {imgs.adminBankImage && <ReceiptImage src={imgs.adminBankImage} alt="Bank details" />}
             </>
           ) : (
             <>
@@ -273,7 +273,7 @@ const RequestModal: React.FC<{
                     </>}
               </div>
               {imgs.adminProof && <><p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'12px 0 8px' }}>Payment Receipt</p>
-                <img src={imgs.adminProof} alt="Receipt" style={{ width:'100%',maxHeight:160,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,background:T.canvas }} /></>}
+                <ReceiptImage src={imgs.adminProof} alt="Receipt" /></>}
             </>
           )}
         </div>

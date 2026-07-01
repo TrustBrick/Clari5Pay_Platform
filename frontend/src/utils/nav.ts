@@ -7,7 +7,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'dashboard', icon: '⬡', label: 'Dashboard' },
     { key: 'deposit', icon: '↓', label: 'Deposit Management' },
     { key: 'withdrawal', icon: '↑', label: 'Withdrawal Management' },
-    { key: 'settlement', icon: '⇄', label: 'Settlement Management' },
+    { key: 'settlement', icon: '⇄', label: 'Settlement Requests' },
     { key: 'approvals', icon: '✓', label: 'Approvals' },
     { key: 'cancel', icon: '⊘', label: 'Cancel Request' },
     { key: 'transactions', icon: '≡', label: 'Transactions' },
@@ -54,7 +54,7 @@ export const PAGE_TITLES: Record<string, string> = {
   dashboard: 'Dashboard',
   deposit: 'Deposit Management',
   withdrawal: 'Withdrawal Management',
-  settlement: 'Settlement Management',
+  settlement: 'Settlement Requests',
   approvals: 'Approvals',
   cancel: 'Cancel Request',
   transactions: 'Transactions',
@@ -95,15 +95,16 @@ export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
 
 /**
  * Resolve the sidebar items for a user. Merchants with a known role see only
- * the pages permitted for that role; everyone else (incl. role-less merchants)
- * gets the full nav for their role.
+ * the pages permitted for that role; a role-less merchant gets the full merchant
+ * nav EXCEPT Settlement Requests, which is a Supervisor-only page.
  */
 export const navForUser = (user: User): NavItem[] => {
   const base = NAV[user.role] || [];
   if (user.role !== 'MERCHANT') return base;
   const role = user.merchantRole ? String(user.merchantRole).toUpperCase() : '';
   const allowed = MERCHANT_ROLE_NAV[role];
-  if (!allowed) return base;
+  // Role-less merchant: full menu minus Settlement Requests (only Supervisors create settlements).
+  if (!allowed) return base.filter((i) => i.key !== 'settlement');
   const byKey = new Map(base.map((i) => [i.key, i]));
   return allowed.map((k) => byKey.get(k)).filter((i): i is NavItem => Boolean(i));
 };
