@@ -1,10 +1,12 @@
-"""WhatsApp notification integration (internal users: Admin / Supervisor / Manager).
+"""WhatsApp notification integration — mirrors every in-app notification to the recipient.
 
 Provider-agnostic. Hooked into the ORM via a session ``after_commit`` listener, so NO
-existing notification code changes: whenever a Notification row is committed for an eligible
-internal user (with ``whatsapp_enabled`` and a phone number), the same message is ALSO sent
-to WhatsApp — asynchronously, off the request path, retried, and never affecting the
-business transaction. Every attempt is written to ``whatsapp_logs``.
+existing notification code changes: whenever a Notification row is committed for any user
+(with ``whatsapp_enabled`` and a phone number), the same message is ALSO sent to that user's
+WhatsApp — asynchronously, off the request path, retried, and never affecting the business
+transaction. The recipient is whoever received the in-app notification (no hardcoded roles),
+so future workflow/recipient changes are mirrored automatically. Per-role toggles act only as
+an optional filter. Every attempt is written to ``whatsapp_logs``.
 
 The feature is inert until a provider + token are configured (WHATSAPP_* env). Adding a new
 provider only means extending ``_send`` — the notification logic never changes.
@@ -24,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.models import User, UserRole, Notification, WhatsAppLog, AppSetting
+from app.models.models import User, UserRole, Notification, WhatsAppLog, AppSetting, Transaction
 
 log = logging.getLogger("clari5pay.whatsapp")
 
@@ -36,10 +38,11 @@ _REF_RE = re.compile(r"\b(?:DEP|WIT|SET)\d{4,}\b")
 
 # ── Global per-role toggle (Admin → Settings → Notifications) ────────────────────
 # Which roles receive WhatsApp, configurable at runtime without code changes. Stored as a
-# JSON map in app_settings; defaults enable the internal reviewer/approver roles only.
+# JSON map in app_settings. Pure-mirror model: every role defaults ON — the toggles are an
+# OPTIONAL filter an admin can use to switch a role off, not a hardcoded allow-list.
 WA_ROLE_KEYS = ["ADMIN", "SUPERVISOR", "MANAGER", "MERCHANT",
                 "DATA_OPERATOR", "DEPOSIT_OPERATOR", "WITHDRAWAL_OPERATOR"]
-WA_DEFAULT_ROLES = {"ADMIN": True, "SUPERVISOR": True, "MANAGER": True}
+WA_DEFAULT_ROLES = {k: True for k in WA_ROLE_KEYS}
 _WA_ROLES_KEY = "whatsapp_roles"
 
 
@@ -65,7 +68,7 @@ async def get_role_settings(db: AsyncSession) -> dict:
             data = json.loads(row.value)
         except Exception:
             data = {}
-    return {k: bool(data.get(k, WA_DEFAULT_ROLES.get(k, False))) for k in WA_ROLE_KEYS}
+    return {k: bool(data.get(k, WA_DEFAULT_ROLES.get(k, True))) for k in WA_ROLE_KEYS}
 
 
 async def set_role_settings(db: AsyncSession, mapping: dict) -> dict:
@@ -84,12 +87,17 @@ async def set_role_settings(db: AsyncSession, mapping: dict) -> dict:
 
 
 def _eligible(user: Optional[User], role_settings: dict) -> bool:
-    """A user gets WhatsApp when: their role is enabled globally, their personal preference is on,
-    and they have a phone. Merchants/operators are off by default but can be enabled per-role."""
+    """Pure mirror: any recipient with a phone and their personal preference on receives the
+    WhatsApp copy of their in-app notification — regardless of role. The per-role toggles are an
+    OPTIONAL filter (default ON): an admin can switch a specific role off, but nothing is
+    hardcoded, so future workflow/recipient changes are mirrored automatically. Roles with no
+    settings key (Super Admin / Support) are always mirrored."""
     if not user or not user.whatsapp_enabled or not (user.phone or "").strip():
         return False
     rk = _role_key(user)
-    return bool(rk and role_settings.get(rk, False))
+    if rk is None:
+        return True
+    return role_settings.get(rk, True)
 
 
 # ── Per-event toggle (which events trigger WhatsApp) ────────────────────────────
@@ -153,16 +161,65 @@ def _notif_type(message: str) -> Optional[str]:
     return {"DEP": "deposit", "WIT": "withdrawal", "SET": "settlement"}.get(m.group(0)[:3])
 
 
-def _format(message: str) -> str:
-    """Company-branded message. The in-app text already carries the reference/action; we add a
-    branded header, the reference (if present) and a timestamp, matching the notification format."""
+# Human-friendly status labels for the WhatsApp message (raw TxStatus enum → readable text).
+_STATUS_LABEL = {
+    "PENDING": "Pending Approval", "PENDING_APPROVAL": "Pending Approval",
+    "SUPERVISOR_REVIEW": "Under Supervisor Review", "MANAGER_REVIEW": "Under Manager Review",
+    "ACCOUNT_REQUESTED": "Requested", "ACCOUNT_SUBMITTED": "Account Details Sent",
+    "SLIP_SUBMITTED": "Slip Submitted", "RESUBMITTED": "Resubmitted",
+    "ADMIN_APPROVED": "Approved", "DEPOSITED": "Approved",
+    "COMPLETED": "Completed", "SUCCESSFUL": "Completed",
+    "REJECTED": "Rejected", "SA_REJECTED": "Rejected", "CANCELLED": "Cancelled",
+}
+
+
+def _money(value) -> Optional[str]:
+    try:
+        return f"₹{float(value):,.2f}"          # ₹25,000.00
+    except (TypeError, ValueError):
+        return None
+
+
+def _tx_kind(tx_type) -> Optional[str]:
+    v = str(getattr(tx_type, "value", tx_type) or "").upper()
+    if "DEPOSIT" in v:
+        return "Deposit"
+    if "WITHDRAWAL" in v:
+        return "Withdrawal"
+    if "SETTLEMENT" in v:
+        return "Settlement"
+    return None
+
+
+def _format(message: str, tx: Optional["Transaction"] = None) -> str:
+    """Company-branded message that MIRRORS the in-app notification, enriched with the linked
+    transaction's details (Business / Transaction / Reference / Amount / Status) when available.
+    Falls back to just the in-app text + reference when there is no transaction (e.g. account /
+    security notifications)."""
     company = settings.WHATSAPP_COMPANY_NAME or "Clari5Pay"
     when = datetime.now().strftime("%d-%b-%Y %I:%M %p")
-    ref = _REF_RE.search(message or "")
     lines = [f"{company} Notification", "", (message or "").strip()]
-    if ref:
-        lines += ["", f"Transaction: {ref.group(0)}"]
-    lines += ["", f"Time: {when}", "", "Please log in to Clari5Pay for complete details."]
+    if tx is not None:
+        details = []
+        if getattr(tx, "merchant_name", None):
+            details.append(f"Business: {tx.merchant_name}")
+        kind = _tx_kind(tx.type)
+        if kind:
+            details.append(f"Transaction: {kind}")
+        details.append(f"Reference: {tx.ref}")
+        amt = _money(getattr(tx, "amount", None))
+        if amt:
+            details.append(f"Amount: {amt}")
+        status = _STATUS_LABEL.get(str(getattr(tx.status, "value", tx.status) or "").upper())
+        if status:
+            details.append(f"Status: {status}")
+        if details:
+            lines += [""] + details
+    else:
+        ref = _REF_RE.search(message or "")
+        if ref:
+            lines += ["", f"Transaction: {ref.group(0)}"]
+    lines += ["", f"Date: {when}", "", "Please log in to Clari5Pay for complete details."]
     return "\n".join(lines)
 
 
@@ -230,7 +287,15 @@ async def _deliver(user_id: int, message: str) -> None:
                 return  # role/user disabled or no phone — nothing to do
             if not (await get_event_settings(db)).get(_event_key(message), True):
                 return  # this event type is switched off in Settings
-            body = _format(message)
+            # Enrich with the linked transaction (Business / Amount / Status) when the message
+            # carries a reference — a self-contained read, no notification/workflow changes.
+            tx = None
+            ref_m = _REF_RE.search(message or "")
+            if ref_m:
+                tx = (await db.execute(
+                    select(Transaction).where(Transaction.ref == ref_m.group(0))
+                )).scalar_one_or_none()
+            body = _format(message, tx)
             ok, msg_id, resp, reason = False, None, None, None
             attempts = max(1, (settings.WHATSAPP_RETRIES or 0) + 1)
             used = 0
