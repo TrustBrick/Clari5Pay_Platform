@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# HTTPS overlay for the Demo/UAT stack — Caddy (automatic Let's Encrypt TLS).
+#
+# Deploy it TOGETHER with the base demo file, and ONLY after the demo-*.win365jackpot.com
+# DNS A records point at this (Demo) server:
+#
+#   docker compose -f docker-compose.demo.yml -f docker-compose.https.demo.yml up -d
+#
+# Caddy takes over ports 80/443 on the DEMO box; the frontend becomes internal-only.
+# Requires inbound 443 open in the Demo EC2's security group.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  frontend:
+    # Caddy now owns 80/443 — drop the frontend's host port mapping (internal only).
+    # This build is the demo.win365jackpot.com portal chooser (VITE_PORTAL=app from demo.yml).
+    ports: !reset []
+
+  # ── Role portals: same codebase, built once per role (VITE_PORTAL) ──
+  frontend-merchant:                 # demo-merchant.win365jackpot.com
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+        VITE_PORTAL: "merchant"
+        VITE_APP_ENV: "demo"
+        VITE_MERCHANT_URL: "https://demo-merchant.win365jackpot.com"
+        VITE_ADMIN_URL: "https://demo-admin.win365jackpot.com"
+        VITE_SA_URL: "https://demo-sa.win365jackpot.com"
+    container_name: clari5pay_demo_ui_merchant
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  frontend-admin:                    # demo-admin.win365jackpot.com
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+        VITE_PORTAL: "admin"
+        VITE_APP_ENV: "demo"
+        VITE_MERCHANT_URL: "https://demo-merchant.win365jackpot.com"
+        VITE_ADMIN_URL: "https://demo-admin.win365jackpot.com"
+        VITE_SA_URL: "https://demo-sa.win365jackpot.com"
+    container_name: clari5pay_demo_ui_admin
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  frontend-sa:                       # demo-sa.win365jackpot.com
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+        VITE_PORTAL: "superadmin"
+        VITE_APP_ENV: "demo"
+        VITE_MERCHANT_URL: "https://demo-merchant.win365jackpot.com"
+        VITE_ADMIN_URL: "https://demo-admin.win365jackpot.com"
+        VITE_SA_URL: "https://demo-sa.win365jackpot.com"
+    container_name: clari5pay_demo_ui_sa
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  # Customer Support agent portal (served at demo-support.win365jackpot.com via Caddy).
+  support:
+    build:
+      context: ./support-frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""    # same-origin; its nginx proxies /api to the backend
+        VITE_APP_ENV: "demo"
+    container_name: clari5pay_demo_support
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: clari5pay_demo_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"          # HTTP/3
+    volumes:
+      - ./Caddyfile.demo:/etc/caddy/Caddyfile:ro
+      - caddy_data_demo:/data       # persists the issued certificates
+      - caddy_config_demo:/config
+    depends_on:
+      - frontend
+      - frontend-merchant
+      - frontend-admin
+      - frontend-sa
+      - support
+
+volumes:
+  caddy_data_demo:
+  caddy_config_demo:

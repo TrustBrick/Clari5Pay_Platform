@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Demo/UAT stack — deployed to its OWN EC2 + its OWN RDS instance, fully separate
+# from Production (see DEPLOY_DEMO_AWS.md). Run it ALONE on that box:
+#
+#   docker compose -f docker-compose.demo.yml up -d --build
+#
+# Reads secrets from a `.env` file in this directory (see .env.demo.example).
+# Same architecture as docker-compose.prod.yml — only container names, the .env
+# contents, and the frontend build args (VITE_APP_ENV, VITE_*_URL) differ.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: clari5pay_demo_redis
+    restart: unless-stopped
+    volumes:
+      - redisdata_demo:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clari5pay_demo_api
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    env_file:
+      - .env                       # ENVIRONMENT=demo, DB_HOST (demo RDS), SECRET_KEY, etc.
+    environment:
+      DB_SSL: "true"               # RDS requires TLS
+      USE_IAM_AUTH: "false"
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"                     # internal only (reached via the nginx /api proxy)
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+        VITE_PORTAL: "app"            # demo.win365jackpot.com → portal chooser landing
+        VITE_APP_ENV: "demo"
+        VITE_MERCHANT_URL: "https://demo-merchant.win365jackpot.com"
+        VITE_ADMIN_URL: "https://demo-admin.win365jackpot.com"
+        VITE_SA_URL: "https://demo-sa.win365jackpot.com"
+    container_name: clari5pay_demo_ui
+    restart: unless-stopped
+    ports:
+      - "80:3000"                  # public HTTP (until docker-compose.https.demo.yml takes over)
+    depends_on:
+      - backend
+
+volumes:
+  redisdata_demo:

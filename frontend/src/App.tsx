@@ -5,9 +5,10 @@ import { PAGE_TITLES } from './utils/nav';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import SessionManager from './components/SessionManager';
+import DemoBanner from './components/DemoBanner';
 import LoginPage from './pages/LoginPage';
 import PortalChooser from './pages/PortalChooser';
-import { PORTAL } from './utils/portal';
+import { PORTAL, IS_DEMO } from './utils/portal';
 import {
   MerchantDashboard, DepositManagement, WithdrawalManagement, SettlementManagement,
   TransactionHistory, BalancePage, RiskPage, MerchantSupportChat, ProfilePage,
@@ -17,7 +18,7 @@ import { AdminReportsPage } from './pages/ReportsPage';
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
   SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage,
-  MerchantAnalyticsPage, WhatsAppSettingsPage,
+  MerchantAnalyticsPage, WhatsAppSettingsPage, DemoToolsPage,
 } from './pages/AdminPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
@@ -67,8 +68,8 @@ const App: React.FC = () => {
   }, [user]);
 
   // app.win365jackpot.com is just a chooser that routes users to their dedicated portal.
-  if (PORTAL === 'app') return <PortalChooser />;
-  if (!user) return <LoginPage />;
+  if (PORTAL === 'app') return (<><DemoBanner /><PortalChooser /></>);
+  if (!user) return (<><DemoBanner /><LoginPage /></>);
 
   // Effective page: fall back to the role default if the current page isn't valid for this role
   // (e.g. a stale page left over from a previous session/role).
@@ -107,12 +108,14 @@ const App: React.FC = () => {
       'sa-news': <NewsPage {...props} />,
       'sa-logs': <SystemLogsPage />,
       'sa-audit': <AuditLogsPage />,
+      ...(IS_DEMO ? { 'sa-demo': <DemoToolsPage /> } : {}),
     };
     return map[activePage] || map[defaultPageFor(user.role)];
   };
 
   return (
     <>
+      <DemoBanner />
       {/* Inactivity session timeout (10 min) — active only while logged in. */}
       <SessionManager />
       <style>{`
@@ -152,7 +155,7 @@ const App: React.FC = () => {
 
       <main
         className="main-content"
-        style={{ marginLeft: 248, marginTop: 60, minHeight: 'calc(100vh - 60px)', background: T.canvas, padding: 24, boxSizing: 'border-box' }}
+        style={{ marginLeft: 248, marginTop: 'calc(60px + var(--demo-banner-h, 0px))', minHeight: 'calc(100vh - 60px)', background: T.canvas, padding: 24, boxSizing: 'border-box' }}
       >
         {renderPage()}
       </main>

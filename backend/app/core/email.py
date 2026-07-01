@@ -40,7 +40,7 @@ async def send_otp_email(to: str, otp: str, name: str = "", purpose: str = "logi
     """Send the OTP using the branded template. Returns True if a real email was dispatched,
     False in dev (logged only). The same template is used for login and password-reset codes."""
     minutes = settings.OTP_EXPIRE_MINUTES
-    subject = "Your Verification Code"
+    subject = "[DEMO] Your Verification Code" if settings.is_demo else "Your Verification Code"
     action = "reset your password" if purpose == "reset" else "sign in"
     body = (
         f"Hello {name or ''},\n\n"

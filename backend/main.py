@@ -49,6 +49,12 @@ app.add_middleware(
         "https://admin.win365jackpot.com",
         "https://sa.win365jackpot.com",
         "https://support.win365jackpot.com",
+        # Demo/UAT portals (separate EC2 + RDS; harmless to also allow here).
+        "https://demo.win365jackpot.com",
+        "https://demo-merchant.win365jackpot.com",
+        "https://demo-admin.win365jackpot.com",
+        "https://demo-sa.win365jackpot.com",
+        "https://demo-support.win365jackpot.com",
         "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
         "http://localhost:5173", "http://localhost:5174",
     ],
@@ -73,7 +79,13 @@ app.include_router(risk.router)
 app.include_router(ai.router)
 app.include_router(whatsapp.router)
 
+# Demo/UAT-only admin tools (e.g. POST /api/demo/reset). Not imported/mounted at all
+# unless ENVIRONMENT=demo, so the route is a 404 on Production regardless of auth.
+if settings.is_demo:
+    from app.api.routes import demo_admin
+    app.include_router(demo_admin.router)
+
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "Clari5Pay API"}
+    return {"status": "ok", "service": "Clari5Pay API", "environment": settings.ENVIRONMENT}

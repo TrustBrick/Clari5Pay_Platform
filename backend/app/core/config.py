@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     DB_PASSWORD: str = ""                # RDS master password (raw value, no escaping)
     AWS_REGION: str = "eu-north-1"
 
+    # ── Which stack this process is: "production" | "demo". Unset → "production", so
+    # Production's .env never needs to change. Gates the demo-only reset endpoint, the
+    # [DEMO] email subject prefix, and is echoed on /health for deploy verification. ──
+    ENVIRONMENT: str = "production"
+
     # ── Login / password-reset OTP ──
     OTP_EXPIRE_MINUTES: int = 15
     # SMTP — when SMTP_HOST is set, OTPs are emailed for real (production).
@@ -75,6 +80,10 @@ class Settings(BaseSettings):
     @property
     def whatsapp_configured(self) -> bool:
         return bool(self.WHATSAPP_PROVIDER and self.WHATSAPP_TOKEN)
+
+    @property
+    def is_demo(self) -> bool:
+        return self.ENVIRONMENT == "demo"
 
     class Config:
         env_file = ".env"

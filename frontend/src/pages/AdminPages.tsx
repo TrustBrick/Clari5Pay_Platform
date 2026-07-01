@@ -10,7 +10,7 @@ import TxSearchFilters from '../components/TxSearchFilters';
 import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery, ReceiptImage } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
-import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI } from '../services/api';
+import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, demoAPI } from '../services/api';
 import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
@@ -1985,6 +1985,71 @@ export const WhatsAppSettingsPage: React.FC = () => {
           </table>
         </div>
       </Card>
+    </div>
+  );
+};
+
+// ─── DemoToolsPage — Demo/UAT builds only (VITE_APP_ENV=demo), see utils/portal.ts::IS_DEMO.
+// Not reachable at all in a Production build (no nav entry, no route) and the backend
+// endpoint itself only exists when the server's ENVIRONMENT=demo. ───────────────────────
+export const DemoToolsPage: React.FC = () => {
+  const { showToast } = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [typed, setTyped] = useState('');
+  const [resetting, setResetting] = useState(false);
+  const [lastResult, setLastResult] = useState<{ resetBy: string; tables: string[] } | null>(null);
+
+  const doReset = async () => {
+    setResetting(true);
+    try {
+      const r = await demoAPI.reset();
+      setLastResult({ resetBy: r.resetBy, tables: r.tables });
+      showToast('Demo data reset — transactions, notifications and logs cleared.');
+      setConfirming(false);
+      setTyped('');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Reset failed', 'error');
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Demo Tools</h2>
+        <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Available only in this Demo/UAT environment — never shown or reachable in Production.</p>
+      </div>
+
+      <Card style={{ padding: 20 }}>
+        <h3 style={{ margin: '0 0 8px', fontSize: 14, fontWeight: 800 }}>Reset Demo Data</h3>
+        <p style={{ fontSize: 13, color: T.textMuted, margin: '0 0 16px' }}>
+          Wipes all demo transactions, account balances, notifications, audit/system logs and WhatsApp logs,
+          and restarts the deposit/withdrawal/settlement reference numbers back to 0000001. Merchant, admin
+          and Super Admin accounts, saved bank details / UPIs, and platform settings are kept as-is.
+        </p>
+        <Btn variant="danger" onClick={() => setConfirming(true)}>🗑 Reset Demo Environment</Btn>
+        {lastResult && (
+          <p style={{ marginTop: 14, fontSize: 12, color: T.textMuted }}>
+            Last reset by <strong>{lastResult.resetBy}</strong> — cleared: {lastResult.tables.join(', ')}.
+          </p>
+        )}
+      </Card>
+
+      {confirming && (
+        <Modal title="Reset Demo Environment?" onClose={() => { setConfirming(false); setTyped(''); }}>
+          <p style={{ fontSize: 13, color: T.textMuted, margin: '0 0 14px' }}>
+            This permanently deletes all demo transactions, notifications and logs. This cannot be undone.
+            Type <strong>RESET</strong> to confirm.
+          </p>
+          <input value={typed} onChange={e => setTyped(e.target.value)} placeholder="Type RESET" autoFocus
+            style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', marginBottom: 16 }} />
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <Btn variant="ghost" onClick={() => { setConfirming(false); setTyped(''); }}>Cancel</Btn>
+            <Btn variant="danger" disabled={typed !== 'RESET' || resetting} onClick={doReset}>{resetting ? 'Resetting…' : 'Reset Everything'}</Btn>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

@@ -7,6 +7,9 @@ COPY . .
 # nginx proxies it to the backend) — used in production behind Caddy.
 ARG VITE_API_BASE_URL=http://localhost:8001
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+# "demo" shows the DemoBanner. Unset = "production".
+ARG VITE_APP_ENV=production
+ENV VITE_APP_ENV=$VITE_APP_ENV
 RUN npm run build
 
 FROM nginx:alpine

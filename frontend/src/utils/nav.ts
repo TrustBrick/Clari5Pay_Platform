@@ -1,4 +1,5 @@
 import type { NavItem, User, UserRole } from '../types';
+import { IS_DEMO } from './portal';
 
 // The Blog module has been merged into News — there is no separate Blog menu.
 
@@ -43,6 +44,8 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'sa-news', icon: '📰', label: 'News Management' },
     { key: 'sa-logs', icon: '🧾', label: 'System Logs' },
     { key: 'sa-audit', icon: '📋', label: 'Audit Logs' },
+    // Demo/UAT builds only (VITE_APP_ENV=demo) — never shown in Production.
+    ...(IS_DEMO ? [{ key: 'sa-demo', icon: '🧪', label: 'Demo Tools' }] : []),
     { key: 'profile', icon: '◉', label: 'Profile' },
   ],
   // Support agents use the separate Customer Support portal.
@@ -82,6 +85,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'sa-news': 'News Management',
   'sa-logs': 'System Logs',
   'sa-audit': 'Audit Logs',
+  'sa-demo': 'Demo Tools',
 };
 
 // Sidebar pages permitted per merchant role (drives the dynamic sidebar).

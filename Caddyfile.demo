@@ -1,0 +1,67 @@
+# Automatic HTTPS (Let's Encrypt) for the Demo/UAT stack — a separate Caddy instance on
+# the Demo EC2, with its own certs (caddy_data_demo / caddy_config_demo volumes). Same
+# hardening as Production's Caddyfile; only the domains differ.
+
+(realclientip) {
+	header_up X-Forwarded-For {http.request.remote.host}
+}
+
+(hardening) {
+	request_body {
+		max_size 12MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' wss: https://ifsc.razorpay.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		-Server
+	}
+}
+
+# Merchant portal.
+demo-merchant.win365jackpot.com {
+	import hardening
+	encode zstd gzip
+	reverse_proxy frontend-merchant:3000 {
+		import realclientip
+	}
+}
+
+# Admin portal.
+demo-admin.win365jackpot.com {
+	import hardening
+	encode zstd gzip
+	reverse_proxy frontend-admin:3000 {
+		import realclientip
+	}
+}
+
+# Super Admin portal.
+demo-sa.win365jackpot.com {
+	import hardening
+	encode zstd gzip
+	reverse_proxy frontend-sa:3000 {
+		import realclientip
+	}
+}
+
+# Combined entry — a chooser that routes users to their portal.
+demo.win365jackpot.com {
+	import hardening
+	encode zstd gzip
+	reverse_proxy frontend:3000 {
+		import realclientip
+	}
+}
+
+# Customer Support agent portal.
+demo-support.win365jackpot.com {
+	import hardening
+	encode zstd gzip
+	reverse_proxy support:3002 {
+		import realclientip
+	}
+}

@@ -98,7 +98,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
       )}
       <aside
         className={`sidebar ${open ? 'open' : ''}`}
-        style={{ width:248,height:'100vh',background:T.sidebar,display:'flex',flexDirection:'column',position:'fixed',left:0,top:0,zIndex:100,boxShadow:'4px 0 24px rgba(0,0,0,0.2)',transition:'transform 0.3s ease' }}
+        style={{ width:248,height:'100vh',background:T.sidebar,display:'flex',flexDirection:'column',position:'fixed',left:0,top:'var(--demo-banner-h, 0px)',zIndex:100,boxShadow:'4px 0 24px rgba(0,0,0,0.2)',transition:'transform 0.3s ease' }}
       >
         {/* Brand */}
         <div style={{ padding:'20px 18px 14px',borderBottom:'1px solid rgba(255,255,255,0.08)' }}>

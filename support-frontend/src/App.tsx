@@ -4,6 +4,7 @@ import {
   sendMessage, wsUrl, type Conversation, type Message, type MerchantDetail, type SupportUser,
 } from './api';
 import { ThemeToggle } from './theme';
+import DemoBanner from './DemoBanner';
 
 // Colors are CSS variables (defined in theme.css for light + dark); flipping data-theme
 // on <html> re-themes the app. `dark` stays dark in both (login + header brand bg).
@@ -40,7 +41,8 @@ const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => 
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: T.dark, fontFamily: "'Inter','Segoe UI',sans-serif", padding: 16, boxSizing: 'border-box', position: 'relative' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: T.dark, fontFamily: "'Inter','Segoe UI',sans-serif", padding: 16, paddingTop: 'calc(16px + var(--demo-banner-h, 0px))', boxSizing: 'border-box', position: 'relative' }}>
+      <DemoBanner />
       <div style={{ position: 'absolute', top: 18, right: 18 }}><ThemeToggle /></div>
       <div style={{ background: T.surface, borderRadius: 20, padding: 'clamp(24px, 5vw, 40px)', width: 'min(380px, 100%)', boxSizing: 'border-box', boxShadow: '0 24px 80px rgba(0,0,0,0.35)' }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
@@ -143,7 +145,8 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
   const backToList = () => { setActiveId(null); setMessages([]); setMerchant(null); setShowDetails(false); };
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: "'Inter','Segoe UI',sans-serif", background: T.canvas }}>
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: "'Inter','Segoe UI',sans-serif", background: T.canvas, paddingTop: 'var(--demo-banner-h, 0px)', boxSizing: 'border-box' }}>
+      <DemoBanner />
       {/* Top bar */}
       <header style={{ height: 56, background: T.dark, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: isMobile ? '0 12px' : '0 20px', flexShrink: 0, gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 7 : 10, minWidth: 0 }}>

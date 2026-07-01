@@ -463,6 +463,10 @@ export const whatsappAPI = {
   getLogs: async (limit = 100) => (await api.get<WhatsappLog[]>('/api/whatsapp/logs', { params: { limit } })).data,
 };
 
+export const demoAPI = {
+  reset: async () => (await api.post<{ ok: boolean; resetBy: string; tables: string[] }>('/api/demo/reset', { confirm: 'RESET' })).data,
+};
+
 export const systemLogAPI = {
   list: async () => {
     const res = await api.get<SystemLogEntry[]>('/api/system-logs');

@@ -104,7 +104,7 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick }) => {
   return (
     <header
       className="main-header"
-      style={{ height:60,background:T.surface,borderBottom:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 20px',position:'fixed',top:0,left:248,right:0,zIndex:90,boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}
+      style={{ height:60,background:T.surface,borderBottom:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 20px',position:'fixed',top:'var(--demo-banner-h, 0px)',left:248,right:0,zIndex:90,boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}
     >
       <div style={{ display:'flex',alignItems:'center',gap:12 }}>
         <button
