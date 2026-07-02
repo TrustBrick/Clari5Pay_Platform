@@ -219,17 +219,14 @@ const RequestModal: React.FC<{
           <Row k="Amount" v={fmt(tx.amount)} />
           <Row k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="ADMIN" />} />
           {(tx.memberId || tx.member) && <Row k="Membership - Member" v={memberLabel(tx.memberId, tx.member)} />}
-          {/* Withdrawal Request Details — merchant + member context the Admin verifies before
-              sending the company account (all from existing records; derived fields load with the detail). */}
-          {!isDeposit && (
-            <>
-              <Row k="Withdrawal Ref" v={tx.ref} />
-              {(tx.creatorUsername || record.merchantUsername) && <Row k="Merchant Username" v={(tx.creatorUsername || record.merchantUsername) as string} />}
-              {(record.merchantCode || tx.merchantCode || tx.merchantId != null) && <Row k="Merchant ID" v={String(record.merchantCode || tx.merchantCode || tx.merchantId)} />}
-              {record.memberProfileType && <Row k="Profile Type" v={record.memberProfileType} />}
-              {(record.memberSegment || tx.segment) && <Row k="Segment" v={(record.memberSegment || tx.segment) as string} />}
-            </>
-          )}
+          {/* Request Details — merchant + member context the Admin verifies before acting.
+              Shown for both Deposits and Withdrawals so the two request types carry the same
+              information (all from existing records; derived fields load with the detail). */}
+          <Row k={isDeposit ? 'Deposit Ref' : 'Withdrawal Ref'} v={tx.ref} />
+          {(tx.creatorUsername || record.merchantUsername) && <Row k="Merchant Username" v={(tx.creatorUsername || record.merchantUsername) as string} />}
+          {(record.merchantCode || tx.merchantCode || tx.merchantId != null) && <Row k="Merchant ID" v={String(record.merchantCode || tx.merchantCode || tx.merchantId)} />}
+          {record.memberProfileType && <Row k="Profile Type" v={record.memberProfileType} />}
+          {(record.memberSegment || tx.segment) && <Row k="Segment" v={(record.memberSegment || tx.segment) as string} />}
           {tx.depositType && <Row k="Deposit Type" v={depositTypeLabel(tx.depositType)} />}
           {isDeposit && tx.depositDetails && Object.entries(tx.depositDetails).map(([k, v]) =>
             v ? <Row key={k} k={depositDetailLabel(k)} v={String(v)} /> : null)}
@@ -257,7 +254,22 @@ const RequestModal: React.FC<{
         <div>
           {isDeposit ? (
             <>
-              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Account Sent</p>
+              {/* Sender account the merchant will send FROM — the Admin reviews this before
+                  providing the company's receiving account. All fields come from the existing
+                  transaction record (bank / UPI captured at deposit creation); no extra data stored. */}
+              <p style={{ fontSize:12,fontWeight:800,color:T.blue,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Sender Account Details (from which merchant will send)</p>
+              {(tx.bank || tx.accountHolder || tx.accountNumber || tx.ifsc || tx.senderUpiId) ? (
+                <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12 }}>
+                  {tx.bank && <Row k="Bank Name" v={tx.bank} />}
+                  {tx.accountHolder && <Row k="Account Holder Name" v={tx.accountHolder} />}
+                  {tx.accountNumber && <Row k="Account Number" v={tx.accountNumber} />}
+                  {tx.ifsc && <Row k="IFSC Code" v={tx.ifsc} />}
+                  {tx.senderUpiId && <Row k="UPI ID" v={tx.senderUpiId} />}
+                  {tx.depositType && <Row k="Payment Method" v={depositTypeLabel(tx.depositType)} />}
+                </div>
+              ) : <div style={{ padding:24,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>No sender account selected yet.</div>}
+
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'16px 0 8px' }}>Account Sent</p>
               {(tx.adminBankDetails || tx.adminUpiId || tx.adminRef || tx.hasAdminBankImage) ? (
                 <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12 }}>
                   {tx.adminUpiId && <Row k="UPI ID" v={tx.adminUpiId} />}
