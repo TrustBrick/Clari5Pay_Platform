@@ -116,8 +116,11 @@ const App: React.FC = () => {
   return (
     <>
       <DemoBanner />
-      {/* Inactivity session timeout (10 min) — active only while logged in. */}
-      <SessionManager />
+      {/* Inactivity session timeout (10 min) — active only while logged in, and only for
+          Merchant-portal users (Merchant / Data-Deposit-Withdrawal Operators / Supervisor /
+          Manager) and Support. Admin & Super Admin have NO auto-timeout: they stay signed in
+          until they click Logout or their token is invalidated. */}
+      {user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN' && <SessionManager />}
       <style>{`
         *{margin:0;padding:0;box-sizing:border-box;}
         body{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:${T.canvas};}
