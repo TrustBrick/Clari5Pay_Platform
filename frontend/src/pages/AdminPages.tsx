@@ -995,7 +995,7 @@ export const AdminMerchantsPage: React.FC = () => {
       </div>
       {showCreate && (
         <Modal title="Onboard Merchant" onClose={()=>setShowCreate(false)} wide>
-          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+          <div style={{ display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:'0 18px' }}>
             <Input label="Business Name" value={form.name} onChange={e=>set('name',e.target.value)} placeholder="e.g. Nexus Fintech Ltd." required/>
             <Sel label="Country" value={form.country} onChange={e=>set('country',e.target.value)} required options={COUNTRY_NAME_OPTIONS}/>
             <Input label="Username" value={form.username} onChange={e=>set('username',e.target.value)} placeholder="Login username" required hint="Merchant uses this to login"/>
@@ -1135,8 +1135,8 @@ export const AdminMerchantsPage: React.FC = () => {
 
       {/* Create User — adds a login under the current business (codes/fees inherited). */}
       {viewCompany && showCreateUser && (
-        <Modal title={`Create User — ${viewCompany.name}`} onClose={()=>setShowCreateUser(false)}>
-          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+        <Modal title={`Create User — ${viewCompany.name}`} onClose={()=>setShowCreateUser(false)} wide>
+          <div style={{ display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:'0 18px' }}>
             <Input label="Merchant Name" value={viewCompany.name} readOnly onChange={()=>{}}/>
             <Input label="User ID" value="Auto-generated" readOnly onChange={()=>{}} hint="Assigned on creation"/>
             <Input label="User Full Name" value={uForm.fullName} onChange={e=>uSet('fullName',e.target.value)} placeholder="e.g. Amit Sharma" required/>
