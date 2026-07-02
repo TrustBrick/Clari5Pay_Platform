@@ -29,6 +29,19 @@ OTP_SETTING_KEY = "otp_enabled"
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 
+# Roles with no inactivity/session timeout: their access token is effectively non-expiring,
+# so they stay signed in until they explicitly log out or their account is deactivated
+# (token revocation). All other roles keep the standard ACCESS_TOKEN_EXPIRE_MINUTES lifetime.
+NO_TIMEOUT_ROLES = (UserRole.ADMIN, UserRole.SUPER_ADMIN)
+
+
+def _issue_session_token(user: User) -> str:
+    """Access token for a fully-authenticated session, with a role-based lifetime.
+    Admin / Super Admin get an effectively non-expiring token; everyone else keeps the
+    configured timeout. JWT authenticity and permission checks are unchanged."""
+    expires = timedelta(days=settings.ADMIN_TOKEN_EXPIRE_DAYS) if user.role in NO_TIMEOUT_ROLES else None
+    return create_access_token({"sub": str(user.id)}, expires)
+
 
 async def _otp_enabled(db: AsyncSession) -> bool:
     row = (await db.execute(select(AppSetting).where(AppSetting.key == OTP_SETTING_KEY))).scalar_one_or_none()
@@ -280,7 +293,7 @@ async def verify_otp(
     # Success
     row.verified = True
     row.consumed = True
-    token = create_access_token({"sub": str(user.id)})
+    token = _issue_session_token(user)
     await record_audit(db, "OTP_VERIFIED", actor=user, entity_type="user", entity_id=user.id, ip=ip)
     await log_event(db, "OTP_VERIFIED", f"OTP verified for {user.name}", actor=user)
     await record_audit(db, "LOGIN", actor=user, entity_type="user", entity_id=user.id, ip=ip)

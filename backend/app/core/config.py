@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "changeme-super-secret-jwt-key-at-least-32-chars"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    # Admin & Super Admin have no inactivity/session timeout — their token is effectively
+    # non-expiring (10 years) so they stay signed in until they explicitly log out or their
+    # account is deactivated (token revocation). Merchant/Support roles keep the value above.
+    ADMIN_TOKEN_EXPIRE_DAYS: int = 3650
     ANTHROPIC_API_KEY: str = ""
     FRONTEND_ORIGIN: str = "http://localhost:3000"
 
