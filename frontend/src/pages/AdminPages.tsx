@@ -889,6 +889,27 @@ const COUNTRY_NAME_OPTIONS = COUNTRY_CODES
   .filter((n, i, a) => !!n && a.indexOf(n) === i)
   .map(n => ({ value: n, label: n }));
 
+// Phone-number field (country code + number). The select uses appearance:none + a custom
+// chevron so it honours the same height / border-radius as the number input and the rest of
+// the form — a raw <select> clamps its corners and shows a native arrow, which looks off.
+const PhoneField: React.FC<{ code: string; onCode: (v: string) => void; phone: string; onPhone: (v: string) => void }> = ({ code, onCode, phone, onPhone }) => {
+  const ctl: React.CSSProperties = { height: 42, border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box', background: T.surface, color: T.textMain };
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Phone Number<span style={{ color: T.danger }}> *</span></label>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <select value={code} onChange={e => onCode(e.target.value)}
+          style={{ ...ctl, width: 122, padding: '0 28px 0 10px', appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none', cursor: 'pointer',
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%236b7280' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 10px center' }}>
+          {COUNTRY_CODES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+        </select>
+        <input value={phone} onChange={e => onPhone(e.target.value.replace(/[^\d]/g, '').slice(0, 10))} placeholder="Phone number"
+          style={{ ...ctl, flex: 1, minWidth: 0, padding: '0 14px' }} />
+      </div>
+    </div>
+  );
+};
+
 // ─── Admin Merchants Page ─────────────────────────────────────────────────────
 // A "merchant" is a business (one or more MERCHANT users sharing the same `name`).
 // The page shows one row per business; View Users drills into its logins.
@@ -1000,17 +1021,7 @@ export const AdminMerchantsPage: React.FC = () => {
             <Sel label="Country" value={form.country} onChange={e=>set('country',e.target.value)} required options={COUNTRY_NAME_OPTIONS}/>
             <Input label="Username" value={form.username} onChange={e=>set('username',e.target.value)} placeholder="Login username" required hint="Merchant uses this to login"/>
             <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="biz@company.com" required/>
-            <div style={{ marginBottom:16 }}>
-              <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Phone Number<span style={{ color:T.danger }}> *</span></label>
-              <div style={{ display:'flex',gap:8 }}>
-                <select value={form.countryCode} onChange={e=>set('countryCode',e.target.value)}
-                  style={{ width:130,padding:'10px 8px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:13,outline:'none',fontFamily:'inherit',background:T.surface }}>
-                  {COUNTRY_CODES.map(c=><option key={c.code} value={c.code}>{c.label}</option>)}
-                </select>
-                <input value={form.phone} onChange={e=>set('phone',e.target.value.replace(/[^\d]/g,'').slice(0,10))} placeholder="Phone number"
-                  style={{ flex:1,padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,outline:'none',fontFamily:'inherit',boxSizing:'border-box' }}/>
-              </div>
-            </div>
+            <PhoneField code={form.countryCode} onCode={v=>set('countryCode',v)} phone={form.phone} onPhone={v=>set('phone',v)} />
             <Input label="Password" type="password" value={form.password} onChange={e=>set('password',e.target.value)} placeholder="Set login password" required hint="Merchant login password"/>
             <div>
               <Input label="Confirm Password" type="password" value={form.confirmPassword} onChange={e=>set('confirmPassword',e.target.value)} placeholder="Re-enter password" required/>
@@ -1142,17 +1153,7 @@ export const AdminMerchantsPage: React.FC = () => {
             <Input label="User Full Name" value={uForm.fullName} onChange={e=>uSet('fullName',e.target.value)} placeholder="e.g. Amit Sharma" required/>
             <Input label="Username" value={uForm.username} onChange={e=>uSet('username',e.target.value)} placeholder="Login username" required/>
             <Input label="Email ID" type="email" value={uForm.email} onChange={e=>uSet('email',e.target.value)} placeholder="user@company.com" required/>
-            <div style={{ marginBottom:16 }}>
-              <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Phone Number<span style={{ color:T.danger }}> *</span></label>
-              <div style={{ display:'flex',gap:8 }}>
-                <select value={uForm.countryCode} onChange={e=>uSet('countryCode',e.target.value)}
-                  style={{ width:130,padding:'10px 8px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:13,outline:'none',fontFamily:'inherit',background:T.surface }}>
-                  {COUNTRY_CODES.map(c=><option key={c.code} value={c.code}>{c.label}</option>)}
-                </select>
-                <input value={uForm.phone} onChange={e=>uSet('phone',e.target.value.replace(/[^\d]/g,'').slice(0,10))} placeholder="Phone number"
-                  style={{ flex:1,padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,outline:'none',fontFamily:'inherit',boxSizing:'border-box' }}/>
-              </div>
-            </div>
+            <PhoneField code={uForm.countryCode} onCode={v=>uSet('countryCode',v)} phone={uForm.phone} onPhone={v=>uSet('phone',v)} />
             <Input label="Password" type="password" value={uForm.password} onChange={e=>uSet('password',e.target.value)} placeholder="Set login password" required/>
             <div>
               <Input label="Confirm Password" type="password" value={uForm.confirmPassword} onChange={e=>uSet('confirmPassword',e.target.value)} placeholder="Re-enter password" required/>
