@@ -213,9 +213,9 @@ export const StatusChart: React.FC<{ data: Array<{ label: string; value: number;
 };
 
 // ─── Modal ───────────────────────────────────────────────────────────────────
-export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean }> = ({ title, children, onClose, wide, xl }) => (
-  <div className="c5-overlay" style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:16,backdropFilter:'blur(4px)' }}>
-    <div className="c5-pop" style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
+export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean; xxl?:boolean }> = ({ title, children, onClose, wide, xl, xxl }) => (
+  <div className="c5-overlay" style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:xxl?'24px 2.5vw':16,backdropFilter:'blur(4px)' }}>
+    <div className="c5-pop" style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xxl?1760:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
       <div style={{ padding:'20px 24px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:T.surface,zIndex:1 }}>
         <h2 style={{ margin:0,fontSize:16,fontWeight:800,color:T.textMain }}>{title}</h2>
         <button onClick={onClose} style={{ background:'none',border:'none',fontSize:20,cursor:'pointer',color:T.textMuted,borderRadius:8,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center' }}>✕</button>

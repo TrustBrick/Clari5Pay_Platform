@@ -959,7 +959,8 @@ export const AdminMerchantsPage: React.FC = () => {
         payIn:form.payIn, payOut:form.payOut, settlement:form.settlement,
         payInFee:parseFloat(form.payInFee), payOutFee:parseFloat(form.payOutFee),
         settlementFee:form.settlementFee===''?null:parseFloat(form.settlementFee),
-        profile:form.profile, merchantRole:form.merchantRole, risk:form.risk, role:'MERCHANT',
+        // Merchant roles are assigned when creating users under the merchant, not at onboarding.
+        profile:null, merchantRole:null, risk:form.risk, role:'MERCHANT',
       });
       await reload();
       setShowCreate(false);
@@ -1027,8 +1028,6 @@ export const AdminMerchantsPage: React.FC = () => {
               <Input label="Confirm Password" type="password" value={form.confirmPassword} onChange={e=>set('confirmPassword',e.target.value)} placeholder="Re-enter password" required/>
               {passwordMismatch && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
             </div>
-            <Sel label="Role Selection" value={form.merchantRole} onChange={e=>set('merchantRole',e.target.value)} required options={rolesForProfile(form.profile)}/>
-            <Sel label="Profile Type" value={form.profile} onChange={e=>{ const p=e.target.value; const opts=rolesForProfile(p); setForm(f=>({ ...f, profile:p, merchantRole: opts.some(o=>o.value===f.merchantRole) ? f.merchantRole : (opts[0]?.value || '') })); }} options={['Admin','User','Maker','Checker'].map(v=>({value:v,label:v}))}/>
             <Input label="Pay-In Code" value={form.payIn} onChange={e=>set('payIn',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. DEP (max 3 chars)" required/>
             <Input label="Pay-Out Code" value={form.payOut} onChange={e=>set('payOut',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. WIT" required/>
             <Input label="Settlement Code" value={form.settlement} onChange={e=>set('settlement',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. SET" required/>
@@ -1092,11 +1091,12 @@ export const AdminMerchantsPage: React.FC = () => {
 
       {/* View Users drawer — merchant information + the logins under this business. */}
       {viewCompany && (
-        <Modal title={`Merchant Details — ${viewCompany.name}`} onClose={()=>{ setViewName(null); setShowCreateUser(false); }} wide>
-          <div style={{ display:'flex',justifyContent:'flex-end',marginBottom:12 }}>
+        <Modal title={`Merchant Details — ${viewCompany.name}`} onClose={()=>{ setViewName(null); setShowCreateUser(false); }} xxl>
+          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14 }}>
+            <p style={{ margin:0,fontSize:13,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Merchant Information</p>
             <Btn size="sm" onClick={()=>setShowCreateUser(true)}>+ Create User</Btn>
           </div>
-          <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:18 }}>
+          <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:12,marginBottom:22 }}>
             {[
               ['Merchant ID', viewCompany.owner.merchantCode||'—'],
               ['Merchant Name', viewCompany.name],
@@ -1108,13 +1108,13 @@ export const AdminMerchantsPage: React.FC = () => {
               ['Fees', feeStr(viewCompany.owner)],
               ['Status', viewCompany.active?'Active':'Inactive'],
             ].map(([k,v])=>(
-              <div key={k} style={{ background:T.canvas,borderRadius:10,padding:'10px 12px' }}>
-                <p style={{ margin:'0 0 3px',fontSize:10,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',fontWeight:700 }}>{k}</p>
-                <p style={{ margin:0,fontSize:12,fontWeight:700,color:T.textMain }}>{v}</p>
+              <div key={k} style={{ background:T.canvas,border:`1px solid ${T.borderLight}`,borderRadius:12,padding:'12px 16px',minWidth:0 }}>
+                <p style={{ margin:'0 0 5px',fontSize:11,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',fontWeight:700 }}>{k}</p>
+                <p style={{ margin:0,fontSize:14,fontWeight:700,color:T.textMain,wordBreak:'break-word' }}>{v}</p>
               </div>
             ))}
           </div>
-          <p style={{ fontSize:12,fontWeight:800,color:T.textMain,margin:'0 0 8px' }}>Users</p>
+          <p style={{ fontSize:13,fontWeight:800,color:T.textMain,margin:'0 0 10px' }}>Users</p>
           <div style={{ overflowX:'auto' }}>
             <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
               <thead>
