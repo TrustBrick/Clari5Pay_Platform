@@ -1047,36 +1047,41 @@ export const AdminMerchantsPage: React.FC = () => {
       )}
       <Card>
         <div style={{ overflowX:'auto' }}>
-          <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+          <table style={{ width:'100%',borderCollapse:'collapse',fontSize:11,tableLayout:'fixed' }}>
+            {/* Fixed proportional widths → the table always equals the container width and never
+                scrolls horizontally; columns share space instead of forcing overflow. */}
+            <colgroup>
+              {[10,8,6,12,8,9,6,7,9,9,6,10].map((w,i)=><col key={i} style={{ width:`${w}%` }} />)}
+            </colgroup>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Business','Merchant ID','Country','Email','Mobile','Created','Codes','Fees','Available Balance','Running Balance','Status','Action'].map(h=>(
-                  <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                {['Business','Merchant ID','Country','Email','Mobile','Created','Codes','Fees','Available','Running','Status','Action'].map(h=>(
+                  <th key={h} style={{ padding:'9px 9px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {companies.map((c)=>(
                 <tr key={c.name} style={{ background:T.surface,borderBottom:`1px solid ${T.borderLight}` }}>
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>
+                  <td style={{ padding:'10px 9px',fontWeight:800,color:T.textMain,wordBreak:'break-word' }}>
                     {c.name}
                     <div style={{ fontSize:10,color:T.textMuted,fontWeight:600,marginTop:2 }}>{c.users.length} user{c.users.length>1?'s':''}</div>
                   </td>
-                  <td style={{ padding:'11px 14px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 7px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{c.owner.merchantCode||'—'}</code></td>
-                  <td style={{ padding:'11px 14px',color:T.textMain,fontSize:11,whiteSpace:'nowrap' }}>{c.owner.country||'—'}</td>
-                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11 }}>{c.owner.email}</td>
-                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11,whiteSpace:'nowrap' }}>{c.owner.phone||'—'}</td>
-                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11,whiteSpace:'nowrap' }}>{c.owner.createdAt?formatDateTime(c.owner.createdAt):c.owner.created}</td>
-                  <td style={{ padding:'11px 14px' }}>
+                  <td style={{ padding:'10px 9px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 6px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{c.owner.merchantCode||'—'}</code></td>
+                  <td style={{ padding:'10px 9px',color:T.textMain,wordBreak:'break-word' }}>{c.owner.country||'—'}</td>
+                  <td style={{ padding:'10px 9px',color:T.textMuted,wordBreak:'break-all' }}>{c.owner.email}</td>
+                  <td style={{ padding:'10px 9px',color:T.textMuted }}>{c.owner.phone||'—'}</td>
+                  <td style={{ padding:'10px 9px',color:T.textMuted }}>{c.owner.createdAt?formatDateTime(c.owner.createdAt):c.owner.created}</td>
+                  <td style={{ padding:'10px 9px' }}>
                     <div style={{ display:'flex',gap:3,flexWrap:'wrap' }}>
                       {[c.owner.payIn,c.owner.payOut,c.owner.settlement].filter(Boolean).map(code=><code key={code} style={{ background:T.infoBg,color:T.blue,padding:'1px 5px',borderRadius:4,fontSize:10,fontWeight:700 }}>{code}</code>)}
                     </div>
                   </td>
-                  <td style={{ padding:'11px 14px',color:T.textMain,fontSize:11,whiteSpace:'nowrap' }}>{feeStr(c.owner)}</td>
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success,whiteSpace:'nowrap' }}>{fmt(balByName[c.name]?.available ?? 0)}</td>
-                  <td style={{ padding:'11px 14px',fontWeight:700,color:(balByName[c.name]?.runningBalance ?? 0)>0?T.danger:T.textMuted,whiteSpace:'nowrap' }}>{fmt(balByName[c.name]?.runningBalance ?? 0)}</td>
-                  <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:c.active?T.successBg:T.dangerBg,color:c.active?T.success:T.danger }}>{c.active?'Active':'Inactive'}</span></td>
-                  <td style={{ padding:'11px 14px' }}>
+                  <td style={{ padding:'10px 9px',color:T.textMain }}>{feeStr(c.owner)}</td>
+                  <td style={{ padding:'10px 9px',fontWeight:800,color:T.success }}>{fmt(balByName[c.name]?.available ?? 0)}</td>
+                  <td style={{ padding:'10px 9px',fontWeight:700,color:(balByName[c.name]?.runningBalance ?? 0)>0?T.danger:T.textMuted }}>{fmt(balByName[c.name]?.runningBalance ?? 0)}</td>
+                  <td style={{ padding:'10px 9px' }}><span style={{ display:'inline-block',padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:c.active?T.successBg:T.dangerBg,color:c.active?T.success:T.danger }}>{c.active?'Active':'Inactive'}</span></td>
+                  <td style={{ padding:'10px 9px' }}>
                     <Btn size="sm" onClick={()=>setViewName(c.name)}>View Users</Btn>
                   </td>
                 </tr>
