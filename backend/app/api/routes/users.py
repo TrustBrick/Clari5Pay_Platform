@@ -30,10 +30,11 @@ def _u(u: User) -> dict:
         "lockedUntil": (u.locked_until.isoformat() + "Z") if u.locked_until else None,
         "failedAttempts": u.failed_attempts or 0,
         "payIn": u.pay_in, "payOut": u.pay_out, "settlement": u.settlement,
-        "payInFee": u.pay_in_fee, "payOutFee": u.pay_out_fee,
+        "payInFee": u.pay_in_fee, "payOutFee": u.pay_out_fee, "settlementFee": u.settlement_fee,
         "balance": u.balance, "risk": u.risk, "profile": u.profile,
         "merchantRole": u.merchant_role,
         "merchantCode": u.merchant_code,
+        "country": u.country, "fullName": u.full_name,
         "whatsappEnabled": bool(u.whatsapp_enabled),
     }
 
@@ -128,6 +129,9 @@ async def create_merchant(
         settlement=data.get("settlement"),
         pay_in_fee=float(data.get("payInFee", 1.5)),
         pay_out_fee=float(data.get("payOutFee", 1.2)),
+        settlement_fee=(float(data["settlementFee"]) if data.get("settlementFee") not in (None, "") else None),
+        country=data.get("country"),
+        full_name=data.get("fullName"),
         balance=0.0,
         risk=data.get("risk", "LOW"),
         profile=data.get("profile", "Maker"),

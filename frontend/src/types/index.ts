@@ -22,6 +22,9 @@ export interface User {
   settlement?: string;
   payInFee?: number;
   payOutFee?: number;
+  settlementFee?: number;
+  country?: string | null;   // merchant company country (business-level)
+  fullName?: string | null;  // personal name for a merchant user (distinct from business name)
   balance?: number;
   risk?: 'LOW' | 'MEDIUM' | 'HIGH';
   profile?: string;

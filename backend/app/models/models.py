@@ -97,6 +97,11 @@ class User(Base):
     settlement: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     pay_in_fee: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     pay_out_fee: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    settlement_fee: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Merchant company country (business-level; owner user holds it for the business).
+    country: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Personal name for a merchant user, distinct from the business name (`name`).
+    full_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     balance: Mapped[Optional[float]] = mapped_column(Float, default=0.0, nullable=True)
     risk: Mapped[Optional[RiskLevel]] = mapped_column(SAEnum(RiskLevel), nullable=True)
     profile: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)

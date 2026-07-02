@@ -90,6 +90,8 @@ export const passwordPolicyError = (pw: string): string | null => {
 
 // Merchant access-role labels (shared across header, profile, admin tables, forms).
 export const MERCHANT_ROLE_LABELS: Record<string, string> = {
+  ADMIN: 'Admin',
+  USER: 'User',
   DEO: 'Data Operator',
   DEPOSIT_OPERATOR: 'Deposit Operator',
   WITHDRAWAL_OPERATOR: 'Withdrawal Operator',
@@ -110,13 +112,20 @@ export const CHECKER_ROLE_OPTIONS = [
   { value: 'SUPERVISOR', label: 'Supervisor' },
   { value: 'MANAGER', label: 'Manager' },
 ];
+export const ADMIN_ROLE_OPTIONS = [{ value: 'ADMIN', label: 'Admin' }];
+export const USER_ROLE_OPTIONS = [{ value: 'USER', label: 'User' }];
 export const MERCHANT_ROLE_OPTIONS = [...MAKER_ROLE_OPTIONS, ...CHECKER_ROLE_OPTIONS];
 
-// Roles allowed for a given Profile Type. Maker → operator roles; Checker → review roles;
-// any other profile keeps the full list.
+// Role Type options for the merchant-user forms (Onboard Merchant / Create User).
+export const ROLE_TYPE_OPTIONS = ['Admin', 'User', 'Maker', 'Checker'].map(v => ({ value: v, label: v }));
+
+// Member Role options allowed for a given Role Type (Profile). Maker → operator roles;
+// Checker → review roles; Admin → Admin; User → User.
 export const rolesForProfile = (profile?: string | null) => {
   if (profile === 'Maker') return MAKER_ROLE_OPTIONS;
   if (profile === 'Checker') return CHECKER_ROLE_OPTIONS;
+  if (profile === 'Admin') return ADMIN_ROLE_OPTIONS;
+  if (profile === 'User') return USER_ROLE_OPTIONS;
   return MERCHANT_ROLE_OPTIONS;
 };
 

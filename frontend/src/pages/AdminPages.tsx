@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, rolesForProfile, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
@@ -882,21 +882,38 @@ export const MerchantAnalyticsPage: React.FC = () => {
   );
 };
 
+// Country names for the merchant-company dropdown, derived from the phone-code list
+// ("🇮🇳 +91 India" → "India"), de-duplicated, India first (order preserved).
+const COUNTRY_NAME_OPTIONS = COUNTRY_CODES
+  .map(c => c.label.split(' ').slice(2).join(' '))
+  .filter((n, i, a) => !!n && a.indexOf(n) === i)
+  .map(n => ({ value: n, label: n }));
+
 // ─── Admin Merchants Page ─────────────────────────────────────────────────────
+// A "merchant" is a business (one or more MERCHANT users sharing the same `name`).
+// The page shows one row per business; View Users drills into its logins.
 export const AdminMerchantsPage: React.FC = () => {
   const { showToast } = useToast();
   const [merchants, setMerchants] = useState<User[]>([]);
   const [showCreate, setShowCreate] = useState(false);
-  const empty = { name:'',username:'',email:'',countryCode:'+91',phone:'',password:'',confirmPassword:'',payIn:'',payOut:'',settlement:'',payInFee:'1.5',payOutFee:'1.2',profile:'Maker',merchantRole:'DEO',risk:'LOW' };
+  const empty = { name:'',country:'India',username:'',email:'',countryCode:'+91',phone:'',password:'',confirmPassword:'',payIn:'',payOut:'',settlement:'',payInFee:'1.5',payOutFee:'1.2',settlementFee:'0.5',profile:'Maker',merchantRole:'DEO',risk:'LOW' };
   const [form, setForm] = useState(empty);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
   const [toggleM, setToggleM] = useState<User | null>(null);
   const [busy, setBusy] = useState(false);
+  // View Users drawer (per business) + Create User (adds a login under a business).
+  const [viewName, setViewName] = useState<string | null>(null);
+  const uEmpty = { fullName:'',username:'',email:'',countryCode:'+91',phone:'',password:'',confirmPassword:'',profile:'Maker',merchantRole:'DEO' };
+  const [uForm, setUForm] = useState(uEmpty);
+  const uSet = (k: string, v: string) => setUForm(f => ({...f,[k]:v}));
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [creatingUser, setCreatingUser] = useState(false);
+  const uMismatch = !!uForm.confirmPassword && uForm.password !== uForm.confirmPassword;
 
   const doToggle = async (reason: string) => {
     if (!toggleM) return;
     setBusy(true);
-    try { await userAPI.toggleStatus(toggleM.id, reason); await reload(); showToast(`${toggleM.name} ${toggleM.active?'deactivated':'activated'}`); setToggleM(null); }
+    try { await userAPI.toggleStatus(toggleM.id, reason); await reload(); showToast(`${toggleM.fullName||toggleM.username} ${toggleM.active?'deactivated':'activated'}`); setToggleM(null); }
     catch { showToast('Failed to update merchant','error'); }
     finally { setBusy(false); }
   };
@@ -916,10 +933,11 @@ export const AdminMerchantsPage: React.FC = () => {
     if(form.password !== form.confirmPassword){ showToast('Passwords do not match','error'); return; }
     try {
       await userAPI.createMerchant({
-        name:form.name, username:form.username, email:form.email,
+        name:form.name, country:form.country, username:form.username, email:form.email,
         phone:`${form.countryCode} ${form.phone}`, password:form.password,
         payIn:form.payIn, payOut:form.payOut, settlement:form.settlement,
         payInFee:parseFloat(form.payInFee), payOutFee:parseFloat(form.payOutFee),
+        settlementFee:form.settlementFee===''?null:parseFloat(form.settlementFee),
         profile:form.profile, merchantRole:form.merchantRole, risk:form.risk, role:'MERCHANT',
       });
       await reload();
@@ -931,16 +949,55 @@ export const AdminMerchantsPage: React.FC = () => {
     }
   };
 
+  // Add another login under an existing business; codes / fees / country / risk are
+  // inherited from the business owner so a business shares one commercial configuration.
+  const createUser = async () => {
+    const group = merchants.filter(m => m.name === viewName).sort((a,b)=>a.id-b.id);
+    const owner = group[0];
+    if(!owner){ showToast('Merchant not found','error'); return; }
+    if(!uForm.fullName||!uForm.username||!uForm.email||!uForm.phone||!uForm.password){ showToast('Fill all required fields','error'); return; }
+    if(uForm.password !== uForm.confirmPassword){ showToast('Passwords do not match','error'); return; }
+    setCreatingUser(true);
+    try {
+      await userAPI.createMerchant({
+        name:owner.name, fullName:uForm.fullName, username:uForm.username, email:uForm.email,
+        phone:`${uForm.countryCode} ${uForm.phone}`, password:uForm.password,
+        payIn:owner.payIn, payOut:owner.payOut, settlement:owner.settlement,
+        payInFee:owner.payInFee, payOutFee:owner.payOutFee, settlementFee:owner.settlementFee,
+        country:owner.country, risk:owner.risk||'LOW',
+        profile:uForm.profile, merchantRole:uForm.merchantRole, role:'MERCHANT',
+      });
+      await reload();
+      setShowCreateUser(false);
+      setUForm(uEmpty);
+      showToast(`User "${uForm.username}" added to ${owner.name}`);
+    } catch {
+      showToast('Failed to create user','error');
+    } finally { setCreatingUser(false); }
+  };
+
+  // One row per business: group users by `name`, owner = earliest-created user (holds the
+  // business-level country / codes / fees / status). Sorted by Merchant ID.
+  const companies = Object.values(
+    merchants.reduce((acc, m) => { (acc[m.name] ||= []).push(m); return acc; }, {} as Record<string, User[]>)
+  ).map(users => {
+    const sorted = [...users].sort((a,b)=>a.id-b.id);
+    return { name: sorted[0].name, owner: sorted[0], users: sorted, active: users.some(u=>u.active) };
+  }).sort((a,b)=>(a.owner.merchantCode||'').localeCompare(b.owner.merchantCode||''));
+  const viewCompany = viewName ? companies.find(c=>c.name===viewName) || null : null;
+  const feeStr = (u: User) => `${u.payInFee ?? '—'}% / ${u.payOutFee ?? '—'}% / ${u.settlementFee ?? '—'}%`;
+
   return (
     <div>
       <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18 }}>
         <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>Merchant Management</h2>
-        <Btn onClick={()=>setShowCreate(true)}>+ Create Merchant</Btn>
+        <Btn onClick={()=>setShowCreate(true)}>+ Onboard Merchant</Btn>
       </div>
       {showCreate && (
-        <Modal title="Create Merchant Account" onClose={()=>setShowCreate(false)} wide>
+        <Modal title="Onboard Merchant" onClose={()=>setShowCreate(false)} wide>
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
             <Input label="Business Name" value={form.name} onChange={e=>set('name',e.target.value)} placeholder="e.g. Nexus Fintech Ltd." required/>
+            <Sel label="Country" value={form.country} onChange={e=>set('country',e.target.value)} required options={COUNTRY_NAME_OPTIONS}/>
             <Input label="Username" value={form.username} onChange={e=>set('username',e.target.value)} placeholder="Login username" required hint="Merchant uses this to login"/>
             <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="biz@company.com" required/>
             <div style={{ marginBottom:16 }}>
@@ -966,6 +1023,7 @@ export const AdminMerchantsPage: React.FC = () => {
             <Input label="Settlement Code" value={form.settlement} onChange={e=>set('settlement',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. SET" required/>
             <Input label="Pay-In Fee (%)" type="number" value={form.payInFee} onChange={e=>set('payInFee',e.target.value)} required/>
             <Input label="Pay-Out Fee (%)" type="number" value={form.payOutFee} onChange={e=>set('payOutFee',e.target.value)} required/>
+            <Input label="Settlement Fee (%)" type="number" value={form.settlementFee} onChange={e=>set('settlementFee',e.target.value)} required/>
             <Sel label="Risk Level" value={form.risk} onChange={e=>set('risk',e.target.value)} options={['LOW','MEDIUM','HIGH','CRITICAL'].map(v=>({value:v,label:v}))}/>
           </div>
           <div style={{ background:T.infoBg,border:`1px solid ${T.blue}20`,borderRadius:10,padding:12,margin:'4px 0 16px',fontSize:12,color:T.blue }}>
@@ -982,40 +1040,136 @@ export const AdminMerchantsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Business','Merchant ID','Username','Role','Email','Phone','Codes','Available Balance','Running Balance','Status','Action'].map(h=>(
+                {['Business','Merchant ID','Country','Email','Mobile','Created','Codes','Fees','Available Balance','Running Balance','Status','Action'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {merchants.map((m)=>(
-                <tr key={m.id} style={{ background:T.surface,borderBottom:`1px solid ${T.borderLight}` }}>
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{m.name}</td>
-                  <td style={{ padding:'11px 14px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 7px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{m.merchantCode||'—'}</code></td>
-                  <td style={{ padding:'11px 14px',color:T.textMain }}>{m.username}</td>
-                  <td style={{ padding:'11px 14px' }}><span style={{ background:T.infoBg,color:T.blue,padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{roleLabel(m.merchantRole)}</span></td>
-                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11 }}>{m.email}</td>
-                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11,whiteSpace:'nowrap' }}>{m.phone||'—'}</td>
+              {companies.map((c)=>(
+                <tr key={c.name} style={{ background:T.surface,borderBottom:`1px solid ${T.borderLight}` }}>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>
+                    {c.name}
+                    <div style={{ fontSize:10,color:T.textMuted,fontWeight:600,marginTop:2 }}>{c.users.length} user{c.users.length>1?'s':''}</div>
+                  </td>
+                  <td style={{ padding:'11px 14px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 7px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{c.owner.merchantCode||'—'}</code></td>
+                  <td style={{ padding:'11px 14px',color:T.textMain,fontSize:11,whiteSpace:'nowrap' }}>{c.owner.country||'—'}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11 }}>{c.owner.email}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11,whiteSpace:'nowrap' }}>{c.owner.phone||'—'}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,fontSize:11,whiteSpace:'nowrap' }}>{c.owner.createdAt?formatDateTime(c.owner.createdAt):c.owner.created}</td>
                   <td style={{ padding:'11px 14px' }}>
                     <div style={{ display:'flex',gap:3,flexWrap:'wrap' }}>
-                      {[m.payIn,m.payOut,m.settlement].filter(Boolean).map(c=><code key={c} style={{ background:T.infoBg,color:T.blue,padding:'1px 5px',borderRadius:4,fontSize:10,fontWeight:700 }}>{c}</code>)}
+                      {[c.owner.payIn,c.owner.payOut,c.owner.settlement].filter(Boolean).map(code=><code key={code} style={{ background:T.infoBg,color:T.blue,padding:'1px 5px',borderRadius:4,fontSize:10,fontWeight:700 }}>{code}</code>)}
                     </div>
                   </td>
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success,whiteSpace:'nowrap' }}>{fmt(balByName[m.name]?.available ?? 0)}</td>
-                  <td style={{ padding:'11px 14px',fontWeight:700,color:(balByName[m.name]?.runningBalance ?? 0)>0?T.danger:T.textMuted,whiteSpace:'nowrap' }}>{fmt(balByName[m.name]?.runningBalance ?? 0)}</td>
-                  <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:m.active?T.successBg:T.dangerBg,color:m.active?T.success:T.danger }}>{m.active?'Active':'Inactive'}</span></td>
+                  <td style={{ padding:'11px 14px',color:T.textMain,fontSize:11,whiteSpace:'nowrap' }}>{feeStr(c.owner)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success,whiteSpace:'nowrap' }}>{fmt(balByName[c.name]?.available ?? 0)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:700,color:(balByName[c.name]?.runningBalance ?? 0)>0?T.danger:T.textMuted,whiteSpace:'nowrap' }}>{fmt(balByName[c.name]?.runningBalance ?? 0)}</td>
+                  <td style={{ padding:'11px 14px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:c.active?T.successBg:T.dangerBg,color:c.active?T.success:T.danger }}>{c.active?'Active':'Inactive'}</span></td>
                   <td style={{ padding:'11px 14px' }}>
-                    <Btn size="sm" variant={m.active?'danger':'success'} onClick={()=>setToggleM(m)}>{m.active?'Deactivate':'Activate'}</Btn>
+                    <Btn size="sm" onClick={()=>setViewName(c.name)}>View Users</Btn>
                   </td>
                 </tr>
               ))}
+              {companies.length===0 && (
+                <tr><td colSpan={12} style={{ padding:'28px 14px',textAlign:'center',color:T.textMuted,fontSize:12 }}>No merchants onboarded yet. Click “Onboard Merchant” to add one.</td></tr>
+              )}
             </tbody>
           </table>
         </div>
       </Card>
+
+      {/* View Users drawer — merchant information + the logins under this business. */}
+      {viewCompany && (
+        <Modal title={`Merchant Details — ${viewCompany.name}`} onClose={()=>{ setViewName(null); setShowCreateUser(false); }} wide>
+          <div style={{ display:'flex',justifyContent:'flex-end',marginBottom:12 }}>
+            <Btn size="sm" onClick={()=>setShowCreateUser(true)}>+ Create User</Btn>
+          </div>
+          <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,marginBottom:18 }}>
+            {[
+              ['Merchant ID', viewCompany.owner.merchantCode||'—'],
+              ['Merchant Name', viewCompany.name],
+              ['Country', viewCompany.owner.country||'—'],
+              ['Email ID', viewCompany.owner.email],
+              ['Mobile Number', viewCompany.owner.phone||'—'],
+              ['Created Date', viewCompany.owner.createdAt?formatDateTime(viewCompany.owner.createdAt):viewCompany.owner.created],
+              ['Reference Codes', [viewCompany.owner.payIn,viewCompany.owner.payOut,viewCompany.owner.settlement].filter(Boolean).join(' / ')||'—'],
+              ['Fees', feeStr(viewCompany.owner)],
+              ['Status', viewCompany.active?'Active':'Inactive'],
+            ].map(([k,v])=>(
+              <div key={k} style={{ background:T.canvas,borderRadius:10,padding:'10px 12px' }}>
+                <p style={{ margin:'0 0 3px',fontSize:10,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',fontWeight:700 }}>{k}</p>
+                <p style={{ margin:0,fontSize:12,fontWeight:700,color:T.textMain }}>{v}</p>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize:12,fontWeight:800,color:T.textMain,margin:'0 0 8px' }}>Users</p>
+          <div style={{ overflowX:'auto' }}>
+            <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+              <thead>
+                <tr style={{ background:T.canvas }}>
+                  {['User ID','Full Name','Username','Email','Phone','Role Type','Member Role','Status','Actions'].map(h=>(
+                    <th key={h} style={{ padding:'9px 12px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {viewCompany.users.map(u=>(
+                  <tr key={u.id} style={{ borderBottom:`1px solid ${T.borderLight}` }}>
+                    <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 6px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{u.merchantCode||'—'}</code></td>
+                    <td style={{ padding:'10px 12px',color:T.textMain }}>{u.fullName||'—'}</td>
+                    <td style={{ padding:'10px 12px',color:T.textMain }}>{u.username}</td>
+                    <td style={{ padding:'10px 12px',color:T.textMuted,fontSize:11 }}>{u.email}</td>
+                    <td style={{ padding:'10px 12px',color:T.textMuted,fontSize:11,whiteSpace:'nowrap' }}>{u.phone||'—'}</td>
+                    <td style={{ padding:'10px 12px',color:T.textMain }}>{u.profile||'—'}</td>
+                    <td style={{ padding:'10px 12px' }}><span style={{ background:T.infoBg,color:T.blue,padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{merchantRoleLabel(u.merchantRole)||'—'}</span></td>
+                    <td style={{ padding:'10px 12px' }}><span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:u.active?T.successBg:T.dangerBg,color:u.active?T.success:T.danger }}>{u.active?'Active':'Inactive'}</span></td>
+                    <td style={{ padding:'10px 12px' }}><Btn size="sm" variant={u.active?'danger':'success'} onClick={()=>setToggleM(u)}>{u.active?'Deactivate':'Activate'}</Btn></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
+
+      {/* Create User — adds a login under the current business (codes/fees inherited). */}
+      {viewCompany && showCreateUser && (
+        <Modal title={`Create User — ${viewCompany.name}`} onClose={()=>setShowCreateUser(false)}>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+            <Input label="Merchant Name" value={viewCompany.name} readOnly onChange={()=>{}}/>
+            <Input label="User ID" value="Auto-generated" readOnly onChange={()=>{}} hint="Assigned on creation"/>
+            <Input label="User Full Name" value={uForm.fullName} onChange={e=>uSet('fullName',e.target.value)} placeholder="e.g. Amit Sharma" required/>
+            <Input label="Username" value={uForm.username} onChange={e=>uSet('username',e.target.value)} placeholder="Login username" required/>
+            <Input label="Email ID" type="email" value={uForm.email} onChange={e=>uSet('email',e.target.value)} placeholder="user@company.com" required/>
+            <div style={{ marginBottom:16 }}>
+              <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Phone Number<span style={{ color:T.danger }}> *</span></label>
+              <div style={{ display:'flex',gap:8 }}>
+                <select value={uForm.countryCode} onChange={e=>uSet('countryCode',e.target.value)}
+                  style={{ width:130,padding:'10px 8px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:13,outline:'none',fontFamily:'inherit',background:T.surface }}>
+                  {COUNTRY_CODES.map(c=><option key={c.code} value={c.code}>{c.label}</option>)}
+                </select>
+                <input value={uForm.phone} onChange={e=>uSet('phone',e.target.value.replace(/[^\d]/g,'').slice(0,10))} placeholder="Phone number"
+                  style={{ flex:1,padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,outline:'none',fontFamily:'inherit',boxSizing:'border-box' }}/>
+              </div>
+            </div>
+            <Input label="Password" type="password" value={uForm.password} onChange={e=>uSet('password',e.target.value)} placeholder="Set login password" required/>
+            <div>
+              <Input label="Confirm Password" type="password" value={uForm.confirmPassword} onChange={e=>uSet('confirmPassword',e.target.value)} placeholder="Re-enter password" required/>
+              {uMismatch && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
+            </div>
+            <Sel label="Role Type" value={uForm.profile} onChange={e=>{ const p=e.target.value; const opts=rolesForProfile(p); setUForm(f=>({ ...f, profile:p, merchantRole: opts.some(o=>o.value===f.merchantRole) ? f.merchantRole : (opts[0]?.value || '') })); }} options={ROLE_TYPE_OPTIONS}/>
+            <Sel label="Member Role" value={uForm.merchantRole} onChange={e=>uSet('merchantRole',e.target.value)} required options={rolesForProfile(uForm.profile)}/>
+          </div>
+          <div style={{ display:'flex',gap:10 }}>
+            <Btn onClick={createUser} disabled={uMismatch||creatingUser}>{creatingUser?'Creating…':'Create User'}</Btn>
+            <Btn variant="secondary" onClick={()=>setShowCreateUser(false)}>Cancel</Btn>
+          </div>
+        </Modal>
+      )}
       {toggleM && (
         <ReasonModal
-          title={`${toggleM.active ? 'Deactivate' : 'Activate'} Merchant — ${toggleM.name}`}
+          title={`${toggleM.active ? 'Deactivate' : 'Activate'} User — ${toggleM.fullName||toggleM.username}`}
           label={toggleM.active ? 'Reason for Deactivation' : 'Reason for Activation'}
           confirmLabel={toggleM.active ? 'Deactivate' : 'Activate'}
           busy={busy} onSubmit={doToggle} onClose={()=>setToggleM(null)}
