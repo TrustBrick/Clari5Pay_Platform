@@ -379,6 +379,7 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "depositType": t.deposit_type,
         "member": t.member_name,
         "memberId": t.member_id,
+        "segment": t.segment,
         "senderUpiId": t.sender_upi_id,
         "bank": t.bank_name,
         "accountHolder": t.account_holder,
@@ -609,6 +610,29 @@ async def get_transaction_detail(
         payload["creatorUsername"] = tx.creator_username or creator.username
         payload["creatorRole"] = tx.creator_role or creator.merchant_role
         payload["merchantCode"] = tx.agent_code or creator.merchant_code
+        payload["merchantUsername"] = creator.username
+        payload["merchantBusinessName"] = creator.name
+    # Member profile + segment — derived from existing records (display-only for the details view).
+    if tx.member_id and creator:
+        ids = (await db.execute(
+            select(User.id).where(User.role == UserRole.MERCHANT, User.name == creator.name)
+        )).scalars().all()
+        if ids:
+            prior = (await db.execute(
+                select(Transaction.id).where(
+                    Transaction.merchant_id.in_(ids),
+                    Transaction.member_id == tx.member_id,
+                    Transaction.id < tx.id,
+                ).limit(1)
+            )).first()
+            payload["memberProfileType"] = "OLD" if prior else "NEW"
+            payload["memberSegment"] = tx.segment or (await db.execute(
+                select(Transaction.segment).where(
+                    Transaction.merchant_id.in_(ids),
+                    Transaction.member_id == tx.member_id,
+                    Transaction.segment.is_not(None), Transaction.segment != "",
+                ).order_by(Transaction.id.desc()).limit(1)
+            )).scalar_one_or_none()
     return payload
 
 

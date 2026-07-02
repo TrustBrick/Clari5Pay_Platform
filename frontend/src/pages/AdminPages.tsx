@@ -219,6 +219,17 @@ const RequestModal: React.FC<{
           <Row k="Amount" v={fmt(tx.amount)} />
           <Row k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="ADMIN" />} />
           {(tx.memberId || tx.member) && <Row k="Membership - Member" v={memberLabel(tx.memberId, tx.member)} />}
+          {/* Withdrawal Request Details — merchant + member context the Admin verifies before
+              sending the company account (all from existing records; derived fields load with the detail). */}
+          {!isDeposit && (
+            <>
+              <Row k="Withdrawal Ref" v={tx.ref} />
+              {(tx.creatorUsername || record.merchantUsername) && <Row k="Merchant Username" v={(tx.creatorUsername || record.merchantUsername) as string} />}
+              {(record.merchantCode || tx.merchantCode || tx.merchantId != null) && <Row k="Merchant ID" v={String(record.merchantCode || tx.merchantCode || tx.merchantId)} />}
+              {record.memberProfileType && <Row k="Profile Type" v={record.memberProfileType} />}
+              {(record.memberSegment || tx.segment) && <Row k="Segment" v={(record.memberSegment || tx.segment) as string} />}
+            </>
+          )}
           {tx.depositType && <Row k="Deposit Type" v={depositTypeLabel(tx.depositType)} />}
           {isDeposit && tx.depositDetails && Object.entries(tx.depositDetails).map(([k, v]) =>
             v ? <Row key={k} k={depositDetailLabel(k)} v={String(v)} /> : null)}

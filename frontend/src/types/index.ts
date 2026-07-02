@@ -133,6 +133,13 @@ export interface Transaction {
   creatorRole?: string | null;
   merchantCode?: string | null;
   riskLevel?: string | null;
+  // Member/segment context for the Admin details view (segment on the row; the rest derived,
+  // detail-fetch only — see get_transaction_detail).
+  segment?: string | null;
+  memberProfileType?: string | null;   // NEW / OLD (derived from member history)
+  memberSegment?: string | null;       // A / B / C / D (this tx's, else member's latest)
+  merchantUsername?: string | null;
+  merchantBusinessName?: string | null;
   // Review-gate workflow record (Supervisor/Manager → Admin).
   approvedBy?: string | null;
   processedBy?: string | null;
