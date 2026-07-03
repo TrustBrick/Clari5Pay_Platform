@@ -272,7 +272,20 @@ async def _send(phone: str, body: str) -> tuple[bool, Optional[str], str]:
     elif provider == "twilio":
         sid = settings.WHATSAPP_ACCOUNT_SID
         url = settings.WHATSAPP_API_URL or f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
-        data = {"From": f"whatsapp:{settings.WHATSAPP_PHONE_ID}", "To": f"whatsapp:+{to}", "Body": body}
+        data = {"To": f"whatsapp:+{to}"}
+        # Address either via a Messaging Service (production sender pool) or the from-number.
+        if settings.WHATSAPP_MESSAGING_SERVICE_SID:
+            data["MessagingServiceSid"] = settings.WHATSAPP_MESSAGING_SERVICE_SID
+        else:
+            data["From"] = f"whatsapp:{settings.WHATSAPP_PHONE_ID}"
+        if settings.whatsapp_use_template:
+            # Business-initiated (production) path — approved Content Template addressed by
+            # ContentSid, with the flattened message as the single {{1}} variable. Reaches users
+            # outside the 24h session window (no free text). Demo-gated so prod is untouched.
+            data["ContentSid"] = settings.WHATSAPP_CONTENT_SID
+            data["ContentVariables"] = json.dumps({"1": _template_param(body)})
+        else:
+            data["Body"] = body                        # free text (24h session / sandbox)
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.post(url, data=data, auth=(sid, settings.WHATSAPP_TOKEN))
     else:

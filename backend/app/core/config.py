@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     WHATSAPP_VERIFY_TOKEN: str = ""      # Meta webhook verification token (delivery/read receipts)
     WHATSAPP_BUSINESS_NUMBER: str = ""   # display-only: the connected Business sender number
     WHATSAPP_BUSINESS_ACCOUNT_ID: str = ""  # Meta WABA id (display / future template mgmt)
+    # ── Twilio business-initiated (production sender + Content Template) path ──
+    # When a Content Template SID is set, Twilio sends via the approved template (ContentSid +
+    # ContentVariables) instead of free text, so messages reach users OUTSIDE the 24h session
+    # window (i.e. real users who never messaged first). Gated to demo (see whatsapp_use_template)
+    # so production is untouched until deliberately enabled there.
+    WHATSAPP_CONTENT_SID: str = ""              # Twilio Content Template SID ("HX…"), body = {{1}}
+    WHATSAPP_MESSAGING_SERVICE_SID: str = ""    # optional Twilio Messaging Service SID ("MG…")
 
     @property
     def email_configured(self) -> bool:
@@ -88,6 +95,13 @@ class Settings(BaseSettings):
     @property
     def is_demo(self) -> bool:
         return self.ENVIRONMENT == "demo"
+
+    @property
+    def whatsapp_use_template(self) -> bool:
+        """Use Twilio's approved Content Template (business-initiated) path instead of free text.
+        DEMO-ONLY guard: enabled only when this is the demo stack AND a Content Template SID is
+        configured, so production keeps its current behaviour untouched."""
+        return bool(self.is_demo and self.WHATSAPP_PROVIDER.lower() == "twilio" and self.WHATSAPP_CONTENT_SID)
 
     class Config:
         env_file = ".env"

@@ -24,7 +24,8 @@ async def get_settings(db: AsyncSession = Depends(get_db), _: User = Depends(get
         "businessNumber": settings.WHATSAPP_BUSINESS_NUMBER or None,
         "businessAccountId": settings.WHATSAPP_BUSINESS_ACCOUNT_ID or None,
         "phoneIdSet": bool(settings.WHATSAPP_PHONE_ID),
-        "templateSet": bool(settings.WHATSAPP_TEMPLATE),
+        "templateSet": bool(settings.WHATSAPP_TEMPLATE or settings.WHATSAPP_CONTENT_SID),
+        "usingTemplate": settings.whatsapp_use_template,   # demo-gated Twilio Content Template path
         "webhookConfigured": bool(settings.WHATSAPP_VERIFY_TOKEN),
         "roles": await wa.get_role_settings(db),
         "roleKeys": wa.WA_ROLE_KEYS,
