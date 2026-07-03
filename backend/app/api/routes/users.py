@@ -9,6 +9,7 @@ from app.core.security import get_password_hash, verify_password
 from app.core.passwords import assert_password_allowed, set_password
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
 from app.core.uploads import validate_upload, IMAGE_TYPES
+from app.core.config import settings
 from app.schemas.schemas import (
     ChangePasswordRequest, ProfileUpdateRequest, ReasonRequest, AdminResetPasswordRequest,
 )
@@ -40,9 +41,16 @@ def _u(u: User) -> dict:
     }
 
 
+# Demo mints Merchant IDs in a distinct high band so codes generated on the demo stack never
+# collide with Production's — the two share cloned data (see the prod→demo sync), and MID is
+# MAX+1 derived (not a sequence), so it can't be offset in data like the sequences are.
+_DEMO_MID_BASE = 900000
+
 async def _next_merchant_code(db: AsyncSession) -> str:
     """Next serial Merchant ID (bank-account style, MID000001…), continuing after the
-    highest code already assigned so codes never collide or get reused."""
+    highest code already assigned so codes never collide or get reused. On the demo stack,
+    new codes are minted from a distinct band (MID900001+) so demo-generated Merchant IDs
+    never clash with Production's. Inert on Production."""
     codes = (await db.execute(
         select(User.merchant_code).where(User.merchant_code.like("MID%"))
     )).scalars().all()
@@ -52,7 +60,10 @@ async def _next_merchant_code(db: AsyncSession) -> str:
             maxn = max(maxn, int(c[3:]))
         except (TypeError, ValueError):
             continue
-    return f"MID{maxn + 1:06d}"
+    nxt = maxn + 1
+    if settings.is_demo:
+        nxt = max(nxt, _DEMO_MID_BASE + 1)   # demo band (MID900001+); prod stays MID000001+
+    return f"MID{nxt:06d}"
 
 
 @router.get("/merchants")
