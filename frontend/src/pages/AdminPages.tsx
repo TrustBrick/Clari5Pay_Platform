@@ -1010,7 +1010,10 @@ export const AdminMerchantsPage: React.FC = () => {
     merchants.reduce((acc, m) => { (acc[m.name] ||= []).push(m); return acc; }, {} as Record<string, User[]>)
   ).map(users => {
     const sorted = [...users].sort((a,b)=>a.id-b.id);
-    return { name: sorted[0].name, owner: sorted[0], users: sorted, active: users.some(u=>u.active) };
+    // Demo: the company (MER code) is the parent entity, not one of its users — exclude it from
+    // the login-user list so counts and the Users table show only the MID users.
+    const displayUsers = IS_DEMO ? sorted.filter(u=>!(u.merchantCode||'').startsWith('MER')) : sorted;
+    return { name: sorted[0].name, owner: sorted[0], users: sorted, displayUsers, active: users.some(u=>u.active) };
   }).sort((a,b)=>(a.owner.merchantCode||'').localeCompare(b.owner.merchantCode||''));
   const viewCompany = viewName ? companies.find(c=>c.name===viewName) || null : null;
   const feeStr = (u: User) => `${u.payInFee ?? '—'}% / ${u.payOutFee ?? '—'}% / ${u.settlementFee ?? '—'}%`;
@@ -1073,7 +1076,7 @@ export const AdminMerchantsPage: React.FC = () => {
                 <tr key={c.name} style={{ background:T.surface,borderBottom:`1px solid ${T.borderLight}` }}>
                   <td style={{ padding:'10px 9px',fontWeight:800,color:T.textMain,wordBreak:'break-word' }}>
                     {c.name}
-                    <div style={{ fontSize:10,color:T.textMuted,fontWeight:600,marginTop:2 }}>{c.users.length} user{c.users.length>1?'s':''}</div>
+                    <div style={{ fontSize:10,color:T.textMuted,fontWeight:600,marginTop:2 }}>{c.displayUsers.length} user{c.displayUsers.length!==1?'s':''}</div>
                   </td>
                   <td style={{ padding:'10px 9px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 6px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{c.owner.merchantCode||'—'}</code></td>
                   <td style={{ padding:'10px 9px',color:T.textMain,wordBreak:'break-word' }}>{c.owner.country||'—'}</td>
@@ -1140,7 +1143,7 @@ export const AdminMerchantsPage: React.FC = () => {
               <tbody>
                 {/* Demo: the company row (MER code) is the parent entity, not a user — the Users
                     table lists only the login users (MID codes) created under it. */}
-                {(IS_DEMO ? viewCompany.users.filter(u=>!(u.merchantCode||'').startsWith('MER')) : viewCompany.users).map(u=>(
+                {viewCompany.displayUsers.map(u=>(
                   <tr key={u.id} style={{ borderBottom:`1px solid ${T.borderLight}` }}>
                     <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 6px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{u.merchantCode||'—'}</code></td>
                     <td style={{ padding:'10px 12px',color:T.textMain }}>{u.fullName||'—'}</td>
