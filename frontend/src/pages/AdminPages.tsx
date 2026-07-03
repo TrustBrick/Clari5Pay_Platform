@@ -981,7 +981,8 @@ export const AdminMerchantsPage: React.FC = () => {
   // inherited from the business owner so a business shares one commercial configuration.
   const createUser = async () => {
     const group = merchants.filter(m => m.name === viewName).sort((a,b)=>a.id-b.id);
-    const owner = group[0];
+    // Inherit business config from the company (MER) row on demo, else the earliest user.
+    const owner = (IS_DEMO ? group.find(m=>(m.merchantCode||'').startsWith('MER')) : undefined) || group[0];
     if(!owner){ showToast('Merchant not found','error'); return; }
     if(!uForm.fullName||!uForm.username||!uForm.email||!uForm.phone||!uForm.password){ showToast('Fill all required fields','error'); return; }
     if(uForm.password !== uForm.confirmPassword){ showToast('Passwords do not match','error'); return; }
@@ -1010,10 +1011,12 @@ export const AdminMerchantsPage: React.FC = () => {
     merchants.reduce((acc, m) => { (acc[m.name] ||= []).push(m); return acc; }, {} as Record<string, User[]>)
   ).map(users => {
     const sorted = [...users].sort((a,b)=>a.id-b.id);
-    // Demo: the company (MER code) is the parent entity, not one of its users — exclude it from
-    // the login-user list so counts and the Users table show only the MID users.
+    // Demo: the company is the MER-coded row (the parent entity), regardless of creation order;
+    // its login users are the MID rows, which the Users list/count show.
+    const company = IS_DEMO ? sorted.find(u=>(u.merchantCode||'').startsWith('MER')) : undefined;
+    const owner = company || sorted[0];
     const displayUsers = IS_DEMO ? sorted.filter(u=>!(u.merchantCode||'').startsWith('MER')) : sorted;
-    return { name: sorted[0].name, owner: sorted[0], users: sorted, displayUsers, active: users.some(u=>u.active) };
+    return { name: owner.name, owner, users: sorted, displayUsers, active: users.some(u=>u.active) };
   }).sort((a,b)=>(a.owner.merchantCode||'').localeCompare(b.owner.merchantCode||''));
   const viewCompany = viewName ? companies.find(c=>c.name===viewName) || null : null;
   const feeStr = (u: User) => `${u.payInFee ?? '—'}% / ${u.payOutFee ?? '—'}% / ${u.settlementFee ?? '—'}%`;
