@@ -525,7 +525,8 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
           rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Pay-Out Fee', payoutFee], ['Available Balance', availableBalance]]} />
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:12,marginBottom:20 }}>
-        <StatCard icon="🏪" label="Total Merchants" value={merchants.length} color={T.blue}/>
+        {/* Demo: a "merchant" is a company (business), not a login row — count distinct businesses. */}
+        <StatCard icon="🏪" label="Total Merchants" value={IS_DEMO ? new Set(merchants.map(m=>m.name)).size : merchants.length} color={T.blue}/>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
         <StatCard icon="⧗" label="Pending" value={pending.length} color={T.warning}/>
         <StatCard icon="↓" label="No. of Deposit Requests" value={depReqs} color={T.blue}/>
@@ -1563,7 +1564,8 @@ export const SaDashboard: React.FC = () => {
       {/* 3 per row → counts on top, money on the bottom row */}
       <div style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:16 }} className="sa-stat-grid">
         <StatCard icon="🛡" label="Total Admins" value={admins.length} color={T.blue}/>
-        <StatCard icon="🏪" label="Total Merchants" value={merchants.length} color={T.success}/>
+        {/* Demo: count distinct businesses, not merchant login rows. */}
+        <StatCard icon="🏪" label="Total Merchants" value={IS_DEMO ? new Set(merchants.map(m=>m.name)).size : merchants.length} color={T.success}/>
         <StatCard icon="✅" label="Active Admins" value={admins.filter(a=>a.active).length} color={T.info}/>
         <StatCard icon="📊" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
       </div>
