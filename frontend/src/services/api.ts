@@ -420,7 +420,7 @@ export const userAPI = {
     const res = await api.post('/api/users/change-password', data);
     return res.data;
   },
-  updateProfile: async (data: { email?: string; new_password?: string; current_password?: string; avatar?: string; whatsappEnabled?: boolean }) => {
+  updateProfile: async (data: { email?: string; phone?: string; new_password?: string; current_password?: string; avatar?: string; whatsappEnabled?: boolean }) => {
     const res = await api.patch<User>('/api/users/me', data);
     return res.data;
   },

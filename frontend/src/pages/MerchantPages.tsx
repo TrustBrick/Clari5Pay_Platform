@@ -1646,7 +1646,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
   const { showToast } = useToast();
   const { updateUser } = useAuth();
   const [edit, setEdit] = useState(false);
-  const [form, setForm] = useState({ email:user.email, current:'', next:'', confirm:'' });
+  const [form, setForm] = useState({ email:user.email, phone:user.phone || '', current:'', next:'', confirm:'' });
   const [avatar, setAvatar] = useState<string | null>(user.avatar || null);
   const [waEnabled, setWaEnabled] = useState(user.whatsappEnabled !== false);
   const [saving, setSaving] = useState(false);
@@ -1661,7 +1661,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
     setAvatar(await fileToDataUrl(f));
   };
 
-  const openEdit = () => { setForm({ email:user.email, current:'', next:'', confirm:'' }); setAvatar(user.avatar || null); setWaEnabled(user.whatsappEnabled !== false); setEdit(true); };
+  const openEdit = () => { setForm({ email:user.email, phone:user.phone || '', current:'', next:'', confirm:'' }); setAvatar(user.avatar || null); setWaEnabled(user.whatsappEnabled !== false); setEdit(true); };
 
   const save = async () => {
     if(form.next && form.next !== form.confirm){ showToast('Passwords do not match','error'); return; }
@@ -1670,12 +1670,13 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
       const avatarChanged = avatar !== (user.avatar || null);
       const updated = await userAPI.updateProfile({
         email: form.email !== user.email ? form.email : undefined,
+        phone: form.phone.trim() !== (user.phone || '') ? form.phone.trim() : undefined,
         new_password: form.next || undefined,
         current_password: form.current || undefined,
         avatar: avatarChanged ? (avatar || '') : undefined,
         whatsappEnabled: waEligible && waEnabled !== (user.whatsappEnabled !== false) ? waEnabled : undefined,
       });
-      updateUser({ email: updated.email, avatar: updated.avatar, whatsappEnabled: updated.whatsappEnabled });
+      updateUser({ email: updated.email, phone: updated.phone, avatar: updated.avatar, whatsappEnabled: updated.whatsappEnabled });
       showToast('Profile updated successfully');
       setEdit(false);
       setForm(f => ({ ...f, current:'', next:'', confirm:'' }));
@@ -1739,6 +1740,8 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
             </div>
           </div>
           <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="you@company.com"/>
+          <Input label="Phone Number" type="tel" value={form.phone} onChange={e=>set('phone',e.target.value)} placeholder="+91 98123 45678"/>
+          <p style={{ fontSize:11,color:T.textMuted,margin:'-6px 0 0' }}>Include the country code. Used for WhatsApp transaction notifications.</p>
           <div style={{ borderTop:`1px solid ${T.border}`,margin:'4px 0 14px',paddingTop:14 }}>
             <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Change Password</p>
             <Input label="Current Password" type="password" value={form.current} onChange={e=>set('current',e.target.value)} placeholder="Required to change password"/>

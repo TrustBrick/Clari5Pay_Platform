@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -300,6 +301,18 @@ async def update_profile(
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Email already in use")
         current_user.email = data.email
+
+    if data.phone is not None:
+        # Own contact number — where transaction/WhatsApp notifications are sent. Empty clears it;
+        # otherwise store in tidy E.164-ish form (leading '+' + digits). 8–15 digits per E.164.
+        raw = (data.phone or "").strip()
+        if raw:
+            digits = re.sub(r"\D", "", raw)
+            if not (8 <= len(digits) <= 15):
+                raise HTTPException(status_code=400, detail="Enter a valid phone number with country code, e.g. +919812345678")
+            current_user.phone = "+" + digits
+        else:
+            current_user.phone = None
 
     if data.avatar is not None:
         # Empty string clears the picture; a data URL sets it (validated for type + size).

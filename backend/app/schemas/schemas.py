@@ -47,6 +47,7 @@ class ChangePasswordRequest(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     email: Optional[str] = None
+    phone: Optional[str] = None               # own contact number (used for WhatsApp notifications)
     new_password: Optional[str] = None
     current_password: Optional[str] = None
     avatar: Optional[str] = None
