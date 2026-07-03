@@ -1646,11 +1646,33 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
   const { showToast } = useToast();
   const { updateUser } = useAuth();
   const [edit, setEdit] = useState(false);
-  const [form, setForm] = useState({ email:user.email, phone:user.phone || '', current:'', next:'', confirm:'' });
+  const [form, setForm] = useState({ current:'', next:'', confirm:'' });
   const [avatar, setAvatar] = useState<string | null>(user.avatar || null);
   const [waEnabled, setWaEnabled] = useState(user.whatsappEnabled !== false);
   const [saving, setSaving] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  // Dedicated "Contact Details" editor — email + phone only, separate from the general profile edit.
+  const [contactEdit, setContactEdit] = useState(false);
+  const [contactForm, setContactForm] = useState({ email:user.email, phone:user.phone || '' });
+  const [savingContact, setSavingContact] = useState(false);
+  const setContact = (k: 'email'|'phone', v: string) => setContactForm(f => ({...f,[k]:v}));
+  const openContactEdit = () => { setContactForm({ email:user.email, phone:user.phone || '' }); setContactEdit(true); };
+  const saveContact = async () => {
+    setSavingContact(true);
+    try {
+      const updated = await userAPI.updateProfile({
+        email: contactForm.email !== user.email ? contactForm.email : undefined,
+        phone: contactForm.phone.trim() !== (user.phone || '') ? contactForm.phone.trim() : undefined,
+      });
+      updateUser({ email: updated.email, phone: updated.phone });
+      showToast('Contact details updated');
+      setContactEdit(false);
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to update contact details','error');
+    } finally {
+      setSavingContact(false);
+    }
+  };
   // WhatsApp notifications apply to internal users only (Admin / Supervisor / Manager).
   const waEligible = user.role === 'ADMIN' || (user.role === 'MERCHANT' && ['SUPERVISOR','MANAGER'].includes(String(user.merchantRole||'').toUpperCase()));
 
@@ -1661,7 +1683,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
     setAvatar(await fileToDataUrl(f));
   };
 
-  const openEdit = () => { setForm({ email:user.email, phone:user.phone || '', current:'', next:'', confirm:'' }); setAvatar(user.avatar || null); setWaEnabled(user.whatsappEnabled !== false); setEdit(true); };
+  const openEdit = () => { setForm({ current:'', next:'', confirm:'' }); setAvatar(user.avatar || null); setWaEnabled(user.whatsappEnabled !== false); setEdit(true); };
 
   const save = async () => {
     if(form.next && form.next !== form.confirm){ showToast('Passwords do not match','error'); return; }
@@ -1669,14 +1691,12 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
     try {
       const avatarChanged = avatar !== (user.avatar || null);
       const updated = await userAPI.updateProfile({
-        email: form.email !== user.email ? form.email : undefined,
-        phone: form.phone.trim() !== (user.phone || '') ? form.phone.trim() : undefined,
         new_password: form.next || undefined,
         current_password: form.current || undefined,
         avatar: avatarChanged ? (avatar || '') : undefined,
         whatsappEnabled: waEligible && waEnabled !== (user.whatsappEnabled !== false) ? waEnabled : undefined,
       });
-      updateUser({ email: updated.email, phone: updated.phone, avatar: updated.avatar, whatsappEnabled: updated.whatsappEnabled });
+      updateUser({ avatar: updated.avatar, whatsappEnabled: updated.whatsappEnabled });
       showToast('Profile updated successfully');
       setEdit(false);
       setForm(f => ({ ...f, current:'', next:'', confirm:'' }));
@@ -1689,8 +1709,6 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
 
   const details: Array<[string,string]> = [
     ['Username', user.username],
-    ['Email ID', user.email],
-    ['Phone', user.phone || '—'],
     ['Role', user.role.replace('_',' ')],
     ['Member Since', user.created],
   ];
@@ -1723,6 +1741,20 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
         </div>
       </Card>
 
+      {/* Dedicated Contact Details section — email + phone, with its own editor */}
+      <Card style={{ padding:'20px 24px', marginTop:16 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+          <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:T.textMain }}>Contact Details</h3>
+          <Btn size="sm" variant="ghost" onClick={openContactEdit}>✎ Edit</Btn>
+        </div>
+        {([['Email ID', user.email],['Phone', user.phone || '—']] as [string,string][]).map(([k,v])=>(
+          <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'11px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
+            <span style={{ fontSize:12,color:T.textMuted }}>{k}</span>
+            <span style={{ fontSize:13,fontWeight:700,color:T.textMain,textAlign:'right' }}>{v}</span>
+          </div>
+        ))}
+      </Card>
+
       {edit && (
         <Modal title="Edit Profile" onClose={()=>setEdit(false)}>
           {/* Profile picture */}
@@ -1739,9 +1771,6 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
               {avatar && <span onClick={()=>setAvatar(null)} style={{ fontSize:11,color:T.danger,cursor:'pointer',fontWeight:700 }}>Remove</span>}
             </div>
           </div>
-          <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="you@company.com"/>
-          <Input label="Phone Number" type="tel" value={form.phone} onChange={e=>set('phone',e.target.value)} placeholder="+91 98123 45678"/>
-          <p style={{ fontSize:11,color:T.textMuted,margin:'-6px 0 0' }}>Include the country code. Used for WhatsApp transaction notifications.</p>
           <div style={{ borderTop:`1px solid ${T.border}`,margin:'4px 0 14px',paddingTop:14 }}>
             <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Change Password</p>
             <Input label="Current Password" type="password" value={form.current} onChange={e=>set('current',e.target.value)} placeholder="Required to change password"/>
@@ -1767,6 +1796,19 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={save} disabled={saving}>{saving?'Saving...':'Save Changes'}</Btn>
             <Btn variant="secondary" onClick={()=>setEdit(false)}>Cancel</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {contactEdit && (
+        <Modal title="Edit Contact Details" onClose={()=>setContactEdit(false)}>
+          <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 14px' }}>Update the email and phone number for your account. Your phone number is where WhatsApp transaction notifications are sent.</p>
+          <Input label="Email ID" type="email" value={contactForm.email} onChange={e=>setContact('email',e.target.value)} placeholder="you@company.com"/>
+          <Input label="Phone Number" type="tel" value={contactForm.phone} onChange={e=>setContact('phone',e.target.value)} placeholder="+91 98123 45678"/>
+          <p style={{ fontSize:11,color:T.textMuted,margin:'-6px 0 14px' }}>Include the country code, e.g. +91 for India.</p>
+          <div style={{ display:'flex',gap:10 }}>
+            <Btn onClick={saveContact} disabled={savingContact}>{savingContact?'Saving...':'Save Changes'}</Btn>
+            <Btn variant="secondary" onClick={()=>setContactEdit(false)}>Cancel</Btn>
           </div>
         </Modal>
       )}
