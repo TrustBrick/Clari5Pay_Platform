@@ -10,6 +10,7 @@ import TxSearchFilters from '../components/TxSearchFilters';
 import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery, ReceiptImage } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
+import { IS_DEMO } from '../utils/portal';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, demoAPI } from '../services/api';
 import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
@@ -938,7 +939,9 @@ export const AdminMerchantsPage: React.FC = () => {
     catch { showToast('Failed to update merchant','error'); }
     finally { setBusy(false); }
   };
-  const passwordMismatch = !!form.confirmPassword && form.password !== form.confirmPassword;
+  // Demo onboards a COMPANY (no login) — logins are created per-user via Create User. Production
+  // onboarding still collects the merchant's login credentials.
+  const passwordMismatch = !IS_DEMO && !!form.confirmPassword && form.password !== form.confirmPassword;
 
   const [mBal, setMBal] = useState<MerchantBalance[]>([]);
   const balByName = Object.fromEntries(mBal.map(b => [b.name, b]));
@@ -950,12 +953,15 @@ export const AdminMerchantsPage: React.FC = () => {
   usePoll(() => { if (!showCreate && !toggleM) reload(); });
 
   const createMerchant = async () => {
-    if(!form.name||!form.username||!form.email||!form.phone||!form.password||!form.payIn||!form.payOut||!form.settlement){ showToast('Fill all required fields','error'); return; }
-    if(form.password !== form.confirmPassword){ showToast('Passwords do not match','error'); return; }
+    // Demo onboards a company (no login fields); production still collects login credentials.
+    const needLogin = !IS_DEMO;
+    if(!form.name||!form.email||!form.phone||!form.payIn||!form.payOut||!form.settlement||(needLogin&&(!form.username||!form.password))){ showToast('Fill all required fields','error'); return; }
+    if(needLogin && form.password !== form.confirmPassword){ showToast('Passwords do not match','error'); return; }
     try {
       await userAPI.createMerchant({
-        name:form.name, country:form.country, username:form.username, email:form.email,
-        phone:`${form.countryCode} ${form.phone}`, password:form.password,
+        name:form.name, country:form.country, email:form.email,
+        phone:`${form.countryCode} ${form.phone}`,
+        ...(needLogin ? { username:form.username, password:form.password } : {}),
         payIn:form.payIn, payOut:form.payOut, settlement:form.settlement,
         payInFee:parseFloat(form.payInFee), payOutFee:parseFloat(form.payOutFee),
         settlementFee:form.settlementFee===''?null:parseFloat(form.settlementFee),
@@ -965,9 +971,9 @@ export const AdminMerchantsPage: React.FC = () => {
       await reload();
       setShowCreate(false);
       setForm(empty);
-      showToast(`Merchant "${form.name}" created`);
+      showToast(IS_DEMO ? `Company "${form.name}" onboarded` : `Merchant "${form.name}" created`);
     } catch {
-      showToast('Failed to create merchant','error');
+      showToast(IS_DEMO ? 'Failed to onboard company' : 'Failed to create merchant','error');
     }
   };
 
@@ -1020,14 +1026,16 @@ export const AdminMerchantsPage: React.FC = () => {
           <div style={{ display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:'0 18px' }}>
             <Input label="Business Name" value={form.name} onChange={e=>set('name',e.target.value)} placeholder="e.g. Nexus Fintech Ltd." required/>
             <Sel label="Country" value={form.country} onChange={e=>set('country',e.target.value)} required options={COUNTRY_NAME_OPTIONS}/>
-            <Input label="Username" value={form.username} onChange={e=>set('username',e.target.value)} placeholder="Login username" required hint="Merchant uses this to login"/>
+            {!IS_DEMO && <Input label="Username" value={form.username} onChange={e=>set('username',e.target.value)} placeholder="Login username" required hint="Merchant uses this to login"/>}
             <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="biz@company.com" required/>
             <PhoneField code={form.countryCode} onCode={v=>set('countryCode',v)} phone={form.phone} onPhone={v=>set('phone',v)} />
-            <Input label="Password" type="password" value={form.password} onChange={e=>set('password',e.target.value)} placeholder="Set login password" required hint="Merchant login password"/>
+            {!IS_DEMO && <Input label="Password" type="password" value={form.password} onChange={e=>set('password',e.target.value)} placeholder="Set login password" required hint="Merchant login password"/>}
+            {!IS_DEMO && (
             <div>
               <Input label="Confirm Password" type="password" value={form.confirmPassword} onChange={e=>set('confirmPassword',e.target.value)} placeholder="Re-enter password" required/>
               {passwordMismatch && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
             </div>
+            )}
             <Input label="Pay-In Code" value={form.payIn} onChange={e=>set('payIn',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. DEP (max 3 chars)" required/>
             <Input label="Pay-Out Code" value={form.payOut} onChange={e=>set('payOut',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. WIT" required/>
             <Input label="Settlement Code" value={form.settlement} onChange={e=>set('settlement',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. SET" required/>
@@ -1040,7 +1048,7 @@ export const AdminMerchantsPage: React.FC = () => {
             ℹ Integration settings are configured and managed by Admins — merchants do not have access.
           </div>
           <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={createMerchant} disabled={passwordMismatch}>Create Account</Btn>
+            <Btn onClick={createMerchant} disabled={passwordMismatch}>{IS_DEMO ? 'Onboard Company' : 'Create Account'}</Btn>
             <Btn variant="secondary" onClick={()=>setShowCreate(false)}>Cancel</Btn>
           </div>
         </Modal>
@@ -1130,7 +1138,9 @@ export const AdminMerchantsPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {viewCompany.users.map(u=>(
+                {/* Demo: the company row (MER code) is the parent entity, not a user — the Users
+                    table lists only the login users (MID codes) created under it. */}
+                {(IS_DEMO ? viewCompany.users.filter(u=>!(u.merchantCode||'').startsWith('MER')) : viewCompany.users).map(u=>(
                   <tr key={u.id} style={{ borderBottom:`1px solid ${T.borderLight}` }}>
                     <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 6px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{u.merchantCode||'—'}</code></td>
                     <td style={{ padding:'10px 12px',color:T.textMain }}>{u.fullName||'—'}</td>

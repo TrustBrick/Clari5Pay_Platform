@@ -1,4 +1,5 @@
 import re
+import secrets
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,29 +42,41 @@ def _u(u: User) -> dict:
     }
 
 
-# Demo mints Merchant IDs in a distinct high band so codes generated on the demo stack never
-# collide with Production's — the two share cloned data (see the prod→demo sync), and MID is
-# MAX+1 derived (not a sequence), so it can't be offset in data like the sequences are.
+# Serial ID helpers. Codes are "<PREFIX><6-digit>" (bank-account style). Independent series by
+# prefix — "MID…" for users (and, on Production, merchants: the two share the users table),
+# "MER…" for merchant COMPANIES on the demo stack (see the demo merchant/user hierarchy). A code
+# never collides or gets reused because each series continues after its own current max. On demo,
+# `demo_base` lifts a series into a distinct high band so demo-generated codes never clash with
+# Production's (the two environments share cloned data — see the prod→demo sync).
 _DEMO_MID_BASE = 900000
 
-async def _next_merchant_code(db: AsyncSession) -> str:
-    """Next serial Merchant ID (bank-account style, MID000001…), continuing after the
-    highest code already assigned so codes never collide or get reused. On the demo stack,
-    new codes are minted from a distinct band (MID900001+) so demo-generated Merchant IDs
-    never clash with Production's. Inert on Production."""
+
+async def _next_code(db: AsyncSession, prefix: str, demo_base: int = 0) -> str:
     codes = (await db.execute(
-        select(User.merchant_code).where(User.merchant_code.like("MID%"))
+        select(User.merchant_code).where(User.merchant_code.like(f"{prefix}%"))
     )).scalars().all()
-    maxn = 0
+    maxn, plen = 0, len(prefix)
     for c in codes:
         try:
-            maxn = max(maxn, int(c[3:]))
+            maxn = max(maxn, int(c[plen:]))
         except (TypeError, ValueError):
             continue
-    nxt = maxn + 1
-    if settings.is_demo:
-        nxt = max(nxt, _DEMO_MID_BASE + 1)   # demo band (MID900001+); prod stays MID000001+
-    return f"MID{nxt:06d}"
+    return f"{prefix}{max(maxn + 1, demo_base + 1):06d}"
+
+
+async def _next_merchant_code(db: AsyncSession) -> str:
+    """Next serial Merchant ID (MID…) — Production merchants and all users continue this series."""
+    return await _next_code(db, "MID")
+
+
+async def _next_company_code(db: AsyncSession) -> str:
+    """Demo only: next COMPANY Merchant ID (MER…) — companies get their own independent series."""
+    return await _next_code(db, "MER")
+
+
+async def _next_user_code(db: AsyncSession) -> str:
+    """Demo only: next USER ID (MID…), in a distinct band so demo user codes never clash with prod."""
+    return await _next_code(db, "MID", demo_base=_DEMO_MID_BASE)
 
 
 @router.get("/merchants")
@@ -122,20 +135,37 @@ async def create_merchant(
     if admin.role == UserRole.SUPER_ADMIN:
         raise HTTPException(status_code=403, detail="Super Admin cannot create merchants")
 
-    existing = await db.execute(select(User).where(User.username == data["username"]))
+    # Demo separates Companies (onboarding → MER code, no login) from Users (Create User → MID
+    # code, real login). A sub-user is identified by carrying a merchant_role. Production is
+    # unchanged: every merchant-role row is a login with a MID code.
+    is_sub_user = bool(data.get("merchantRole"))
+    if settings.is_demo and not is_sub_user:
+        merchant_code = await _next_company_code(db)
+        # A company collects no credentials — fill the NOT NULL login columns with a placeholder so
+        # the company row exists but is not a usable login (username = its MER code, random secret).
+        username = (data.get("username") or merchant_code).lower()
+        raw_password = data.get("password") or secrets.token_urlsafe(24)
+    elif settings.is_demo:
+        merchant_code = await _next_user_code(db)
+        username, raw_password = data["username"], data["password"]
+    else:
+        merchant_code = await _next_merchant_code(db)
+        username, raw_password = data["username"], data["password"]
+
+    existing = await db.execute(select(User).where(User.username == username))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username already taken")
 
     user = User(
-        username=data["username"],
-        hashed_password=get_password_hash(data["password"]),
+        username=username,
+        hashed_password=get_password_hash(raw_password),
         email=data["email"],
         name=data["name"],
         phone=data.get("phone"),
         role=UserRole.MERCHANT,
         active=True,
         created_by=admin.id,
-        merchant_code=await _next_merchant_code(db),
+        merchant_code=merchant_code,
         pay_in=data.get("payIn"),
         pay_out=data.get("payOut"),
         settlement=data.get("settlement"),
