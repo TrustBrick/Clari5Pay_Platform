@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, ActiveUsersData, AdminUpi, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, ActiveUsersData, AdminUpi, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -362,6 +362,10 @@ export const supportAPI = {
     const res = await api.get<SupportMessage[]>('/api/support/my-messages');
     return res.data;
   },
+  myConversation: async () => {
+    const res = await api.get<{ status: string; queued: boolean; agentName: string | null }>('/api/support/my-conversation');
+    return res.data;
+  },
   send: async (content: string, merchantId?: number) => {
     const res = await api.post<SupportMessage>('/api/support/messages', { content, merchant_id: merchantId });
     return res.data;
@@ -605,10 +609,6 @@ export const supportManagementAPI = {
     const res = await api.get<SupportMembersData>('/api/support-management/agents');
     return res.data;
   },
-  assignableMerchants: async () => {
-    const res = await api.get<AssignableMerchant[]>('/api/support-management/assignable-merchants');
-    return res.data;
-  },
   create: async (data: Record<string, unknown>) => {
     const res = await api.post<SupportMemberRow>('/api/support-management/agents', data);
     return res.data;
@@ -625,10 +625,6 @@ export const supportManagementAPI = {
     const res = await api.post<{ message: string }>(`/api/support-management/agents/${id}/reset-password`, { new_password: newPassword });
     return res.data;
   },
-  assignMerchants: async (id: number, merchantIds: number[]) => {
-    const res = await api.put<SupportMemberRow>(`/api/support-management/agents/${id}/merchants`, { merchantIds });
-    return res.data;
-  },
   profile: async (id: number) => {
     const res = await api.get<SupportMemberRow>(`/api/support-management/agents/${id}/profile`);
     return res.data;
@@ -637,8 +633,35 @@ export const supportManagementAPI = {
     const res = await api.delete<{ message: string }>(`/api/support-management/agents/${id}`);
     return res.data;
   },
-  setAvailability: async (availability: 'AVAILABLE' | 'BUSY') => {
+  setAvailability: async (availability: 'AVAILABLE' | 'BUSY' | 'ON_BREAK') => {
     const res = await api.patch<{ availability: string }>('/api/support-management/me/availability', { availability });
+    return res.data;
+  },
+  // Admin: force a member's availability.
+  forceAvailability: async (id: number, availability: 'AVAILABLE' | 'BUSY' | 'ON_BREAK') => {
+    const res = await api.patch<SupportMemberRow>(`/api/support-management/agents/${id}/availability`, { availability });
+    return res.data;
+  },
+  // Assignment config (max active conversations + strategy).
+  getConfig: async () => {
+    const res = await api.get<{ maxActiveConversations: number; strategy: string }>('/api/support-management/config');
+    return res.data;
+  },
+  updateConfig: async (data: { maxActiveConversations?: number; strategy?: string }) => {
+    const res = await api.put<{ maxActiveConversations: number; strategy: string }>('/api/support-management/config', data);
+    return res.data;
+  },
+  // Conversations (active + queued).
+  conversations: async (status?: 'open' | 'queued') => {
+    const res = await api.get<SupportConversationRow[]>('/api/support-management/conversations', { params: status ? { status } : {} });
+    return res.data;
+  },
+  reassignConversation: async (conversationId: number, supportId: number) => {
+    const res = await api.post<{ ok: boolean; supportId: number; supportName: string }>(`/api/support-management/conversations/${conversationId}/reassign`, { supportId });
+    return res.data;
+  },
+  closeConversation: async (conversationId: number) => {
+    const res = await api.post<{ ok: boolean }>(`/api/support-management/conversations/${conversationId}/close`, {});
     return res.data;
   },
 };

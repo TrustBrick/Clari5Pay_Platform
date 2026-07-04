@@ -408,8 +408,9 @@ class SupportMessage(Base):
 
 
 class SupportAssignment(Base):
-    """Maps a support member (SUPPORT_AGENT) to a merchant they are allowed to service.
-    A support member only sees/handles the merchants assigned to them."""
+    """Legacy: mapped a support member (SUPPORT_AGENT) to a merchant they were allowed to service.
+    Superseded by per-conversation ownership (SupportConversation); kept for historical rows and
+    no longer consulted for routing. Not written to by new code."""
     __tablename__ = "support_assignments"
     __table_args__ = (UniqueConstraint("support_id", "merchant_id", name="uq_support_merchant"),)
 
@@ -418,6 +419,37 @@ class SupportAssignment(Base):
     merchant_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
     assigned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     assigned_by: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+class SupportConversation(Base):
+    """One support conversation thread per customer (a merchant-role user). Each thread is owned by
+    exactly one support agent (``support_id``); it is *queued* when ``support_id`` is NULL and no
+    agent was available at open time. Status is OPEN until an agent/admin closes it. Message history
+    still lives in SupportMessage keyed by the same customer id (``merchant_id``)."""
+    __tablename__ = "support_conversations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    customer_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    support_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="OPEN", nullable=False)  # OPEN | CLOSED
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    queued_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # when it entered the wait queue
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_message_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Response-time metric: first agent reply timestamp for the current open span.
+    first_response_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    assigned_by: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # admin id on manual (re)assignment
+
+
+class SupportConfig(Base):
+    """Singleton (id=1) global support-assignment configuration, editable by Admins."""
+    __tablename__ = "support_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    max_active_conversations: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    strategy: Mapped[str] = mapped_column(String(24), default="LEAST_ACTIVE", nullable=False)  # LEAST_ACTIVE | ROUND_ROBIN
+    last_assigned_support_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # round-robin pointer
 
 
 class BlogPost(Base):

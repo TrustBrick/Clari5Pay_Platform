@@ -1,20 +1,24 @@
-"""Support Management — Admin/Super Admin CRUD for Support Team members.
+"""Support Management — Admin/Super Admin console for the Support Team.
 
-Support members are ``SUPPORT_AGENT``-role users enriched with a Support ID, department,
-shift, availability (Available/Busy) and a set of assigned merchants. They keep the existing
-no-OTP support-portal login and appear in Active Users. This module adds:
+Support members are ``SUPPORT_AGENT``-role users enriched with a Support ID, department, shift and
+availability. Customers are auto-assigned to a single member per conversation (see
+services/support_routing); members are no longer permanently tied to merchants. This module covers:
 
-  • GET    /api/support-management/agents            — list visible members (+ derived status)
-  • GET    /api/support-management/agents/stream     — SSE live feed (cards + table)
-  • POST   /api/support-management/agents            — create a member
-  • PATCH  /api/support-management/agents/{id}        — edit details
-  • PATCH  /api/support-management/agents/{id}/toggle — activate / deactivate
+  • GET    /api/support-management/agents             — list members (+ live status / active count)
+  • GET    /api/support-management/agents/stream      — SSE live feed (cards + table + dashboard)
+  • POST   /api/support-management/agents             — create a member
+  • PATCH  /api/support-management/agents/{id}         — edit details
+  • PATCH  /api/support-management/agents/{id}/toggle  — activate / deactivate
   • POST   /api/support-management/agents/{id}/reset-password
-  • PUT    /api/support-management/agents/{id}/merchants — replace assigned merchants
-  • GET    /api/support-management/agents/{id}/profile  — full profile (session details)
-  • DELETE /api/support-management/agents/{id}        — soft-archive (Super Admin only)
-  • GET    /api/support-management/assignable-merchants — merchants the caller may assign
-  • PATCH  /api/support-management/me/availability    — member sets own Available/Busy
+  • PATCH  /api/support-management/agents/{id}/availability — Admin force Available/Busy/On-Break
+  • GET    /api/support-management/agents/{id}/profile — full profile (session details)
+  • DELETE /api/support-management/agents/{id}         — soft-archive (Super Admin only)
+  • GET    /api/support-management/config              — assignment config (max / strategy)
+  • PUT    /api/support-management/config              — update config
+  • GET    /api/support-management/conversations       — all conversations (active + queued)
+  • POST   /api/support-management/conversations/{id}/reassign
+  • POST   /api/support-management/conversations/{id}/close
+  • PATCH  /api/support-management/me/availability     — member sets own Available/Busy/On-Break
 
 Scope: Super Admin → all members; Admin → only members they created (``created_by``).
 """
@@ -26,29 +30,29 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, delete
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db, AsyncSessionLocal
 from app.core.deps import get_current_admin, get_current_super_admin, get_current_support
 from app.core.security import get_password_hash
 from app.core.passwords import assert_password_allowed, set_password
-from app.models.models import User, UserRole, Notification, SupportAssignment, SupportMessage
+from app.models.models import User, UserRole, Notification, SupportMessage, SupportConversation
 from app.schemas.schemas import (
-    SupportMemberCreate, SupportMemberUpdate, AssignMerchantsRequest, AvailabilityRequest,
-    ReasonRequest,
+    SupportMemberCreate, SupportMemberUpdate, AvailabilityRequest, ReasonRequest,
+    SupportConfigUpdate, ReassignConversationRequest,
 )
-from app.services import presence
+from app.services import presence, support_routing
 from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/support-management", tags=["support-management"])
 
-# Stream tuning — mirrors active_users.py so the two presence feeds behave identically.
 STREAM_TICK_SECONDS = 1.0
 STREAM_FORCE_REFRESH_SECONDS = 15.0
 
 DEPARTMENTS = {"Technical Support", "Payments", "Merchant Support", "Finance", "Compliance"}
 SHIFTS = {"Morning", "Afternoon", "Night"}
+AVAILABILITY_VALUES = ("AVAILABLE", "BUSY", "ON_BREAK")
 
 
 def _ip(request: Request) -> str | None:
@@ -56,7 +60,6 @@ def _ip(request: Request) -> str | None:
 
 
 def _normalize_phone(raw: str | None) -> str | None:
-    """E.164-ish: leading '+' + 8–15 digits. Empty → None. Same rule as users.update_profile."""
     raw = (raw or "").strip()
     if not raw:
         return None
@@ -67,7 +70,6 @@ def _normalize_phone(raw: str | None) -> str | None:
 
 
 async def _next_support_code(db: AsyncSession) -> str:
-    """Next serial Support ID (SUP000001…), continuing after the current max (collision-safe)."""
     codes = (await db.execute(
         select(User.support_code).where(User.support_code.like("SUP%"))
     )).scalars().all()
@@ -78,22 +80,6 @@ async def _next_support_code(db: AsyncSession) -> str:
         except (TypeError, ValueError):
             continue
     return f"SUP{maxn + 1:06d}"
-
-
-AVAILABILITY_VALUES = ("AVAILABLE", "BUSY", "ON_BREAK")
-
-
-def _derive_status(u: User, sess, now: datetime) -> str:
-    """online (green) / busy (yellow) / break (red) / offline (gray). Offline is derived from
-    presence; Available/Busy/On-Break is the member's manual availability while their session is live."""
-    if not presence.is_online(sess, now):
-        return "offline"
-    avail = str(u.support_availability or "AVAILABLE").upper()
-    if avail == "BUSY":
-        return "busy"
-    if avail == "ON_BREAK":
-        return "break"
-    return "online"
 
 
 # ─── Visibility / access ──────────────────────────────────────────────────────
@@ -115,37 +101,8 @@ async def _get_member(db: AsyncSession, caller: User, member_id: int) -> User:
     return m
 
 
-async def _assignable_merchants(db: AsyncSession, caller: User) -> list[User]:
-    q = select(User).where(User.role == UserRole.MERCHANT, User.active == True)  # noqa: E712
-    if caller.role != UserRole.SUPER_ADMIN:
-        q = q.where(User.created_by == caller.id)
-    return (await db.execute(q)).scalars().all()
-
-
-async def assigned_merchant_ids(db: AsyncSession, support_id: int) -> set[int]:
-    """Merchant ids a support member may service. Imported by support.py to gate the chat."""
-    rows = (await db.execute(
-        select(SupportAssignment.merchant_id).where(SupportAssignment.support_id == support_id)
-    )).scalars().all()
-    return set(rows)
-
-
-async def _assignments_map(db: AsyncSession, support_ids: list[int]) -> dict[int, list[dict]]:
-    if not support_ids:
-        return {}
-    rows = (await db.execute(
-        select(SupportAssignment.support_id, User.id, User.name)
-        .join(User, User.id == SupportAssignment.merchant_id)
-        .where(SupportAssignment.support_id.in_(support_ids))
-    )).all()
-    out: dict[int, list[dict]] = {}
-    for sid, mid, mname in rows:
-        out.setdefault(sid, []).append({"id": mid, "name": mname})
-    return out
-
-
 # ─── Serialization ────────────────────────────────────────────────────────────
-def _member_out(u: User, sess, assigned: list[dict], now: datetime) -> dict:
+def _member_out(u: User, sess, active: int, cfg, now: datetime) -> dict:
     ua = presence.parse_user_agent(sess.user_agent if sess else None)
     current = bool(sess and sess.active and sess.logout_at is None)
     duration = None
@@ -162,11 +119,11 @@ def _member_out(u: User, sess, assigned: list[dict], now: datetime) -> dict:
         "avatar": u.avatar,
         "department": u.support_department,
         "shift": u.support_shift,
-        "status": _derive_status(u, sess, now),
+        "status": support_routing.derive_status(u, sess, active, cfg, now),
         "availability": str(u.support_availability or "AVAILABLE").upper(),
         "active": u.active,
-        "assignedMerchants": assigned,
-        "assignedMerchantCount": len(assigned),
+        "activeConversations": active,
+        "maxConversations": cfg.max_active_conversations,
         "loginTime": (sess.login_at.isoformat() + "Z") if sess else None,
         "lastActivity": (sess.last_activity_at.isoformat() + "Z") if sess else None,
         "lastSeen": (sess.last_activity_at.isoformat() + "Z") if sess else None,
@@ -183,60 +140,75 @@ def _member_out(u: User, sess, assigned: list[dict], now: datetime) -> dict:
     }
 
 
+async def _avg_response_seconds(db: AsyncSession) -> int | None:
+    rows = (await db.execute(
+        select(SupportConversation.created_at, SupportConversation.first_response_at)
+        .where(SupportConversation.first_response_at.isnot(None))
+    )).all()
+    if not rows:
+        return None
+    spans = [(fr - cr).total_seconds() for cr, fr in rows if fr and cr]
+    return int(sum(spans) / len(spans)) if spans else None
+
+
 async def _build_payload(db: AsyncSession, caller_role, caller_id: int) -> dict:
     members = (await db.execute(select(User).where(_visible_filter(caller_role, caller_id)))).scalars().all()
     now = datetime.utcnow()
     ids = [m.id for m in members]
     sessions = await presence.latest_sessions(db, ids)
-    amap = await _assignments_map(db, ids)
-    rows = [_member_out(m, sessions.get(m.id), amap.get(m.id, []), now) for m in members]
+    counts = await support_routing.active_counts(db, ids)
+    cfg = await support_routing.get_config(db)
+    rows = [_member_out(m, sessions.get(m.id), counts.get(m.id, 0), cfg, now) for m in members]
     rows.sort(key=lambda r: (r["fullName"] or "").lower())
-    online = sum(1 for r in rows if r["status"] == "online")
+
+    available = sum(1 for r in rows if r["status"] == "available")
     busy = sum(1 for r in rows if r["status"] == "busy")
     on_break = sum(1 for r in rows if r["status"] == "break")
-    # Distinct merchants assigned across all visible members (card metric).
-    assigned_ids: set[int] = set()
-    for lst in amap.values():
-        for m in lst:
-            assigned_ids.add(m["id"])
+    offline = sum(1 for r in rows if r["status"] == "offline")
+
+    active_total = (await db.execute(
+        select(func.count()).where(SupportConversation.status == "OPEN", SupportConversation.support_id.isnot(None))
+    )).scalar() or 0
+    waiting = (await db.execute(
+        select(func.count()).where(SupportConversation.status == "OPEN", SupportConversation.support_id.is_(None))
+    )).scalar() or 0
+
     summary = {
         "members": len(rows),
-        "online": online,
+        "available": available,
         "busy": busy,
         "onBreak": on_break,
-        "offline": len(rows) - online - busy - on_break,
-        "assignedMerchants": len(assigned_ids),
-        "openTickets": 0,  # future-ready: wired once a ticketing model exists
+        "offline": offline,
+        "activeConversations": active_total,
+        "waitingCustomers": waiting,
+        "queueLength": waiting,
+        "avgResponseSeconds": await _avg_response_seconds(db),
+        "maxActiveConversations": cfg.max_active_conversations,
+        "strategy": cfg.strategy,
     }
     return {"summary": summary, "members": rows}
 
 
 def _signature(payload: dict) -> str:
-    """Fingerprint of presence-relevant state (id + status + availability + session marks)."""
-    return "|".join(
-        f"{r['id']}:{r['status']}:{r['availability']}:{r['lastActivity']}:{r['logoutTime']}:{r['active']}:{r['assignedMerchantCount']}"
+    s = payload["summary"]
+    head = f"{s['available']}:{s['busy']}:{s['onBreak']}:{s['offline']}:{s['activeConversations']}:{s['waitingCustomers']}:{s['maxActiveConversations']}:{s['strategy']}"
+    body = "|".join(
+        f"{r['id']}:{r['status']}:{r['availability']}:{r['activeConversations']}:{r['lastActivity']}:{r['logoutTime']}:{r['active']}"
         for r in sorted(payload["members"], key=lambda r: r["id"])
     )
+    return head + "#" + body
 
 
 # ─── List / stream ────────────────────────────────────────────────────────────
 @router.get("/agents")
-async def list_agents(
-    db: AsyncSession = Depends(get_db),
-    caller: User = Depends(get_current_admin),
-):
+async def list_agents(db: AsyncSession = Depends(get_db), caller: User = Depends(get_current_admin)):
     return await _build_payload(db, caller.role, caller.id)
 
 
 @router.get("/agents/stream")
-async def agents_stream(
-    request: Request,
-    caller: User = Depends(get_current_admin),
-):
-    """SSE feed — pushes a fresh payload whenever a member's presence/availability/assignment
-    changes, plus a periodic refresh so derived fields keep ticking. Uses its own short-lived
-    DB sessions so it never holds a pooled connection across idle waits."""
-    caller_id, caller_role = caller.id, caller.role  # extract primitives (caller detaches below)
+async def agents_stream(request: Request, caller: User = Depends(get_current_admin)):
+    """SSE feed — pushes a fresh payload whenever member presence/availability/load changes."""
+    caller_id, caller_role = caller.id, caller.role
 
     async def event_source():
         last_sig: str | None = None
@@ -266,15 +238,6 @@ async def agents_stream(
             "Content-Encoding": "identity",
         },
     )
-
-
-@router.get("/assignable-merchants")
-async def assignable_merchants(
-    db: AsyncSession = Depends(get_db),
-    caller: User = Depends(get_current_admin),
-):
-    ms = await _assignable_merchants(db, caller)
-    return [{"id": m.id, "name": m.name, "merchantCode": m.merchant_code, "username": m.username} for m in ms]
 
 
 # ─── Create ───────────────────────────────────────────────────────────────────
@@ -317,12 +280,6 @@ async def create_agent(
     )
     db.add(member)
     await db.flush()
-
-    # Assignments (only merchants the caller may assign are honored).
-    allowed = {m.id for m in await _assignable_merchants(db, caller)}
-    chosen = [mid for mid in (data.merchantIds or []) if mid in allowed]
-    for mid in chosen:
-        db.add(SupportAssignment(support_id=member.id, merchant_id=mid, assigned_by=caller.id))
 
     db.add(Notification(user_id=member.id, message="Your support account was created", icon="🎧"))
     db.add(Notification(user_id=caller.id, message=f"Support member \"{member.name}\" created", icon="🎧"))
@@ -382,6 +339,8 @@ async def toggle_agent(
     was_active = m.active
     m.active = not m.active
     await db.flush()
+    if not m.active:
+        await _requeue_member_conversations(db, m.id)  # free their conversations for reassignment
     state = "activated" if m.active else "deactivated"
     db.add(Notification(user_id=m.id, message=f"Your account was {state} — {reason}", icon="🎧"))
     db.add(Notification(user_id=caller.id, message=f"Support member {m.name} {state}", icon="🎧"))
@@ -415,26 +374,27 @@ async def reset_agent_password(
     return {"message": f"Password reset for {m.name}."}
 
 
-# ─── Assign merchants (replace set) ───────────────────────────────────────────
-@router.put("/agents/{member_id}/merchants")
-async def assign_merchants(
+# ─── Admin: force availability ────────────────────────────────────────────────
+@router.patch("/agents/{member_id}/availability")
+async def force_availability(
     member_id: int,
-    data: AssignMerchantsRequest,
+    data: AvailabilityRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
     caller: User = Depends(get_current_admin),
 ):
     m = await _get_member(db, caller, member_id)
-    allowed = {mm.id for mm in await _assignable_merchants(db, caller)}
-    chosen = [mid for mid in (data.merchantIds or []) if mid in allowed]
-    await db.execute(delete(SupportAssignment).where(SupportAssignment.support_id == m.id))
-    for mid in chosen:
-        db.add(SupportAssignment(support_id=m.id, merchant_id=mid, assigned_by=caller.id))
+    value = str(data.availability or "").upper()
+    if value not in AVAILABILITY_VALUES:
+        raise HTTPException(status_code=400, detail="availability must be AVAILABLE, BUSY or ON_BREAK")
+    m.support_availability = value
+    m.support_availability_at = datetime.utcnow()
     await db.flush()
-    db.add(Notification(user_id=m.id, message=f"Your assigned merchants were updated ({len(chosen)})", icon="🎧"))
-    await log_event(db, "SUPPORT_MERCHANTS_ASSIGNED", f"{caller.name} set {len(chosen)} merchant(s) for support member \"{m.name}\"", actor=caller)
-    await record_audit(db, "SUPPORT_MERCHANTS_ASSIGNED", actor=caller, entity_type="support", entity_id=m.id,
-                       new=f"{len(chosen)} merchants", ip=_ip(request))
+    if value == "AVAILABLE":
+        await support_routing.drain_queue(db)  # a freed member may admit queued customers
+    db.add(Notification(user_id=m.id, message=f"An administrator set your status to {value.title().replace('_', ' ')}", icon="🎧"))
+    await log_event(db, "SUPPORT_AVAILABILITY_FORCED", f"{caller.name} set {m.name} to {value}", actor=caller)
+    await record_audit(db, "SUPPORT_AVAILABILITY_FORCED", actor=caller, entity_type="support", entity_id=m.id, new=value, ip=_ip(request))
     return await _one(db, m)
 
 
@@ -447,15 +407,7 @@ async def agent_profile(
 ):
     m = await _get_member(db, caller, member_id)
     out = await _one(db, m)
-    # Active conversations = assigned merchants that have at least one chat message.
-    mids = await assigned_merchant_ids(db, m.id)
-    active = 0
-    if mids:
-        rows = (await db.execute(
-            select(SupportMessage.merchant_id).where(SupportMessage.merchant_id.in_(mids)).distinct()
-        )).scalars().all()
-        active = len(rows)
-    out["activeConversations"] = active
+    out["activeConversations"] = (await support_routing.active_counts(db, [m.id])).get(m.id, 0)
     return out
 
 
@@ -474,13 +426,134 @@ async def archive_agent(
         raise HTTPException(status_code=404, detail="Support member not found")
     m.support_archived = True
     m.active = False
-    await db.execute(delete(SupportAssignment).where(SupportAssignment.support_id == m.id))
+    await _requeue_member_conversations(db, m.id)
     await presence.end_session(db, m)
     await db.flush()
     await log_event(db, "SUPPORT_ARCHIVED", f"Support member \"{m.name}\" deleted (archived) by {sa.name}", actor=sa)
     await record_audit(db, "SUPPORT_ARCHIVED", actor=sa, entity_type="support", entity_id=m.id,
                        new="archived", ip=_ip(request))
     return {"message": f"{m.name} removed."}
+
+
+# ─── Config ───────────────────────────────────────────────────────────────────
+@router.get("/config")
+async def get_config(db: AsyncSession = Depends(get_db), caller: User = Depends(get_current_admin)):
+    cfg = await support_routing.get_config(db)
+    return {"maxActiveConversations": cfg.max_active_conversations, "strategy": cfg.strategy}
+
+
+@router.put("/config")
+async def update_config(
+    data: SupportConfigUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    caller: User = Depends(get_current_admin),
+):
+    cfg = await support_routing.get_config(db)
+    if data.maxActiveConversations is not None:
+        if data.maxActiveConversations < 1 or data.maxActiveConversations > 1000:
+            raise HTTPException(status_code=400, detail="maxActiveConversations must be between 1 and 1000")
+        cfg.max_active_conversations = data.maxActiveConversations
+    if data.strategy is not None:
+        if data.strategy not in support_routing.STRATEGIES:
+            raise HTTPException(status_code=400, detail="strategy must be LEAST_ACTIVE or ROUND_ROBIN")
+        cfg.strategy = data.strategy
+    await db.flush()
+    await support_routing.drain_queue(db)  # a higher limit can free capacity for queued customers
+    await log_event(db, "SUPPORT_CONFIG_UPDATED",
+                    f"{caller.name} set support config (max={cfg.max_active_conversations}, strategy={cfg.strategy})", actor=caller)
+    await record_audit(db, "SUPPORT_CONFIG_UPDATED", actor=caller, entity_type="support",
+                       new=f"max={cfg.max_active_conversations}, {cfg.strategy}", ip=_ip(request))
+    return {"maxActiveConversations": cfg.max_active_conversations, "strategy": cfg.strategy}
+
+
+# ─── Conversations (admin) ────────────────────────────────────────────────────
+async def _conversation_out(db: AsyncSession, c: SupportConversation, users: dict[int, User]) -> dict:
+    cust = users.get(c.customer_id)
+    agent = users.get(c.support_id) if c.support_id else None
+    last = (await db.execute(
+        select(SupportMessage).where(SupportMessage.merchant_id == c.customer_id)
+        .order_by(SupportMessage.created_at.desc())
+    )).scalars().first()
+    return {
+        "id": c.id,
+        "customerId": c.customer_id,
+        "customerName": cust.name if cust else None,
+        "customerCode": (cust.merchant_code or cust.username) if cust else None,
+        "supportId": c.support_id,
+        "supportName": (agent.full_name or agent.name) if agent else None,
+        "status": "QUEUED" if (c.status == "OPEN" and c.support_id is None) else c.status,
+        "queued": c.status == "OPEN" and c.support_id is None,
+        "createdAt": c.created_at.isoformat() + "Z",
+        "assignedAt": (c.assigned_at.isoformat() + "Z") if c.assigned_at else None,
+        "lastMessage": last.content if last else None,
+        "lastAt": (last.created_at.isoformat() + "Z") if last else None,
+    }
+
+
+@router.get("/conversations")
+async def list_conversations(
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    caller: User = Depends(get_current_admin),
+):
+    """All conversations (active + queued). Admin scope: only conversations owned by / queued for
+    the caller's own support members plus unassigned queue; Super Admin sees everything."""
+    q = select(SupportConversation)
+    if status == "open":
+        q = q.where(SupportConversation.status == "OPEN")
+    elif status == "queued":
+        q = q.where(SupportConversation.status == "OPEN", SupportConversation.support_id.is_(None))
+    convs = (await db.execute(q.order_by(SupportConversation.created_at.desc()))).scalars().all()
+
+    # Restrict an Admin to their own members' conversations (+ the shared queue).
+    if caller.role != UserRole.SUPER_ADMIN:
+        my_members = {mid for (mid,) in (await db.execute(
+            select(User.id).where(User.role == UserRole.SUPPORT_AGENT, User.created_by == caller.id)
+        )).all()}
+        convs = [c for c in convs if c.support_id in my_members or c.support_id is None]
+
+    uid = {c.customer_id for c in convs} | {c.support_id for c in convs if c.support_id}
+    users = {u.id: u for u in (await db.execute(select(User).where(User.id.in_(uid or {0})))).scalars().all()}
+    return [await _conversation_out(db, c, users) for c in convs]
+
+
+@router.post("/conversations/{conv_id}/reassign")
+async def reassign_conversation(
+    conv_id: int,
+    data: ReassignConversationRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    caller: User = Depends(get_current_admin),
+):
+    conv = (await db.execute(select(SupportConversation).where(SupportConversation.id == conv_id))).scalar_one_or_none()
+    if not conv or conv.status != "OPEN":
+        raise HTTPException(status_code=404, detail="Open conversation not found")
+    target = await _get_member(db, caller, data.supportId)  # enforces Admin can only pick own members
+    agent = await support_routing.reassign_conversation(db, conv, target.id, actor_id=caller.id)
+    await log_event(db, "SUPPORT_CONVERSATION_REASSIGNED",
+                    f"{caller.name} reassigned conversation #{conv.id} to {agent.name}", actor=caller)
+    await record_audit(db, "SUPPORT_CONVERSATION_REASSIGNED", actor=caller, entity_type="support",
+                       entity_id=conv.id, new=agent.name, ip=_ip(request))
+    return {"ok": True, "supportId": agent.id, "supportName": agent.full_name or agent.name}
+
+
+@router.post("/conversations/{conv_id}/close")
+async def close_conversation(
+    conv_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    caller: User = Depends(get_current_admin),
+):
+    conv = (await db.execute(select(SupportConversation).where(SupportConversation.id == conv_id))).scalar_one_or_none()
+    if not conv or conv.status != "OPEN":
+        raise HTTPException(status_code=404, detail="Open conversation not found")
+    if caller.role != UserRole.SUPER_ADMIN and conv.support_id is not None:
+        await _get_member(db, caller, conv.support_id)  # scope check
+    await support_routing.close_conversation(db, conv, actor_id=caller.id)
+    await log_event(db, "SUPPORT_CONVERSATION_CLOSED", f"{caller.name} closed conversation #{conv.id}", actor=caller)
+    await record_audit(db, "SUPPORT_CONVERSATION_CLOSED", actor=caller, entity_type="support", entity_id=conv.id, ip=_ip(request))
+    return {"ok": True}
 
 
 # ─── Member self: availability toggle ─────────────────────────────────────────
@@ -496,8 +569,10 @@ async def set_availability(
         raise HTTPException(status_code=400, detail="availability must be AVAILABLE, BUSY or ON_BREAK")
     member.support_availability = value
     member.support_availability_at = datetime.utcnow()
-    await presence.touch(db, member)  # a manual availability change also counts as activity
+    await presence.touch(db, member)
     await db.flush()
+    if value == "AVAILABLE":
+        await support_routing.drain_queue(db)
     if member.created_by:
         pretty = {"AVAILABLE": "Available", "BUSY": "Busy", "ON_BREAK": "On Break"}[value]
         db.add(Notification(user_id=member.created_by, message=f"Support member {member.name} is now {pretty}", icon="🎧"))
@@ -507,9 +582,25 @@ async def set_availability(
     return {"availability": value}
 
 
-# ─── helper: serialize one member with its live session + assignments ─────────
+# ─── helpers ──────────────────────────────────────────────────────────────────
+async def _requeue_member_conversations(db: AsyncSession, member_id: int) -> None:
+    """Unassign a member's OPEN conversations (they go back to the queue) and drain to others."""
+    convs = (await db.execute(
+        select(SupportConversation).where(
+            SupportConversation.support_id == member_id, SupportConversation.status == "OPEN"
+        )
+    )).scalars().all()
+    now = datetime.utcnow()
+    for c in convs:
+        c.support_id = None
+        c.queued_at = now
+    await db.flush()
+    await support_routing.drain_queue(db, now=now)
+
+
 async def _one(db: AsyncSession, m: User) -> dict:
     now = datetime.utcnow()
     sessions = await presence.latest_sessions(db, [m.id])
-    amap = await _assignments_map(db, [m.id])
-    return _member_out(m, sessions.get(m.id), amap.get(m.id, []), now)
+    counts = await support_routing.active_counts(db, [m.id])
+    cfg = await support_routing.get_config(db)
+    return _member_out(m, sessions.get(m.id), counts.get(m.id, 0), cfg, now)

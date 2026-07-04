@@ -4,11 +4,10 @@ import { Card, StatCard, Sel, Input, Btn, Modal, Skeleton, CountUp, ReasonModal 
 import { supportManagementAPI } from '../services/api';
 import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
 import { openSSE } from '../utils/sse';
-import type { User, SupportMembersData, SupportMemberRow, SupportStatus, AssignableMerchant } from '../types';
+import type { User, SupportMembersData, SupportMemberRow, SupportStatus, SupportConversationRow } from '../types';
 
 const DEPARTMENTS = ['Technical Support', 'Payments', 'Merchant Support', 'Finance', 'Compliance'];
 const SHIFTS = ['Morning', 'Afternoon', 'Night'];
-// Common country dial codes for the phone selector (value = dial code with '+').
 const COUNTRY_CODES = [
   { value: '+91', label: '🇮🇳 +91' }, { value: '+1', label: '🇺🇸 +1' }, { value: '+44', label: '🇬🇧 +44' },
   { value: '+971', label: '🇦🇪 +971' }, { value: '+65', label: '🇸🇬 +65' }, { value: '+61', label: '🇦🇺 +61' },
@@ -16,7 +15,7 @@ const COUNTRY_CODES = [
   { value: '+92', label: '🇵🇰 +92' }, { value: '+880', label: '🇧🇩 +880' }, { value: '+94', label: '🇱🇰 +94' },
 ];
 
-// ── formatting helpers (kept local to mirror ActiveUsersPage) ──
+// ── formatting helpers ──
 const relTime = (iso?: string | null): string => {
   if (!iso) return '—';
   const t = new Date(iso).getTime();
@@ -38,7 +37,8 @@ const fmtDuration = (secs?: number | null): string => {
 };
 
 const STATUS_META: Record<SupportStatus, { label: string; color: string }> = {
-  online: { label: 'Online', color: T.success },
+  available: { label: 'Available', color: T.success },
+  online: { label: 'Available', color: T.success },
   busy: { label: 'Busy', color: T.warning },
   break: { label: 'On Break', color: T.danger },
   offline: { label: 'Offline', color: T.textMuted },
@@ -47,7 +47,7 @@ const AVAILABILITY_LABEL: Record<string, string> = { AVAILABLE: 'Available', BUS
 const availColor = (a?: string) => a === 'BUSY' ? T.warning : a === 'ON_BREAK' ? T.danger : T.success;
 
 const StatusDot: React.FC<{ status: SupportStatus }> = ({ status }) => {
-  const m = STATUS_META[status];
+  const m = STATUS_META[status] || STATUS_META.offline;
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, fontWeight: 700, color: m.color }}>
       <span style={{ width: 9, height: 9, borderRadius: '50%', background: m.color, boxShadow: status !== 'offline' ? `0 0 0 3px ${m.color}22` : 'none' }} />
@@ -61,35 +61,16 @@ const td: React.CSSProperties = { padding: '10px 12px', fontSize: 12.5, color: T
 const rowLine: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 16, padding: '8px 0', borderBottom: `1px solid ${T.borderLight}` };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// ── Merchant multiselect (checkbox list) ──
-const MerchantMultiSelect: React.FC<{
-  options: AssignableMerchant[]; selected: number[]; onChange: (ids: number[]) => void;
-}> = ({ options, selected, onChange }) => {
-  const [q, setQ] = useState('');
-  const filtered = options.filter(o => o.name.toLowerCase().includes(q.trim().toLowerCase()));
-  const toggle = (id: number) => onChange(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
-  return (
-    <div>
-      <Input label="Assigned Merchant(s)" value={q} onChange={e => setQ(e.target.value)} placeholder="Search merchants…" style={{ marginBottom: 8 }} />
-      <div style={{ maxHeight: 180, overflowY: 'auto', border: `1.5px solid ${T.border}`, borderRadius: 10, padding: 6 }}>
-        {options.length === 0 && <p style={{ fontSize: 12, color: T.textMuted, padding: 8, margin: 0 }}>No merchants available to assign.</p>}
-        {filtered.map(o => (
-          <label key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 8, cursor: 'pointer', fontSize: 13, color: T.textMain }} className="c5-row-hover">
-            <input type="checkbox" checked={selected.includes(o.id)} onChange={() => toggle(o.id)} />
-            <span style={{ fontWeight: 600 }}>{o.name}</span>
-            {o.merchantCode && <span style={{ fontSize: 11, color: T.textMuted }}>· {o.merchantCode}</span>}
-          </label>
-        ))}
-      </div>
-      <p style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>{selected.length} merchant(s) selected</p>
-    </div>
-  );
+// Active-load pill (active / max conversations), coloured by how full the member is.
+const LoadPill: React.FC<{ active?: number; max?: number }> = ({ active = 0, max = 0 }) => {
+  const full = max > 0 && active >= max;
+  const color = full ? T.warning : active > 0 ? T.blue : T.textMuted;
+  return <span style={{ fontWeight: 700, color }}>{active}/{max || '—'}</span>;
 };
 
 // ── Create modal ──
-const CreateModal: React.FC<{ merchants: AssignableMerchant[]; onClose: () => void; onCreated: () => void }> = ({ merchants, onClose, onCreated }) => {
+const CreateModal: React.FC<{ onClose: () => void; onCreated: () => void }> = ({ onClose, onCreated }) => {
   const [f, setF] = useState({ fullName: '', username: '', email: '', dial: '+91', phone: '', password: '', confirm: '', department: '', shift: SHIFTS[0], status: 'Active' });
-  const [ids, setIds] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const set = (k: keyof typeof f, v: string) => setF(p => ({ ...p, [k]: v }));
@@ -99,7 +80,6 @@ const CreateModal: React.FC<{ merchants: AssignableMerchant[]; onClose: () => vo
   const phoneOk = phoneDigits.length >= 6 && phoneDigits.length <= 14;
   const pwOk = f.password.length >= 8 && f.password === f.confirm;
   const valid = f.fullName.trim() && f.username.trim() && emailOk && phoneOk && pwOk;
-  // Human-readable reason the Create button is disabled (shown next to it).
   const disabledReason =
     !f.fullName.trim() ? 'Enter the full name'
     : !f.username.trim() ? 'Enter a username'
@@ -115,7 +95,7 @@ const CreateModal: React.FC<{ merchants: AssignableMerchant[]; onClose: () => vo
     try {
       await supportManagementAPI.create({
         username: f.username.trim(), password: f.password, email: f.email.trim(), fullName: f.fullName.trim(),
-        phone: `${f.dial}${phoneDigits}`, department: f.department, shift: f.shift, status: f.status, merchantIds: ids,
+        phone: `${f.dial}${phoneDigits}`, department: f.department, shift: f.shift, status: f.status,
       });
       onCreated(); onClose();
     } catch (e: unknown) {
@@ -141,9 +121,9 @@ const CreateModal: React.FC<{ merchants: AssignableMerchant[]; onClose: () => vo
         <Sel label="Shift" value={f.shift} onChange={e => set('shift', e.target.value)} options={SHIFTS.map(s => ({ value: s, label: s }))} />
         <Sel label="Status" value={f.status} onChange={e => set('status', e.target.value)} options={[{ value: 'Active', label: 'Active' }, { value: 'Inactive', label: 'Inactive' }]} />
       </div>
-      <div style={{ marginTop: 4, marginBottom: 8 }}>
-        <MerchantMultiSelect options={merchants} selected={ids} onChange={setIds} />
-      </div>
+      <p style={{ fontSize: 12, color: T.textMuted, margin: '8px 0 4px' }}>
+        Customers are assigned to members automatically by availability — members are no longer tied to specific merchants.
+      </p>
       {err && <p style={{ color: T.danger, fontSize: 12.5, fontWeight: 600, margin: '4px 0 10px' }}>{err}</p>}
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <Btn onClick={submit} disabled={!valid || busy}>{busy ? 'Creating…' : 'Create Support Member'}</Btn>
@@ -188,26 +168,6 @@ const EditModal: React.FC<{ member: SupportMemberRow; onClose: () => void; onSav
   );
 };
 
-// ── Assign merchants modal ──
-const AssignModal: React.FC<{ member: SupportMemberRow; merchants: AssignableMerchant[]; onClose: () => void; onSaved: () => void }> = ({ member, merchants, onClose, onSaved }) => {
-  const [ids, setIds] = useState<number[]>(member.assignedMerchants.map(m => m.id));
-  const [busy, setBusy] = useState(false);
-  const submit = async () => {
-    setBusy(true);
-    try { await supportManagementAPI.assignMerchants(member.id, ids); onSaved(); onClose(); }
-    finally { setBusy(false); }
-  };
-  return (
-    <Modal title={`Assign Merchants — ${member.fullName}`} onClose={onClose}>
-      <MerchantMultiSelect options={merchants} selected={ids} onChange={setIds} />
-      <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-        <Btn onClick={submit} disabled={busy}>{busy ? 'Saving…' : 'Save Assignments'}</Btn>
-        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
-      </div>
-    </Modal>
-  );
-};
-
 // ── Reset password modal ──
 const ResetModal: React.FC<{ member: SupportMemberRow; onClose: () => void; onDone: () => void }> = ({ member, onClose, onDone }) => {
   const [pw, setPw] = useState(''); const [confirm, setConfirm] = useState('');
@@ -235,11 +195,12 @@ const ResetModal: React.FC<{ member: SupportMemberRow; onClose: () => void; onDo
 
 // ── Profile drawer ──
 const ProfileDrawer: React.FC<{
-  member: SupportMemberRow; isSuperAdmin: boolean; merchants: AssignableMerchant[]; activeConversations: number | null;
+  member: SupportMemberRow; isSuperAdmin: boolean; activeConversations: number | null;
   onClose: () => void; onChanged: () => void;
-}> = ({ member, isSuperAdmin, merchants, activeConversations, onClose, onChanged }) => {
-  const [sub, setSub] = useState<'' | 'edit' | 'assign' | 'reset' | 'toggle' | 'delete'>('');
+}> = ({ member, isSuperAdmin, activeConversations, onClose, onChanged }) => {
+  const [sub, setSub] = useState<'' | 'edit' | 'reset' | 'toggle' | 'delete'>('');
   const done = () => { onChanged(); setSub(''); };
+  const force = async (a: 'AVAILABLE' | 'BUSY' | 'ON_BREAK') => { await supportManagementAPI.forceAvailability(member.id, a); onChanged(); };
   const rows: [string, React.ReactNode][] = [
     ['Support ID', member.supportCode || '—'],
     ['Username', `@${member.username}`],
@@ -249,9 +210,7 @@ const ProfileDrawer: React.FC<{
     ['Shift', member.shift || '—'],
     ['Status', member.active ? 'Active' : 'Inactive'],
     ['Availability', <StatusDot status={member.status} />],
-    ['Assigned Merchants', member.assignedMerchants.length ? member.assignedMerchants.map(m => m.name).join(', ') : '—'],
-    ['Total Assigned Merchants', member.assignedMerchantCount],
-    ['Active Conversations', activeConversations == null ? '…' : activeConversations],
+    ['Active Conversations', `${activeConversations == null ? '…' : activeConversations} / ${member.maxConversations ?? '—'}`],
     ['Last Login', fmtTime(member.loginTime)],
     ['Last Activity', relTime(member.lastActivity)],
     ['Last Seen', relTime(member.lastSeen)],
@@ -280,16 +239,23 @@ const ProfileDrawer: React.FC<{
           <span style={{ fontSize: 12.5, fontWeight: 700, color: T.textMain, textAlign: 'right', wordBreak: 'break-word' }}>{v}</span>
         </div>
       ))}
+      {/* Admin force-status */}
+      <div style={{ marginTop: 14 }}>
+        <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 6px' }}>Force Status</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Btn size="sm" variant="secondary" onClick={() => force('AVAILABLE')}>Set Available</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => force('BUSY')}>Set Busy</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => force('ON_BREAK')}>Set On Break</Btn>
+        </div>
+      </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
         <Btn size="sm" onClick={() => setSub('edit')}>Edit</Btn>
-        <Btn size="sm" variant="secondary" onClick={() => setSub('assign')}>Assign Merchants</Btn>
         <Btn size="sm" variant="secondary" onClick={() => setSub('reset')}>Reset Password</Btn>
         <Btn size="sm" variant={member.active ? 'danger' : 'success'} onClick={() => setSub('toggle')}>{member.active ? 'Deactivate' : 'Activate'}</Btn>
         {isSuperAdmin && <Btn size="sm" variant="danger" onClick={() => setSub('delete')}>Delete</Btn>}
       </div>
 
       {sub === 'edit' && <EditModal member={member} onClose={() => setSub('')} onSaved={done} />}
-      {sub === 'assign' && <AssignModal member={member} merchants={merchants} onClose={() => setSub('')} onSaved={done} />}
       {sub === 'reset' && <ResetModal member={member} onClose={() => setSub('')} onDone={() => setSub('')} />}
       {sub === 'toggle' && (
         <ReasonModal
@@ -303,7 +269,7 @@ const ProfileDrawer: React.FC<{
       {sub === 'delete' && (
         <Modal title={`Delete ${member.fullName}?`} onClose={() => setSub('')}>
           <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 16 }}>
-            This removes the support member from all lists and revokes their access. The record is archived (preserved for audit), not permanently erased.
+            This removes the support member from all lists and revokes their access. Their open conversations are returned to the queue and reassigned. The record is archived (preserved for audit).
           </p>
           <div style={{ display: 'flex', gap: 10 }}>
             <Btn variant="danger" onClick={async () => { await supportManagementAPI.archive(member.id); onChanged(); onClose(); }}>Delete</Btn>
@@ -315,29 +281,128 @@ const ProfileDrawer: React.FC<{
   );
 };
 
+// ── Assignment config panel ──
+const ConfigPanel: React.FC<{ max: number; strategy: string; onSaved: () => void }> = ({ max, strategy, onSaved }) => {
+  const [m, setM] = useState(String(max));
+  const [s, setS] = useState(strategy);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  useEffect(() => { setM(String(max)); setS(strategy); }, [max, strategy]);
+  const dirty = m !== String(max) || s !== strategy;
+  const save = async () => {
+    const n = parseInt(m, 10);
+    if (!n || n < 1) { setMsg('Enter a valid limit'); return; }
+    setBusy(true); setMsg('');
+    try { await supportManagementAPI.updateConfig({ maxActiveConversations: n, strategy: s }); setMsg('Saved'); onSaved(); }
+    catch { setMsg('Could not save'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Card style={{ padding: 14, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ width: 200 }}>
+          <Input label="Max Active Conversations / Member" value={m} onChange={e => setM(e.target.value.replace(/\D/g, ''))} inputMode="numeric" />
+        </div>
+        <Sel label="Assignment Strategy" value={s} onChange={e => setS(e.target.value)} options={[
+          { value: 'LEAST_ACTIVE', label: 'Least Active Conversations' },
+          { value: 'ROUND_ROBIN', label: 'Round Robin' },
+        ]} />
+        <Btn onClick={save} disabled={!dirty || busy}>{busy ? 'Saving…' : 'Save Config'}</Btn>
+        {msg && <span style={{ fontSize: 12, color: msg === 'Saved' ? T.success : T.danger, fontWeight: 600 }}>{msg}</span>}
+      </div>
+    </Card>
+  );
+};
+
+// ── Conversations & queue panel ──
+const ConversationsPanel: React.FC<{ members: SupportMemberRow[]; refreshKey: number; onChanged: () => void }> = ({ members, refreshKey, onChanged }) => {
+  const [convs, setConvs] = useState<SupportConversationRow[] | null>(null);
+  const [reassignId, setReassignId] = useState<number | null>(null);
+  const load = () => supportManagementAPI.conversations().then(setConvs).catch(() => setConvs([]));
+  useEffect(() => { load(); }, [refreshKey]);
+  usePoll(() => load(), PRESENCE_POLL_MS);
+
+  const rows = convs || [];
+  const target = reassignId != null ? rows.find(c => c.id === reassignId) : null;
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 18 }}>
+      <div style={{ padding: '12px 14px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: T.textMain }}>Conversations & Queue</p>
+        <span style={{ fontSize: 11, color: T.textMuted }}>{rows.filter(c => c.queued).length} waiting · {rows.filter(c => !c.queued && c.status === 'OPEN').length} active</span>
+      </div>
+      <div style={{ overflowX: 'auto', maxHeight: 360 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ background: T.canvas }}>
+            {['Customer', 'Assigned To', 'Status', 'Last Message', 'Started', 'Actions'].map(h => <th key={h} style={th}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {rows.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: 'center', color: T.textMuted, padding: 24 }}>No open conversations.</td></tr>}
+            {rows.map(c => (
+              <tr key={c.id} className="c5-row-hover">
+                <td style={{ ...td, fontWeight: 700 }}>{c.customerName || `#${c.customerId}`}{c.customerCode && <span style={{ marginLeft: 6, fontSize: 11, color: T.textMuted }}>{c.customerCode}</span>}</td>
+                <td style={{ ...td, color: c.queued ? T.warning : T.textMain, fontWeight: 700 }}>{c.queued ? '— Queued —' : (c.supportName || '—')}</td>
+                <td style={td}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: c.queued ? T.warning : c.status === 'CLOSED' ? T.textMuted : T.success }}>
+                    {c.queued ? 'QUEUED' : c.status}
+                  </span>
+                </td>
+                <td style={{ ...td, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', color: T.textMuted }} title={c.lastMessage || ''}>{c.lastMessage || '—'}</td>
+                <td style={{ ...td, color: T.textMuted }}>{relTime(c.createdAt)}</td>
+                <td style={td}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <Btn size="sm" variant="ghost" onClick={() => setReassignId(c.id)}>Reassign</Btn>
+                    <Btn size="sm" variant="ghost" onClick={async () => { await supportManagementAPI.closeConversation(c.id); load(); onChanged(); }}>Close</Btn>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {target && (
+        <Modal title={`Reassign — ${target.customerName || 'Customer'}`} onClose={() => setReassignId(null)}>
+          <p style={{ fontSize: 12.5, color: T.textMuted, marginTop: 0 }}>Pick a support member to own this conversation.</p>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {members.filter(m => m.active).map(m => (
+              <button key={m.id} className="c5-row-hover"
+                onClick={async () => { await supportManagementAPI.reassignConversation(target.id, m.id); setReassignId(null); load(); onChanged(); }}
+                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', borderRadius: 10, border: `1px solid ${T.border}`, background: T.surface, cursor: 'pointer', textAlign: 'left' }}>
+                <span style={{ fontWeight: 700, color: T.textMain, fontSize: 13 }}>{m.fullName} <span style={{ color: T.textMuted, fontWeight: 500 }}>· {m.supportCode}</span></span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <LoadPill active={m.activeConversations} max={m.maxConversations} />
+                  <StatusDot status={m.status} />
+                </span>
+              </button>
+            ))}
+          </div>
+          <div style={{ marginTop: 12 }}><Btn variant="secondary" onClick={() => setReassignId(null)}>Cancel</Btn></div>
+        </Modal>
+      )}
+    </Card>
+  );
+};
+
 // ── Main page ──
 export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
   const isSuperAdmin = user.role === 'SUPER_ADMIN';
   const [data, setData] = useState<SupportMembersData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [merchants, setMerchants] = useState<AssignableMerchant[]>([]);
   const [selId, setSelId] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [convKey, setConvKey] = useState(0);
 
-  // Filters / search / sort
   const [status, setStatus] = useState('ALL');
   const [availability, setAvailability] = useState('ALL');
   const [department, setDepartment] = useState('ALL');
   const [shift, setShift] = useState('ALL');
-  const [merchant, setMerchant] = useState('ALL');
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<'name' | 'loginTime' | 'lastSeen' | 'department'>('name');
 
   const reload = () => supportManagementAPI.list().then(setData).catch(() => {});
-  const loadMerchants = () => supportManagementAPI.assignableMerchants().then(setMerchants).catch(() => {});
-  useEffect(() => { reload().finally(() => setLoading(false)); loadMerchants(); }, []);
+  useEffect(() => { reload().finally(() => setLoading(false)); }, []);
 
-  // Live SSE stream; polling is the fallback only while the stream is down.
   const [live, setLive] = useState(false);
   const cb = useRef<(d: SupportMembersData) => void>(() => {});
   cb.current = (d) => { setData(d); setLoading(false); };
@@ -354,19 +419,12 @@ export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
   const rows = data?.members || [];
   const sel = useMemo(() => rows.find(r => r.id === selId) || null, [rows, selId]);
 
-  // Fetch the richer profile (Active Conversations) when a member drawer opens.
   const [convos, setConvos] = useState<number | null>(null);
   useEffect(() => {
     if (selId == null) { setConvos(null); return; }
     setConvos(null);
     supportManagementAPI.profile(selId).then(p => setConvos(p.activeConversations ?? 0)).catch(() => setConvos(null));
   }, [selId]);
-
-  const merchantOpts = useMemo(() => {
-    const names = new Set<string>();
-    rows.forEach(r => r.assignedMerchants.forEach(m => names.add(m.name)));
-    return Array.from(names).sort();
-  }, [rows]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -375,7 +433,6 @@ export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
       (availability === 'ALL' || r.availability === availability) &&
       (department === 'ALL' || (r.department || '') === department) &&
       (shift === 'ALL' || (r.shift || '') === shift) &&
-      (merchant === 'ALL' || r.assignedMerchants.some(m => m.name === merchant)) &&
       (!q || [r.supportCode, r.fullName, r.username, r.email, r.phone].some(v => (v || '').toLowerCase().includes(q)))
     );
     const cmp: Record<string, (a: SupportMemberRow, b: SupportMemberRow) => number> = {
@@ -385,9 +442,10 @@ export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
       department: (a, b) => (a.department || '~').localeCompare(b.department || '~'),
     };
     return [...list].sort(cmp[sortKey]);
-  }, [rows, status, availability, department, shift, merchant, search, sortKey]);
+  }, [rows, status, availability, department, shift, search, sortKey]);
 
   const s = data?.summary;
+  const bumpConv = () => setConvKey(k => k + 1);
 
   if (loading) return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 14 }}>
@@ -397,24 +455,30 @@ export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
 
   return (
     <div>
-      {/* Header + create */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <p style={{ fontSize: 13, color: T.textMuted, margin: 0 }}>
-          Manage your support team, assign merchants, and track real-time availability.
+          Manage your support team and track real-time availability. Customers are auto-assigned to one available member.
         </p>
-        <Btn onClick={() => { loadMerchants(); setShowCreate(true); }}>+ Create Support Member</Btn>
+        <Btn onClick={() => setShowCreate(true)}>+ Create Support Member</Btn>
       </div>
 
-      {/* Cards */}
-      <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: 14, marginBottom: 18 }}>
+      {/* Dashboard cards */}
+      <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 14, marginBottom: 14 }}>
         <StatCard icon="🎧" label="Support Members" value={<CountUp value={s?.members ?? 0} />} color={T.blue} />
-        <StatCard icon="🟢" label="Online" value={<CountUp value={s?.online ?? 0} />} color={T.success} />
+        <StatCard icon="🟢" label="Available" value={<CountUp value={s?.available ?? 0} />} color={T.success} />
         <StatCard icon="🟡" label="Busy" value={<CountUp value={s?.busy ?? 0} />} color={T.warning} />
         <StatCard icon="🔴" label="On Break" value={<CountUp value={s?.onBreak ?? 0} />} color={T.danger} />
         <StatCard icon="⚪" label="Offline" value={<CountUp value={s?.offline ?? 0} />} color={T.textMuted} />
-        <StatCard icon="🏢" label="Assigned Merchants" value={<CountUp value={s?.assignedMerchants ?? 0} />} color={T.blue} />
-        <StatCard icon="🎫" label="Open Tickets" value={s?.openTickets ?? 0} sub="Coming soon" color={T.textMuted} />
+        <StatCard icon="💬" label="Active Conversations" value={<CountUp value={s?.activeConversations ?? 0} />} color={T.blue} />
+        <StatCard icon="⏳" label="Waiting in Queue" value={<CountUp value={s?.waitingCustomers ?? 0} />} color={(s?.waitingCustomers ?? 0) > 0 ? T.warning : T.textMuted} />
+        <StatCard icon="⚡" label="Avg Response" value={fmtDuration(s?.avgResponseSeconds ?? null)} color={T.textMuted} />
       </div>
+
+      {/* Assignment config */}
+      <ConfigPanel max={s?.maxActiveConversations ?? 10} strategy={s?.strategy ?? 'LEAST_ACTIVE'} onSaved={reload} />
+
+      {/* Conversations & queue */}
+      <ConversationsPanel members={rows} refreshKey={convKey} onChanged={reload} />
 
       {/* Filters */}
       <Card style={{ padding: 14, marginBottom: 12 }}>
@@ -422,23 +486,22 @@ export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
           <div style={{ flex: '1 1 220px', minWidth: 180 }}>
             <Input label="Search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Support ID, name, username, email or phone" />
           </div>
-          <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} options={[{ value: 'ALL', label: 'All' }, { value: 'online', label: 'Online' }, { value: 'busy', label: 'Busy' }, { value: 'break', label: 'On Break' }, { value: 'offline', label: 'Offline' }]} />
+          <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} options={[{ value: 'ALL', label: 'All' }, { value: 'available', label: 'Available' }, { value: 'busy', label: 'Busy' }, { value: 'break', label: 'On Break' }, { value: 'offline', label: 'Offline' }]} />
           <Sel label="Availability" value={availability} onChange={e => setAvailability(e.target.value)} options={[{ value: 'ALL', label: 'All' }, { value: 'AVAILABLE', label: 'Available' }, { value: 'BUSY', label: 'Busy' }, { value: 'ON_BREAK', label: 'On Break' }]} />
           <Sel label="Department" value={department} onChange={e => setDepartment(e.target.value)} options={[{ value: 'ALL', label: 'All' }, ...DEPARTMENTS.map(d => ({ value: d, label: d }))]} />
           <Sel label="Shift" value={shift} onChange={e => setShift(e.target.value)} options={[{ value: 'ALL', label: 'All' }, ...SHIFTS.map(x => ({ value: x, label: x }))]} />
-          <Sel label="Merchant" value={merchant} onChange={e => setMerchant(e.target.value)} options={[{ value: 'ALL', label: 'All Merchants' }, ...merchantOpts.map(m => ({ value: m, label: m }))]} />
           <Sel label="Sort By" value={sortKey} onChange={e => setSortKey(e.target.value as typeof sortKey)} options={[
             { value: 'name', label: 'Name' }, { value: 'loginTime', label: 'Login Time' }, { value: 'lastSeen', label: 'Last Seen' }, { value: 'department', label: 'Department' },
           ]} />
         </div>
       </Card>
 
-      {/* Table */}
+      {/* Members table */}
       <Card style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto', maxHeight: 600 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr style={{ background: T.canvas }}>
-              {['Support ID', 'Full Name', 'Username', 'Department', 'Shift', 'Assigned Merchants', 'Availability', 'Status', 'Login Time', 'Last Activity', 'Last Seen', 'Current Session', 'Actions'].map(h => <th key={h} style={th}>{h}</th>)}
+              {['Support ID', 'Full Name', 'Username', 'Department', 'Shift', 'Active / Max', 'Availability', 'Status', 'Login Time', 'Last Activity', 'Last Seen', 'Current Session', 'Actions'].map(h => <th key={h} style={th}>{h}</th>)}
             </tr></thead>
             <tbody>
               {filtered.length === 0 && <tr><td colSpan={13} style={{ ...td, textAlign: 'center', color: T.textMuted, padding: 28 }}>No support members match the filters.</td></tr>}
@@ -449,16 +512,13 @@ export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
                   <td style={{ ...td, color: T.textMuted }}>{m.username}</td>
                   <td style={{ ...td, color: T.textMuted }}>{m.department || '—'}</td>
                   <td style={{ ...td, color: T.textMuted }}>{m.shift || '—'}</td>
-                  <td style={{ ...td, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }} title={m.assignedMerchants.map(x => x.name).join(', ')}>
-                    {m.assignedMerchantCount ? `${m.assignedMerchantCount} · ${m.assignedMerchants.map(x => x.name).join(', ')}` : '—'}
-                  </td>
+                  <td style={td}><LoadPill active={m.activeConversations} max={m.maxConversations} /></td>
                   <td style={{ ...td, color: availColor(m.availability), fontWeight: 700 }}>{AVAILABILITY_LABEL[m.availability] || 'Available'}</td>
                   <td style={td}><StatusDot status={m.status} /></td>
                   <td style={{ ...td, color: T.textMuted }}>{fmtTime(m.loginTime)}</td>
                   <td style={{ ...td, color: T.textMuted }}>{relTime(m.lastActivity)}</td>
                   <td style={{ ...td, color: m.status !== 'offline' ? T.success : T.textMuted }}>{relTime(m.lastSeen)}</td>
                   <td style={{ ...td, color: m.currentSession ? T.success : T.textMuted, fontWeight: 700 }}>{m.currentSession ? 'Active' : '—'}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{fmtDate(m.createdAt || m.created)}</td>
                   <td style={td}><Btn size="sm" variant="ghost" onClick={() => setSelId(m.id)}>View</Btn></td>
                 </tr>
               ))}
@@ -470,8 +530,8 @@ export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
         </div>
       </Card>
 
-      {showCreate && <CreateModal merchants={merchants} onClose={() => setShowCreate(false)} onCreated={reload} />}
-      {sel && <ProfileDrawer member={sel} isSuperAdmin={isSuperAdmin} merchants={merchants} activeConversations={convos} onClose={() => setSelId(null)} onChanged={() => { reload(); loadMerchants(); }} />}
+      {showCreate && <CreateModal onClose={() => setShowCreate(false)} onCreated={() => { reload(); bumpConv(); }} />}
+      {sel && <ProfileDrawer member={sel} isSuperAdmin={isSuperAdmin} activeConversations={convos} onClose={() => setSelId(null)} onChanged={() => { reload(); bumpConv(); }} />}
     </div>
   );
 };

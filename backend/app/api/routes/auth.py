@@ -20,7 +20,7 @@ from app.schemas.schemas import (
     ForgotPasswordRequest, VerifyResetOtpRequest, ResetPasswordRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
-from app.services import presence
+from app.services import presence, support_routing
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -222,6 +222,11 @@ async def login(
         await log_event(db, "LOGIN", f"{user.name} ({user.role.value}) signed in", actor=user)
         await record_audit(db, "LOGIN", actor=user, entity_type="user", entity_id=user.id, ip=ip)
         await presence.start_session(db, user, ip, request.headers.get("user-agent"))
+        # Now online + Available — pull in any customers waiting in the support queue.
+        try:
+            await support_routing.drain_queue(db)
+        except Exception:
+            pass
         # Notify the admin who owns this support member that they came online.
         if user.created_by:
             db.add(Notification(user_id=user.created_by, message=f"Support member {user.name} logged in", icon="🎧"))

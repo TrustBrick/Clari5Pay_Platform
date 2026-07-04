@@ -1566,13 +1566,18 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
   const [messages, setMessages] = useState<SupportMessage[]>([]);
   const [input, setInput] = useState('');
   const [connected, setConnected] = useState(false);
+  const [conv, setConv] = useState<{ queued: boolean; agentName: string | null; status: string } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // Refresh assignment status whenever the thread changes (a new message may have just assigned us).
+  const refreshConv = () => supportAPI.myConversation().then(setConv).catch(()=>{});
+  useEffect(() => { refreshConv(); }, [messages.length]);
 
   useEffect(() => {
     supportAPI.myMessages().then(setMessages).catch(()=>{});
+    refreshConv();
     const ws = new WebSocket(supportWsUrl());
     wsRef.current = ws;
     ws.onopen = () => setConnected(true);
@@ -1604,7 +1609,13 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
           <div style={{ width:44,height:44,borderRadius:14,background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22 }}>💬</div>
           <div>
             <h2 style={{ margin:0,fontSize:15,fontWeight:800 }}>Customer Support</h2>
-            <p style={{ margin:0,fontSize:12,color:T.textMuted }}>Chat with our support team in real time</p>
+            <p style={{ margin:0,fontSize:12,color: conv?.queued ? T.warning : conv?.agentName ? T.success : T.textMuted }}>
+              {conv?.queued
+                ? 'No support member is currently available. Your request has been queued.'
+                : conv?.agentName
+                ? `Assigned to ${conv.agentName}`
+                : 'Chat with our support team in real time'}
+            </p>
           </div>
           <div style={{ marginLeft:'auto',display:'flex',alignItems:'center',gap:6 }}>
             <div style={{ width:8,height:8,borderRadius:'50%',background:connected?T.success:T.textLight }}/>

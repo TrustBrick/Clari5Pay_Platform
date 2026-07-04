@@ -312,7 +312,16 @@ class AssignMerchantsRequest(BaseModel):
 
 
 class AvailabilityRequest(BaseModel):
-    availability: str                          # "AVAILABLE" | "BUSY"
+    availability: str                          # "AVAILABLE" | "BUSY" | "ON_BREAK"
+
+
+class SupportConfigUpdate(BaseModel):
+    maxActiveConversations: Optional[int] = None
+    strategy: Optional[str] = None             # "LEAST_ACTIVE" | "ROUND_ROBIN"
+
+
+class ReassignConversationRequest(BaseModel):
+    supportId: int
 
 
 # ─── AI Schemas ───────────────────────────────────────────────────────────────

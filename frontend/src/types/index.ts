@@ -669,7 +669,7 @@ export interface ActiveUsersData {
 
 // ── Support Management ──
 export type SupportAvailability = 'AVAILABLE' | 'BUSY' | 'ON_BREAK';
-export type SupportStatus = 'online' | 'busy' | 'break' | 'offline';
+export type SupportStatus = 'available' | 'online' | 'busy' | 'break' | 'offline';
 
 export interface SupportAssignedMerchant { id: number; name: string; }
 
@@ -686,8 +686,10 @@ export interface SupportMemberRow {
   status: SupportStatus;
   availability: SupportAvailability;
   active: boolean;
-  assignedMerchants: SupportAssignedMerchant[];
-  assignedMerchantCount: number;
+  assignedMerchants?: SupportAssignedMerchant[];   // legacy; no longer populated
+  assignedMerchantCount?: number;                  // legacy; no longer populated
+  activeConversations?: number;                    // OPEN conversations owned by this member
+  maxConversations?: number;                       // configured workload limit
   loginTime?: string | null;
   lastActivity?: string | null;
   lastSeen?: string | null;
@@ -701,10 +703,27 @@ export interface SupportMemberRow {
   createdAt?: string | null;
   created?: string | null;
   createdBy?: number | null;
-  activeConversations?: number;   // populated by the profile endpoint
 }
 export interface SupportMembersData {
-  summary: { members: number; online: number; busy: number; onBreak: number; offline: number; assignedMerchants: number; openTickets: number };
+  summary: {
+    members: number; available: number; busy: number; onBreak: number; offline: number;
+    activeConversations: number; waitingCustomers: number; queueLength: number;
+    avgResponseSeconds: number | null; maxActiveConversations: number; strategy: string;
+  };
   members: SupportMemberRow[];
 }
 export interface AssignableMerchant { id: number; name: string; merchantCode?: string | null; username?: string; }
+export interface SupportConversationRow {
+  id: number;
+  customerId: number;
+  customerName?: string | null;
+  customerCode?: string | null;
+  supportId?: number | null;
+  supportName?: string | null;
+  status: 'OPEN' | 'CLOSED' | 'QUEUED';
+  queued: boolean;
+  createdAt: string;
+  assignedAt?: string | null;
+  lastMessage?: string | null;
+  lastAt?: string | null;
+}
