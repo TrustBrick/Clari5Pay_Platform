@@ -42,16 +42,14 @@ def _u(u: User) -> dict:
     }
 
 
-# Serial ID helpers. Codes are "<PREFIX><6-digit>" (bank-account style). Independent series by
-# prefix — "MID…" for users (and, on Production, merchants: the two share the users table),
-# "MER…" for merchant COMPANIES on the demo stack (see the demo merchant/user hierarchy). A code
-# never collides or gets reused because each series continues after its own current max. On demo,
-# `demo_base` lifts a series into a distinct high band so demo-generated codes never clash with
-# Production's (the two environments share cloned data — see the prod→demo sync).
-_DEMO_MID_BASE = 900000
+# Serial ID helpers. Codes are "<PREFIX><digits>" (bank-account style). Independent series per
+# prefix — each continues after its own current max, so a code never collides or gets reused.
+# Prefixes: Production merchants/users → "MID…"; demo merchant COMPANIES → "MER…"; demo USERS →
+# the first 3 letters of their business name (e.g. Nexus Fintech → NEX00001). The business-derived
+# prefix keeps demo user codes distinct from Production's MID codes with no numeric band needed.
 
 
-async def _next_code(db: AsyncSession, prefix: str, demo_base: int = 0) -> str:
+async def _next_code(db: AsyncSession, prefix: str, width: int = 6) -> str:
     codes = (await db.execute(
         select(User.merchant_code).where(User.merchant_code.like(f"{prefix}%"))
     )).scalars().all()
@@ -61,7 +59,14 @@ async def _next_code(db: AsyncSession, prefix: str, demo_base: int = 0) -> str:
             maxn = max(maxn, int(c[plen:]))
         except (TypeError, ValueError):
             continue
-    return f"{prefix}{max(maxn + 1, demo_base + 1):06d}"
+    return f"{prefix}{maxn + 1:0{width}d}"
+
+
+def _business_prefix(name: str) -> str:
+    """First 3 letters of a business name, uppercased — the demo user-ID prefix (e.g. 'Nexus
+    Fintech' → NEX). Falls back to 'USR' when the name has fewer than 3 letters."""
+    letters = re.sub(r"[^A-Za-z]", "", name or "")
+    return letters[:3].upper() or "USR"
 
 
 async def _next_merchant_code(db: AsyncSession) -> str:
@@ -74,9 +79,10 @@ async def _next_company_code(db: AsyncSession) -> str:
     return await _next_code(db, "MER")
 
 
-async def _next_user_code(db: AsyncSession) -> str:
-    """Demo only: next USER ID (MID…), in a distinct band so demo user codes never clash with prod."""
-    return await _next_code(db, "MID", demo_base=_DEMO_MID_BASE)
+async def _next_user_code(db: AsyncSession, business_name: str) -> str:
+    """Demo only: next USER ID for a business — prefixed with the first 3 letters of the business
+    name (e.g. Nexus Fintech → NEX00001), numbered per-prefix (5-digit)."""
+    return await _next_code(db, _business_prefix(business_name), width=5)
 
 
 @router.get("/merchants")
@@ -146,7 +152,7 @@ async def create_merchant(
         username = (data.get("username") or merchant_code).lower()
         raw_password = data.get("password") or secrets.token_urlsafe(24)
     elif settings.is_demo:
-        merchant_code = await _next_user_code(db)
+        merchant_code = await _next_user_code(db, data.get("name"))
         username, raw_password = data["username"], data["password"]
     else:
         merchant_code = await _next_merchant_code(db)
