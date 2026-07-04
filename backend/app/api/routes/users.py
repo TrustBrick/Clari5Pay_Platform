@@ -10,7 +10,6 @@ from app.core.security import get_password_hash, verify_password
 from app.core.passwords import assert_password_allowed, set_password
 from app.core.deps import get_current_user, get_current_admin, get_current_super_admin
 from app.core.uploads import validate_upload, IMAGE_TYPES
-from app.core.config import settings
 from app.schemas.schemas import (
     ChangePasswordRequest, ProfileUpdateRequest, ReasonRequest, AdminResetPasswordRequest,
 )
@@ -44,10 +43,9 @@ def _u(u: User) -> dict:
 
 # Serial ID helpers. Codes are "<PREFIX><digits>" (bank-account style). Independent series per
 # prefix — each continues after its own current max, so a code never collides or gets reused.
-# Prefixes: merchant COMPANIES (onboarding, both Production and demo) → "MER…"; Production staff
-# logins → "MID…"; demo staff logins → the first 3 letters of their business name (e.g. Nexus
-# Fintech → NEX000001). The business-derived prefix keeps demo user codes distinct from Production's
-# MID codes with no numeric band needed.
+# Prefixes: merchant COMPANIES (onboarding) → "MER…"; staff logins → the first 3 letters of their
+# business name (e.g. Nexus Fintech → NEX000001), numbered per-prefix. Applies on both Production
+# and demo. ("MID…" is a legacy staff series kept only by pre-existing rows.)
 
 
 async def _next_code(db: AsyncSession, prefix: str, width: int = 6) -> str:
@@ -64,25 +62,20 @@ async def _next_code(db: AsyncSession, prefix: str, width: int = 6) -> str:
 
 
 def _business_prefix(name: str) -> str:
-    """First 3 letters of a business name, uppercased — the demo user-ID prefix (e.g. 'Nexus
+    """First 3 letters of a business name, uppercased — the staff user-ID prefix (e.g. 'Nexus
     Fintech' → NEX). Falls back to 'USR' when the name has fewer than 3 letters."""
     letters = re.sub(r"[^A-Za-z]", "", name or "")
     return letters[:3].upper() or "USR"
 
 
-async def _next_merchant_code(db: AsyncSession) -> str:
-    """Next serial Merchant ID (MID…) — Production merchants and all users continue this series."""
-    return await _next_code(db, "MID")
-
-
 async def _next_company_code(db: AsyncSession) -> str:
-    """Next COMPANY Merchant ID (MER…) — merchant companies (Production + demo) get their own
-    independent series, separate from the staff-login MID… series."""
+    """Next COMPANY Merchant ID (MER…) — merchant companies get their own independent series,
+    separate from the staff-login codes."""
     return await _next_code(db, "MER")
 
 
 async def _next_user_code(db: AsyncSession, business_name: str) -> str:
-    """Demo only: next USER ID for a business — prefixed with the first 3 letters of the business
+    """Next staff USER ID for a business — prefixed with the first 3 letters of the business
     name (e.g. Nexus Fintech → NEX000001), numbered per-prefix (6-digit)."""
     return await _next_code(db, _business_prefix(business_name))
 
@@ -144,9 +137,8 @@ async def create_merchant(
         raise HTTPException(status_code=403, detail="Super Admin cannot create merchants")
 
     # Onboarding registers a COMPANY (MER code, no login); staff logins are added per-user via
-    # Create User (they carry a merchant_role). This split now applies on BOTH Production and demo.
-    # They differ only in the staff-login code series: demo derives it from the business name
-    # (e.g. NEX000001); Production continues the serial MID… series.
+    # Create User (they carry a merchant_role) and get a code prefixed with the first 3 letters of
+    # the business name (e.g. NEX000001). Both apply on Production and demo alike.
     is_sub_user = bool(data.get("merchantRole"))
     if not is_sub_user:
         merchant_code = await _next_company_code(db)
@@ -154,11 +146,8 @@ async def create_merchant(
         # the company row exists but is not a usable login (username = its MER code, random secret).
         username = (data.get("username") or merchant_code).lower()
         raw_password = data.get("password") or secrets.token_urlsafe(24)
-    elif settings.is_demo:
-        merchant_code = await _next_user_code(db, data.get("name"))
-        username, raw_password = data["username"], data["password"]
     else:
-        merchant_code = await _next_merchant_code(db)
+        merchant_code = await _next_user_code(db, data.get("name"))
         username, raw_password = data["username"], data["password"]
 
     existing = await db.execute(select(User).where(User.username == username))
