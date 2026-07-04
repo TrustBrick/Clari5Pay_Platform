@@ -17,7 +17,6 @@ from app.schemas.schemas import (
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
-from app.core.config import settings
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -141,13 +140,13 @@ async def _next_ref(db: AsyncSession, kind: str, code: Optional[str] = None) -> 
     """Next reference number for a transaction type. `kind` ("DEP"/"WIT"/"SET") selects that
     type's own sequence, so the numeric sequence continues seamlessly regardless of the prefix.
 
-    On the demo stack, `code` — the creating merchant's own configured Deposit/Withdrawal/
-    Settlement code — replaces the fixed prefix, so a new deposit reads e.g. CLD000010 instead of
-    DEP000010. Production keeps the fixed DEP/WIT/SET prefixes; a missing merchant code also falls
-    back to the fixed prefix. Only the prefix changes — existing references are never touched."""
+    `code` — the creating merchant's own configured Deposit/Withdrawal/Settlement code — replaces
+    the fixed prefix, so a new deposit reads e.g. CLD000010 instead of DEP000010 (applies on both
+    Production and demo). A merchant with no configured code falls back to the fixed DEP/WIT/SET
+    prefix. Only the prefix changes — existing references are never touched."""
     seq = _REF_SEQUENCES[kind]
     n = (await db.execute(text(f"SELECT nextval('{seq}')"))).scalar_one()
-    prefix = code.strip().upper() if (settings.is_demo and code and code.strip()) else kind
+    prefix = code.strip().upper() if (code and code.strip()) else kind
     return f"{prefix}{str(n).zfill(6)}"
 
 
