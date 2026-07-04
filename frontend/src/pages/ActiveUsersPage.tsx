@@ -49,6 +49,57 @@ const UserStatusDot: React.FC<{ status: string }> = ({ status }) => {
 const th: React.CSSProperties = { textAlign: 'left', padding: '10px 12px', fontSize: 10.5, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap', borderBottom: `1px solid ${T.border}` };
 const td: React.CSSProperties = { padding: '10px 12px', fontSize: 12.5, color: T.textMain, borderBottom: `1px solid ${T.borderLight}`, whiteSpace: 'nowrap' };
 
+// One presence container (Admins / Support / Users) — same table, its own heading + counts.
+const UserGroup: React.FC<{
+  title: string; icon: string; rows: ActiveUserRow[]; flash: Set<number>; onSelect: (u: ActiveUserRow) => void;
+}> = ({ title, icon, rows, flash, onSelect }) => {
+  const online = rows.filter(r => r.status !== 'offline').length;
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '0 0 10px' }}>
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>{icon} {title}</h3>
+        <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 700 }}>
+          <span style={{ color: T.success }}>{online} online</span> · {rows.length} total
+        </span>
+      </div>
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto', maxHeight: 460 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: T.canvas }}>
+              {['Status', 'User Name', 'Username', 'Merchant', 'Role', 'Member Role', 'Phone', 'Login Time', 'Last Activity', 'Last Seen', 'IP', 'Device', 'Browser', 'Logout', 'Session'].map(h => <th key={h} style={th}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {rows.length === 0 && <tr><td colSpan={15} style={{ ...td, textAlign: 'center', color: T.textMuted, padding: 24 }}>No {title.toLowerCase()} match the filters.</td></tr>}
+              {rows.map(u => (
+                <tr key={u.id} className="c5-row-hover" style={{ cursor: 'pointer', background: flash.has(u.id) ? `${T.success}22` : undefined, transition: 'background 600ms ease' }} onClick={() => onSelect(u)}>
+                  <td style={td}><UserStatusDot status={u.status} /></td>
+                  <td style={{ ...td, fontWeight: 700 }}>{u.name}</td>
+                  <td style={{ ...td, color: T.textMuted }}>{u.username}</td>
+                  <td style={td}>{u.merchant || '—'}</td>
+                  <td style={td}>{prettyRole(u.role)}</td>
+                  <td style={td}>{prettyRole(u.merchantRole)}</td>
+                  <td style={{ ...td, color: T.textMuted }}>{u.phone || '—'}</td>
+                  <td style={{ ...td, color: T.textMuted }}>{fmtTime(u.loginTime)}</td>
+                  <td style={{ ...td, color: T.textMuted }}>{relTime(u.lastActivity)}</td>
+                  <td style={{ ...td, color: u.status !== 'offline' ? T.success : T.textMuted }}>{relTime(u.lastSeen)}</td>
+                  <td style={{ ...td, color: T.textMuted, fontFamily: 'monospace' }}>{u.ip || '—'}</td>
+                  <td style={{ ...td, color: T.textMuted }}>{u.device || '—'}</td>
+                  <td style={{ ...td, color: T.textMuted }}>{u.browser || '—'}</td>
+                  <td style={{ ...td, color: T.textMuted }}>{u.logoutTime ? fmtTime(u.logoutTime) : '—'}</td>
+                  <td style={{ ...td, color: T.textMuted }}>{fmtDuration(u.sessionDuration)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding: '10px 14px', borderTop: `1px solid ${T.border}` }}>
+          <p style={{ fontSize: 11, color: T.textMuted, margin: 0 }}>Showing {rows.length} {title.toLowerCase()} · updates automatically</p>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
 export const ActiveUsersPage: React.FC<{ user: User }> = () => {
   const [data, setData] = useState<ActiveUsersData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -104,6 +155,11 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
     };
     return [...list].sort(cmp[sortKey]);
   }, [rows, status, merchant, role, memberRole, search, sortKey]);
+
+  // Split the filtered list into three presence containers.
+  const admins = useMemo(() => filtered.filter(u => u.role === 'SUPER_ADMIN' || u.role === 'ADMIN'), [filtered]);
+  const support = useMemo(() => filtered.filter(u => u.role === 'SUPPORT_AGENT'), [filtered]);
+  const users = useMemo(() => filtered.filter(u => u.role === 'MERCHANT'), [filtered]);
 
   const s = data?.summary;
 
@@ -168,40 +224,10 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
         </div>
       </Card>
 
-      <Card style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto', maxHeight: 560 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr style={{ background: T.canvas }}>
-              {['Status', 'User Name', 'Username', 'Merchant', 'Role', 'Member Role', 'Phone', 'Login Time', 'Last Activity', 'Last Seen', 'IP', 'Device', 'Browser', 'Logout', 'Session'].map(h => <th key={h} style={th}>{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {filtered.length === 0 && <tr><td colSpan={15} style={{ ...td, textAlign: 'center', color: T.textMuted, padding: 28 }}>No users match the filters.</td></tr>}
-              {filtered.map(u => (
-                <tr key={u.id} className="c5-row-hover" style={{ cursor: 'pointer', background: flash.has(u.id) ? `${T.success}22` : undefined, transition: 'background 600ms ease' }} onClick={() => setSel(u)}>
-                  <td style={td}><UserStatusDot status={u.status} /></td>
-                  <td style={{ ...td, fontWeight: 700 }}>{u.name}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{u.username}</td>
-                  <td style={td}>{u.merchant || '—'}</td>
-                  <td style={td}>{prettyRole(u.role)}</td>
-                  <td style={td}>{prettyRole(u.merchantRole)}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{u.phone || '—'}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{fmtTime(u.loginTime)}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{relTime(u.lastActivity)}</td>
-                  <td style={{ ...td, color: u.status !== 'offline' ? T.success : T.textMuted }}>{relTime(u.lastSeen)}</td>
-                  <td style={{ ...td, color: T.textMuted, fontFamily: 'monospace' }}>{u.ip || '—'}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{u.device || '—'}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{u.browser || '—'}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{u.logoutTime ? fmtTime(u.logoutTime) : '—'}</td>
-                  <td style={{ ...td, color: T.textMuted }}>{fmtDuration(u.sessionDuration)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ padding: '10px 14px', borderTop: `1px solid ${T.border}` }}>
-          <p style={{ fontSize: 11, color: T.textMuted, margin: 0 }}>Showing {filtered.length} of {rows.length} users · updates automatically</p>
-        </div>
-      </Card>
+      {/* Three separate presence containers */}
+      <UserGroup title="Admins" icon="🛡" rows={admins} flash={flash} onSelect={setSel} />
+      <UserGroup title="Support" icon="🎧" rows={support} flash={flash} onSelect={setSel} />
+      <UserGroup title="Users" icon="🏬" rows={users} flash={flash} onSelect={setSel} />
 
       {/* User details drawer */}
       {sel && (
