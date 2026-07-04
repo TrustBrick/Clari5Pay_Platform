@@ -294,12 +294,19 @@ async def compute_global_summary(db: AsyncSession) -> dict:
     }
 
 
+async def _all_admin_ids(db: AsyncSession) -> list[int]:
+    """Every active Admin. Transaction alerts go to all of them so whoever is on the monitor
+    (e.g. the lone night-shift admin) is notified and can act — not just the merchant's creator."""
+    return (await db.execute(
+        select(User.id).where(User.role == UserRole.ADMIN, User.active == True)  # noqa: E712
+    )).scalars().all()
+
+
 async def notify_tx(db: AsyncSession, tx: Transaction, message: str, icon: str = "🔔") -> None:
-    """Notify both the merchant and (if any) the admin who created them about a tx event."""
+    """Notify the originating merchant and EVERY admin about a tx event (deposit / withdrawal /
+    settlement), so any admin on duty receives the alert (with sound) and can take action."""
     recipients = {tx.merchant_id}
-    merch = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
-    if merch and merch.created_by:
-        recipients.add(merch.created_by)
+    recipients.update(await _all_admin_ids(db))
     for uid in recipients:
         db.add(Notification(user_id=uid, message=message, icon=icon))
 
@@ -310,11 +317,10 @@ async def _notify_merchant(db: AsyncSession, tx: Transaction, message: str, icon
 
 
 async def _notify_admin(db: AsyncSession, tx: Transaction, message: str, icon: str = "🔔") -> None:
-    """Notify the admin who owns (created) this merchant — used when a reviewer forwards a
-    request for final approval."""
-    merch = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
-    if merch and merch.created_by:
-        db.add(Notification(user_id=merch.created_by, message=message, icon=icon))
+    """Notify EVERY admin — used when a reviewer forwards a request for final approval, so any
+    admin on duty can approve it (not only the merchant's creating admin)."""
+    for uid in await _all_admin_ids(db):
+        db.add(Notification(user_id=uid, message=message, icon=icon))
 
 
 async def _notify_business_role(db: AsyncSession, tx: Transaction, role: str,
