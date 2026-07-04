@@ -11,6 +11,7 @@ from app.core.security import decode_token
 from app.core.deps import get_current_user
 from app.schemas.schemas import SupportMessageCreate
 from app.api.routes.transactions import compute_balance
+from app.api.routes.support_management import assigned_merchant_ids
 
 router = APIRouter(prefix="/api/support", tags=["support"])
 
@@ -126,6 +127,10 @@ async def support_ws(websocket: WebSocket, token: str):
                 merchant_id = data.get("merchantId") or data.get("merchant_id")
                 if not merchant_id:
                     continue
+                # Agents may only message merchants assigned to them.
+                async with AsyncSessionLocal() as db:
+                    if int(merchant_id) not in await assigned_merchant_ids(db, user.id):
+                        continue
                 sender = SupportSender.SUPPORT
             else:
                 merchant_id = user.id
@@ -152,12 +157,18 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Support agents: list every merchant conversation with last message + unread count."""
+    """Support agents: list the conversations for merchants ASSIGNED to them, with last message
+    + unread count. A support member only sees the merchants assigned to them."""
     if current_user.role != UserRole.SUPPORT_AGENT:
         raise HTTPException(status_code=403, detail="Support agent access required")
 
+    allowed = await assigned_merchant_ids(db, current_user.id)
+    if not allowed:
+        return []
     merchants = (
-        await db.execute(select(User).where(User.role == UserRole.MERCHANT))
+        await db.execute(
+            select(User).where(User.role == UserRole.MERCHANT, User.id.in_(allowed))
+        )
     ).scalars().all()
 
     convos = []
@@ -203,6 +214,9 @@ async def get_messages(
         raise HTTPException(status_code=403, detail="Forbidden")
     if current_user.role not in (UserRole.MERCHANT, UserRole.SUPPORT_AGENT):
         raise HTTPException(status_code=403, detail="Forbidden")
+    # Support agents can only read conversations for merchants assigned to them.
+    if current_user.role == UserRole.SUPPORT_AGENT and merchant_id not in await assigned_merchant_ids(db, current_user.id):
+        raise HTTPException(status_code=403, detail="Merchant not assigned to you")
 
     msgs = (
         await db.execute(
@@ -256,6 +270,8 @@ async def post_message(
     elif current_user.role == UserRole.SUPPORT_AGENT:
         if not data.merchant_id:
             raise HTTPException(status_code=400, detail="merchant_id required")
+        if data.merchant_id not in await assigned_merchant_ids(db, current_user.id):
+            raise HTTPException(status_code=403, detail="Merchant not assigned to you")
         merchant_id = data.merchant_id
         sender = SupportSender.SUPPORT
     else:
@@ -280,6 +296,8 @@ async def merchant_details(
 ):
     if current_user.role != UserRole.SUPPORT_AGENT:
         raise HTTPException(status_code=403, detail="Support agent access required")
+    if merchant_id not in await assigned_merchant_ids(db, current_user.id):
+        raise HTTPException(status_code=403, detail="Merchant not assigned to you")
     m = (
         await db.execute(select(User).where(User.id == merchant_id, User.role == UserRole.MERCHANT))
     ).scalar_one_or_none()

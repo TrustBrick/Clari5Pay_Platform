@@ -23,6 +23,13 @@ _NEW_COLUMNS = [
     ("users", "settlement_fee", "DOUBLE PRECISION"),
     ("users", "country", "VARCHAR(64)"),
     ("users", "full_name", "VARCHAR(128)"),
+    # Support Management module: enrich SUPPORT_AGENT rows with member metadata + availability.
+    ("users", "support_code", "VARCHAR(16)"),
+    ("users", "support_department", "VARCHAR(64)"),
+    ("users", "support_shift", "VARCHAR(24)"),
+    ("users", "support_availability", "VARCHAR(16)"),
+    ("users", "support_availability_at", "TIMESTAMP"),
+    ("users", "support_archived", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("transactions", "merchant_ref", "VARCHAR(64)"),
     ("transactions", "admin_bank_details", "TEXT"),
     ("transactions", "admin_bank_image", "TEXT"),
@@ -152,6 +159,18 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "  'Normal', b.publish_date, COALESCE(b.created_at, NOW()) "
             "FROM blog_posts b "
             "WHERE NOT EXISTS (SELECT 1 FROM news n WHERE n.title = b.title)"
+        ))
+        # Support Management: back-fill merchant assignments for LEGACY support agents only
+        # (those never onboarded through the module → support_code IS NULL) that have no
+        # assignments yet, so they keep their pre-feature "see all merchants" access. New members
+        # created through the module always have a support_code and explicit assignments, so they
+        # are never touched here. Idempotent: once an agent has any assignment it is skipped.
+        await conn.execute(text(
+            "INSERT INTO support_assignments (support_id, merchant_id, assigned_at) "
+            "SELECT s.id, m.id, NOW() FROM users s CROSS JOIN users m "
+            "WHERE s.role::text = 'SUPPORT_AGENT' AND s.support_code IS NULL "
+            "AND m.role::text = 'MERCHANT' "
+            "AND NOT EXISTS (SELECT 1 FROM support_assignments a WHERE a.support_id = s.id)"
         ))
         # Settlements are now created by the Supervisor and go straight to the Admin (no review
         # gate). Move any in-flight settlement still sitting in a Supervisor/Manager review queue

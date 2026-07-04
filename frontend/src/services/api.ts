@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, ActiveUsersData, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, ActiveUsersData, AdminUpi, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -597,6 +597,49 @@ export const activeUsersAPI = {
   },
   heartbeat: async () => {
     try { await api.post('/api/active-users/heartbeat'); } catch { /* best-effort presence */ }
+  },
+};
+
+export const supportManagementAPI = {
+  list: async () => {
+    const res = await api.get<SupportMembersData>('/api/support-management/agents');
+    return res.data;
+  },
+  assignableMerchants: async () => {
+    const res = await api.get<AssignableMerchant[]>('/api/support-management/assignable-merchants');
+    return res.data;
+  },
+  create: async (data: Record<string, unknown>) => {
+    const res = await api.post<SupportMemberRow>('/api/support-management/agents', data);
+    return res.data;
+  },
+  update: async (id: number, data: Record<string, unknown>) => {
+    const res = await api.patch<SupportMemberRow>(`/api/support-management/agents/${id}`, data);
+    return res.data;
+  },
+  toggle: async (id: number, reason: string) => {
+    const res = await api.patch<SupportMemberRow>(`/api/support-management/agents/${id}/toggle`, { reason });
+    return res.data;
+  },
+  resetPassword: async (id: number, newPassword: string) => {
+    const res = await api.post<{ message: string }>(`/api/support-management/agents/${id}/reset-password`, { new_password: newPassword });
+    return res.data;
+  },
+  assignMerchants: async (id: number, merchantIds: number[]) => {
+    const res = await api.put<SupportMemberRow>(`/api/support-management/agents/${id}/merchants`, { merchantIds });
+    return res.data;
+  },
+  profile: async (id: number) => {
+    const res = await api.get<SupportMemberRow>(`/api/support-management/agents/${id}/profile`);
+    return res.data;
+  },
+  archive: async (id: number) => {
+    const res = await api.delete<{ message: string }>(`/api/support-management/agents/${id}`);
+    return res.data;
+  },
+  setAvailability: async (availability: 'AVAILABLE' | 'BUSY') => {
+    const res = await api.patch<{ availability: string }>('/api/support-management/me/availability', { availability });
+    return res.data;
   },
 };
 

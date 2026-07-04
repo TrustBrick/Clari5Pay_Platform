@@ -11,7 +11,10 @@ export interface SupportUser {
   name: string;
   email: string;
   role: string;
+  supportAvailability?: 'AVAILABLE' | 'BUSY' | 'ON_BREAK';
 }
+
+export type Availability = 'AVAILABLE' | 'BUSY' | 'ON_BREAK';
 
 export interface Conversation {
   merchantId: number;
@@ -94,6 +97,20 @@ async function getJSON<T>(path: string): Promise<T> {
 export const fetchConversations = () => getJSON<Conversation[]>('/api/support/conversations');
 export const fetchMessages = (merchantId: number) => getJSON<Message[]>(`/api/support/messages/${merchantId}`);
 export const fetchMerchant = (merchantId: number) => getJSON<MerchantDetail>(`/api/support/merchant/${merchantId}`);
+
+export async function setAvailability(availability: Availability): Promise<Availability> {
+  const res = await fetch(`${BASE_URL}/api/support-management/me/availability`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ availability }),
+  });
+  if (!res.ok) throw new Error('Failed to update availability');
+  // Keep the cached user in sync so the toggle survives a reload.
+  const u = getUser();
+  if (u) localStorage.setItem(USER_KEY, JSON.stringify({ ...u, supportAvailability: availability }));
+  const data = await res.json();
+  return (data.availability as Availability) ?? availability;
+}
 
 export async function sendMessage(content: string, merchantId: number): Promise<Message> {
   const res = await fetch(`${BASE_URL}/api/support/messages`, {

@@ -51,13 +51,18 @@ def _display_name(u: User) -> str:
 async def _build_payload(db: AsyncSession, caller_id: int, caller_role) -> dict:
     """Compute the full presence overview for a caller. Shared by the snapshot and the stream."""
     if caller_role == UserRole.SUPER_ADMIN:
-        users = (await db.execute(select(User))).scalars().all()
+        users = (await db.execute(
+            select(User).where(User.support_archived == False)  # noqa: E712
+        )).scalars().all()
     else:
-        # Admin: their own merchants' users + themselves. Never another admin's users.
+        # Admin: their own merchants' users + their own support members + themselves.
+        # Never another admin's users. Archived support members are excluded.
         users = (await db.execute(
             select(User).where(
                 (User.id == caller_id) |
-                ((User.role == UserRole.MERCHANT) & (User.created_by == caller_id))
+                ((User.role == UserRole.MERCHANT) & (User.created_by == caller_id)) |
+                ((User.role == UserRole.SUPPORT_AGENT) & (User.created_by == caller_id)
+                 & (User.support_archived == False))  # noqa: E712
             )
         )).scalars().all()
 
@@ -80,6 +85,15 @@ async def _build_payload(db: AsyncSession, caller_id: int, caller_role) -> dict:
         if s:
             end = now if (s.active and s.logout_at is None) else (s.logout_at or s.last_activity_at)
             duration = max(0, int((end - s.login_at).total_seconds()))
+        # Support members carry a manual availability (Available/Busy) shown while online.
+        is_support = u.role == UserRole.SUPPORT_AGENT
+        availability = str(u.support_availability or "AVAILABLE").upper() if is_support else None
+        if online and is_support and availability == "BUSY":
+            status = "busy"
+        elif online and is_support and availability == "ON_BREAK":
+            status = "break"
+        else:
+            status = "online" if online else "offline"
         rows.append({
             "id": u.id,
             "name": _display_name(u),
@@ -87,11 +101,13 @@ async def _build_payload(db: AsyncSession, caller_id: int, caller_role) -> dict:
             "merchant": u.name if u.role == UserRole.MERCHANT else None,
             "role": u.role.value if hasattr(u.role, "value") else u.role,
             "merchantRole": u.merchant_role,
+            "supportCode": u.support_code if is_support else None,
+            "availability": availability,
             "phone": u.phone,
             "email": u.email,
             "avatar": u.avatar,
             "country": u.country,
-            "status": "online" if online else "offline",
+            "status": status,
             "loginTime": (s.login_at.isoformat() + "Z") if s else None,
             "lastActivity": (s.last_activity_at.isoformat() + "Z") if s else None,
             "lastSeen": (s.last_activity_at.isoformat() + "Z") if s else None,

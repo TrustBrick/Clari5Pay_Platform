@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   login, getUser, clearAuth, fetchConversations, fetchMessages, fetchMerchant,
-  sendMessage, wsUrl, type Conversation, type Message, type MerchantDetail, type SupportUser,
+  sendMessage, wsUrl, setAvailability, type Availability,
+  type Conversation, type Message, type MerchantDetail, type SupportUser,
 } from './api';
 import { ThemeToggle } from './theme';
 import DemoBanner from './DemoBanner';
@@ -76,8 +77,37 @@ const Field: React.FC<{ label: string; value: string; onChange: (v: string) => v
     </div>
   );
 
+// ─── Availability toggle (Available / Busy) — Offline is automatic on logout ───
+const AV_META: Record<Availability, { label: string; dot: string }> = {
+  AVAILABLE: { label: 'Available', dot: '#26d00c' },
+  BUSY: { label: 'Busy', dot: '#f5a623' },
+  ON_BREAK: { label: 'On Break', dot: '#dc2626' },
+};
+const AvailabilityToggle: React.FC<{ value: Availability; onChange: (v: Availability) => void; compact?: boolean }> = ({ value, onChange, compact }) => {
+  const set = async (v: Availability) => {
+    if (v === value) return;
+    onChange(v);                                  // optimistic
+    try { await setAvailability(v); } catch { /* best-effort; SSE will reconcile */ }
+  };
+  return (
+    <div style={{ display: 'flex', background: 'rgba(255,255,255,0.12)', borderRadius: 8, padding: 2, gap: 2 }} title="Set your availability">
+      {(['AVAILABLE', 'BUSY', 'ON_BREAK'] as Availability[]).map(v => {
+        const active = v === value;
+        return (
+          <button key={v} onClick={() => set(v)} aria-label={AV_META[v].label}
+            style={{ display: 'flex', alignItems: 'center', gap: 5, border: 'none', cursor: 'pointer', borderRadius: 6, padding: compact ? '4px 7px' : '5px 10px', fontSize: 11, fontWeight: 700, background: active ? '#fff' : 'transparent', color: active ? 'var(--c5-text-main)' : 'rgba(255,255,255,0.75)' }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: AV_META[v].dot }} />
+            {!compact && AV_META[v].label}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 // ─── Console ─────────────────────────────────────────────────────────────────
 const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, onLogout }) => {
+  const [avail, setAvail] = useState<Availability>((user.supportAvailability as Availability) || 'AVAILABLE');
   const [convos, setConvos] = useState<Conversation[]>([]);
   const [search, setSearch] = useState('');
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -164,6 +194,7 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 8 : 12, flexShrink: 0 }}>
+          <AvailabilityToggle value={avail} onChange={setAvail} compact={isMobile} />
           <ThemeToggle />
           {!isMobile && <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>{user.name}</span>}
           {isMobile && activeId != null && merchant && (

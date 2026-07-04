@@ -136,6 +136,11 @@ def _user_to_out(u: User) -> dict:
         "profile": u.profile,
         "merchantRole": u.merchant_role,
         "merchantCode": u.merchant_code,
+        # Support member fields (only meaningful for SUPPORT_AGENT rows).
+        "supportCode": u.support_code,
+        "supportDepartment": u.support_department,
+        "supportShift": u.support_shift,
+        "supportAvailability": str(u.support_availability or "AVAILABLE").upper(),
     }
 
 
@@ -203,9 +208,15 @@ async def login(
     # flow (that portal has no OTP screen), so they remain exempt by design.
     if user.role == UserRole.SUPPORT_AGENT:
         token = create_access_token({"sub": str(user.id)})
+        # A fresh login starts Available; the member can flip to Busy from the portal.
+        user.support_availability = "AVAILABLE"
+        user.support_availability_at = datetime.utcnow()
         await log_event(db, "LOGIN", f"{user.name} ({user.role.value}) signed in", actor=user)
         await record_audit(db, "LOGIN", actor=user, entity_type="user", entity_id=user.id, ip=ip)
         await presence.start_session(db, user, ip, request.headers.get("user-agent"))
+        # Notify the admin who owns this support member that they came online.
+        if user.created_by:
+            db.add(Notification(user_id=user.created_by, message=f"Support member {user.name} logged in", icon="🎧"))
         return {"access_token": token, "token_type": "bearer", "user": _user_to_out(user)}
 
     # Valid credentials → always generate + email an OTP and move to the verification step.
@@ -247,6 +258,9 @@ async def logout(
     await log_event(db, "LOGOUT", f"{current_user.name} ({current_user.role.value}) signed out", actor=current_user)
     await record_audit(db, "LOGOUT", actor=current_user, entity_type="user",
                        entity_id=current_user.id, ip=_client_ip(request))
+    # Notify the owning admin that a support member went offline.
+    if current_user.role == UserRole.SUPPORT_AGENT and current_user.created_by:
+        db.add(Notification(user_id=current_user.created_by, message=f"Support member {current_user.name} went offline", icon="🎧"))
     await presence.end_session(db, current_user)
     return {"status": "ok"}
 

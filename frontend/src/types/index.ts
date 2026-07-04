@@ -644,7 +644,10 @@ export interface ActiveUserRow {
   email?: string | null;
   avatar?: string | null;
   country?: string | null;
-  status: 'online' | 'offline';
+  status: 'online' | 'offline' | 'busy' | 'break';
+  // Support members carry a manual availability shown while online (Available/Busy/On-Break).
+  availability?: 'AVAILABLE' | 'BUSY' | 'ON_BREAK' | null;
+  supportCode?: string | null;
   loginTime?: string | null;
   lastActivity?: string | null;
   lastSeen?: string | null;
@@ -663,3 +666,45 @@ export interface ActiveUsersData {
   merchants: ActiveMerchantRow[];
   users: ActiveUserRow[];
 }
+
+// ── Support Management ──
+export type SupportAvailability = 'AVAILABLE' | 'BUSY' | 'ON_BREAK';
+export type SupportStatus = 'online' | 'busy' | 'break' | 'offline';
+
+export interface SupportAssignedMerchant { id: number; name: string; }
+
+export interface SupportMemberRow {
+  id: number;
+  supportCode?: string | null;
+  fullName: string;
+  username: string;
+  email: string;
+  phone?: string | null;
+  avatar?: string | null;
+  department?: string | null;
+  shift?: string | null;
+  status: SupportStatus;
+  availability: SupportAvailability;
+  active: boolean;
+  assignedMerchants: SupportAssignedMerchant[];
+  assignedMerchantCount: number;
+  loginTime?: string | null;
+  lastActivity?: string | null;
+  lastSeen?: string | null;
+  logoutTime?: string | null;
+  currentSession: boolean;
+  sessionDuration?: number | null;
+  ip?: string | null;
+  device?: string | null;
+  browser?: string | null;
+  os?: string | null;
+  createdAt?: string | null;
+  created?: string | null;
+  createdBy?: number | null;
+  activeConversations?: number;   // populated by the profile endpoint
+}
+export interface SupportMembersData {
+  summary: { members: number; online: number; busy: number; onBreak: number; offline: number; assignedMerchants: number; openTickets: number };
+  members: SupportMemberRow[];
+}
+export interface AssignableMerchant { id: number; name: string; merchantCode?: string | null; username?: string; }

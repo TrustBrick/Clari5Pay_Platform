@@ -2,7 +2,7 @@ from datetime import datetime, date
 from typing import Optional
 from sqlalchemy import (
     String, Integer, Boolean, Float, DateTime, Date,
-    ForeignKey, Enum as SAEnum, Text
+    ForeignKey, Enum as SAEnum, Text, UniqueConstraint
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
@@ -107,6 +107,17 @@ class User(Base):
     profile: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # Per-user preference: also deliver notifications to WhatsApp (internal users only). Default on.
     whatsapp_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # ── Support member fields (a SUPPORT_AGENT enriched via the Support Management module) ──
+    # Unique auto Support ID (e.g. SUP000001). Only members onboarded through the module have one.
+    support_code: Mapped[Optional[str]] = mapped_column(String(16), index=True, nullable=True)
+    support_department: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    support_shift: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    # Manual availability while logged in: "AVAILABLE" | "BUSY" (Offline is derived from presence).
+    support_availability: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    support_availability_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Soft-delete flag (Super Admin "Delete"): hidden from lists but preserved for audit/history.
+    support_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     transactions: Mapped[list["Transaction"]] = relationship(
         "Transaction", back_populates="merchant_user", foreign_keys="Transaction.merchant_id"
@@ -394,6 +405,19 @@ class SupportMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SupportAssignment(Base):
+    """Maps a support member (SUPPORT_AGENT) to a merchant they are allowed to service.
+    A support member only sees/handles the merchants assigned to them."""
+    __tablename__ = "support_assignments"
+    __table_args__ = (UniqueConstraint("support_id", "merchant_id", name="uq_support_merchant"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    support_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    merchant_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    assigned_by: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 class BlogPost(Base):

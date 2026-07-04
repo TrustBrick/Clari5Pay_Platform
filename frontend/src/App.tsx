@@ -23,6 +23,7 @@ import {
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
+import { SupportManagementPage } from './pages/SupportManagementPage';
 import { usePoll } from './utils/usePoll';
 import { activeUsersAPI } from './services/api';
 
@@ -104,6 +105,7 @@ const App: React.FC = () => {
       'admin-dashboard': <AdminDashboard {...props} />,
       'admin-merchants': <AdminMerchantsPage />,
       'admin-active-users': <ActiveUsersPage user={user} />,
+      'admin-support': <SupportManagementPage user={user} />,
       'admin-analytics': <MerchantAnalyticsPage />,
       'admin-reports': <AdminReportsPage {...props} />,
       'admin-transactions': <AdminTransactionsPage />,
@@ -111,6 +113,7 @@ const App: React.FC = () => {
       'admin-whatsapp': <WhatsAppSettingsPage />,
       'sa-dashboard': <SaDashboard onNavigate={setPage} />,
       'sa-active-users': <ActiveUsersPage user={user} />,
+      'sa-support': <SupportManagementPage user={user} />,
       'sa-analytics': <MerchantAnalyticsPage />,
       'sa-reports': <AdminReportsPage {...props} />,
       'sa-admins': <SaAdminsPage />,

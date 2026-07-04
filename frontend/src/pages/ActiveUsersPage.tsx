@@ -34,6 +34,18 @@ const StatusDot: React.FC<{ online: boolean }> = ({ online }) => (
   </span>
 );
 
+// Multi-state dot for user rows: Support members can be Busy (yellow) / On Break (red) while logged in.
+const UserStatusDot: React.FC<{ status: string }> = ({ status }) => {
+  const color = status === 'online' ? T.success : status === 'busy' ? T.warning : status === 'break' ? T.danger : T.textMuted;
+  const label = status === 'online' ? 'Online' : status === 'busy' ? 'Busy' : status === 'break' ? 'On Break' : 'Offline';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, fontWeight: 700, color }}>
+      <span style={{ width: 9, height: 9, borderRadius: '50%', background: color, boxShadow: status !== 'offline' ? `0 0 0 3px ${color}22` : 'none' }} />
+      {label}
+    </span>
+  );
+};
+
 const th: React.CSSProperties = { textAlign: 'left', padding: '10px 12px', fontSize: 10.5, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap', borderBottom: `1px solid ${T.border}` };
 const td: React.CSSProperties = { padding: '10px 12px', fontSize: 12.5, color: T.textMain, borderBottom: `1px solid ${T.borderLight}`, whiteSpace: 'nowrap' };
 
@@ -166,7 +178,7 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
               {filtered.length === 0 && <tr><td colSpan={15} style={{ ...td, textAlign: 'center', color: T.textMuted, padding: 28 }}>No users match the filters.</td></tr>}
               {filtered.map(u => (
                 <tr key={u.id} className="c5-row-hover" style={{ cursor: 'pointer', background: flash.has(u.id) ? `${T.success}22` : undefined, transition: 'background 600ms ease' }} onClick={() => setSel(u)}>
-                  <td style={td}><StatusDot online={u.status === 'online'} /></td>
+                  <td style={td}><UserStatusDot status={u.status} /></td>
                   <td style={{ ...td, fontWeight: 700 }}>{u.name}</td>
                   <td style={{ ...td, color: T.textMuted }}>{u.username}</td>
                   <td style={td}>{u.merchant || '—'}</td>
@@ -175,7 +187,7 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
                   <td style={{ ...td, color: T.textMuted }}>{u.phone || '—'}</td>
                   <td style={{ ...td, color: T.textMuted }}>{fmtTime(u.loginTime)}</td>
                   <td style={{ ...td, color: T.textMuted }}>{relTime(u.lastActivity)}</td>
-                  <td style={{ ...td, color: u.status === 'online' ? T.success : T.textMuted }}>{relTime(u.lastSeen)}</td>
+                  <td style={{ ...td, color: u.status !== 'offline' ? T.success : T.textMuted }}>{relTime(u.lastSeen)}</td>
                   <td style={{ ...td, color: T.textMuted, fontFamily: 'monospace' }}>{u.ip || '—'}</td>
                   <td style={{ ...td, color: T.textMuted }}>{u.device || '—'}</td>
                   <td style={{ ...td, color: T.textMuted }}>{u.browser || '—'}</td>
@@ -201,7 +213,7 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
             <div>
               <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: T.textMain }}>{sel.name}</p>
               <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>@{sel.username}</p>
-              <div style={{ marginTop: 4 }}><StatusDot online={sel.status === 'online'} /></div>
+              <div style={{ marginTop: 4 }}><UserStatusDot status={sel.status} /></div>
             </div>
           </div>
           {([

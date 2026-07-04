@@ -286,6 +286,35 @@ class SupportMessageOut(BaseModel):
         from_attributes = True
 
 
+# ─── Support Management Schemas ───────────────────────────────────────────────
+class SupportMemberCreate(BaseModel):
+    username: str
+    password: str
+    email: str
+    fullName: str
+    phone: Optional[str] = None
+    department: Optional[str] = None
+    shift: Optional[str] = None
+    status: Optional[str] = "Active"          # "Active" | "Inactive"
+    merchantIds: list[int] = []
+
+
+class SupportMemberUpdate(BaseModel):
+    fullName: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    department: Optional[str] = None
+    shift: Optional[str] = None
+
+
+class AssignMerchantsRequest(BaseModel):
+    merchantIds: list[int] = []
+
+
+class AvailabilityRequest(BaseModel):
+    availability: str                          # "AVAILABLE" | "BUSY"
+
+
 # ─── AI Schemas ───────────────────────────────────────────────────────────────
 class AIMessage(BaseModel):
     role: str
