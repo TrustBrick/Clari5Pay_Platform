@@ -44,9 +44,10 @@ def _u(u: User) -> dict:
 
 # Serial ID helpers. Codes are "<PREFIX><digits>" (bank-account style). Independent series per
 # prefix — each continues after its own current max, so a code never collides or gets reused.
-# Prefixes: Production merchants/users → "MID…"; demo merchant COMPANIES → "MER…"; demo USERS →
-# the first 3 letters of their business name (e.g. Nexus Fintech → NEX000001). The business-derived
-# prefix keeps demo user codes distinct from Production's MID codes with no numeric band needed.
+# Prefixes: merchant COMPANIES (onboarding, both Production and demo) → "MER…"; Production staff
+# logins → "MID…"; demo staff logins → the first 3 letters of their business name (e.g. Nexus
+# Fintech → NEX000001). The business-derived prefix keeps demo user codes distinct from Production's
+# MID codes with no numeric band needed.
 
 
 async def _next_code(db: AsyncSession, prefix: str, width: int = 6) -> str:
@@ -75,7 +76,8 @@ async def _next_merchant_code(db: AsyncSession) -> str:
 
 
 async def _next_company_code(db: AsyncSession) -> str:
-    """Demo only: next COMPANY Merchant ID (MER…) — companies get their own independent series."""
+    """Next COMPANY Merchant ID (MER…) — merchant companies (Production + demo) get their own
+    independent series, separate from the staff-login MID… series."""
     return await _next_code(db, "MER")
 
 
@@ -141,11 +143,12 @@ async def create_merchant(
     if admin.role == UserRole.SUPER_ADMIN:
         raise HTTPException(status_code=403, detail="Super Admin cannot create merchants")
 
-    # Demo separates Companies (onboarding → MER code, no login) from Users (Create User → MID
-    # code, real login). A sub-user is identified by carrying a merchant_role. Production is
-    # unchanged: every merchant-role row is a login with a MID code.
+    # Onboarding registers a COMPANY (MER code, no login); staff logins are added per-user via
+    # Create User (they carry a merchant_role). This split now applies on BOTH Production and demo.
+    # They differ only in the staff-login code series: demo derives it from the business name
+    # (e.g. NEX000001); Production continues the serial MID… series.
     is_sub_user = bool(data.get("merchantRole"))
-    if settings.is_demo and not is_sub_user:
+    if not is_sub_user:
         merchant_code = await _next_company_code(db)
         # A company collects no credentials — fill the NOT NULL login columns with a placeholder so
         # the company row exists but is not a usable login (username = its MER code, random secret).

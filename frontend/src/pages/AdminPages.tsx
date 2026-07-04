@@ -11,7 +11,6 @@ import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery, ReceiptImage } from './MerchantPages';
 import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
 import { usePresenceStream } from '../utils/sse';
-import { IS_DEMO } from '../utils/portal';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, demoAPI, activeUsersAPI } from '../services/api';
 import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
@@ -526,8 +525,8 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
           rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Pay-Out Fee', payoutFee], ['Available Balance', availableBalance]]} />
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:12,marginBottom:20 }}>
-        {/* Demo: a "merchant" is a company (business), not a login row — count distinct businesses. */}
-        <StatCard icon="🏪" label="Total Merchants" value={IS_DEMO ? new Set(merchants.map(m=>m.name)).size : merchants.length} color={T.blue}/>
+        {/* A "merchant" is a company (business), not a login row — count distinct businesses. */}
+        <StatCard icon="🏪" label="Total Merchants" value={new Set(merchants.map(m=>m.name)).size} color={T.blue}/>
         <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
         <StatCard icon="⧗" label="Pending" value={pending.length} color={T.warning}/>
         <StatCard icon="↓" label="No. of Deposit Requests" value={depReqs} color={T.blue}/>
@@ -941,9 +940,9 @@ export const AdminMerchantsPage: React.FC = () => {
     catch { showToast('Failed to update merchant','error'); }
     finally { setBusy(false); }
   };
-  // Demo onboards a COMPANY (no login) — logins are created per-user via Create User. Production
-  // onboarding still collects the merchant's login credentials.
-  const passwordMismatch = !IS_DEMO && !!form.confirmPassword && form.password !== form.confirmPassword;
+  // Onboarding registers a COMPANY (no login) on both Production and demo — staff logins are
+  // created per-user via Create User, so onboarding never collects login credentials.
+  const passwordMismatch = false;
 
   const [mBal, setMBal] = useState<MerchantBalance[]>([]);
   const balByName = Object.fromEntries(mBal.map(b => [b.name, b]));
@@ -962,15 +961,12 @@ export const AdminMerchantsPage: React.FC = () => {
   usePoll(() => { if (!liveOnline) loadOnline(); }, PRESENCE_POLL_MS);
 
   const createMerchant = async () => {
-    // Demo onboards a company (no login fields); production still collects login credentials.
-    const needLogin = !IS_DEMO;
-    if(!form.name||!form.email||!form.phone||!form.payIn||!form.payOut||!form.settlement||(needLogin&&(!form.username||!form.password))){ showToast('Fill all required fields','error'); return; }
-    if(needLogin && form.password !== form.confirmPassword){ showToast('Passwords do not match','error'); return; }
+    // Onboarding registers a no-login company (both Production and demo) — no username/password.
+    if(!form.name||!form.email||!form.phone||!form.payIn||!form.payOut||!form.settlement){ showToast('Fill all required fields','error'); return; }
     try {
       await userAPI.createMerchant({
         name:form.name, country:form.country, email:form.email,
         phone:`${form.countryCode} ${form.phone}`,
-        ...(needLogin ? { username:form.username, password:form.password } : {}),
         payIn:form.payIn, payOut:form.payOut, settlement:form.settlement,
         payInFee:parseFloat(form.payInFee), payOutFee:parseFloat(form.payOutFee),
         settlementFee:form.settlementFee===''?null:parseFloat(form.settlementFee),
@@ -980,9 +976,9 @@ export const AdminMerchantsPage: React.FC = () => {
       await reload();
       setShowCreate(false);
       setForm(empty);
-      showToast(IS_DEMO ? `Company "${form.name}" onboarded` : `Merchant "${form.name}" created`);
+      showToast(`Company "${form.name}" onboarded`);
     } catch {
-      showToast(IS_DEMO ? 'Failed to onboard company' : 'Failed to create merchant','error');
+      showToast('Failed to onboard company','error');
     }
   };
 
@@ -990,8 +986,9 @@ export const AdminMerchantsPage: React.FC = () => {
   // inherited from the business owner so a business shares one commercial configuration.
   const createUser = async () => {
     const group = merchants.filter(m => m.name === viewName).sort((a,b)=>a.id-b.id);
-    // Inherit business config from the company (MER) row on demo, else the earliest user.
-    const owner = (IS_DEMO ? group.find(m=>(m.merchantCode||'').startsWith('MER')) : undefined) || group[0];
+    // Inherit business config from the company (MER) row; fall back to the earliest user for any
+    // legacy business that has no MER company row yet.
+    const owner = group.find(m=>(m.merchantCode||'').startsWith('MER')) || group[0];
     if(!owner){ showToast('Merchant not found','error'); return; }
     if(!uForm.fullName||!uForm.username||!uForm.email||!uForm.phone||!uForm.password){ showToast('Fill all required fields','error'); return; }
     if(uForm.password !== uForm.confirmPassword){ showToast('Passwords do not match','error'); return; }
@@ -1020,11 +1017,12 @@ export const AdminMerchantsPage: React.FC = () => {
     merchants.reduce((acc, m) => { (acc[m.name] ||= []).push(m); return acc; }, {} as Record<string, User[]>)
   ).map(users => {
     const sorted = [...users].sort((a,b)=>a.id-b.id);
-    // Demo: the company is the MER-coded row (the parent entity), regardless of creation order;
-    // its login users are the MID rows, which the Users list/count show.
-    const company = IS_DEMO ? sorted.find(u=>(u.merchantCode||'').startsWith('MER')) : undefined;
+    // The company is the MER-coded row (the parent entity), regardless of creation order; its
+    // login users are the MID rows, which the Users list/count show. Legacy businesses without a
+    // MER row fall back to the earliest user as owner and list every row.
+    const company = sorted.find(u=>(u.merchantCode||'').startsWith('MER'));
     const owner = company || sorted[0];
-    const displayUsers = IS_DEMO ? sorted.filter(u=>!(u.merchantCode||'').startsWith('MER')) : sorted;
+    const displayUsers = company ? sorted.filter(u=>!(u.merchantCode||'').startsWith('MER')) : sorted;
     return { name: owner.name, owner, users: sorted, displayUsers, active: users.some(u=>u.active) };
   }).sort((a,b)=>(a.owner.merchantCode||'').localeCompare(b.owner.merchantCode||''));
   const viewCompany = viewName ? companies.find(c=>c.name===viewName) || null : null;
@@ -1041,16 +1039,8 @@ export const AdminMerchantsPage: React.FC = () => {
           <div style={{ display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:'0 18px' }}>
             <Input label="Business Name" value={form.name} onChange={e=>set('name',e.target.value)} placeholder="e.g. Nexus Fintech Ltd." required/>
             <Sel label="Country" value={form.country} onChange={e=>set('country',e.target.value)} required options={COUNTRY_NAME_OPTIONS}/>
-            {!IS_DEMO && <Input label="Username" value={form.username} onChange={e=>set('username',e.target.value)} placeholder="Login username" required hint="Merchant uses this to login"/>}
             <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="biz@company.com" required/>
             <PhoneField code={form.countryCode} onCode={v=>set('countryCode',v)} phone={form.phone} onPhone={v=>set('phone',v)} />
-            {!IS_DEMO && <Input label="Password" type="password" value={form.password} onChange={e=>set('password',e.target.value)} placeholder="Set login password" required hint="Merchant login password"/>}
-            {!IS_DEMO && (
-            <div>
-              <Input label="Confirm Password" type="password" value={form.confirmPassword} onChange={e=>set('confirmPassword',e.target.value)} placeholder="Re-enter password" required/>
-              {passwordMismatch && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
-            </div>
-            )}
             <Input label="Pay-In Code" value={form.payIn} onChange={e=>set('payIn',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. DEP (max 3 chars)" required/>
             <Input label="Pay-Out Code" value={form.payOut} onChange={e=>set('payOut',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. WIT" required/>
             <Input label="Settlement Code" value={form.settlement} onChange={e=>set('settlement',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. SET" required/>
@@ -1063,7 +1053,7 @@ export const AdminMerchantsPage: React.FC = () => {
             ℹ Integration settings are configured and managed by Admins — merchants do not have access.
           </div>
           <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={createMerchant} disabled={passwordMismatch}>{IS_DEMO ? 'Onboard Company' : 'Create Account'}</Btn>
+            <Btn onClick={createMerchant}>Onboard Company</Btn>
             <Btn variant="secondary" onClick={()=>setShowCreate(false)}>Cancel</Btn>
           </div>
         </Modal>
@@ -1603,8 +1593,8 @@ export const SaDashboard: React.FC<{ onNavigate?: (p: string) => void }> = ({ on
       {/* 3 per row → counts on top, money on the bottom row */}
       <div style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:16 }} className="sa-stat-grid">
         <StatCard icon="🛡" label="Total Admins" value={admins.length} color={T.blue}/>
-        {/* Demo: count distinct businesses, not merchant login rows. */}
-        <StatCard icon="🏪" label="Total Merchants" value={IS_DEMO ? new Set(merchants.map(m=>m.name)).size : merchants.length} color={T.success}/>
+        {/* Count distinct businesses, not merchant login rows. */}
+        <StatCard icon="🏪" label="Total Merchants" value={new Set(merchants.map(m=>m.name)).size} color={T.success}/>
         <StatCard icon="✅" label="Active Admins" value={admins.filter(a=>a.active).length} color={T.info}/>
         <StatCard icon="📊" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
       </div>
