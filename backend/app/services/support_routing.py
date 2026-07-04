@@ -131,6 +131,42 @@ async def assign_conversation(
     return agent
 
 
+async def _agent_online(db: AsyncSession, agent_id: Optional[int], now: datetime) -> bool:
+    """Is this agent a live, usable owner right now (active, not archived, session online)?"""
+    if not agent_id:
+        return False
+    u = (await db.execute(select(User).where(User.id == agent_id))).scalar_one_or_none()
+    if not u or not u.active or u.support_archived:
+        return False
+    sess = (await presence.latest_sessions(db, [agent_id])).get(agent_id)
+    return presence.is_online(sess, now)
+
+
+async def reclaim_offline(db: AsyncSession, *, now: Optional[datetime] = None) -> None:
+    """Return to the queue any OPEN conversation whose owner is offline / deactivated / archived, so
+    it can be reassigned to whoever is on shift now. This is what makes shift hand-over work: when a
+    member logs out at the end of their shift, their live chats flow to the next available member."""
+    now = now or datetime.utcnow()
+    convs = (await db.execute(
+        select(SupportConversation).where(
+            SupportConversation.status == "OPEN", SupportConversation.support_id.isnot(None)
+        )
+    )).scalars().all()
+    if not convs:
+        return
+    ids = list({c.support_id for c in convs})
+    users = {u.id: u for u in (await db.execute(select(User).where(User.id.in_(ids)))).scalars().all()}
+    sessions = await presence.latest_sessions(db, ids)
+    for c in convs:
+        u = users.get(c.support_id)
+        online = bool(u and u.active and not u.support_archived and presence.is_online(sessions.get(c.support_id), now))
+        if not online:
+            c.support_id = None
+            if c.queued_at is None:
+                c.queued_at = now
+    await db.flush()
+
+
 async def get_open_conversation(db: AsyncSession, customer_id: int) -> Optional[SupportConversation]:
     return (await db.execute(
         select(SupportConversation)
@@ -144,6 +180,12 @@ async def ensure_conversation(db: AsyncSession, customer_id: int, *, now: Option
     now = now or datetime.utcnow()
     conv = await get_open_conversation(db, customer_id)
     if conv:
+        # If the owning agent has gone offline (e.g. their shift ended), hand the thread to whoever
+        # is on shift now so the customer always reaches an available member.
+        if conv.support_id and not await _agent_online(db, conv.support_id, now):
+            conv.support_id = None
+            conv.queued_at = now
+            await assign_conversation(db, conv, now=now)
         return conv
     conv = SupportConversation(customer_id=customer_id, status="OPEN", created_at=now, last_message_at=now)
     db.add(conv)
@@ -153,8 +195,11 @@ async def ensure_conversation(db: AsyncSession, customer_id: int, *, now: Option
 
 
 async def drain_queue(db: AsyncSession, *, now: Optional[datetime] = None) -> list[SupportConversation]:
-    """Assign queued conversations (oldest first) while capacity exists."""
+    """Reclaim conversations from offline agents, then assign queued ones (oldest first) while
+    capacity exists. Triggered on agent login, availability change, close and config change — so a
+    new shift member automatically picks up both waiting customers and the prior shift's chats."""
     now = now or datetime.utcnow()
+    await reclaim_offline(db, now=now)
     queued = (await db.execute(
         select(SupportConversation)
         .where(SupportConversation.status == "OPEN", SupportConversation.support_id.is_(None))
