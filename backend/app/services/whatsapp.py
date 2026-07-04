@@ -34,7 +34,10 @@ log = logging.getLogger("clari5pay.whatsapp")
 _LOOP: Optional[asyncio.AbstractEventLoop] = None
 _INSTALLED = False
 
-_REF_RE = re.compile(r"\b(?:DEP|WIT|SET)\d{4,}\b")
+# A transaction reference token in a message: 2–4 uppercase letters + digits. Matches both the
+# fixed prefixes (DEP/WIT/SET…) and merchant-specific codes (CLD/CLP/ABC…). Type is resolved from
+# the linked transaction (below), not the prefix, so it stays correct whatever the prefix is.
+_REF_RE = re.compile(r"\b[A-Z]{2,4}\d{4,}\b")
 
 # ── Global per-role toggle (Admin → Settings → Notifications) ────────────────────
 # Which roles receive WhatsApp, configurable at runtime without code changes. Stored as a
@@ -324,16 +327,20 @@ async def _deliver(user_id: int, message: str) -> None:
             role_settings = await get_role_settings(db)
             if not _eligible(user, role_settings):
                 return  # role/user disabled or no phone — nothing to do
-            if not (await get_event_settings(db)).get(_event_key(message), True):
-                return  # this event type is switched off in Settings
-            # Enrich with the linked transaction (Business / Amount / Status) when the message
-            # carries a reference — a self-contained read, no notification/workflow changes.
+            # Find the linked transaction FIRST (any ref prefix — robust to merchant-specific
+            # codes like CLD000010), so we classify the event by its real type and enrich the
+            # message. A self-contained read, no notification/workflow changes.
             tx = None
             ref_m = _REF_RE.search(message or "")
             if ref_m:
                 tx = (await db.execute(
                     select(Transaction).where(Transaction.ref == ref_m.group(0))
                 )).scalar_one_or_none()
+            kind = _tx_kind(tx.type) if tx is not None else None       # Deposit/Withdrawal/Settlement
+            ntype = (kind.lower() if kind else None) or _notif_type(message)
+            event_key = ntype.upper() if ntype in ("deposit", "withdrawal", "settlement") else _event_key(message)
+            if not (await get_event_settings(db)).get(event_key, True):
+                return  # this event type is switched off in Settings
             body = _format(message, tx)
             ok, msg_id, resp, reason = False, None, None, None
             attempts = max(1, (settings.WHATSAPP_RETRIES or 0) + 1)
@@ -362,7 +369,7 @@ async def _deliver(user_id: int, message: str) -> None:
             db.add(WhatsAppLog(
                 user_id=user.id, username=user.username,
                 role=str(user.merchant_role or user.role.value), phone=user.phone,
-                notification_type=_notif_type(message), message=message,
+                notification_type=ntype, message=message,
                 status="SENT" if ok else "FAILED", provider=settings.WHATSAPP_PROVIDER,
                 message_id=msg_id, delivery_status="sent" if ok else "failed",
                 retry_count=max(0, used - 1),

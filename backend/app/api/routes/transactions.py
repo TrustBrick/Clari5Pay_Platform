@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from app.schemas.schemas import (
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
+from app.core.config import settings
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -135,12 +137,18 @@ INSUFFICIENT_BALANCE_MSG = (
 _REF_SEQUENCES = {"DEP": "deposit_ref_seq", "WIT": "withdrawal_ref_seq", "SET": "settlement_ref_seq"}
 
 
-async def _next_ref(db: AsyncSession, kind: str) -> str:
-    """Next reference number for a transaction type. `kind` is "DEP", "WIT" or "SET". Pulls the
-    next value from that type's own sequence and formats it 6-digit zero-padded, e.g. DEP000001."""
+async def _next_ref(db: AsyncSession, kind: str, code: Optional[str] = None) -> str:
+    """Next reference number for a transaction type. `kind` ("DEP"/"WIT"/"SET") selects that
+    type's own sequence, so the numeric sequence continues seamlessly regardless of the prefix.
+
+    On the demo stack, `code` — the creating merchant's own configured Deposit/Withdrawal/
+    Settlement code — replaces the fixed prefix, so a new deposit reads e.g. CLD000010 instead of
+    DEP000010. Production keeps the fixed DEP/WIT/SET prefixes; a missing merchant code also falls
+    back to the fixed prefix. Only the prefix changes — existing references are never touched."""
     seq = _REF_SEQUENCES[kind]
     n = (await db.execute(text(f"SELECT nextval('{seq}')"))).scalar_one()
-    return f"{kind}{str(n).zfill(6)}"
+    prefix = code.strip().upper() if (settings.is_demo and code and code.strip()) else kind
+    return f"{prefix}{str(n).zfill(6)}"
 
 
 def _forbid_checker_create(user: User) -> None:
@@ -1223,7 +1231,7 @@ async def create_deposit(
     )
     db.add(tx)
     await db.flush()
-    tx.ref = await _next_ref(db, "DEP")
+    tx.ref = await _next_ref(db, "DEP", current_user.pay_in)
     if data.saveBankAccount:
         await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName, member_id=data.memberId)
     # Remember the merchant's sender UPI for this member (first one becomes the default).
@@ -1297,7 +1305,7 @@ async def create_withdrawal(
     )
     db.add(tx)
     await db.flush()
-    tx.ref = await _next_ref(db, "WIT")
+    tx.ref = await _next_ref(db, "WIT", current_user.pay_out)
     # Remember this member's payout details so they auto-fill on the next withdrawal.
     _wd_mode = (data.payoutMode or "BANK").upper()
     if _wd_mode == "BANK" and data.accountNumber:
@@ -1360,7 +1368,7 @@ async def create_settlement(
     )
     db.add(tx)
     await db.flush()
-    tx.ref = await _next_ref(db, "SET")
+    tx.ref = await _next_ref(db, "SET", current_user.settlement)
     await db.flush()
     await _notify_admin(db, tx, f"Settlement {tx.ref} from {tx.merchant_name} — awaiting your approval", "⇄")
     await notify_tx(db, tx, f"Settlement {tx.ref} submitted by {tx.merchant_name}", "⇄")
