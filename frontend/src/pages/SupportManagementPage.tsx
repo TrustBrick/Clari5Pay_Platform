@@ -99,6 +99,15 @@ const CreateModal: React.FC<{ merchants: AssignableMerchant[]; onClose: () => vo
   const phoneOk = phoneDigits.length >= 6 && phoneDigits.length <= 14;
   const pwOk = f.password.length >= 8 && f.password === f.confirm;
   const valid = f.fullName.trim() && f.username.trim() && emailOk && phoneOk && pwOk;
+  // Human-readable reason the Create button is disabled (shown next to it).
+  const disabledReason =
+    !f.fullName.trim() ? 'Enter the full name'
+    : !f.username.trim() ? 'Enter a username'
+    : !emailOk ? 'Enter a valid email address'
+    : !phoneOk ? 'Enter a valid phone number'
+    : f.password.length < 8 ? 'Password must be at least 8 characters'
+    : f.password !== f.confirm ? 'Passwords do not match'
+    : '';
 
   const submit = async () => {
     if (!valid || busy) return;
@@ -136,9 +145,10 @@ const CreateModal: React.FC<{ merchants: AssignableMerchant[]; onClose: () => vo
         <MerchantMultiSelect options={merchants} selected={ids} onChange={setIds} />
       </div>
       {err && <p style={{ color: T.danger, fontSize: 12.5, fontWeight: 600, margin: '4px 0 10px' }}>{err}</p>}
-      <div style={{ display: 'flex', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <Btn onClick={submit} disabled={!valid || busy}>{busy ? 'Creating…' : 'Create Support Member'}</Btn>
         <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        {!valid && !busy && disabledReason && <span style={{ fontSize: 12, color: T.warning, fontWeight: 600 }}>⚠ {disabledReason}</span>}
       </div>
     </Modal>
   );
