@@ -1,21 +1,37 @@
 """Active Users (real-time presence) — session-metadata only, never tokens/secrets.
 
-Presence is polled by the client (see the existing usePoll architecture). A heartbeat keeps
-the caller's session fresh; the list endpoint computes online/offline from the newest session
-per user. Scope: Super Admin → everyone; Admin → only users of merchants they created.
+Two delivery paths, same data:
+  • GET  /api/active-users          — one-shot snapshot (polled by the client as a fallback).
+  • GET  /api/active-users/stream   — Server-Sent Events push: the server watches the
+    user_sessions table and streams a fresh snapshot the instant presence changes (login,
+    logout, heartbeat), so every open Active Users page updates in ~1s without a poll.
+  • POST /api/active-users/heartbeat — keeps the caller's own session marked online.
+
+Presence is computed from the newest session per user. Scope: Super Admin → everyone;
+Admin → only users of merchants they created (plus themselves), never another admin's.
 """
+import asyncio
+import json
+import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_db
+from app.db.session import get_db, AsyncSessionLocal
 from app.core.deps import get_current_user, get_current_admin
 from app.models.models import User, UserRole
 from app.services import presence
 
 router = APIRouter(prefix="/api/active-users", tags=["active-users"])
+
+# Stream tuning. The loop re-checks presence every tick and pushes only when something changed;
+# a forced refresh guarantees the derived fields (session duration, "x min ago") keep ticking and
+# doubles as a keep-alive so proxies never see the connection go idle.
+STREAM_TICK_SECONDS = 1.0
+STREAM_FORCE_REFRESH_SECONDS = 15.0
 
 
 @router.post("/heartbeat")
@@ -32,21 +48,16 @@ def _display_name(u: User) -> str:
     return (u.full_name or "").strip() or (u.name or "").strip() or u.username
 
 
-@router.get("")
-async def active_users(
-    db: AsyncSession = Depends(get_db),
-    caller: User = Depends(get_current_admin),
-):
-    """Real-time presence overview. Super Admin sees all users; an Admin sees only the users
-    belonging to merchants they created (plus themselves)."""
-    if caller.role == UserRole.SUPER_ADMIN:
+async def _build_payload(db: AsyncSession, caller_id: int, caller_role) -> dict:
+    """Compute the full presence overview for a caller. Shared by the snapshot and the stream."""
+    if caller_role == UserRole.SUPER_ADMIN:
         users = (await db.execute(select(User))).scalars().all()
     else:
         # Admin: their own merchants' users + themselves. Never another admin's users.
         users = (await db.execute(
             select(User).where(
-                (User.id == caller.id) |
-                ((User.role == UserRole.MERCHANT) & (User.created_by == caller.id))
+                (User.id == caller_id) |
+                ((User.role == UserRole.MERCHANT) & (User.created_by == caller_id))
             )
         )).scalars().all()
 
@@ -116,3 +127,63 @@ async def active_users(
         b["status"] = "Online" if b["online"] > 0 else "Offline"
 
     return {"summary": summary, "merchants": merchants, "users": rows}
+
+
+def _signature(payload: dict) -> str:
+    """A cheap fingerprint of the *presence-relevant* state (who's online + their session marks).
+    Excludes derived, always-moving fields like sessionDuration so we push on real changes only."""
+    return "|".join(
+        f"{r['id']}:{r['status']}:{r['lastActivity']}:{r['logoutTime']}"
+        for r in sorted(payload["users"], key=lambda r: r["id"])
+    )
+
+
+@router.get("")
+async def active_users(
+    db: AsyncSession = Depends(get_db),
+    caller: User = Depends(get_current_admin),
+):
+    """Real-time presence overview (one-shot). Super Admin sees all users; an Admin sees only the
+    users belonging to merchants they created (plus themselves)."""
+    return await _build_payload(db, caller.id, caller.role)
+
+
+@router.get("/stream")
+async def active_users_stream(
+    request: Request,
+    caller: User = Depends(get_current_admin),
+):
+    """SSE presence stream. Pushes a fresh snapshot whenever presence changes (≈1s latency) plus a
+    periodic refresh so derived fields keep ticking. Uses its own short-lived DB sessions so it
+    never holds a pooled connection across the idle waits."""
+    caller_id, caller_role = caller.id, caller.role
+
+    async def event_source():
+        last_sig: str | None = None
+        last_push = 0.0
+        while True:
+            if await request.is_disconnected():
+                break
+            tnow = time.monotonic()
+            try:
+                async with AsyncSessionLocal() as db:
+                    payload = await _build_payload(db, caller_id, caller_role)
+                sig = _signature(payload)
+                if sig != last_sig or (tnow - last_push) >= STREAM_FORCE_REFRESH_SECONDS:
+                    last_sig, last_push = sig, tnow
+                    yield f"data: {json.dumps(payload)}\n\n"
+            except Exception:
+                # A transient DB hiccup must not kill the stream — just skip this tick.
+                pass
+            await asyncio.sleep(STREAM_TICK_SECONDS)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",   # tell nginx not to buffer the stream
+            "Content-Encoding": "identity",  # opt out of GZipMiddleware (it would buffer/break SSE)
+        },
+    )

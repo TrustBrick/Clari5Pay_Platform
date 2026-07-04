@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { T } from '../utils/theme';
 import { Card, StatCard, Sel, Input, Modal, Skeleton, CountUp } from '../components/UI';
 import { activeUsersAPI } from '../services/api';
-import { usePoll } from '../utils/usePoll';
+import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
+import { usePresenceStream } from '../utils/sse';
 import type { User, ActiveUsersData, ActiveUserRow } from '../types';
 
 // ── formatting helpers ──
@@ -49,7 +50,24 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
 
   const reload = () => activeUsersAPI.list().then(setData).catch(() => {});
   useEffect(() => { reload().finally(() => setLoading(false)); }, []);
-  usePoll(reload, 15000);   // real-time refresh (also on focus/visibility)
+  // Live push via SSE (<1s). Polling stays as the fallback and only runs while the stream is down.
+  const live = usePresenceStream(d => { setData(d); setLoading(false); });
+  usePoll(() => { if (!live) reload(); }, PRESENCE_POLL_MS);
+
+  // Briefly highlight rows that just went offline → online, as a live "someone came online" cue.
+  const prevOnline = React.useRef<Set<number>>(new Set());
+  const initedRef = React.useRef(false);
+  const [flash, setFlash] = useState<Set<number>>(() => new Set());
+  useEffect(() => {
+    const online = new Set((data?.users || []).filter(u => u.status === 'online').map(u => u.id));
+    if (!initedRef.current) { prevOnline.current = online; initedRef.current = true; return; }  // don't flash the whole list on first load
+    const fresh = [...online].filter(id => !prevOnline.current.has(id));
+    prevOnline.current = online;
+    if (!fresh.length) return;
+    setFlash(prev => { const n = new Set(prev); fresh.forEach(id => n.add(id)); return n; });
+    const t = setTimeout(() => setFlash(prev => { const n = new Set(prev); fresh.forEach(id => n.delete(id)); return n; }), 2600);
+    return () => clearTimeout(t);
+  }, [data]);
 
   const rows = data?.users || [];
   const merchantOpts = useMemo(() => Array.from(new Set(rows.map(r => r.merchant).filter(Boolean))) as string[], [rows]);
@@ -147,7 +165,7 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
             <tbody>
               {filtered.length === 0 && <tr><td colSpan={15} style={{ ...td, textAlign: 'center', color: T.textMuted, padding: 28 }}>No users match the filters.</td></tr>}
               {filtered.map(u => (
-                <tr key={u.id} className="c5-row-hover" style={{ cursor: 'pointer' }} onClick={() => setSel(u)}>
+                <tr key={u.id} className="c5-row-hover" style={{ cursor: 'pointer', background: flash.has(u.id) ? `${T.success}22` : undefined, transition: 'background 600ms ease' }} onClick={() => setSel(u)}>
                   <td style={td}><StatusDot online={u.status === 'online'} /></td>
                   <td style={{ ...td, fontWeight: 700 }}>{u.name}</td>
                   <td style={{ ...td, color: T.textMuted }}>{u.username}</td>

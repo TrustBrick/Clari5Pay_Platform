@@ -9,7 +9,8 @@ import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
 import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery, ReceiptImage } from './MerchantPages';
-import { usePoll } from '../utils/usePoll';
+import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
+import { usePresenceStream } from '../utils/sse';
 import { IS_DEMO } from '../utils/portal';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, demoAPI, activeUsersAPI } from '../services/api';
 import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats } from '../services/api';
@@ -950,10 +951,15 @@ export const AdminMerchantsPage: React.FC = () => {
   const reload = () => {
     userAPI.getMerchants().then(setMerchants).catch(()=>{});
     transactionAPI.merchantBalances().then(setMBal).catch(()=>{});
-    activeUsersAPI.list().then(d => setOnlineByBiz(Object.fromEntries(d.merchants.map(m => [m.name, m.online])))).catch(()=>{});
   };
-  useEffect(() => { reload(); }, []);
+  // Live per-merchant online counts poll on a short interval; the heavier merchant/balance
+  // queries above keep their conservative cadence so only presence refreshes fast.
+  const applyOnline = (d: ActiveUsersData) => setOnlineByBiz(Object.fromEntries(d.merchants.map(m => [m.name, m.online])));
+  const loadOnline = () => activeUsersAPI.list().then(applyOnline).catch(()=>{});
+  useEffect(() => { reload(); loadOnline(); }, []);
+  const liveOnline = usePresenceStream(applyOnline);   // SSE push; poll below is the fallback
   usePoll(() => { if (!showCreate && !toggleM) reload(); });
+  usePoll(() => { if (!liveOnline) loadOnline(); }, PRESENCE_POLL_MS);
 
   const createMerchant = async () => {
     // Demo onboards a company (no login fields); production still collects login credentials.
@@ -1540,8 +1546,9 @@ export const SaDashboard: React.FC<{ onNavigate?: (p: string) => void }> = ({ on
     .catch(()=>{});
   const loadActive = () => activeUsersAPI.list().then(setActive).catch(()=>{});
   useEffect(() => { reload().finally(()=>setLoading(false)); loadActive(); }, []);
+  const liveActive = usePresenceStream(setActive);   // SSE push (<1s); presence poll below is the fallback
   usePoll(reload);
-  usePoll(loadActive, 20000);
+  usePoll(() => { if (!liveActive) loadActive(); }, PRESENCE_POLL_MS);
   const onlineAdmins = (active?.users || []).filter(u => u.role === 'ADMIN' && u.status === 'online').length;
   const onlineMerchantUsers = (active?.users || []).filter(u => u.role === 'MERCHANT' && u.status === 'online').length;
   const onlineMerchants = (active?.merchants || []).filter(m => m.status === 'Online').length;
