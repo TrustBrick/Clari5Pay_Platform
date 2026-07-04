@@ -45,7 +45,8 @@ def _u(u: User) -> dict:
 # prefix — each continues after its own current max, so a code never collides or gets reused.
 # Prefixes: merchant COMPANIES (onboarding) → "MER…"; staff logins → the first 3 letters of their
 # business name (e.g. Nexus Fintech → NEX000001), numbered per-prefix. Applies on both Production
-# and demo. ("MID…" is a legacy staff series kept only by pre-existing rows.)
+# and demo. Exception: a legacy business whose staff already use the shared "MID…" series (e.g.
+# BELLAGIO) keeps continuing MID… so its existing staff-code format stays consistent.
 
 
 async def _next_code(db: AsyncSession, prefix: str, width: int = 6) -> str:
@@ -75,8 +76,15 @@ async def _next_company_code(db: AsyncSession) -> str:
 
 
 async def _next_user_code(db: AsyncSession, business_name: str) -> str:
-    """Next staff USER ID for a business — prefixed with the first 3 letters of the business
-    name (e.g. Nexus Fintech → NEX000001), numbered per-prefix (6-digit)."""
+    """Next staff USER ID for a business. A business whose staff already use the legacy shared
+    "MID…" series (e.g. BELLAGIO, onboarded before per-business prefixes) keeps continuing that
+    series so its existing code format stays consistent. Every other business mints a code from
+    the first 3 letters of its name (e.g. Nexus Fintech → NEX000001), numbered per-prefix."""
+    legacy_mid = (await db.execute(
+        select(User.id).where(User.name == business_name, User.merchant_code.like("MID%")).limit(1)
+    )).scalar()
+    if legacy_mid is not None:
+        return await _next_code(db, "MID")
     return await _next_code(db, _business_prefix(business_name))
 
 
@@ -137,8 +145,9 @@ async def create_merchant(
         raise HTTPException(status_code=403, detail="Super Admin cannot create merchants")
 
     # Onboarding registers a COMPANY (MER code, no login); staff logins are added per-user via
-    # Create User (they carry a merchant_role) and get a code prefixed with the first 3 letters of
-    # the business name (e.g. NEX000001). Both apply on Production and demo alike.
+    # Create User (they carry a merchant_role) and get a business-name-prefixed code (e.g.
+    # NEX000001) — except legacy MID… businesses (e.g. BELLAGIO) which keep continuing MID…
+    # (see _next_user_code). Both apply on Production and demo alike.
     is_sub_user = bool(data.get("merchantRole"))
     if not is_sub_user:
         merchant_code = await _next_company_code(db)
