@@ -311,8 +311,8 @@ async def create_agent(
         active=(str(data.status or "Active").lower() != "inactive"),
         created_by=caller.id,
         support_code=code,
-        support_department=data.department,
-        support_shift=data.shift,
+        support_department=(data.department or None),
+        support_shift=(data.shift or None),
         support_availability="AVAILABLE",
     )
     db.add(member)

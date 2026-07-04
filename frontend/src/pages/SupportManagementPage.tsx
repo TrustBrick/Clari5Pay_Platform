@@ -88,7 +88,7 @@ const MerchantMultiSelect: React.FC<{
 
 // ── Create modal ──
 const CreateModal: React.FC<{ merchants: AssignableMerchant[]; onClose: () => void; onCreated: () => void }> = ({ merchants, onClose, onCreated }) => {
-  const [f, setF] = useState({ fullName: '', username: '', email: '', dial: '+91', phone: '', password: '', confirm: '', department: DEPARTMENTS[0], shift: SHIFTS[0], status: 'Active' });
+  const [f, setF] = useState({ fullName: '', username: '', email: '', dial: '+91', phone: '', password: '', confirm: '', department: '', shift: SHIFTS[0], status: 'Active' });
   const [ids, setIds] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -126,7 +126,7 @@ const CreateModal: React.FC<{ merchants: AssignableMerchant[]; onClose: () => vo
           <Sel label="Code" value={f.dial} onChange={e => set('dial', e.target.value)} options={COUNTRY_CODES} />
           <Input label="Phone Number" value={f.phone} onChange={e => set('phone', e.target.value)} required inputMode="tel" hint={f.phone && !phoneOk ? 'Enter a valid number' : undefined} />
         </div>
-        <Sel label="Department" value={f.department} onChange={e => set('department', e.target.value)} options={DEPARTMENTS.map(d => ({ value: d, label: d }))} />
+        <Sel label="Department" value={f.department} onChange={e => set('department', e.target.value)} options={[{ value: '', label: 'Select department' }, ...DEPARTMENTS.map(d => ({ value: d, label: d }))]} />
         <Input label="Password" type="password" value={f.password} onChange={e => set('password', e.target.value)} required hint={f.password && f.password.length < 8 ? 'Min 8 characters' : undefined} />
         <Input label="Confirm Password" type="password" value={f.confirm} onChange={e => set('confirm', e.target.value)} required hint={f.confirm && f.password !== f.confirm ? 'Passwords do not match' : undefined} />
         <Sel label="Shift" value={f.shift} onChange={e => set('shift', e.target.value)} options={SHIFTS.map(s => ({ value: s, label: s }))} />
