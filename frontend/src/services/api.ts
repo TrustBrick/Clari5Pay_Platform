@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, ActiveUsersData, AdminUpi, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -587,6 +587,16 @@ export const aiAPI = {
   chat: async (messages: Array<{ role: string; content: string }>) => {
     const res = await api.post<{ reply: string }>('/api/ai/chat', { messages });
     return res.data;
+  },
+};
+
+export const activeUsersAPI = {
+  list: async () => {
+    const res = await api.get<ActiveUsersData>('/api/active-users');
+    return res.data;
+  },
+  heartbeat: async () => {
+    try { await api.post('/api/active-users/heartbeat'); } catch { /* best-effort presence */ }
   },
 };
 

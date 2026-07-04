@@ -631,3 +631,35 @@ export interface ComplaintList {
   statuses: ComplaintStatus[];
   priorities: ComplaintPriority[];
 }
+
+// ── Active Users (real-time presence) ──
+export interface ActiveUserRow {
+  id: number;
+  name: string;
+  username: string;
+  merchant?: string | null;
+  role: string;
+  merchantRole?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  avatar?: string | null;
+  country?: string | null;
+  status: 'online' | 'offline';
+  loginTime?: string | null;
+  lastActivity?: string | null;
+  lastSeen?: string | null;
+  logoutTime?: string | null;
+  sessionDuration?: number | null;   // seconds
+  ip?: string | null;
+  device?: string | null;
+  browser?: string | null;
+  os?: string | null;
+}
+export interface ActiveMerchantRow {
+  name: string; online: number; offline: number; total: number; status: string;
+}
+export interface ActiveUsersData {
+  summary: { online: number; offline: number; totalLoggedIn: number; totalRegistered: number };
+  merchants: ActiveMerchantRow[];
+  users: ActiveUserRow[];
+}

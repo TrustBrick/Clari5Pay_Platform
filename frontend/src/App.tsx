@@ -22,6 +22,9 @@ import {
 } from './pages/AdminPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
+import { ActiveUsersPage } from './pages/ActiveUsersPage';
+import { usePoll } from './utils/usePoll';
+import { activeUsersAPI } from './services/api';
 
 const defaultPageFor = (role?: string) =>
   role === 'MERCHANT' ? 'dashboard' : role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard';
@@ -67,6 +70,10 @@ const App: React.FC = () => {
     }
   }, [user]);
 
+  // Presence heartbeat — keeps the logged-in user marked Online for the Active Users view.
+  // Best-effort; fires on interval + focus/visibility like the rest of the app.
+  usePoll(() => { if (user) activeUsersAPI.heartbeat(); }, 25000);
+
   // app.win365jackpot.com is just a chooser that routes users to their dedicated portal.
   if (PORTAL === 'app') return (<><DemoBanner /><PortalChooser /></>);
   if (!user) return (<><DemoBanner /><LoginPage /></>);
@@ -96,12 +103,14 @@ const App: React.FC = () => {
       profile: <ProfilePage {...props} />,
       'admin-dashboard': <AdminDashboard {...props} />,
       'admin-merchants': <AdminMerchantsPage />,
+      'admin-active-users': <ActiveUsersPage user={user} />,
       'admin-analytics': <MerchantAnalyticsPage />,
       'admin-reports': <AdminReportsPage {...props} />,
       'admin-transactions': <AdminTransactionsPage />,
       'admin-accounts': <AdminAccountsPage />,
       'admin-whatsapp': <WhatsAppSettingsPage />,
-      'sa-dashboard': <SaDashboard />,
+      'sa-dashboard': <SaDashboard onNavigate={setPage} />,
+      'sa-active-users': <ActiveUsersPage user={user} />,
       'sa-analytics': <MerchantAnalyticsPage />,
       'sa-reports': <AdminReportsPage {...props} />,
       'sa-admins': <SaAdminsPage />,

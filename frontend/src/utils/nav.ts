@@ -24,6 +24,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
   ADMIN: [
     { key: 'admin-dashboard', icon: '⬡', label: 'Dashboard' },
     { key: 'admin-merchants', icon: '▤', label: 'Merchants' },
+    { key: 'admin-active-users', icon: '🟢', label: 'Active Users' },
     { key: 'admin-analytics', icon: '📊', label: 'Merchant Analytics' },
     { key: 'admin-reports', icon: '📑', label: 'Reports' },
     { key: 'admin-transactions', icon: '≡', label: 'All Transactions' },
@@ -37,6 +38,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
   SUPER_ADMIN: [
     { key: 'sa-dashboard', icon: '⬡', label: 'Platform Overview' },
     { key: 'sa-admins', icon: '🛡', label: 'Admin Management' },
+    { key: 'sa-active-users', icon: '🟢', label: 'Active Users' },
     { key: 'sa-analytics', icon: '📊', label: 'Merchant Analytics' },
     { key: 'sa-reports', icon: '📑', label: 'Reports' },
     { key: 'risk-mgmt', icon: '🛡️', label: 'Risk Management' },
@@ -73,6 +75,7 @@ export const PAGE_TITLES: Record<string, string> = {
   profile: 'Profile',
   'admin-dashboard': 'Dashboard',
   'admin-merchants': 'Merchants',
+  'admin-active-users': 'Active Users',
   'admin-analytics': 'Merchant Analytics',
   'admin-reports': 'Reports',
   'admin-transactions': 'All Transactions',
@@ -80,6 +83,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'admin-whatsapp': 'WhatsApp Settings',
   'sa-dashboard': 'Platform Overview',
   'sa-admins': 'Admin Management',
+  'sa-active-users': 'Active Users',
   'sa-analytics': 'Merchant Analytics',
   'sa-reports': 'Reports',
   'sa-news': 'News Management',

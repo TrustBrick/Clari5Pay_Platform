@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.db.session import engine, Base
 from app.db.migrate import ensure_schema
-from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news, admin_upis, blogs, risk, whatsapp
+from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news, admin_upis, blogs, risk, whatsapp, active_users
 
 
 @asynccontextmanager
@@ -78,6 +78,7 @@ app.include_router(blogs.router)
 app.include_router(risk.router)
 app.include_router(ai.router)
 app.include_router(whatsapp.router)
+app.include_router(active_users.router)
 
 # Demo/UAT-only admin tools (e.g. POST /api/demo/reset). Not imported/mounted at all
 # unless ENVIRONMENT=demo, so the route is a 404 on Production regardless of auth.

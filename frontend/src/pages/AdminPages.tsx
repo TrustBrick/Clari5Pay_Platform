@@ -11,11 +11,11 @@ import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery, ReceiptImage } from './MerchantPages';
 import { usePoll } from '../utils/usePoll';
 import { IS_DEMO } from '../utils/portal';
-import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, demoAPI } from '../services/api';
+import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, demoAPI, activeUsersAPI } from '../services/api';
 import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi } from '../types';
+import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
@@ -946,9 +946,11 @@ export const AdminMerchantsPage: React.FC = () => {
 
   const [mBal, setMBal] = useState<MerchantBalance[]>([]);
   const balByName = Object.fromEntries(mBal.map(b => [b.name, b]));
+  const [onlineByBiz, setOnlineByBiz] = useState<Record<string, number>>({});   // real-time online count per business
   const reload = () => {
     userAPI.getMerchants().then(setMerchants).catch(()=>{});
     transactionAPI.merchantBalances().then(setMBal).catch(()=>{});
+    activeUsersAPI.list().then(d => setOnlineByBiz(Object.fromEntries(d.merchants.map(m => [m.name, m.online])))).catch(()=>{});
   };
   useEffect(() => { reload(); }, []);
   usePoll(() => { if (!showCreate && !toggleM) reload(); });
@@ -1066,11 +1068,11 @@ export const AdminMerchantsPage: React.FC = () => {
             {/* Fixed proportional widths → the table always equals the container width and never
                 scrolls horizontally; columns share space instead of forcing overflow. */}
             <colgroup>
-              {[10,8,6,12,8,9,6,7,9,9,6,10].map((w,i)=><col key={i} style={{ width:`${w}%` }} />)}
+              {[10,6,8,6,12,8,9,6,7,9,9,6,10].map((w,i)=><col key={i} style={{ width:`${w}%` }} />)}
             </colgroup>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Business','Merchant ID','Country','Email','Mobile','Created','Codes','Fees','Available','Running','Status','Action'].map(h=>(
+                {['Business','Online','Merchant ID','Country','Email','Mobile','Created','Codes','Fees','Available','Running','Status','Action'].map(h=>(
                   <th key={h} style={{ padding:'9px 9px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -1081,6 +1083,11 @@ export const AdminMerchantsPage: React.FC = () => {
                   <td style={{ padding:'10px 9px',fontWeight:800,color:T.textMain,wordBreak:'break-word' }}>
                     {c.name}
                     <div style={{ fontSize:10,color:T.textMuted,fontWeight:600,marginTop:2 }}>{c.displayUsers.length} user{c.displayUsers.length!==1?'s':''}</div>
+                  </td>
+                  <td style={{ padding:'10px 9px' }}>
+                    <span style={{ display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700,color:(onlineByBiz[c.name]??0)>0?T.success:T.textMuted }}>
+                      <span style={{ width:8,height:8,borderRadius:'50%',background:(onlineByBiz[c.name]??0)>0?T.success:T.textMuted }} />{onlineByBiz[c.name]??0} Online
+                    </span>
                   </td>
                   <td style={{ padding:'10px 9px' }}><code style={{ background:T.canvas,color:T.textMain,padding:'2px 6px',borderRadius:5,fontSize:11,fontWeight:700,whiteSpace:'nowrap' }}>{c.owner.merchantCode||'—'}</code></td>
                   <td style={{ padding:'10px 9px',color:T.textMain,wordBreak:'break-word' }}>{c.owner.country||'—'}</td>
@@ -1520,18 +1527,24 @@ const FinanceCard: React.FC<{ icon: string; label: string; value: number; color:
   </Card>
 );
 
-export const SaDashboard: React.FC = () => {
+export const SaDashboard: React.FC<{ onNavigate?: (p: string) => void }> = ({ onNavigate }) => {
   const [merchants, setMerchants] = useState<User[]>([]);
   const [admins, setAdmins] = useState<User[]>([]);
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [summary, setSummary] = useState<GlobalSummary | null>(null);
+  const [active, setActive] = useState<ActiveUsersData | null>(null);
   const [loading, setLoading] = useState(true);
 
   const reload = () => Promise.all([userAPI.getMerchants(), userAPI.getAdmins(), transactionAPI.getAll(), transactionAPI.globalSummary()])
     .then(([m,a,t,s]) => { setMerchants(m); setAdmins(a); setTxns(t); setSummary(s); })
     .catch(()=>{});
-  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  const loadActive = () => activeUsersAPI.list().then(setActive).catch(()=>{});
+  useEffect(() => { reload().finally(()=>setLoading(false)); loadActive(); }, []);
   usePoll(reload);
+  usePoll(loadActive, 20000);
+  const onlineAdmins = (active?.users || []).filter(u => u.role === 'ADMIN' && u.status === 'online').length;
+  const onlineMerchantUsers = (active?.users || []).filter(u => u.role === 'MERCHANT' && u.status === 'online').length;
+  const onlineMerchants = (active?.merchants || []).filter(m => m.status === 'Online').length;
 
   // Volume from real completed deposit + withdrawal amounts.
   const completed = txns.filter(t => t.status === 'COMPLETED' && (t.type.startsWith('DEPOSIT') || t.type.startsWith('WITHDRAWAL')));
@@ -1561,6 +1574,25 @@ export const SaDashboard: React.FC = () => {
 
   return (
     <div>
+      {/* Active Users — real-time presence widget (click to open the full page) */}
+      <div onClick={() => onNavigate?.('sa-active-users')} className="c5-hover-lift"
+        style={{ background:T.surface,border:`1px solid ${T.border}`,borderLeft:`3px solid ${T.success}`,borderRadius:14,padding:'14px 18px',marginBottom:16,cursor:'pointer' }}>
+        <div style={{ display:'flex',alignItems:'center',gap:14,flexWrap:'wrap' }}>
+          <span style={{ display:'flex',alignItems:'center',gap:8 }}>
+            <span style={{ width:10,height:10,borderRadius:'50%',background:T.success,boxShadow:`0 0 0 3px ${T.success}22` }} />
+            <span style={{ fontSize:13,fontWeight:800,color:T.textMain }}>Active Users</span>
+          </span>
+          <div style={{ display:'flex',gap:24,flexWrap:'wrap',marginLeft:'auto' }}>
+            {([['Online', active?.summary.online ?? 0, T.success],['Online Admins', onlineAdmins, T.blue],['Online Merchant Users', onlineMerchantUsers, T.blue],['Online Merchants', onlineMerchants, T.blue],['Offline', active?.summary.offline ?? 0, T.textMuted]] as [string,number,string][]).map(([k,v,c]) => (
+              <div key={k} style={{ textAlign:'center' }}>
+                <p style={{ margin:0,fontSize:20,fontWeight:800,color:c }}>{v}</p>
+                <p style={{ margin:0,fontSize:10,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.04em' }}>{k}</p>
+              </div>
+            ))}
+          </div>
+          <span style={{ fontSize:12,color:T.blue,fontWeight:700 }}>Open →</span>
+        </div>
+      </div>
       {/* 3 per row → counts on top, money on the bottom row */}
       <div style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:16 }} className="sa-stat-grid">
         <StatCard icon="🛡" label="Total Admins" value={admins.length} color={T.blue}/>

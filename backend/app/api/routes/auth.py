@@ -20,6 +20,7 @@ from app.schemas.schemas import (
     ForgotPasswordRequest, VerifyResetOtpRequest, ResetPasswordRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
+from app.services import presence
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -204,6 +205,7 @@ async def login(
         token = create_access_token({"sub": str(user.id)})
         await log_event(db, "LOGIN", f"{user.name} ({user.role.value}) signed in", actor=user)
         await record_audit(db, "LOGIN", actor=user, entity_type="user", entity_id=user.id, ip=ip)
+        await presence.start_session(db, user, ip, request.headers.get("user-agent"))
         return {"access_token": token, "token_type": "bearer", "user": _user_to_out(user)}
 
     # Valid credentials → always generate + email an OTP and move to the verification step.
@@ -245,6 +247,7 @@ async def logout(
     await log_event(db, "LOGOUT", f"{current_user.name} ({current_user.role.value}) signed out", actor=current_user)
     await record_audit(db, "LOGOUT", actor=current_user, entity_type="user",
                        entity_id=current_user.id, ip=_client_ip(request))
+    await presence.end_session(db, current_user)
     return {"status": "ok"}
 
 
@@ -298,6 +301,7 @@ async def verify_otp(
     await log_event(db, "OTP_VERIFIED", f"OTP verified for {user.name}", actor=user)
     await record_audit(db, "LOGIN", actor=user, entity_type="user", entity_id=user.id, ip=ip)
     await log_event(db, "LOGIN", f"{user.name} ({user.role.value}) signed in", actor=user)
+    await presence.start_session(db, user, ip, request.headers.get("user-agent"))
     return {
         "access_token": token,
         "token_type": "bearer",
