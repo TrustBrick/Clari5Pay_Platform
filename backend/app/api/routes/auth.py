@@ -164,6 +164,14 @@ async def login(
             detail="Username and password are incorrect.",
         )
 
+    # No-login company entities (MER… onboarding rows) are not real logins — reject outright with
+    # the same generic message so they can never authenticate even if the placeholder secret leaked.
+    if (user.merchant_code or "").startswith("MER"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Username and password are incorrect.",
+        )
+
     # Account lockout: block while a lock is active.
     now = datetime.utcnow()
     if user.locked_until and user.locked_until > now:

@@ -66,6 +66,10 @@ async def _build_payload(db: AsyncSession, caller_id: int, caller_role) -> dict:
             )
         )).scalars().all()
 
+    # No-login company entities (MER… onboarding rows) are not real people — never list them or
+    # count them toward a business's member total; only their staff logins appear here.
+    users = [u for u in users if not (u.merchant_code or "").startswith("MER")]
+
     now = datetime.utcnow()
     sessions = await presence.latest_sessions(db, [u.id for u in users])
 
