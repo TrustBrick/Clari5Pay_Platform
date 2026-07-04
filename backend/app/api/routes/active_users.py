@@ -49,22 +49,12 @@ def _display_name(u: User) -> str:
 
 
 async def _build_payload(db: AsyncSession, caller_id: int, caller_role) -> dict:
-    """Compute the full presence overview for a caller. Shared by the snapshot and the stream."""
-    if caller_role == UserRole.SUPER_ADMIN:
-        users = (await db.execute(
-            select(User).where(User.support_archived == False)  # noqa: E712
-        )).scalars().all()
-    else:
-        # Admin: their own merchants' users + their own support members + themselves.
-        # Never another admin's users. Archived support members are excluded.
-        users = (await db.execute(
-            select(User).where(
-                (User.id == caller_id) |
-                ((User.role == UserRole.MERCHANT) & (User.created_by == caller_id)) |
-                ((User.role == UserRole.SUPPORT_AGENT) & (User.created_by == caller_id)
-                 & (User.support_archived == False))  # noqa: E712
-            )
-        )).scalars().all()
+    """Compute the full presence overview for a caller. Shared by the snapshot and the stream.
+    Active Users is a shared monitoring view: both Super Admin and Admin see every user's presence
+    (identical data), regardless of who created whom — same policy as Risk Management."""
+    users = (await db.execute(
+        select(User).where(User.support_archived == False)  # noqa: E712
+    )).scalars().all()
 
     # No-login company entities (MER… onboarding rows) are not real people — never list them or
     # count them toward a business's member total; only their staff logins appear here.
