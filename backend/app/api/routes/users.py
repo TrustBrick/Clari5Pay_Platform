@@ -45,7 +45,7 @@ def _u(u: User) -> dict:
 # Serial ID helpers. Codes are "<PREFIX><digits>" (bank-account style). Independent series per
 # prefix — each continues after its own current max, so a code never collides or gets reused.
 # Prefixes: Production merchants/users → "MID…"; demo merchant COMPANIES → "MER…"; demo USERS →
-# the first 3 letters of their business name (e.g. Nexus Fintech → NEX00001). The business-derived
+# the first 3 letters of their business name (e.g. Nexus Fintech → NEX000001). The business-derived
 # prefix keeps demo user codes distinct from Production's MID codes with no numeric band needed.
 
 
@@ -81,8 +81,8 @@ async def _next_company_code(db: AsyncSession) -> str:
 
 async def _next_user_code(db: AsyncSession, business_name: str) -> str:
     """Demo only: next USER ID for a business — prefixed with the first 3 letters of the business
-    name (e.g. Nexus Fintech → NEX00001), numbered per-prefix (5-digit)."""
-    return await _next_code(db, _business_prefix(business_name), width=5)
+    name (e.g. Nexus Fintech → NEX000001), numbered per-prefix (6-digit)."""
+    return await _next_code(db, _business_prefix(business_name))
 
 
 @router.get("/merchants")
