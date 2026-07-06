@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, remarkUsernameForRole, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
@@ -1103,9 +1103,9 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
       {(d.approvedBy || d.supervisorName || d.managerName || d.processedBy) && (
         <DetailSection title="Approval Information">
           {d.approvedBy && <SlipRow k="Approved By" v={d.approvedBy} />}
-          {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', remarkUsernameForRole(d.remarksHistory, 'SUPERVISOR'))}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
-          {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', remarkUsernameForRole(d.remarksHistory, 'MANAGER'))}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
-          {d.processedBy && <SlipRow k="Processed By (Admin)" v={`${nameWithRole(d.processedBy, 'ADMIN', '', remarkUsernameForRole(d.remarksHistory, 'ADMIN'))}${d.adminActionAt ? ` · ${formatDateTime(d.adminActionAt)}` : ''}`} />}
+          {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', d.supervisorUsername)}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
+          {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', d.managerUsername)}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
+          {d.processedBy && <SlipRow k="Processed By (Admin)" v={`${nameWithRole(d.processedBy, 'ADMIN', '', d.adminUsername)}${d.adminActionAt ? ` · ${formatDateTime(d.adminActionAt)}` : ''}`} />}
         </DetailSection>
       )}
 
@@ -1249,8 +1249,8 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
       <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
         <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Timeline</p>
         <SlipRow k="Created By" v={`${nameWithRole(d.merchant, d.creatorRole, 'Merchant User', d.creatorUsername)}${d.createdAt ? ` · ${formatDateTime(d.createdAt)}` : ''}`} />
-        {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', remarkUsernameForRole(d.remarksHistory, 'SUPERVISOR'))}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
-        {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', remarkUsernameForRole(d.remarksHistory, 'MANAGER'))}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
+        {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', d.supervisorUsername)}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
+        {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', d.managerUsername)}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
         {d.adminActionAt && <SlipRow k="Admin Action" v={formatDateTime(d.adminActionAt)} />}
       </div>
 

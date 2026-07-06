@@ -152,6 +152,10 @@ export interface Transaction {
   managerName?: string | null;
   managerActionAt?: string | null;
   adminActionAt?: string | null;
+  // Resolved actual usernames of the approval-stage actors (display-only; from get_transaction_detail).
+  supervisorUsername?: string | null;
+  managerUsername?: string | null;
+  adminUsername?: string | null;
   remarksHistory?: RemarkEntry[] | null;
   refPrefix?: string;
 }

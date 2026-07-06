@@ -627,6 +627,40 @@ async def get_transaction_detail(
         payload["merchantCode"] = tx.agent_code or creator.merchant_code
         payload["merchantUsername"] = creator.username
         payload["merchantBusinessName"] = creator.name
+    # Actual username for each approval-stage actor (display-only; from existing records, no
+    # schema change). Prefer the username recorded in the remarks trail (the exact user who
+    # acted); fall back to the unique role-holder by the stored name so older records — recorded
+    # before usernames were captured — also show a username.
+    remarks = json.loads(tx.remarks_history) if tx.remarks_history else []
+
+    def _remark_username(role_key: str):
+        for e in reversed(remarks):
+            if str(e.get("role", "")).upper() == role_key and e.get("username"):
+                return e["username"]
+        return None
+
+    async def _username_by_name(name, *, merchant_role=None, admin=False):
+        if not name:
+            return None
+        q = select(User.username).where(User.name == name)
+        if merchant_role:
+            q = q.where(User.role == UserRole.MERCHANT, User.merchant_role == merchant_role)
+        if admin:
+            q = q.where(User.role.in_((UserRole.ADMIN, UserRole.SUPER_ADMIN)))
+        return (await db.execute(q.order_by(User.id).limit(1))).scalar_one_or_none()
+
+    payload["supervisorUsername"] = _remark_username("SUPERVISOR") or await _username_by_name(tx.supervisor_name, merchant_role="SUPERVISOR")
+    payload["managerUsername"] = _remark_username("MANAGER") or await _username_by_name(tx.manager_name, merchant_role="MANAGER")
+    payload["adminUsername"] = _remark_username("ADMIN") or await _username_by_name(tx.processed_by, admin=True)
+    # Backfill usernames into the remarks entries in the response (display only) so entries
+    # recorded before usernames were captured still render "Name (Role • username)".
+    _stage_user = {"SUPERVISOR": payload["supervisorUsername"], "MANAGER": payload["managerUsername"], "ADMIN": payload["adminUsername"]}
+    for e in remarks:
+        if not e.get("username"):
+            u = _stage_user.get(str(e.get("role", "")).upper())
+            if u:
+                e["username"] = u
+    payload["remarksHistory"] = remarks
     # Member profile + segment — derived from existing records (display-only for the details view).
     if tx.member_id and creator:
         ids = (await db.execute(

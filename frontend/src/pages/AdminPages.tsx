@@ -211,16 +211,6 @@ const RequestModal: React.FC<{
     finally { setSaving(false); }
   };
 
-  // Actual username of whoever acted at a given stage — taken from the remarks trail (the
-  // reviewer/admin username is recorded there). Latest matching entry wins; '' if unknown.
-  const remarkUsername = (role: string): string => {
-    const list = record.remarksHistory || [];
-    for (let i = list.length - 1; i >= 0; i--) {
-      if (String(list[i].role).toUpperCase() === role && list[i].username) return list[i].username as string;
-    }
-    return '';
-  };
-
   return (
     <Modal title={`${title} — ${tx.ref}`} onClose={onClose} wide>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 24px' }}>
@@ -338,9 +328,9 @@ const RequestModal: React.FC<{
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Approval Record</p>
           <Row k="Created By" v={`${nameWithRole(record.merchant, record.creatorRole, 'Merchant User', record.creatorUsername)}${record.createdAt ? ` · ${formatDateTime(record.createdAt)}` : ''}`} />
-          {record.supervisorName && <Row k="Supervisor" v={`${nameWithRole(record.supervisorName, 'SUPERVISOR', '', remarkUsername('SUPERVISOR'))}${record.supervisorActionAt ? ` · ${formatDateTime(record.supervisorActionAt)}` : ''}`} />}
-          {record.managerName && <Row k="Manager" v={`${nameWithRole(record.managerName, 'MANAGER', '', remarkUsername('MANAGER'))}${record.managerActionAt ? ` · ${formatDateTime(record.managerActionAt)}` : ''}`} />}
-          {record.processedBy && <Row k="Admin" v={`${nameWithRole(record.processedBy, 'ADMIN', '', remarkUsername('ADMIN'))}${record.adminActionAt ? ` · ${formatDateTime(record.adminActionAt)}` : ''}`} />}
+          {record.supervisorName && <Row k="Supervisor" v={`${nameWithRole(record.supervisorName, 'SUPERVISOR', '', record.supervisorUsername)}${record.supervisorActionAt ? ` · ${formatDateTime(record.supervisorActionAt)}` : ''}`} />}
+          {record.managerName && <Row k="Manager" v={`${nameWithRole(record.managerName, 'MANAGER', '', record.managerUsername)}${record.managerActionAt ? ` · ${formatDateTime(record.managerActionAt)}` : ''}`} />}
+          {record.processedBy && <Row k="Admin" v={`${nameWithRole(record.processedBy, 'ADMIN', '', record.adminUsername)}${record.adminActionAt ? ` · ${formatDateTime(record.adminActionAt)}` : ''}`} />}
           {record.remarksHistory && record.remarksHistory.length > 0 && (
             <div style={{ marginTop:8 }}>
               <p style={{ fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Remarks History</p>
