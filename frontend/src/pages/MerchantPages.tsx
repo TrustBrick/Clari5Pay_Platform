@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, remarkUsernameForRole, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
@@ -1103,9 +1103,9 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
       {(d.approvedBy || d.supervisorName || d.managerName || d.processedBy) && (
         <DetailSection title="Approval Information">
           {d.approvedBy && <SlipRow k="Approved By" v={d.approvedBy} />}
-          {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR')}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
-          {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER')}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
-          {d.processedBy && <SlipRow k="Processed By (Admin)" v={`${nameWithRole(d.processedBy, 'ADMIN')}${d.adminActionAt ? ` · ${formatDateTime(d.adminActionAt)}` : ''}`} />}
+          {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', remarkUsernameForRole(d.remarksHistory, 'SUPERVISOR'))}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
+          {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', remarkUsernameForRole(d.remarksHistory, 'MANAGER'))}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
+          {d.processedBy && <SlipRow k="Processed By (Admin)" v={`${nameWithRole(d.processedBy, 'ADMIN', '', remarkUsernameForRole(d.remarksHistory, 'ADMIN'))}${d.adminActionAt ? ` · ${formatDateTime(d.adminActionAt)}` : ''}`} />}
         </DetailSection>
       )}
 
@@ -1151,7 +1151,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         <DetailSection title="Remarks">
           {d.remarksHistory.map((r, i) => (
             <div key={i} style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 10, marginBottom: 8 }}>
-              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {nameWithRole(r.user, r.role)} — {r.action}</p>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {nameWithRole(r.user, r.role, '', r.username)} — {r.action}</p>
               <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{r.remark}</p>
               <p style={{ margin: '2px 0 0', fontSize: 10, color: T.textMuted }}>{r.at}</p>
             </div>
@@ -1248,9 +1248,9 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
       {/* Timeline (created → reviewer → admin). */}
       <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
         <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Timeline</p>
-        <SlipRow k="Created By" v={`${nameWithRole(d.merchant, d.creatorRole, 'Merchant User')}${d.createdAt ? ` · ${formatDateTime(d.createdAt)}` : ''}`} />
-        {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR')}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
-        {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER')}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
+        <SlipRow k="Created By" v={`${nameWithRole(d.merchant, d.creatorRole, 'Merchant User', d.creatorUsername)}${d.createdAt ? ` · ${formatDateTime(d.createdAt)}` : ''}`} />
+        {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', remarkUsernameForRole(d.remarksHistory, 'SUPERVISOR'))}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
+        {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', remarkUsernameForRole(d.remarksHistory, 'MANAGER'))}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
         {d.adminActionAt && <SlipRow k="Admin Action" v={formatDateTime(d.adminActionAt)} />}
       </div>
 
@@ -1268,7 +1268,7 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
           <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Remarks History</p>
           {d.remarksHistory.map((r, i) => (
             <div key={i} style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 10, marginBottom: 8 }}>
-              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {nameWithRole(r.user, r.role)} — {r.action}</p>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {nameWithRole(r.user, r.role, '', r.username)} — {r.action}</p>
               <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{r.remark}</p>
               <p style={{ margin: '2px 0 0', fontSize: 10, color: T.textMuted }}>{r.at}</p>
             </div>

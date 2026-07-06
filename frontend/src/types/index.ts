@@ -159,6 +159,7 @@ export interface Transaction {
 export interface RemarkEntry {
   role: string;
   user: string;
+  username?: string;   // actor's actual login username (shown beside the role)
   action: string;
   remark: string;
   at: string;

@@ -348,14 +348,16 @@ def _client_ip(request: Request | None) -> str | None:
     return request.client.host if request.client else None
 
 
-def _append_remark(tx: Transaction, *, role: str, user: str, action: str, remark: str) -> None:
-    """Append an entry to the transaction's JSON remarks history (review audit trail)."""
+def _append_remark(tx: Transaction, *, role: str, user: str, action: str, remark: str, username: str = "") -> None:
+    """Append an entry to the transaction's JSON remarks history (review audit trail).
+    `user` is the actor's full name; `username` is their actual login username (shown
+    alongside the role in the details view). Stored in the JSON — no schema change."""
     try:
         history = json.loads(tx.remarks_history) if tx.remarks_history else []
     except (ValueError, TypeError):
         history = []
     history.append({
-        "role": role, "user": user, "action": action,
+        "role": role, "user": user, "username": username or "", "action": action,
         "remark": (remark or "").strip(),
         "at": _ist_now().strftime("%Y-%m-%d %H:%M:%S"),
     })
@@ -1518,7 +1520,7 @@ async def mark_done(
     tx.processed_by = actor.name
     tx.approved_by = tx.approved_by or actor.name
     tx.admin_action_at = datetime.utcnow()
-    _append_remark(tx, role="ADMIN", user=actor.name, action="APPROVED",
+    _append_remark(tx, role="ADMIN", user=actor.name, username=actor.username, action="APPROVED",
                    remark="Deposited" if is_deposit else "Completed")
     await db.flush()
     label = "deposited" if is_deposit else "completed"
@@ -1667,7 +1669,7 @@ async def _reviewer_action(
     if decision == "approve":
         action = "APPROVED"
         tx.status = TxStatus.SLIP_SUBMITTED        # forwarded to Admin for final approval
-        _append_remark(tx, role=role, user=reviewer.name, action=action, remark=remark)
+        _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
         await _notify_admin(db, tx, f"{tx.ref}: approved by {cfg['label']} {reviewer.name} — awaiting your final approval", "✅")
         await _notify_merchant(db, tx, f"{tx.ref}: approved by {cfg['label']} — forwarded to Admin", "✅")
@@ -1675,13 +1677,13 @@ async def _reviewer_action(
         action = "REJECTED"
         tx.status = TxStatus.REJECTED
         tx.reject_reason = remark
-        _append_remark(tx, role=role, user=reviewer.name, action=action, remark=remark)
+        _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
         await _notify_merchant(db, tx, f"{tx.ref}: rejected by {cfg['label']} — {remark}", "✕")
     elif decision == "resubmit":
         action = "RESUBMITTED"
         tx.status = TxStatus.RESUBMITTED            # returned to the Data Operator
-        _append_remark(tx, role=role, user=reviewer.name, action=action, remark=remark)
+        _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
         await _notify_merchant(db, tx, f"{tx.ref}: returned for resubmission by {cfg['label']} — {remark}", "↻")
         await _notify_business_role(db, tx, "DEO", f"{tx.ref}: returned for correction by {cfg['label']} — {remark}", "↻")
@@ -1793,7 +1795,7 @@ async def reject_transaction(
     tx.status = TxStatus.REJECTED
     tx.reject_reason = data.reason.strip()
     tx.admin_action_at = datetime.utcnow()
-    _append_remark(tx, role="ADMIN", user=actor.name, action="REJECTED", remark=tx.reject_reason)
+    _append_remark(tx, role="ADMIN", user=actor.name, username=actor.username, action="REJECTED", remark=tx.reject_reason)
     await db.flush()
     db.add(Notification(user_id=tx.merchant_id, message=f"{tx.ref} rejected — {tx.reject_reason}", icon="✕"))
     await log_event(db, "ADMIN_REJECTED", f"{tx.ref} rejected by {actor.name} — reason: {tx.reject_reason}", actor=actor)

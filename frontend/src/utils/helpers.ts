@@ -101,12 +101,27 @@ export const MERCHANT_ROLE_LABELS: Record<string, string> = {
 export const merchantRoleLabel = (r?: string | null) =>
   r ? (MERCHANT_ROLE_LABELS[String(r).toUpperCase()] || r) : '';
 
-// Approval-record / remarks display: append the actor's role in parentheses, e.g.
-// "BELLAGIO (Supervisor)". Role is resolved via MERCHANT_ROLE_LABELS (never hardcoded); when
-// a role can't be resolved, `fallback` (e.g. "Merchant User") is used, else just the name.
-export const nameWithRole = (name?: string | null, role?: string | null, fallback = ''): string => {
+// Approval-record / remarks display: "Full Name (Role • username)", e.g.
+// "BELLAGIO (Supervisor • harsha)". Role is resolved via MERCHANT_ROLE_LABELS (never
+// hardcoded); `fallback` (e.g. "Merchant User") covers a missing role. The username is the
+// actor's actual login username and is appended only when present — never generated.
+export const nameWithRole = (name?: string | null, role?: string | null, fallback = '', username?: string | null): string => {
   const label = merchantRoleLabel(role) || fallback;
-  return label ? `${name ?? ''} (${label})` : `${name ?? ''}`;
+  const inside = [label, (username || '').trim()].filter(Boolean).join(' • ');
+  return inside ? `${name ?? ''} (${inside})` : `${name ?? ''}`;
+};
+
+// Latest actual username recorded in the remarks trail for a given role — used to show the
+// approver's username in the Approval Record (the reviewer/admin username lives in remarks).
+export const remarkUsernameForRole = (
+  remarks: ReadonlyArray<{ role: string; username?: string | null }> | null | undefined,
+  role: string,
+): string => {
+  const list = remarks || [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (String(list[i].role).toUpperCase() === role.toUpperCase() && list[i].username) return String(list[i].username);
+  }
+  return '';
 };
 
 // Maker = data-entry operators; Checker = review/approval roles. The admin "Create
