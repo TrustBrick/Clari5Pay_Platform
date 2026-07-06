@@ -403,6 +403,12 @@ class SupportMessage(Base):
     sender: Mapped[SupportSender] = mapped_column(SAEnum(SupportSender), nullable=False)
     sender_name: Mapped[str] = mapped_column(String(128), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Optional attachment (image/document) stored as a base64 data-URL — same pattern as
+    # transaction proofs. content may be empty when a message is attachment-only.
+    attachment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    attachment_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)   # sanitized original filename
+    attachment_type: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)   # MIME type
+    attachment_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)        # bytes
     read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 

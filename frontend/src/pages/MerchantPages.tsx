@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
@@ -1561,13 +1561,49 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   );
 };
 
+// Renders a chat message's attachment: images inline (click to enlarge/open + download);
+// documents as a compact card (View / Download). Shared shape across both chat portals.
+export const ChatAttachment: React.FC<{ msg: SupportMessage; mine: boolean }> = ({ msg, mine }) => {
+  if (!msg.attachment) return null;
+  const name = msg.attachmentName || 'attachment';
+  const linkColor = mine ? '#fff' : T.blue;
+  if (isChatImage(msg.attachmentType, name)) {
+    return (
+      <div style={{ marginTop: msg.content ? 8 : 0 }}>
+        <img src={msg.attachment} alt={name} loading="lazy" onClick={() => openDataUrl(msg.attachment!)}
+          style={{ maxWidth: 240, maxHeight: 260, borderRadius: 10, display: 'block', cursor: 'zoom-in', objectFit: 'cover' }} />
+        <div style={{ marginTop: 4, display: 'flex', gap: 12 }}>
+          <button onClick={() => openDataUrl(msg.attachment!)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 10, color: linkColor, textDecoration: 'underline' }}>Open</button>
+          <a href={msg.attachment} download={name} style={{ fontSize: 10, color: linkColor, textDecoration: 'underline' }}>⬇ Download</a>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: msg.content ? 8 : 0, display: 'flex', alignItems: 'center', gap: 10, background: mine ? 'rgba(255,255,255,0.15)' : T.surface, border: `1px solid ${mine ? 'rgba(255,255,255,0.25)' : T.border}`, borderRadius: 10, padding: '8px 10px', maxWidth: 260 }}>
+      <div style={{ width: 34, height: 34, borderRadius: 8, background: mine ? 'rgba(255,255,255,0.2)' : T.infoBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>📄</div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: mine ? '#fff' : T.textMain, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</p>
+        <p style={{ margin: '1px 0 0', fontSize: 10, color: mine ? 'rgba(255,255,255,0.85)' : T.textMuted }}>{formatBytes(msg.attachmentSize)}</p>
+        <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
+          <button onClick={() => openDataUrl(msg.attachment!)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 10, fontWeight: 700, color: linkColor, textDecoration: 'underline' }}>View</button>
+          <a href={msg.attachment} download={name} style={{ fontSize: 10, fontWeight: 700, color: linkColor, textDecoration: 'underline' }}>Download</a>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Customer Support chat (merchant side, WebSocket) ──────────────────────────
 export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
+  const { showToast } = useToast();
   const [messages, setMessages] = useState<SupportMessage[]>([]);
   const [input, setInput] = useState('');
   const [connected, setConnected] = useState(false);
+  const [sending, setSending] = useState(false);
   const [conv, setConv] = useState<{ queued: boolean; agentName: string | null; status: string } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -1602,6 +1638,30 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
     }
   };
 
+  // Attach an image/document: validate client-side, then send (with any typed text) over the
+  // socket, or via REST as a fallback. The receiver gets it in real time.
+  const sendAttachment = async (f: File) => {
+    const err = chatAttachmentError(f);
+    if (err) { showToast(err, 'error'); return; }
+    setSending(true);
+    try {
+      const att = await readChatAttachment(f);
+      // Always send attachments over REST (not the socket) — large base64 payloads can exceed
+      // the WebSocket frame limit. The server still delivers to both parties in real time, so
+      // the socket echoes it back; dedupe on id to avoid showing it twice.
+      const m = await supportAPI.send(input.trim(), undefined, { dataUrl: att.dataUrl, name: att.name });
+      setMessages(prev => prev.some(x => x.id === m.id) ? prev : [...prev, m]);
+      setInput('');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to send attachment', 'error');
+    } finally { setSending(false); }
+  };
+  const onPickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) sendAttachment(f);
+    e.target.value = '';
+  };
+
   return (
     <div style={{ maxWidth:800,height:'calc(100vh - 120px)',display:'flex',flexDirection:'column',gap:16 }}>
       <Card style={{ padding:'16px 20px' }}>
@@ -1627,25 +1687,36 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
       <Card style={{ flex:1,padding:0,display:'flex',flexDirection:'column',overflow:'hidden' }}>
         <div style={{ flex:1,overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:12 }}>
           {messages.length === 0 && <div style={{ margin:'auto',color:T.textMuted,fontSize:13 }}>No messages yet. Say hello 👋</div>}
-          {messages.map((m)=>{
+          {messages.map((m, i)=>{
             const mine = m.sender === 'MERCHANT';
+            const prev = messages[i-1];
+            const showSep = i === 0 || chatDateLabel(prev.createdAt) !== chatDateLabel(m.createdAt);
             return (
-              <div key={m.id} style={{ display:'flex',justifyContent:mine?'flex-end':'flex-start' }}>
-                <div style={{ maxWidth:'75%',padding:'10px 14px',borderRadius:mine?'16px 16px 4px 16px':'16px 16px 16px 4px',background:mine?T.grad1:T.canvas,color:mine?'#fff':T.textMain,fontSize:13,lineHeight:1.5 }}>
-                  {!mine && <p style={{ margin:'0 0 2px',fontSize:10,fontWeight:800,color:T.blue }}>{m.senderName}</p>}
-                  {m.content}
-                  <p style={{ margin:'3px 0 0',fontSize:9,opacity:0.6,textAlign:'right' }}>{new Date(m.createdAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</p>
+              <React.Fragment key={m.id}>
+                {showSep && (
+                  <div style={{ alignSelf:'center',background:T.canvas,color:T.textMuted,fontSize:10,fontWeight:700,padding:'3px 12px',borderRadius:12,margin:'4px 0' }}>{chatDateLabel(m.createdAt)}</div>
+                )}
+                <div style={{ display:'flex',justifyContent:mine?'flex-end':'flex-start' }}>
+                  <div style={{ maxWidth:'75%',padding:'10px 14px',borderRadius:mine?'16px 16px 4px 16px':'16px 16px 16px 4px',background:mine?T.grad1:T.canvas,color:mine?'#fff':T.textMain,fontSize:13,lineHeight:1.5 }}>
+                    {!mine && <p style={{ margin:'0 0 2px',fontSize:10,fontWeight:800,color:T.blue }}>{m.senderName}</p>}
+                    {m.content && <span style={{ whiteSpace:'pre-wrap',wordBreak:'break-word' }}>{m.content}</span>}
+                    <ChatAttachment msg={m} mine={mine} />
+                    <p style={{ margin:'3px 0 0',fontSize:9,opacity:0.6,textAlign:'right' }}>{chatTime(m.createdAt)}</p>
+                  </div>
                 </div>
-              </div>
+              </React.Fragment>
             );
           })}
           <div ref={bottomRef}/>
         </div>
-        <div style={{ padding:'12px 16px',borderTop:`1px solid ${T.border}`,display:'flex',gap:10 }}>
+        <div style={{ padding:'12px 16px',borderTop:`1px solid ${T.border}`,display:'flex',gap:10,alignItems:'center' }}>
+          <input ref={fileRef} type="file" accept={CHAT_ACCEPT} onChange={onPickFile} style={{ display:'none' }} />
+          <button onClick={()=>fileRef.current?.click()} disabled={sending} title="Attach image or document" aria-label="Attach file"
+            style={{ width:40,height:40,flexShrink:0,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.canvas,color:T.textMuted,fontSize:18,cursor:sending?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center' }}>{sending ? '⏳' : '📎'}</button>
           <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()}
-            placeholder="Type a message..."
+            placeholder={sending ? 'Sending attachment…' : 'Type a message...'} disabled={sending}
             style={{ flex:1,padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:13,outline:'none',fontFamily:'inherit',color:T.textMain,background:T.canvas }}/>
-          <Btn onClick={send} disabled={!input.trim()} style={{ borderRadius:12 }}>→ Send</Btn>
+          <Btn onClick={send} disabled={!input.trim()||sending} style={{ borderRadius:12 }}>→ Send</Btn>
         </div>
       </Card>
     </div>

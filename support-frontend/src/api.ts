@@ -34,6 +34,10 @@ export interface Message {
   sender: 'MERCHANT' | 'SUPPORT';
   senderName: string;
   content: string;
+  attachment?: string | null;
+  attachmentName?: string | null;
+  attachmentType?: string | null;
+  attachmentSize?: number | null;
   read: boolean;
   createdAt: string;
 }
@@ -112,13 +116,22 @@ export async function setAvailability(availability: Availability): Promise<Avail
   return (data.availability as Availability) ?? availability;
 }
 
-export async function sendMessage(content: string, merchantId: number): Promise<Message> {
+export async function sendMessage(
+  content: string, merchantId: number, attachment?: { dataUrl: string; name: string } | null,
+): Promise<Message> {
   const res = await fetch(`${BASE_URL}/api/support/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ content, merchant_id: merchantId }),
+    body: JSON.stringify({
+      content, merchant_id: merchantId,
+      attachment: attachment?.dataUrl, attachment_name: attachment?.name,
+    }),
   });
-  if (!res.ok) throw new Error('Failed to send');
+  if (!res.ok) {
+    let detail = 'Failed to send';
+    try { detail = (await res.json()).detail || detail; } catch { /* ignore */ }
+    throw new Error(detail);
+  }
   return res.json();
 }
 

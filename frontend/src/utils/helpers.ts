@@ -111,6 +111,93 @@ export const nameWithRole = (name?: string | null, role?: string | null, fallbac
   return inside ? `${name ?? ''} (${inside})` : `${name ?? ''}`;
 };
 
+// ─── Customer Support chat: IST timestamps + attachment helpers ───────────────
+// Chat timestamps are ALWAYS shown in Indian Standard Time (Asia/Kolkata), regardless of the
+// viewer's device timezone. Backend sends UTC (…Z); we render it in IST here.
+const IST_TZ = 'Asia/Kolkata';
+export const chatTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString('en-US', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: true });
+export const chatDateLabel = (iso: string): string => {
+  const key = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: IST_TZ });   // YYYY-MM-DD in IST
+  const k = key(new Date(iso));
+  if (k === key(new Date())) return 'Today';
+  if (k === key(new Date(Date.now() - 86400000))) return 'Yesterday';
+  return new Date(iso).toLocaleDateString('en-GB', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric' });
+};
+// Open a base64 data-URL in a new tab reliably (via a blob URL — browsers block direct
+// navigation to large data: URLs). Used for chat image "enlarge" and document "view".
+export const openDataUrl = (dataUrl: string) => {
+  try {
+    const [head, b64] = dataUrl.split(',');
+    const mime = (head.match(/data:([^;]+)/) || [])[1] || 'application/octet-stream';
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([arr], { type: mime }));
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch { window.open(dataUrl, '_blank'); }
+};
+export const formatBytes = (n?: number | null): string => {
+  if (n == null) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+export const CHAT_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+export const CHAT_DOC_TYPES = [
+  'application/pdf', 'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain', 'application/zip', 'application/x-zip-compressed',
+];
+// Accept attribute for the file picker.
+export const CHAT_ACCEPT = '.jpg,.jpeg,.png,.webp,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,image/*';
+const _IMG_EXT = ['jpg', 'jpeg', 'png', 'webp'];
+const _DOC_EXT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'zip'];
+const _EXT_MIME: Record<string, string> = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp',
+  pdf: 'application/pdf', doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  txt: 'text/plain', zip: 'application/zip',
+};
+export const isChatImage = (type?: string | null, name?: string | null) => {
+  const t = (type || '').toLowerCase();
+  if (t.startsWith('image/')) return true;
+  const ext = (name || '').split('.').pop()?.toLowerCase() || '';
+  return _IMG_EXT.includes(ext);
+};
+// Client-side validation. Returns a friendly error string, or null when the file is allowed.
+export const chatAttachmentError = (f: File): string | null => {
+  const t = (f.type || '').toLowerCase();
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
+  const isImg = CHAT_IMAGE_TYPES.includes(t) || _IMG_EXT.includes(ext);
+  const isDoc = CHAT_DOC_TYPES.includes(t) || _DOC_EXT.includes(ext);
+  if (!isImg && !isDoc) return 'Unsupported file type. Allowed: images, PDF, Word, Excel, TXT, ZIP.';
+  if (f.size > 8 * 1024 * 1024) return 'File too large. Maximum 8 MB.';
+  return null;
+};
+// Read a file into a base64 data-URL, fixing a missing/generic MIME from the extension so the
+// backend allowlist accepts it. Returns the fields sent with the chat message.
+export const readChatAttachment = (f: File): Promise<{ dataUrl: string; name: string; type: string; size: number }> =>
+  new Promise((resolve, reject) => {
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    const mime = (f.type && f.type !== 'application/octet-stream') ? f.type : (_EXT_MIME[ext] || 'application/octet-stream');
+    const r = new FileReader();
+    r.onload = () => {
+      let dataUrl = String(r.result || '');
+      // Normalise the data-URL MIME to the resolved type so server validation matches.
+      dataUrl = dataUrl.replace(/^data:[^;,]*;base64,/, `data:${mime};base64,`);
+      resolve({ dataUrl, name: f.name, type: mime, size: f.size });
+    };
+    r.onerror = () => reject(new Error('read failed'));
+    r.readAsDataURL(f);
+  });
+
 // Latest actual username recorded in the remarks trail for a given role — used to show the
 // approver's username in the Approval Record (the reviewer/admin username lives in remarks).
 export const remarkUsernameForRole = (

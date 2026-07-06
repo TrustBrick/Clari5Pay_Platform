@@ -270,7 +270,9 @@ class AccountCreate(BaseModel):
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────
 class SupportMessageCreate(BaseModel):
     merchant_id: Optional[int] = None  # required when sent by a support agent
-    content: str
+    content: str = ""                  # may be empty when an attachment is present
+    attachment: Optional[str] = None   # base64 data-URL (image/document)
+    attachment_name: Optional[str] = None
 
 
 class SupportMessageOut(BaseModel):

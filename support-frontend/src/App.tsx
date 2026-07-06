@@ -5,6 +5,7 @@ import {
   type Conversation, type Message, type MerchantDetail, type SupportUser,
 } from './api';
 import { ThemeToggle } from './theme';
+import { chatTime, chatDateLabel, ChatAttachment, chatAttachmentError, readChatAttachment, CHAT_ACCEPT } from './chat';
 import DemoBanner from './DemoBanner';
 
 // Colors are CSS variables (defined in theme.css for light + dark); flipping data-theme
@@ -115,9 +116,12 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
   const [merchant, setMerchant] = useState<MerchantDetail | null>(null);
   const [input, setInput] = useState('');
   const [connected, setConnected] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [attachError, setAttachError] = useState('');
   const [showDetails, setShowDetails] = useState(false);   // mobile: merchant-details slide-over
   const isMobile = useIsMobile();
   const wsRef = useRef<WebSocket | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const activeIdRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -165,6 +169,32 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
     } else {
       try { const m = await sendMessage(content, activeId); setMessages(prev => [...prev, m]); refreshConvos(); } catch { /* ignore */ }
     }
+  };
+
+  // Attach an image/document to the active conversation (validated client-side, sent with any
+  // typed text). Delivered to the customer in real time.
+  const sendAttachment = async (f: File) => {
+    if (activeId == null) return;
+    const err = chatAttachmentError(f);
+    if (err) { setAttachError(err); setTimeout(() => setAttachError(''), 4000); return; }
+    setAttachError('');
+    setSending(true);
+    try {
+      const att = await readChatAttachment(f);
+      // Attachments go over REST (not the socket) — large base64 payloads can exceed the
+      // WebSocket frame limit. The server delivers to both parties, so dedupe on id.
+      const m = await sendMessage(input.trim(), activeId, { dataUrl: att.dataUrl, name: att.name });
+      setMessages(prev => prev.some(x => x.id === m.id) ? prev : [...prev, m]);
+      refreshConvos();
+      setInput('');
+    } catch (e: any) {
+      setAttachError(e?.message || 'Failed to send attachment'); setTimeout(() => setAttachError(''), 4000);
+    } finally { setSending(false); }
+  };
+  const onPickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) sendAttachment(f);
+    e.target.value = '';
   };
 
   const filtered = convos.filter(c => !search || c.merchantName.toLowerCase().includes(search.toLowerCase()));
@@ -245,26 +275,42 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
               </div>
               <div style={{ flex: 1, overflowY: 'auto', padding: isMobile ? 14 : 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {messages.length === 0 && <p style={{ margin: 'auto', color: T.textMuted, fontSize: 13 }}>No messages yet</p>}
-                {messages.map(m => {
+                {messages.map((m, i) => {
                   const mine = m.sender === 'SUPPORT';
+                  const prev = messages[i - 1];
+                  const showSep = i === 0 || chatDateLabel(prev.createdAt) !== chatDateLabel(m.createdAt);
                   return (
-                    <div key={m.id} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
-                      <div style={{ maxWidth: isMobile ? '85%' : '70%', padding: '10px 14px', borderRadius: mine ? '16px 16px 4px 16px' : '16px 16px 16px 4px', background: mine ? T.grad : T.surface, color: mine ? '#fff' : T.textMain, fontSize: 13, lineHeight: 1.5, border: mine ? 'none' : `1px solid ${T.border}` }}>
-                        {!mine && <p style={{ margin: '0 0 2px', fontSize: 10, fontWeight: 800, color: T.blue }}>{m.senderName}</p>}
-                        {m.content}
-                        <p style={{ margin: '3px 0 0', fontSize: 9, opacity: 0.6, textAlign: 'right' }}>{new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                    <React.Fragment key={m.id}>
+                      {showSep && (
+                        <div style={{ alignSelf: 'center', background: T.canvas, color: T.textMuted, fontSize: 10, fontWeight: 700, padding: '3px 12px', borderRadius: 12, margin: '4px 0' }}>{chatDateLabel(m.createdAt)}</div>
+                      )}
+                      <div style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
+                        <div style={{ maxWidth: isMobile ? '85%' : '70%', padding: '10px 14px', borderRadius: mine ? '16px 16px 4px 16px' : '16px 16px 16px 4px', background: mine ? T.grad : T.surface, color: mine ? '#fff' : T.textMain, fontSize: 13, lineHeight: 1.5, border: mine ? 'none' : `1px solid ${T.border}` }}>
+                          {!mine && <p style={{ margin: '0 0 2px', fontSize: 10, fontWeight: 800, color: T.blue }}>{m.senderName}</p>}
+                          {m.content && <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</span>}
+                          <ChatAttachment msg={m} mine={mine} theme={{ blue: T.blue, surface: T.surface, border: T.border, infoBg: T.infoBg, textMain: T.textMain, textMuted: T.textMuted }} />
+                          <p style={{ margin: '3px 0 0', fontSize: 9, opacity: 0.6, textAlign: 'right' }}>{chatTime(m.createdAt)}</p>
+                        </div>
                       </div>
-                    </div>
+                    </React.Fragment>
                   );
                 })}
                 <div ref={bottomRef} />
               </div>
-              <div style={{ padding: '12px 16px', borderTop: `1px solid ${T.border}`, background: T.surface, display: 'flex', gap: 10 }}>
-                <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()}
-                  placeholder="Type your reply..."
-                  style={{ flex: 1, padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 12, fontSize: 13, outline: 'none', fontFamily: 'inherit', background: T.canvas }} />
-                <button onClick={send} disabled={!input.trim()}
-                  style={{ padding: '10px 20px', borderRadius: 12, border: 'none', background: T.grad, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: input.trim() ? 1 : 0.6 }}>→ Send</button>
+              <div style={{ borderTop: `1px solid ${T.border}`, background: T.surface }}>
+                {attachError && (
+                  <p style={{ margin: 0, padding: '8px 16px 0', fontSize: 11, color: T.danger, fontWeight: 600 }}>{attachError}</p>
+                )}
+                <div style={{ padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <input ref={fileRef} type="file" accept={CHAT_ACCEPT} onChange={onPickFile} style={{ display: 'none' }} />
+                  <button onClick={() => fileRef.current?.click()} disabled={sending} title="Attach image or document" aria-label="Attach file"
+                    style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.canvas, color: T.textMuted, fontSize: 18, cursor: sending ? 'default' : 'pointer' }}>{sending ? '⏳' : '📎'}</button>
+                  <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()}
+                    placeholder={sending ? 'Sending attachment…' : 'Type your reply...'} disabled={sending}
+                    style={{ flex: 1, padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 12, fontSize: 13, outline: 'none', fontFamily: 'inherit', background: T.canvas }} />
+                  <button onClick={send} disabled={!input.trim() || sending}
+                    style={{ padding: '10px 20px', borderRadius: 12, border: 'none', background: T.grad, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: (input.trim() && !sending) ? 1 : 0.6 }}>→ Send</button>
+                </div>
               </div>
             </>
           )}

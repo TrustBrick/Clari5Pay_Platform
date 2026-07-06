@@ -279,6 +279,10 @@ export interface SupportMessage {
   sender: 'MERCHANT' | 'SUPPORT';
   senderName: string;
   content: string;
+  attachment?: string | null;        // base64 data-URL (image/document)
+  attachmentName?: string | null;
+  attachmentType?: string | null;    // MIME
+  attachmentSize?: number | null;    // bytes
   read: boolean;
   createdAt: string;
 }

@@ -366,8 +366,11 @@ export const supportAPI = {
     const res = await api.get<{ status: string; queued: boolean; agentName: string | null }>('/api/support/my-conversation');
     return res.data;
   },
-  send: async (content: string, merchantId?: number) => {
-    const res = await api.post<SupportMessage>('/api/support/messages', { content, merchant_id: merchantId });
+  send: async (content: string, merchantId?: number, attachment?: { dataUrl: string; name: string } | null) => {
+    const res = await api.post<SupportMessage>('/api/support/messages', {
+      content, merchant_id: merchantId,
+      attachment: attachment?.dataUrl, attachment_name: attachment?.name,
+    });
     return res.data;
   },
   merchant: async (merchantId: number) => {

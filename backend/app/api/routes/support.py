@@ -5,7 +5,9 @@ support agent (see services/support_routing). Messages for a conversation are de
 customer and their assigned agent — never broadcast to every agent — which prevents duplicate
 replies and unnecessary traffic.
 """
+import base64
 import json
+import re
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,9 +30,57 @@ def _m(m: SupportMessage) -> dict:
         "sender": m.sender.value if hasattr(m.sender, "value") else m.sender,
         "senderName": m.sender_name,
         "content": m.content,
-        "read": m.read,
-        "createdAt": m.created_at.isoformat(),
+        "attachment": m.attachment,
+        "attachmentName": m.attachment_name,
+        "attachmentType": m.attachment_type,
+        "attachmentSize": m.attachment_size,
+        # Stored UTC (naive); marked with 'Z' so the UI can render it in IST (Asia/Kolkata).
+        "createdAt": m.created_at.isoformat() + "Z",
     }
+
+
+# ─── Attachment validation (images / documents shared in chat by either party) ──
+_IMAGE_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+_DOC_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",   # .docx
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",         # .xlsx
+    "text/plain",
+    "application/zip", "application/x-zip-compressed",
+}
+# Capped at 8 MB so the base64 payload stays within the platform's 12 MB edge body limit
+# (Caddy + nginx). Raising these requires raising that edge limit too.
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_MAX_DOC_BYTES = 8 * 1024 * 1024
+_DATA_URL_RE = re.compile(r"^data:([-\w.+/]+);base64,(.+)$", re.DOTALL)
+
+
+def _sanitize_filename(name: str | None) -> str:
+    base = (name or "file").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    base = re.sub(r"[^A-Za-z0-9._ \-()]", "_", base).strip() or "file"
+    return base[:200]
+
+
+def _validate_attachment(data_url: str, name: str | None):
+    """Validate a base64 data-URL attachment (MIME allowlist + size limit) and sanitize its
+    name. Returns (data_url, clean_name, mime, size_bytes); raises HTTPException if invalid."""
+    match = _DATA_URL_RE.match(data_url or "")
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid attachment format.")
+    mime = match.group(1).lower()
+    is_image = mime in _IMAGE_TYPES
+    if not is_image and mime not in _DOC_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported file type.")
+    try:
+        size = len(base64.b64decode(match.group(2), validate=True))
+    except Exception:
+        raise HTTPException(status_code=400, detail="The attachment could not be read.")
+    limit = _MAX_IMAGE_BYTES if is_image else _MAX_DOC_BYTES
+    if size > limit:
+        raise HTTPException(status_code=400, detail=f"File too large (max {limit // (1024 * 1024)} MB).")
+    return data_url, _sanitize_filename(name), mime, size
 
 
 # ─── Connection manager ───────────────────────────────────────────────────────
@@ -84,13 +134,19 @@ manager = ConnectionManager()
 
 
 async def _persist_message(
-    db: AsyncSession, merchant_id: int, sender: SupportSender, sender_name: str, content: str
+    db: AsyncSession, merchant_id: int, sender: SupportSender, sender_name: str, content: str,
+    attachment: str | None = None, attachment_name: str | None = None,
+    attachment_type: str | None = None, attachment_size: int | None = None,
 ) -> SupportMessage:
     msg = SupportMessage(
         merchant_id=merchant_id,
         sender=sender,
         sender_name=sender_name,
         content=content,
+        attachment=attachment,
+        attachment_name=attachment_name,
+        attachment_type=attachment_type,
+        attachment_size=attachment_size,
         read=False,
     )
     db.add(msg)
@@ -136,7 +192,15 @@ async def support_ws(websocket: WebSocket, token: str):
             except json.JSONDecodeError:
                 continue
             content = (data.get("content") or "").strip()
-            if not content:
+            # Optional attachment (base64 data-URL). Validated defensively here too — the client
+            # validates before sending, so an invalid one is simply dropped.
+            a_url = a_name = a_type = a_size = None
+            if data.get("attachment"):
+                try:
+                    a_url, a_name, a_type, a_size = _validate_attachment(data.get("attachment"), data.get("attachmentName"))
+                except HTTPException:
+                    continue
+            if not content and not a_url:
                 continue
 
             if is_agent:
@@ -147,7 +211,8 @@ async def support_ws(websocket: WebSocket, token: str):
                     # An agent may only message a customer whose OPEN conversation they own.
                     if not await _owns_open(db, user.id, int(merchant_id)):
                         continue
-                    msg = await _persist_message(db, int(merchant_id), SupportSender.SUPPORT, user.name, content)
+                    msg = await _persist_message(db, int(merchant_id), SupportSender.SUPPORT, user.name, content,
+                                                 a_url, a_name, a_type, a_size)
                     await support_routing.record_agent_reply(db, int(merchant_id))
                     await db.commit()
                     payload_out = _m(msg)
@@ -157,7 +222,8 @@ async def support_ws(websocket: WebSocket, token: str):
                     conv = await support_routing.ensure_conversation(db, user.id)
                     agent_id = conv.support_id
                     conv.last_message_at = datetime.utcnow()
-                    msg = await _persist_message(db, user.id, SupportSender.MERCHANT, user.name, content)
+                    msg = await _persist_message(db, user.id, SupportSender.MERCHANT, user.name, content,
+                                                 a_url, a_name, a_type, a_size)
                     await db.commit()
                     payload_out = _m(msg)
                 await manager.deliver(user.id, agent_id, payload_out)
@@ -205,6 +271,18 @@ async def list_conversations(
         )).scalars().all()
         last = msgs[0] if msgs else None
         unread = sum(1 for x in msgs if x.sender == SupportSender.MERCHANT and not x.read)
+
+        def _preview(msg):
+            if msg is None:
+                return None
+            if msg.content:
+                return msg.content
+            if msg.attachment_type and msg.attachment_type.startswith("image/"):
+                return "📷 Photo"
+            if msg.attachment:
+                return f"📎 {msg.attachment_name or 'Attachment'}"
+            return None
+
         out.append({
             "conversationId": c.id,
             "merchantId": m.id,
@@ -212,8 +290,8 @@ async def list_conversations(
             "email": m.email,
             "phone": m.phone,
             "username": m.username,
-            "lastMessage": last.content if last else None,
-            "lastAt": last.created_at.isoformat() if last else None,
+            "lastMessage": _preview(last),
+            "lastAt": (last.created_at.isoformat() + "Z") if last else None,
             "unread": unread,
             "messageCount": len(msgs),
         })
@@ -295,7 +373,10 @@ async def post_message(
 ):
     """REST fallback for sending a message (also delivered over WebSocket to the two parties)."""
     content = (data.content or "").strip()
-    if not content:
+    a_url = a_name = a_type = a_size = None
+    if data.attachment:
+        a_url, a_name, a_type, a_size = _validate_attachment(data.attachment, data.attachment_name)
+    if not content and not a_url:
         raise HTTPException(status_code=400, detail="Empty message")
 
     if current_user.role == UserRole.MERCHANT:
@@ -311,7 +392,8 @@ async def post_message(
     else:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    msg = await _persist_message(db, merchant_id, sender, current_user.name, content)
+    msg = await _persist_message(db, merchant_id, sender, current_user.name, content,
+                                 a_url, a_name, a_type, a_size)
     if sender == SupportSender.SUPPORT:
         await support_routing.record_agent_reply(db, merchant_id)
     await db.flush()

@@ -97,6 +97,12 @@ _NEW_COLUMNS = [
     ("cyber_complaints", "escalated_at", "TIMESTAMP"),
     ("cyber_complaints", "complaint_filed_at", "TIMESTAMP"),
     ("cyber_complaints", "stage_by", "TEXT"),
+    # Support chat attachments (image/document sent by either party) — stored as a base64
+    # data-URL in the row, mirroring transaction proofs. No separate file storage.
+    ("support_messages", "attachment", "TEXT"),
+    ("support_messages", "attachment_name", "VARCHAR(256)"),
+    ("support_messages", "attachment_type", "VARCHAR(128)"),
+    ("support_messages", "attachment_size", "INTEGER"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
