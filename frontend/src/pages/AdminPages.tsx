@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
@@ -327,16 +327,16 @@ const RequestModal: React.FC<{
       {(record.supervisorName || record.managerName || record.approvedBy || record.processedBy || (record.remarksHistory && record.remarksHistory.length > 0)) && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Approval Record</p>
-          <Row k="Created By" v={`${record.merchant}${record.createdAt ? ` · ${formatDateTime(record.createdAt)}` : ''}`} />
-          {record.supervisorName && <Row k="Supervisor" v={`${record.supervisorName}${record.supervisorActionAt ? ` · ${formatDateTime(record.supervisorActionAt)}` : ''}`} />}
-          {record.managerName && <Row k="Manager" v={`${record.managerName}${record.managerActionAt ? ` · ${formatDateTime(record.managerActionAt)}` : ''}`} />}
-          {record.processedBy && <Row k="Admin" v={`${record.processedBy}${record.adminActionAt ? ` · ${formatDateTime(record.adminActionAt)}` : ''}`} />}
+          <Row k="Created By" v={`${nameWithRole(record.merchant, record.creatorRole, 'Merchant User')}${record.createdAt ? ` · ${formatDateTime(record.createdAt)}` : ''}`} />
+          {record.supervisorName && <Row k="Supervisor" v={`${nameWithRole(record.supervisorName, 'SUPERVISOR')}${record.supervisorActionAt ? ` · ${formatDateTime(record.supervisorActionAt)}` : ''}`} />}
+          {record.managerName && <Row k="Manager" v={`${nameWithRole(record.managerName, 'MANAGER')}${record.managerActionAt ? ` · ${formatDateTime(record.managerActionAt)}` : ''}`} />}
+          {record.processedBy && <Row k="Admin" v={`${nameWithRole(record.processedBy, 'ADMIN')}${record.adminActionAt ? ` · ${formatDateTime(record.adminActionAt)}` : ''}`} />}
           {record.remarksHistory && record.remarksHistory.length > 0 && (
             <div style={{ marginTop:8 }}>
               <p style={{ fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Remarks History</p>
               {record.remarksHistory.map((r, i) => (
                 <div key={i} style={{ borderLeft:`3px solid ${T.border}`,paddingLeft:10,marginBottom:8 }}>
-                  <p style={{ margin:0,fontSize:12,fontWeight:700,color:T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {r.user} — {r.action}</p>
+                  <p style={{ margin:0,fontSize:12,fontWeight:700,color:T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {nameWithRole(r.user, r.role)} — {r.action}</p>
                   <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>{r.remark}</p>
                   <p style={{ margin:'2px 0 0',fontSize:10,color:T.textMuted }}>{r.at}</p>
                 </div>

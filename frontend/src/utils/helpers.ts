@@ -101,6 +101,14 @@ export const MERCHANT_ROLE_LABELS: Record<string, string> = {
 export const merchantRoleLabel = (r?: string | null) =>
   r ? (MERCHANT_ROLE_LABELS[String(r).toUpperCase()] || r) : '';
 
+// Approval-record / remarks display: append the actor's role in parentheses, e.g.
+// "BELLAGIO (Supervisor)". Role is resolved via MERCHANT_ROLE_LABELS (never hardcoded); when
+// a role can't be resolved, `fallback` (e.g. "Merchant User") is used, else just the name.
+export const nameWithRole = (name?: string | null, role?: string | null, fallback = ''): string => {
+  const label = merchantRoleLabel(role) || fallback;
+  return label ? `${name ?? ''} (${label})` : `${name ?? ''}`;
+};
+
 // Maker = data-entry operators; Checker = review/approval roles. The admin "Create
 // Merchant" form scopes the Roles dropdown to the selected Profile Type using these.
 export const MAKER_ROLE_OPTIONS = [
