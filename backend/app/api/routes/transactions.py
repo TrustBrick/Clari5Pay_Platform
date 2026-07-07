@@ -1480,7 +1480,10 @@ async def account_submit(
     tx.status = TxStatus.ACCOUNT_SUBMITTED
     tx.approved_by = actor.name
     await db.flush()
-    await notify_tx(db, tx, f"{tx.ref}: account details sent to {tx.merchant_name}", "🏦")
+    # Tell the user (deposit creator) plainly that they can now pay; the owning admin gets a
+    # send confirmation. (Previously a single "account details sent to <merchant>" line went to both.)
+    await _notify_merchant(db, tx, f"{tx.ref}: account details received — you can now make the payment and submit your slip", "🏦")
+    await _notify_admin(db, tx, f"{tx.ref}: account details sent to {tx.merchant_name}", "🏦")
     await log_event(db, "ACCOUNT_SUBMITTED", f"{tx.ref}: account details sent to {tx.merchant_name}", actor=actor)
     await record_audit(db, "ACCOUNT_SUBMITTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="ACCOUNT_SUBMITTED")
     await db.refresh(tx)
