@@ -484,18 +484,34 @@ interface RFilters {
   ref: string; memberId: string; memberName: string; combined: string; agentCode: string;
   approvedBy: string; processedBy: string; type: string; status: string; method: string;
   riskLevel: string; minA: string; maxA: string; exactA: string; datePreset: string; from: string; to: string;
+  fromTime: string; toTime: string;   // Custom Range time-of-day bounds (IST, "HH:MM")
   business: string;   // admin Reports only — client-side business-name filter (all-merchants view)
 }
 const EMPTY_FILTERS: RFilters = {
   ref: '', memberId: '', memberName: '', combined: '', agentCode: '', approvedBy: '', processedBy: '',
   type: '', status: '', method: '', riskLevel: '', minA: '', maxA: '', exactA: '', datePreset: 'all', from: '', to: '',
+  fromTime: '', toTime: '',
   business: '',
 };
 
 const rowTs = (r: ReportRow) => r.createdAt ? new Date(r.createdAt).getTime() : new Date(`${r.date}T${r.time || '00:00:00'}Z`).getTime();
-const inDateWindow = (r: ReportRow, preset: string, from: string, to: string): boolean => {
+// "HH:MM" (24h) → "h:MM AM/PM" for the Selected Date Range label. '' when no time chosen.
+const fmtTime12 = (t: string): string => {
+  if (!t) return '';
+  const [hs, m] = t.split(':');
+  let h = Number(hs); const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return `${h}:${m} ${ap}`;
+};
+const inDateWindow = (r: ReportRow, preset: string, from: string, to: string, fromTime = '', toTime = ''): boolean => {
   if (preset === 'all') return true;
-  if (preset === 'custom') return (!from || (r.date || '') >= from) && (!to || (r.date || '') <= to);
+  if (preset === 'custom') {
+    // Compare on the transaction's own IST date+time (tx_date / tx_time are already IST) — no UTC.
+    // Missing time defaults to start-of-day (From) / end-of-day (To), preserving date-only behaviour.
+    const rDT = `${r.date || ''}T${r.time || '00:00:00'}`;
+    const fromDT = from ? `${from}T${(fromTime || '00:00')}:00` : '';
+    const toDT = to ? `${to}T${(toTime || '23:59')}:59` : '';
+    return (!fromDT || rDT >= fromDT) && (!toDT || rDT <= toDT);
+  }
   const ts = rowTs(r); const now = Date.now(); const day = 86400000;
   if (preset === '30m') return ts >= now - 30 * 60000;
   if (preset === '1h') return ts >= now - 3600000;
@@ -517,7 +533,7 @@ const matchesFilters = (r: ReportRow, f: RFilters): boolean => {
     && (!f.method || (r.paymentMethod || '').toUpperCase() === f.method) && (!f.riskLevel || (r.riskLevel || '') === f.riskLevel)
     && (!f.minA || r.amount >= Number(f.minA)) && (!f.maxA || r.amount <= Number(f.maxA))
     && (!f.exactA || r.amount === Number(f.exactA))
-    && inDateWindow(r, f.datePreset, f.from, f.to);
+    && inDateWindow(r, f.datePreset, f.from, f.to, f.fromTime, f.toTime);
 };
 const totalsOf = (rows: ReportRow[]) => {
   const sum = (k: string) => rows.filter(r => r.type === k && r.completed).reduce((a, r) => a + r.amount, 0);
@@ -817,6 +833,12 @@ const ReportsView: React.FC<ReportsViewProps> = ({
   // second click can't fire a duplicate request.
   const applyFilters = async () => {
     if (applying) return;
+    // Custom Range validation: "To" date & time cannot be earlier than "From".
+    if (draft.datePreset === 'custom' && draft.from && draft.to) {
+      const fromDT = `${draft.from}T${(draft.fromTime || '00:00')}:00`;
+      const toDT = `${draft.to}T${(draft.toTime || '23:59')}:59`;
+      if (toDT < fromDT) { toast.showToast('“To” date & time cannot be earlier than “From”.', 'error'); return; }
+    }
     setApplying(true);
     try { await reload(); setF(draft); }
     finally { setApplying(false); }
@@ -846,7 +868,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
   const filtered = data.transactions.filter(r => matchesFilters(r, f));
   const tot = totalsOf(filtered);
   const rangeLabel = f.datePreset === 'custom'
-    ? `${f.from || 'start'} → ${f.to || 'today'}`
+    ? `${f.from || 'start'}${f.fromTime ? ' ' + fmtTime12(f.fromTime) : ''} → ${f.to || 'today'}${f.toTime ? ' ' + fmtTime12(f.toTime) : ''}`
     : (DATE_PRESETS.find(d => d[0] === f.datePreset)?.[1] || 'All Time');
   // 1 — Summary cards (colour-coded per spec)
   const card = (label: string, value: number, color: string) => (
@@ -909,8 +931,10 @@ const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
         {draft.datePreset === 'custom' && (
           <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-            <Input label="From" type="date" value={draft.from} onChange={e => set('from', e.target.value)} />
-            <Input label="To" type="date" value={draft.to} onChange={e => set('to', e.target.value)} />
+            <Input label="From Date" type="date" value={draft.from} onChange={e => set('from', e.target.value)} />
+            <Input label="From Time" type="time" value={draft.fromTime} onChange={e => set('fromTime', e.target.value)} hint="IST · optional (start of day)" />
+            <Input label="To Date" type="date" value={draft.to} onChange={e => set('to', e.target.value)} />
+            <Input label="To Time" type="time" value={draft.toTime} onChange={e => set('toTime', e.target.value)} hint="IST · optional (end of day)" />
           </div>
         )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
