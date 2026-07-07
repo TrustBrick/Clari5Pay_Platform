@@ -201,10 +201,19 @@ def _format(message: str, tx: Optional["Transaction"] = None) -> str:
     security notifications)."""
     company = settings.WHATSAPP_COMPANY_NAME or "Clari5Pay"
     when = datetime.now().strftime("%d-%b-%Y %I:%M %p")
-    lines = [f"{company} Notification", "", (message or "").strip()]
+    body = (message or "").strip()
+    # Demo: hide the business name in WhatsApp — substitute the creating user's ID (e.g. MID000001)
+    # in the message body and show it as "User ID" instead of "Business". Production is unchanged.
+    hide_business = bool(settings.is_demo and tx is not None
+                         and getattr(tx, "merchant_name", None) and getattr(tx, "agent_code", None))
+    if hide_business:
+        body = body.replace(tx.merchant_name, tx.agent_code)
+    lines = [f"{company} Notification", "", body]
     if tx is not None:
         details = []
-        if getattr(tx, "merchant_name", None):
+        if hide_business:
+            details.append(f"User ID: {tx.agent_code}")
+        elif getattr(tx, "merchant_name", None):
             details.append(f"Business: {tx.merchant_name}")
         kind = _tx_kind(tx.type)
         if kind:
