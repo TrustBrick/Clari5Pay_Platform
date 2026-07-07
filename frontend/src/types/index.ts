@@ -207,6 +207,8 @@ export interface AccountBalance {
   bankDeposited?: number;
   upiDeposited?: number;
   totalDeposited: number;
+  highestDeposit?: number;
+  lowestDeposit?: number;
   totalFees?: number;
   withdrawals?: number;
   settlements?: number;

@@ -78,6 +78,8 @@ async def account_balances(
     dep: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))   # account → merchant → amount
     bank_dep: dict[str, float] = defaultdict(float)
     upi_dep: dict[str, float] = defaultdict(float)
+    dep_high: dict[str, float] = {}   # account → highest single successful deposit ever received
+    dep_low: dict[str, float] = {}    # account → lowest single successful deposit ever received
     acct_wd: dict[str, float] = defaultdict(float)
     acct_st: dict[str, float] = defaultdict(float)
     # Only completed transactions affect an account's balance. A deposit completes as COMPLETED
@@ -88,6 +90,11 @@ async def account_balances(
             if t.status in _COMPLETED_STATUSES and t.admin_ref:
                 dep[t.admin_ref][t.merchant_name] += t.amount
                 (upi_dep if t.admin_upi_id else bank_dep)[t.admin_ref] += t.amount
+                # Track the largest/smallest individual deposit received into this account.
+                if t.admin_ref not in dep_high or t.amount > dep_high[t.admin_ref]:
+                    dep_high[t.admin_ref] = t.amount
+                if t.admin_ref not in dep_low or t.amount < dep_low[t.admin_ref]:
+                    dep_low[t.admin_ref] = t.amount
         elif ty.startswith("WITHDRAWAL"):
             if t.status == TxStatus.COMPLETED and t.member_id in member_acct:
                 acct_wd[member_acct[t.member_id]] += t.amount
@@ -129,6 +136,8 @@ async def account_balances(
             "bankDeposited": round(bank_d, 2),
             "upiDeposited": round(upi_d, 2),
             "totalDeposited": round(total_d, 2),
+            "highestDeposit": round(dep_high.get(ref, 0.0), 2),
+            "lowestDeposit": round(dep_low.get(ref, 0.0), 2),
             "withdrawals": round(wd, 2),
             "settlements": round(st, 2),
             "available": round(total_d - wd - st, 2),   # deposits − withdrawals − settlements

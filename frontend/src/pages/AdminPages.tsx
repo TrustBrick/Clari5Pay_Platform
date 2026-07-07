@@ -1291,23 +1291,24 @@ export const AdminAccountsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Account Name','Reference ID','Account Number','IFSC Code','Branch','Deposits Received','Available','Merchants','Status','Details'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Deposit','Lowest Deposit','Deposits Received','Available','Merchants','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={10} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={11} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
               {filtered.map((a,i)=>{ const bal = balMap[a.referenceNumber]; return (
                 <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                   <td style={{ padding:'11px 14px' }}>
                     <div style={{ fontWeight:700,color:T.textMain }}>{a.accountName}</div>
                     <div style={{ fontSize:10,color:T.textMuted }}>{a.bankName}</div>
                   </td>
-                  <td style={{ padding:'11px 14px' }}><code style={{ background:T.infoBg,color:T.blue,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{a.referenceNumber}</code></td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.accountNumber}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.ifscCode}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.branch}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestDeposit ?? 0)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.lowestDeposit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{fmt(bal?.totalDeposited ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}>
