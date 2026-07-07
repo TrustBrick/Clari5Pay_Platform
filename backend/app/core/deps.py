@@ -95,3 +95,18 @@ async def get_current_manager(current_user: User = Depends(get_current_user)) ->
     if not _is_merchant_role(current_user, "MANAGER"):
         raise HTTPException(status_code=403, detail="Manager access required")
     return current_user
+
+
+# Merchant roles permitted to use the KYC Update module (identity verification).
+KYC_MERCHANT_ROLES = ("SUPERVISOR", "MANAGER")
+
+
+async def get_current_kyc_user(current_user: User = Depends(get_current_user)) -> User:
+    """MERCHANT users whose merchant_role is Supervisor or Manager — the only roles
+    allowed to access the KYC Update module. Every other role is rejected with 403."""
+    if (
+        current_user.role == UserRole.MERCHANT
+        and str(current_user.merchant_role or "").upper() in KYC_MERCHANT_ROLES
+    ):
+        return current_user
+    raise HTTPException(status_code=403, detail="KYC access requires a Supervisor or Manager role")

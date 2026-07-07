@@ -84,6 +84,18 @@ class Settings(BaseSettings):
     WHATSAPP_CONTENT_SID: str = ""              # Twilio Content Template SID ("HX…"), body = {{1}}
     WHATSAPP_MESSAGING_SERVICE_SID: str = ""    # optional Twilio Messaging Service SID ("MG…")
 
+    # ── KYC verification (Melento.ai for Aadhaar/PAN/Passport/OCR + DigiLocker) ──
+    # All empty by default → the KYC service layer stays inert: endpoints validate input
+    # and return a clear "provider not configured yet" response, and the Merchant KYC
+    # Update UI shows a graceful message. Credentials are supplied later via env ONLY
+    # (never hardcoded); once set, only app/services/kyc.py's provider seams need filling.
+    MELENTO_API_KEY: str = ""
+    MELENTO_API_ID: str = ""
+    MELENTO_BASE_URL: str = "https://api.melento.ai"
+    DIGILOCKER_CLIENT_ID: str = ""
+    DIGILOCKER_CLIENT_SECRET: str = ""
+    DIGILOCKER_BASE_URL: str = "https://api.digitallocker.gov.in"
+
     @property
     def email_configured(self) -> bool:
         return bool(self.SMTP_HOST)
@@ -95,6 +107,16 @@ class Settings(BaseSettings):
     @property
     def is_demo(self) -> bool:
         return self.ENVIRONMENT == "demo"
+
+    @property
+    def kyc_configured(self) -> bool:
+        """Melento.ai credentials present → Aadhaar/PAN/Passport/OCR can call the provider."""
+        return bool(self.MELENTO_API_ID and self.MELENTO_API_KEY)
+
+    @property
+    def digilocker_configured(self) -> bool:
+        """DigiLocker OAuth credentials present → the DigiLocker flow can be initiated."""
+        return bool(self.DIGILOCKER_CLIENT_ID and self.DIGILOCKER_CLIENT_SECRET)
 
     @property
     def whatsapp_use_template(self) -> bool:

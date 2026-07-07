@@ -12,6 +12,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'approvals', icon: '✓', label: 'Approvals' },
     { key: 'cancel', icon: '⊘', label: 'Cancel Request' },
     { key: 'transactions', icon: '≡', label: 'Transactions' },
+    { key: 'kyc', icon: '🪪', label: 'KYC Update' },
     { key: 'reports', icon: '📊', label: 'Reports' },
     { key: 'risk-mgmt', icon: '🛡️', label: 'Risk Management' },
     { key: 'templates', icon: '▦', label: 'All Templates View' },
@@ -66,6 +67,7 @@ export const PAGE_TITLES: Record<string, string> = {
   approvals: 'Approvals',
   cancel: 'Cancel Request',
   transactions: 'Transactions',
+  kyc: 'KYC Update',
   reports: 'Reports',
   'risk-mgmt': 'Risk Management',
   complaints: 'Complaint Management',
@@ -103,8 +105,8 @@ export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
   DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  SUPERVISOR: ['dashboard', 'approvals', 'settlement', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  MANAGER: ['dashboard', 'approvals', 'transactions', 'templates', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  SUPERVISOR: ['dashboard', 'approvals', 'settlement', 'transactions', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  MANAGER: ['dashboard', 'approvals', 'transactions', 'templates', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
 };
 
 /**
@@ -117,8 +119,9 @@ export const navForUser = (user: User): NavItem[] => {
   if (user.role !== 'MERCHANT') return base;
   const role = user.merchantRole ? String(user.merchantRole).toUpperCase() : '';
   const allowed = MERCHANT_ROLE_NAV[role];
-  // Role-less merchant: full menu minus Settlement Requests (only Supervisors create settlements).
-  if (!allowed) return base.filter((i) => i.key !== 'settlement');
+  // Role-less merchant: full menu minus Settlement Requests (Supervisor-only) and KYC Update
+  // (Supervisor/Manager-only).
+  if (!allowed) return base.filter((i) => i.key !== 'settlement' && i.key !== 'kyc');
   const byKey = new Map(base.map((i) => [i.key, i]));
   return allowed.map((k) => byKey.get(k)).filter((i): i is NavItem => Boolean(i));
 };

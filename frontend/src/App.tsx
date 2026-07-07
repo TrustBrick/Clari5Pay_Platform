@@ -20,6 +20,7 @@ import {
   SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage,
   MerchantAnalyticsPage, WhatsAppSettingsPage, DemoToolsPage,
 } from './pages/AdminPages';
+import { KYCPage } from './pages/KYCPage';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
@@ -46,6 +47,8 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (role === 'ADMIN') return page.startsWith('admin-');
   // MERCHANT — no admin/SA pages.
   if (page.startsWith('sa-') || page.startsWith('admin-')) return false;
+  // KYC Update is restricted to the Supervisor and Manager merchant roles.
+  if (page === 'kyc') return ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   // A Manager is an approval-only role — block direct Deposit/Withdrawal/Settlement creation.
   if (String(user.merchantRole || '').toUpperCase() === 'MANAGER' && MANAGER_BLOCKED_PAGES.includes(page)) return false;
   // A Supervisor manages only Settlement Requests — no Deposit/Withdrawal pages, even by
@@ -93,6 +96,7 @@ const App: React.FC = () => {
       approvals: <ApprovalsPage user={user} />,
       cancel: <CancelRequestPage {...props} />,
       transactions: <TransactionHistory {...props} />,
+      kyc: <KYCPage user={user} />,
       reports: <ReportsPage {...props} />,
       'risk-mgmt': <RiskManagementPage user={user} />,
       complaints: <ComplaintManagementPage user={user} />,
