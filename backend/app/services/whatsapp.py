@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -33,6 +34,14 @@ log = logging.getLogger("clari5pay.whatsapp")
 # Loop captured at startup so the (possibly greenlet-driven) commit event can schedule work safely.
 _LOOP: Optional[asyncio.AbstractEventLoop] = None
 _INSTALLED = False
+
+# De-duplication: one transaction event fires a separate notification per recipient, and several
+# recipients can share the same phone number (e.g. one person holding multiple accounts). Without
+# this, that phone would receive identical messages several times. We remember each (phone, message)
+# just sent and skip repeats within a short window. In-process + single-threaded asyncio, so the
+# check-and-set below is atomic (no await between check and set).
+_recent_sends: dict[tuple[str, str], float] = {}
+_DEDUP_WINDOW = 120.0  # seconds
 
 # A transaction reference token in a message: 2–4 uppercase letters + digits. Matches both the
 # fixed prefixes (DEP/WIT/SET…) and merchant-specific codes (CLD/CLP/ABC…). Type is resolved from
@@ -351,6 +360,18 @@ async def _deliver(user_id: int, message: str) -> None:
             if not (await get_event_settings(db)).get(event_key, True):
                 return  # this event type is switched off in Settings
             body = _format(message, tx)
+            # Skip if this exact message was just sent to this phone (a shared number). Atomic
+            # check-and-set (no await in between) so concurrent deliveries dedupe correctly.
+            phone_key = re.sub(r"\D", "", user.phone or "")
+            if phone_key:
+                now = time.monotonic()
+                for k, ts in list(_recent_sends.items()):
+                    if now - ts > _DEDUP_WINDOW:
+                        _recent_sends.pop(k, None)
+                dkey = (phone_key, message or "")
+                if dkey in _recent_sends:
+                    return  # duplicate to the same phone from the same event — skip
+                _recent_sends[dkey] = now
             ok, msg_id, resp, reason = False, None, None, None
             attempts = max(1, (settings.WHATSAPP_RETRIES or 0) + 1)
             used = 0
