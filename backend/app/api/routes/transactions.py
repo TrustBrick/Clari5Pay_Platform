@@ -1561,7 +1561,7 @@ async def mark_done(
                    remark="Deposited" if is_deposit else "Completed")
     await db.flush()
     label = "deposited" if is_deposit else "completed"
-    await notify_tx(db, tx, f"{tx.ref}: {label}", "✓")
+    await notify_tx(db, tx, f"{tx.ref}: approved and {label} successfully", "✓")
     await log_event(db, "TRANSACTION_COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
     await record_audit(db, "ADMIN_APPROVED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
                        new=tx.status.value, ip=_client_ip(request))
@@ -1709,21 +1709,21 @@ async def _reviewer_action(
         _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
         await _notify_admin(db, tx, f"{tx.ref}: approved by {cfg['label']} {reviewer.name} — awaiting your final approval", "✅")
-        await _notify_merchant(db, tx, f"{tx.ref}: approved by {cfg['label']} — forwarded to Admin", "✅")
+        await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and forwarded to Admin for final approval", "✅")
     elif decision == "reject":
         action = "REJECTED"
         tx.status = TxStatus.REJECTED
         tx.reject_reason = remark
         _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
-        await _notify_merchant(db, tx, f"{tx.ref}: rejected by {cfg['label']} — {remark}", "✕")
+        await _notify_merchant(db, tx, f"{tx.ref}: rejected by the {cfg['label']}. Reason: {remark}", "✕")
     elif decision == "resubmit":
         action = "RESUBMITTED"
         tx.status = TxStatus.RESUBMITTED            # returned to the Data Operator
         _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
-        await _notify_merchant(db, tx, f"{tx.ref}: returned for resubmission by {cfg['label']} — {remark}", "↻")
-        await _notify_business_role(db, tx, "DEO", f"{tx.ref}: returned for correction by {cfg['label']} — {remark}", "↻")
+        await _notify_merchant(db, tx, f"{tx.ref}: returned by the {cfg['label']} — please correct and resubmit. Reason: {remark}", "↻")
+        await _notify_business_role(db, tx, "DEO", f"{tx.ref}: returned for correction by the {cfg['label']} — please fix and resubmit. Reason: {remark}", "↻")
     else:
         raise HTTPException(status_code=400, detail="Unknown review decision.")
 
