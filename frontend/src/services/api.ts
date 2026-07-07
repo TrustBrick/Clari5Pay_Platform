@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, ActiveUsersData, AdminUpi, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, ActiveUsersData, AdminUpi, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -290,6 +290,13 @@ export const accountAPI = {
   },
   balances: async () => {
     const res = await api.get<AccountBalance[]>('/api/accounts/balances');
+    return res.data;
+  },
+  // Bank-statement ledger rows for a single account (deposits via admin_ref; withdrawals/
+  // settlements via the member→account map). Shaped as ReportRow[] so the shared Agent
+  // Ledger renderer computes Opening/Running/Closing balance — no duplicated balance logic.
+  statement: async (ref: string) => {
+    const res = await api.get<{ referenceNumber: string; accountName: string; transactions: ReportRow[] }>(`/api/accounts/${ref}/statement`);
     return res.data;
   },
   lastForMember: async (memberId: string) => {

@@ -9,13 +9,15 @@ import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
 import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery, ReceiptImage } from './MerchantPages';
+import { AgentLedgerReport } from './ReportsPage';
+import { useAuth } from '../context/AuthContext';
 import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
 import { usePresenceStream } from '../utils/sse';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, demoAPI, activeUsersAPI } from '../services/api';
 import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData } from '../types';
+import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
@@ -1208,9 +1210,22 @@ export const AdminMerchantsPage: React.FC = () => {
 // ─── Admin Account Management ───────────────────────────────────────────────────
 export const AdminAccountsPage: React.FC = () => {
   const { showToast } = useToast();
+  const { user } = useAuth();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [search, setSearch] = useState('');
   const [detail, setDetail] = useState<Account | null>(null);
+  // Per-account bank statement (reuses the shared Agent Ledger renderer).
+  const [stmtAcc, setStmtAcc] = useState<Account | null>(null);
+  const [stmtRows, setStmtRows] = useState<ReportRow[]>([]);
+  const [stmtLoading, setStmtLoading] = useState(false);
+  const [stmtFrom, setStmtFrom] = useState('');
+  const [stmtTo, setStmtTo] = useState('');
+  const openStatement = async (a: Account) => {
+    setStmtAcc(a); setDetail(null); setStmtRows([]); setStmtFrom(''); setStmtTo(''); setStmtLoading(true);
+    try { setStmtRows((await accountAPI.statement(a.referenceNumber)).transactions); }
+    catch { showToast('Failed to load statement', 'error'); }
+    finally { setStmtLoading(false); }
+  };
   const [showCreate, setShowCreate] = useState(false);
   const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'' };
   const [form, setForm] = useState(empty);
@@ -1247,7 +1262,7 @@ export const AdminAccountsPage: React.FC = () => {
   };
   const acctName = (ref?: string | null) => accounts.find(a => a.referenceNumber === ref)?.accountName;
   useEffect(() => { reload(); }, []);
-  usePoll(() => { if (!detail && !showCreate && !toggleAcc) reload(); });
+  usePoll(() => { if (!detail && !showCreate && !toggleAcc && !stmtAcc) reload(); });
 
   const doToggle = async (reason: string) => {
     if (!toggleAcc) return;
@@ -1472,6 +1487,35 @@ export const AdminAccountsPage: React.FC = () => {
               <span style={{ fontSize:13,fontWeight:700,color:T.textMain,textAlign:'right' }}>{v}</span>
             </div>
           ))}
+          <div style={{ display:'flex',gap:10,marginTop:16 }}>
+            <Btn onClick={()=>openStatement(detail)}>📒 View Statement</Btn>
+            <Btn variant="secondary" onClick={()=>setDetail(null)}>Close</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {stmtAcc && (
+        <Modal title={`Account Statement — ${stmtAcc.accountName}`} onClose={()=>setStmtAcc(null)} xl>
+          <div style={{ display:'flex',gap:12,alignItems:'flex-end',flexWrap:'wrap',marginBottom:16 }}>
+            <Input label="From Date" type="date" value={stmtFrom} onChange={e=>setStmtFrom(e.target.value)} style={{ marginBottom:0 }}/>
+            <Input label="To Date" type="date" value={stmtTo} onChange={e=>setStmtTo(e.target.value)} style={{ marginBottom:0 }}/>
+            {(stmtFrom||stmtTo) && <Btn size="sm" variant="secondary" onClick={()=>{ setStmtFrom(''); setStmtTo(''); }}>Clear</Btn>}
+            <span style={{ fontSize:12,color:T.textMuted,marginLeft:'auto' }}>Ref: <code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontWeight:700 }}>{stmtAcc.referenceNumber}</code></span>
+          </div>
+          {stmtLoading
+            ? <div style={{ padding:'40px 0' }}><LoadingScreen label="Loading statement…"/></div>
+            : (() => {
+                const filtered = stmtRows.filter(r => (!stmtFrom || (r.date||'') >= stmtFrom) && (!stmtTo || (r.date||'') <= stmtTo));
+                const rangeLabel = stmtFrom && stmtTo ? `${stmtFrom} → ${stmtTo}` : stmtFrom ? `From ${stmtFrom}` : stmtTo ? `Up to ${stmtTo}` : 'All time';
+                return (
+                  <AgentLedgerReport
+                    rows={filtered}
+                    businessName={`${stmtAcc.accountName} (${stmtAcc.referenceNumber})`}
+                    generatedBy={user?.name || user?.username || 'Admin'}
+                    rangeLabel={rangeLabel}
+                  />
+                );
+              })()}
         </Modal>
       )}
 

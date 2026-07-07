@@ -697,7 +697,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
 // sequential running balance (Opening + Deposits − Withdrawals − Settlements). ──
 const LEDGER_HEADERS = ['Date', 'Time', 'Description', 'Transaction Reference', 'Amount', 'Running Balance'];
 const signed = (n: number) => `${n >= 0 ? '+' : '−'}${fmt(Math.abs(n))}`;
-const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
+export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
   ({ rows, businessName, generatedBy, rangeLabel }) => {
     const toast = useToast();
     // Completed transactions, oldest first; deposits add, withdrawals & settlements subtract.

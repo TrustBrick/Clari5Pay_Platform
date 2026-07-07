@@ -8,7 +8,7 @@ from app.models.models import AccountMaster, AccountTransaction, AdminUpi, Trans
 from app.core.deps import get_current_admin
 from app.schemas.schemas import AccountCreate, ReasonRequest
 from app.api.routes.system_logs import log_event, record_audit
-from app.api.routes.transactions import compute_balance, _COMPLETED_STATUSES
+from app.api.routes.transactions import compute_balance, _COMPLETED_STATUSES, _kind, _completed, _member_label
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -145,6 +145,59 @@ async def account_balances(
             "merchants": rows,
         })
     return out
+
+
+@router.get("/{ref}/statement")
+async def account_statement(
+    ref: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Bank-statement ledger for a SINGLE account: every transaction routed to this account —
+    deposits via ``Transaction.admin_ref``; withdrawals/settlements via the member→account map
+    (the exact attribution used by /balances). Rows are shaped identically to the Reports
+    payload so the frontend reuses the same Agent Ledger renderer (Opening/Running/Closing
+    balance + PDF/Excel/CSV export). No balance logic is duplicated here — this only scopes
+    transactions to the account; the running-balance math stays in the shared ledger view."""
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == ref)
+    )).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    txns = (await db.execute(select(Transaction))).scalars().all()
+
+    # Member → most recent receiving account — same source as account_balances, so a member's
+    # withdrawals/settlements attribute back to the account they deposit into.
+    links = (await db.execute(
+        select(AccountTransaction).order_by(AccountTransaction.id.desc())
+    )).scalars().all()
+    member_acct: dict[str, str] = {}
+    for l in links:
+        if l.member_id and l.reference_number and l.member_id not in member_acct:
+            member_acct[l.member_id] = l.reference_number
+
+    def _belongs(t: Transaction) -> bool:
+        if _kind(t) == "deposit":
+            return t.admin_ref == ref
+        # withdrawals / settlements attribute via the member's receiving account
+        return bool(t.member_id and member_acct.get(t.member_id) == ref)
+
+    rows = [{
+        "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
+        "business": t.merchant_name,
+        "type": _kind(t), "depositType": t.deposit_type, "amount": round(t.amount, 2),
+        "status": t.status.value, "date": str(t.tx_date), "time": t.tx_time,
+        "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
+        "completed": _completed(t),
+        "cancelReason": t.cancel_reason,
+        "paymentMethod": t.deposit_type if _kind(t) == "deposit" else (t.payout_mode or None),
+        "approvedBy": t.approved_by, "processedBy": t.processed_by,
+        "agentCode": t.agent_code, "riskLevel": "HIGH" if t.high_risk else "LOW",
+        "availableBalance": None,
+    } for t in txns if _belongs(t)]
+    rows.sort(key=lambda r: r["createdAt"] or "", reverse=True)
+    return {"referenceNumber": ref, "accountName": acc.account_name, "transactions": rows}
 
 
 def _a(a: AccountMaster, merchant_name: str | None = None) -> dict:
