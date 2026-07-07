@@ -1506,13 +1506,10 @@ export const AdminAccountsPage: React.FC = () => {
             ? <div style={{ padding:'40px 0' }}><LoadingScreen label="Loading statement…"/></div>
             : (() => {
                 const filtered = stmtRows.filter(r => (!stmtFrom || (r.date||'') >= stmtFrom) && (!stmtTo || (r.date||'') <= stmtTo));
-                // Opening Balance seed: this account's transactions before the From Date.
-                const priorRows = stmtFrom ? stmtRows.filter(r => (r.date||'') < stmtFrom) : [];
                 const rangeLabel = stmtFrom && stmtTo ? `${stmtFrom} → ${stmtTo}` : stmtFrom ? `From ${stmtFrom}` : stmtTo ? `Up to ${stmtTo}` : 'All time';
                 return (
                   <AgentLedgerReport
                     rows={filtered}
-                    priorRows={priorRows}
                     businessName={`${stmtAcc.accountName} (${stmtAcc.referenceNumber})`}
                     generatedBy={user?.name || user?.username || 'Admin'}
                     rangeLabel={rangeLabel}

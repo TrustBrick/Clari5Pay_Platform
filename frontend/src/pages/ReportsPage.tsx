@@ -507,23 +507,6 @@ const inDateWindow = (r: ReportRow, preset: string, from: string, to: string): b
   if (preset === 'yesterday') return ts >= start.getTime() - day && ts < start.getTime();
   return true;
 };
-// Timestamp marking the START of the applied date window — used to seed the Agent Ledger's
-// Opening Balance from transactions before it. null = no lower bound (All Time, or Custom with
-// no From Date) → Opening Balance is 0.
-const windowStartTs = (f: RFilters): number | null => {
-  const now = Date.now(); const day = 86400000;
-  switch (f.datePreset) {
-    case 'custom': return f.from ? new Date(`${f.from}T00:00:00Z`).getTime() : null;
-    case '30m': return now - 30 * 60000;
-    case '1h': return now - 3600000;
-    case '24h': return now - day;
-    case '7d': return now - 7 * day;
-    case '30d': return now - 30 * day;
-    case 'today': { const s = new Date(); s.setHours(0, 0, 0, 0); return s.getTime(); }
-    case 'yesterday': { const s = new Date(); s.setHours(0, 0, 0, 0); return s.getTime() - day; }
-    default: return null;   // 'all' (or unknown) → no opening carry-forward
-  }
-};
 const matchesFilters = (r: ReportRow, f: RFilters): boolean => {
   const inc = (v: string | null | undefined, q: string) => !q || (v || '').toLowerCase().includes(q.toLowerCase());
   return inc(r.ref, f.ref) && inc(r.memberId, f.memberId) && inc(r.member, f.memberName)
@@ -714,26 +697,26 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
 // sequential running balance (Opening + Deposits − Withdrawals − Settlements). ──
 const LEDGER_HEADERS = ['Date', 'Time', 'Description', 'Transaction Reference', 'Amount', 'Running Balance'];
 const signed = (n: number) => `${n >= 0 ? '+' : '−'}${fmt(Math.abs(n))}`;
-export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string; priorRows?: ReportRow[] }> =
-  ({ rows, businessName, generatedBy, rangeLabel, priorRows }) => {
+export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
+  ({ rows, businessName, generatedBy, rangeLabel }) => {
     const toast = useToast();
     // Deposits add; withdrawals & settlements subtract (shared Total Available Balance rule).
     const delta = (r: ReportRow) => (r.type === 'deposit' ? r.amount : -r.amount);
-    // Opening Balance = net of every COMPLETED transaction before the selected period
-    // (priorRows). 0 when there are none — or when no From Date is selected (priorRows empty).
-    // Same delta rule as the running balance below, so there is no duplicated calculation.
-    const opening = (priorRows || []).filter(r => r.completed).reduce((s, r) => s + delta(r), 0);
-    // Completed transactions in range, oldest first; running balance starts from Opening.
+    // Completed transactions, oldest first; running balance starts from zero (unchanged).
     const ledger = (() => {
       const completed = rows.filter(r => r.completed).slice().sort((a, b) => rowTs(a) - rowTs(b));
-      let bal = opening;
+      let bal = 0;
       return completed.map(r => {
         const d = delta(r);
         bal += d;
         return { date: r.date, time: r.time, description: `${RTYPE_LABEL[r.type || ''] || 'Transaction'} — ${memberLabel(r.memberId, r.member)}`, ref: r.ref, amount: d, balance: bal };
       });
     })();
-    const closing = ledger.length ? ledger[ledger.length - 1].balance : opening;
+    // Clari5Pay business rule (not a bank statement): Opening Balance displays the amount of
+    // the FIRST transaction shown in the report — 0 only when the filtered report is empty.
+    // Display value only; it does not feed the Running Balance (which still starts from zero).
+    const opening = ledger.length ? ledger[0].amount : 0;
+    const closing = ledger.length ? ledger[ledger.length - 1].balance : 0;
     const csvRows: Array<Array<string | number>> = [['', '', 'Opening Balance', '', '', opening], ...ledger.map(l => [l.date, l.time, l.description, l.ref, l.amount, l.balance])];
     const pdfRows: Array<Array<string | number>> = [['—', '—', 'Opening Balance', '—', '—', fmt(opening)], ...ledger.map(l => [l.date, l.time, l.description, l.ref, signed(l.amount), fmt(l.balance)])];
     const onExcel = () => {
@@ -865,20 +848,6 @@ const ReportsView: React.FC<ReportsViewProps> = ({
   const rangeLabel = f.datePreset === 'custom'
     ? `${f.from || 'start'} → ${f.to || 'today'}`
     : (DATE_PRESETS.find(d => d[0] === f.datePreset)?.[1] || 'All Time');
-  // Rows before the window start (same non-date filters) → the Agent Ledger seeds its Opening
-  // Balance from these. Empty when there's no lower bound (All Time / Custom without a From Date).
-  // Custom range complements the in-range filter on the IST calendar date (r.date < from);
-  // rolling presets compare on the transaction timestamp.
-  const ledgerPriorRows = (() => {
-    const others = { ...f, datePreset: 'all', from: '', to: '' };
-    if (f.datePreset === 'custom') {
-      return f.from ? data.transactions.filter(r => matchesFilters(r, others) && (r.date || '') < f.from) : [];
-    }
-    const startTs = windowStartTs(f);
-    if (startTs == null) return [];
-    return data.transactions.filter(r => matchesFilters(r, others) && rowTs(r) < startTs);
-  })();
-
   // 1 — Summary cards (colour-coded per spec)
   const card = (label: string, value: number, color: string) => (
     <Card className="c5-hover-lift" style={{ padding: '14px 16px', borderTop: `3px solid ${color}` }}>
@@ -972,7 +941,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 
       {/* Focused report types (Treasury / Agent Ledger) — same filters, same exports */}
       {reportType === 'treasury' && <TreasuryReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
-      {reportType === 'ledger' && <AgentLedgerReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} priorRows={ledgerPriorRows} />}
+      {reportType === 'ledger' && <AgentLedgerReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
 
       {reportType === 'full' && <>
       {/* 4 — Membership analytics */}
