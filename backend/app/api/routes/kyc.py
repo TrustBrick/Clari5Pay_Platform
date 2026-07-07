@@ -46,15 +46,6 @@ class OcrRequest(BaseModel):
     fileData: str          # base64 data URL of the uploaded document
 
 
-class DigiLockerConnectRequest(BaseModel):
-    mobile: str | None = None
-    aadhaar: str | None = None
-
-
-class DigiLockerDocumentsRequest(BaseModel):
-    sessionId: str
-
-
 def _unavailable(exc: kyc_service.KYCNotConfigured) -> HTTPException:
     """Map a not-configured provider to a graceful, client-friendly 503."""
     return HTTPException(
@@ -111,27 +102,12 @@ async def ocr_extract(body: OcrRequest, _: User = Depends(get_current_kyc_user))
         raise _unavailable(exc)
 
 
-@router.post("/digilocker/connect")
-async def digilocker_connect(body: DigiLockerConnectRequest, _: User = Depends(get_current_kyc_user)):
-    mobile = (body.mobile or "").strip()
-    aadhaar = (body.aadhaar or "").replace(" ", "").strip()
-    if not mobile and not aadhaar:
-        raise HTTPException(status_code=400, detail="Enter the customer's mobile number or Aadhaar number to continue.")
-    if mobile and not re.match(r"^\d{10}$", mobile):
-        raise HTTPException(status_code=400, detail="Invalid mobile number — must be 10 digits.")
-    if aadhaar and not AADHAAR_RE.match(aadhaar):
-        raise HTTPException(status_code=400, detail="Invalid Aadhaar Number — must be exactly 12 digits.")
+@router.post("/digilocker/verify")
+async def digilocker_verify(_: User = Depends(get_current_kyc_user)):
+    """Verify Aadhaar via DigiLocker — the customer authenticates with DigiLocker and the
+    verified Aadhaar document is retrieved (no manual Aadhaar entry). Returns the same
+    Aadhaar result shape as /aadhaar/verify so the UI renders one unified details card."""
     try:
-        return await kyc_service.digilocker_connect(mobile or None, aadhaar or None)
-    except kyc_service.KYCNotConfigured as exc:
-        raise _unavailable(exc)
-
-
-@router.post("/digilocker/documents")
-async def digilocker_documents(body: DigiLockerDocumentsRequest, _: User = Depends(get_current_kyc_user)):
-    if not body.sessionId.strip():
-        raise HTTPException(status_code=400, detail="Missing DigiLocker session.")
-    try:
-        return await kyc_service.digilocker_documents(body.sessionId.strip())
+        return await kyc_service.verify_via_digilocker()
     except kyc_service.KYCNotConfigured as exc:
         raise _unavailable(exc)

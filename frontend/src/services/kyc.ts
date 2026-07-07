@@ -20,6 +20,7 @@ export interface AadhaarResult {
   pincode?: string;
   photo?: string | null;      // base64 / URL
   status?: string;
+  lastSynced?: string;        // populated when verified via DigiLocker
 }
 
 export interface PanResult {
@@ -52,25 +53,6 @@ export interface OcrResult {
   status?: string;
 }
 
-export interface DigiLockerDocument {
-  type: string;
-  documentNumber?: string;
-  holderName?: string;
-  dateOfBirth?: string;
-  issueDate?: string;
-  expiryDate?: string;
-  issuingAuthority?: string;
-  status?: string;
-  lastSynced?: string;
-  preview?: string | null;
-}
-
-export interface DigiLockerSession {
-  sessionId: string;
-  authUrl?: string;
-  documents?: DigiLockerDocument[];
-}
-
 // ── Service methods (placeholders — backend integration added later) ────────────
 export const kycAPI = {
   verifyAadhaar: async (aadhaarNumber: string): Promise<AadhaarResult> =>
@@ -85,11 +67,10 @@ export const kycAPI = {
   verifyOCR: async (documentType: string, fileName: string, fileData: string): Promise<OcrResult> =>
     (await api.post<OcrResult>('/api/kyc/ocr/extract', { documentType, fileName, fileData })).data,
 
-  verifyDigiLocker: async (params: { mobile?: string; aadhaar?: string }): Promise<DigiLockerSession> =>
-    (await api.post<DigiLockerSession>('/api/kyc/digilocker/connect', params)).data,
-
-  digiLockerDocuments: async (sessionId: string): Promise<DigiLockerSession> =>
-    (await api.post<DigiLockerSession>('/api/kyc/digilocker/documents', { sessionId })).data,
+  // Aadhaar via DigiLocker — customer authenticates with DigiLocker; the verified Aadhaar
+  // document is returned in the same shape as verifyAadhaar (unified result card).
+  verifyViaDigiLocker: async (): Promise<AadhaarResult> =>
+    (await api.post<AadhaarResult>('/api/kyc/digilocker/verify')).data,
 };
 
 // ── Client-side validation helpers (mirror the server-side rules) ───────────────

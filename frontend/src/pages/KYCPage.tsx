@@ -4,33 +4,34 @@ import { T } from '../utils/theme';
 import { Card, Btn, Input, Sel } from '../components/UI';
 import {
   kycAPI, KYC_VALIDATION, OCR_ACCEPT, OCR_MAX_BYTES, kycErrorMessage,
-  type AadhaarResult, type PanResult, type PassportResult, type OcrResult, type DigiLockerSession,
+  type AadhaarResult, type PanResult, type PassportResult, type OcrResult,
 } from '../services/kyc';
 
 // ─── Merchant Portal → KYC Update ──────────────────────────────────────────────
-// Identity-verification workspace for Supervisor / Manager roles. Five providers
-// (Aadhaar, PAN, Passport, OCR, DigiLocker) share one dashboard. The UI, validation,
-// loading/error/success states and a session verification history are all live; the
-// actual provider responses arrive once the Melento.ai / DigiLocker APIs are connected.
+// Identity-verification workspace for Supervisor / Manager roles. Four providers share
+// one dashboard. Aadhaar offers TWO methods on a single page — a 12-digit Aadhaar number
+// (Melento.ai) or DigiLocker authentication — both rendered into one unified result card.
+// The UI, validation, loading/error/success states and a session history are all live;
+// the actual provider responses arrive once the Melento.ai / DigiLocker APIs are connected.
 
-type ViewKey = 'home' | 'aadhaar' | 'pan' | 'passport' | 'ocr' | 'digilocker';
+type ViewKey = 'home' | 'aadhaar' | 'pan' | 'passport' | 'ocr';
 
 interface CardDef { key: ViewKey; icon: string; title: string; desc: string; }
 const CARDS: CardDef[] = [
-  { key: 'aadhaar',    icon: '🆔', title: 'Aadhaar Verification',      desc: 'Verify a customer using their 12-digit Aadhaar number.' },
-  { key: 'pan',        icon: '💳', title: 'PAN Verification',          desc: 'Validate a PAN and fetch the holder’s details.' },
-  { key: 'passport',   icon: '📘', title: 'Passport Verification',     desc: 'Verify a passport number and its validity.' },
-  { key: 'ocr',        icon: '📄', title: 'OCR Document Verification', desc: 'Extract details from an uploaded identity document.' },
-  { key: 'digilocker', icon: '🔐', title: 'DigiLocker Verification',   desc: 'Securely verify customer documents through DigiLocker.' },
+  { key: 'aadhaar',  icon: '🆔', title: 'Aadhaar Verification',      desc: 'Verify a customer using their Aadhaar number or through DigiLocker.' },
+  { key: 'pan',      icon: '💳', title: 'PAN Verification',          desc: 'Validate a PAN and fetch the holder’s details.' },
+  { key: 'passport', icon: '📘', title: 'Passport Verification',     desc: 'Verify a passport number and its validity.' },
+  { key: 'ocr',      icon: '📄', title: 'OCR Document Verification', desc: 'Extract details from an uploaded identity document.' },
 ];
 const TYPE_LABEL: Record<ViewKey, string> = {
-  home: '', aadhaar: 'Aadhaar', pan: 'PAN', passport: 'Passport', ocr: 'OCR Document', digilocker: 'DigiLocker',
+  home: '', aadhaar: 'Aadhaar', pan: 'PAN', passport: 'Passport', ocr: 'OCR Document',
 };
 
 export interface KycHistoryRow {
   id: number;
   dateTime: string;
   type: string;
+  method: string;      // e.g. "Aadhaar API" | "DigiLocker" | "PAN API" | "OCR"
   docNumber: string;   // already masked
   customerName: string;
   verifiedBy: string;
@@ -62,11 +63,13 @@ const Spinner: React.FC = () => (
   <span style={{ width: 14, height: 14, border: `2px solid rgba(255,255,255,0.5)`, borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block', animation: 'kycspin 0.7s linear infinite' }} />
 );
 
-const ResultCard: React.FC<{ title: string; rows: Array<[string, React.ReactNode]>; photo?: string | null }> = ({ title, rows, photo }) => (
+const ResultCard: React.FC<{ title: string; rows: Array<[string, React.ReactNode]>; photo?: string | null; verifiedVia?: string }> = ({ title, rows, photo, verifiedVia }) => (
   <Card style={{ marginTop: 18 }}>
-    <div style={{ padding: '12px 18px', borderBottom: `1px solid ${T.border}`, background: T.canvas, display: 'flex', alignItems: 'center', gap: 8 }}>
+    <div style={{ padding: '12px 18px', borderBottom: `1px solid ${T.border}`, background: T.canvas, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <span style={{ fontSize: 13, fontWeight: 800, color: T.textMain }}>{title}</span>
-      <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>● Verified</span>
+      <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>
+        ● {verifiedVia ? `Verified via ${verifiedVia}` : 'Verified'}
+      </span>
     </div>
     <div style={{ padding: 18, display: 'flex', gap: 20, flexWrap: 'wrap' }}>
       {photo && <img src={photo} alt="Document" style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 10, border: `1px solid ${T.border}` }} />}
@@ -96,43 +99,92 @@ const VerifyShell: React.FC<{ icon: string; title: string; children: React.React
   </div>
 );
 
+// Build the shared Aadhaar detail rows (used by both verification methods).
+const aadhaarRows = (r: AadhaarResult, fallbackNum: string, viaDigiLocker: boolean): Array<[string, React.ReactNode]> => {
+  const rows: Array<[string, React.ReactNode]> = [
+    ['Aadhaar Number', maskNumber(r.aadhaarNumber || fallbackNum)],
+    ['Full Name', r.fullName], ['Date of Birth', r.dateOfBirth], ['Gender', r.gender],
+    ['Address', r.address], ['State', r.state], ['District', r.district], ['Pincode', r.pincode],
+    [viaDigiLocker ? 'DigiLocker Verification Status' : 'Verification Status', r.status],
+  ];
+  if (viaDigiLocker) rows.push(['Last Synced Date', r.lastSynced]);
+  return rows;
+};
+
 interface ViewProps { onRecord: (r: Omit<KycHistoryRow, 'id' | 'dateTime' | 'verifiedBy'>) => void; onBack: () => void; }
 
-// ─── Aadhaar ───────────────────────────────────────────────────────────────────
+// ─── Aadhaar (two methods: Aadhaar number OR DigiLocker) ───────────────────────
 const AadhaarView: React.FC<ViewProps> = ({ onRecord, onBack }) => {
   const [num, setNum] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loadingApi, setLoadingApi] = useState(false);
+  const [loadingDl, setLoadingDl] = useState(false);
   const [err, setErr] = useState('');
   const [ok, setOk] = useState(false);
   const [result, setResult] = useState<AadhaarResult | null>(null);
+  const [via, setVia] = useState<'api' | 'digilocker' | null>(null);
 
-  const submit = async () => {
-    setErr(''); setOk(false); setResult(null);
+  const reset = () => { setErr(''); setOk(false); setResult(null); setVia(null); };
+
+  const submitApi = async () => {
+    reset();
     if (!KYC_VALIDATION.aadhaar(num)) { setErr('Invalid Aadhaar Number — must be exactly 12 digits.'); return; }
-    setLoading(true);
+    setLoadingApi(true);
     try {
       const r = await kycAPI.verifyAadhaar(num.replace(/\s/g, ''));
-      setResult(r); setOk(true);
-      onRecord({ type: 'Aadhaar', docNumber: maskNumber(num), customerName: r.fullName || '—', status: 'Verified' });
+      setResult(r); setVia('api'); setOk(true);
+      onRecord({ type: 'Aadhaar', method: 'Aadhaar API', docNumber: maskNumber(num), customerName: r.fullName || '—', status: 'Verified' });
     } catch (e) {
-      setErr(kycErrorMessage(e, 'Aadhaar verification failed.'));
-      onRecord({ type: 'Aadhaar', docNumber: maskNumber(num), customerName: '—', status: 'Failed' });
-    } finally { setLoading(false); }
+      setErr(kycErrorMessage(e, 'Aadhaar Verification Failed.'));
+      onRecord({ type: 'Aadhaar', method: 'Aadhaar API', docNumber: maskNumber(num), customerName: '—', status: 'Failed' });
+    } finally { setLoadingApi(false); }
+  };
+
+  const connectDigiLocker = async () => {
+    reset();
+    setLoadingDl(true);
+    try {
+      const r = await kycAPI.verifyViaDigiLocker();
+      setResult(r); setVia('digilocker'); setOk(true);
+      onRecord({ type: 'Aadhaar', method: 'DigiLocker', docNumber: maskNumber(r.aadhaarNumber || ''), customerName: r.fullName || '—', status: 'Verified' });
+    } catch (e) {
+      setErr(kycErrorMessage(e, 'DigiLocker Authentication Failed.'));
+      onRecord({ type: 'Aadhaar', method: 'DigiLocker', docNumber: '—', customerName: '—', status: 'Failed' });
+    } finally { setLoadingDl(false); }
   };
 
   return (
     <VerifyShell icon="🆔" title="Aadhaar Verification" onBack={onBack}>
       {ok && <Banner kind="success">Verification completed successfully.</Banner>}
       {err && <Banner kind="error">{err}</Banner>}
-      <Input label="Aadhaar Number" value={num} onChange={e => setNum(e.target.value.replace(/[^\d\s]/g, ''))} placeholder="1234 5678 9012" inputMode="numeric" hint="12-digit Aadhaar number" />
-      <Btn onClick={submit} disabled={loading}>{loading ? <><Spinner /> Verifying...</> : 'Verify Aadhaar'}</Btn>
+
+      {/* Method 1 — Aadhaar number */}
+      <Input label="Aadhaar Number" value={num} onChange={e => setNum(e.target.value.replace(/[^\d\s]/g, ''))} placeholder="1234 5678 9012" inputMode="numeric" hint="Exactly 12 digits, numeric only" />
+      <Btn onClick={submitApi} disabled={loadingApi || loadingDl}>{loadingApi ? <><Spinner /> Verifying...</> : 'Verify Aadhaar'}</Btn>
+
+      {/* OR divider */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, margin: '22px 0' }}>
+        <div style={{ flex: 1, height: 1, background: T.border }} />
+        <span style={{ fontSize: 12, fontWeight: 800, color: T.textMuted, letterSpacing: '0.08em' }}>OR</span>
+        <div style={{ flex: 1, height: 1, background: T.border }} />
+      </div>
+
+      {/* Method 2 — DigiLocker */}
+      <div style={{ padding: 18, borderRadius: 12, background: T.canvas, border: `1px solid ${T.border}` }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: T.textMain, marginBottom: 4 }}>Verify using DigiLocker</div>
+        <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted, lineHeight: 1.5 }}>
+          Securely verify Aadhaar through DigiLocker. The customer authenticates with DigiLocker — no manual Aadhaar entry required.
+        </p>
+        <Btn variant="dark" onClick={connectDigiLocker} disabled={loadingApi || loadingDl}>{loadingDl ? <><Spinner /> Connecting...</> : '🔐 Connect DigiLocker'}</Btn>
+      </div>
+
+      {/* Unified result — same card for both methods */}
       {result && (
-        <ResultCard title="Aadhaar Details" photo={result.photo} rows={[
-          ['Aadhaar Number', maskNumber(result.aadhaarNumber || num)],
-          ['Full Name', result.fullName], ['Date of Birth', result.dateOfBirth], ['Gender', result.gender],
-          ['Address', result.address], ['State', result.state], ['District', result.district],
-          ['Pincode', result.pincode], ['Verification Status', result.status],
-        ]} />
+        <ResultCard
+          title="Aadhaar Details"
+          photo={result.photo}
+          verifiedVia={via === 'digilocker' ? 'DigiLocker' : undefined}
+          rows={aadhaarRows(result, num, via === 'digilocker')}
+        />
       )}
     </VerifyShell>
   );
@@ -153,10 +205,10 @@ const PanView: React.FC<ViewProps> = ({ onRecord, onBack }) => {
     try {
       const r = await kycAPI.verifyPAN(num.toUpperCase().trim());
       setResult(r); setOk(true);
-      onRecord({ type: 'PAN', docNumber: maskNumber(num), customerName: r.fullName || '—', status: 'Verified' });
+      onRecord({ type: 'PAN', method: 'PAN API', docNumber: maskNumber(num), customerName: r.fullName || '—', status: 'Verified' });
     } catch (e) {
       setErr(kycErrorMessage(e, 'PAN verification failed.'));
-      onRecord({ type: 'PAN', docNumber: maskNumber(num), customerName: '—', status: 'Failed' });
+      onRecord({ type: 'PAN', method: 'PAN API', docNumber: maskNumber(num), customerName: '—', status: 'Failed' });
     } finally { setLoading(false); }
   };
 
@@ -193,10 +245,10 @@ const PassportView: React.FC<ViewProps> = ({ onRecord, onBack }) => {
     try {
       const r = await kycAPI.verifyPassport(num.toUpperCase().trim(), dob || undefined);
       setResult(r); setOk(true);
-      onRecord({ type: 'Passport', docNumber: maskNumber(num), customerName: r.fullName || '—', status: 'Verified' });
+      onRecord({ type: 'Passport', method: 'Passport API', docNumber: maskNumber(num), customerName: r.fullName || '—', status: 'Verified' });
     } catch (e) {
       setErr(kycErrorMessage(e, 'Passport Not Found.'));
-      onRecord({ type: 'Passport', docNumber: maskNumber(num), customerName: '—', status: 'Failed' });
+      onRecord({ type: 'Passport', method: 'Passport API', docNumber: maskNumber(num), customerName: '—', status: 'Failed' });
     } finally { setLoading(false); }
   };
 
@@ -247,10 +299,10 @@ const OcrView: React.FC<ViewProps> = ({ onRecord, onBack }) => {
     try {
       const r = await kycAPI.verifyOCR(docType, file.name, dataUrl);
       setResult(r); setOk(true);
-      onRecord({ type: 'OCR Document', docNumber: maskNumber(r.documentNumber || file.name), customerName: r.name || '—', status: 'Verified' });
+      onRecord({ type: 'OCR Document', method: 'OCR', docNumber: maskNumber(r.documentNumber || file.name), customerName: r.name || '—', status: 'Verified' });
     } catch (e) {
       setErr(kycErrorMessage(e, 'OCR Extraction Failed.'));
-      onRecord({ type: 'OCR Document', docNumber: '—', customerName: '—', status: 'Failed' });
+      onRecord({ type: 'OCR Document', method: 'OCR', docNumber: '—', customerName: '—', status: 'Failed' });
     } finally { setLoading(false); }
   };
 
@@ -287,78 +339,6 @@ const OcrView: React.FC<ViewProps> = ({ onRecord, onBack }) => {
   );
 };
 
-// ─── DigiLocker ────────────────────────────────────────────────────────────────
-const DigiLockerView: React.FC<ViewProps> = ({ onRecord, onBack }) => {
-  const [mode, setMode] = useState<'intro' | 'auth'>('intro');
-  const [mobile, setMobile] = useState('');
-  const [aadhaar, setAadhaar] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState('');
-  const [ok, setOk] = useState(false);
-  const [session, setSession] = useState<DigiLockerSession | null>(null);
-
-  const submit = async () => {
-    setErr(''); setOk(false); setSession(null);
-    const m = mobile.trim(); const a = aadhaar.replace(/\s/g, '').trim();
-    if (!m && !a) { setErr('Enter the customer’s mobile number or Aadhaar number to continue.'); return; }
-    if (m && !KYC_VALIDATION.mobile(m)) { setErr('Invalid mobile number — must be 10 digits.'); return; }
-    if (a && !KYC_VALIDATION.aadhaar(a)) { setErr('Invalid Aadhaar Number — must be exactly 12 digits.'); return; }
-    setLoading(true);
-    try {
-      const s = await kycAPI.verifyDigiLocker({ mobile: m || undefined, aadhaar: a || undefined });
-      setSession(s); setOk(true);
-      onRecord({ type: 'DigiLocker', docNumber: maskNumber(a || m), customerName: '—', status: 'Verified' });
-    } catch (e) {
-      setErr(kycErrorMessage(e, 'DigiLocker Authentication Failed.'));
-      onRecord({ type: 'DigiLocker', docNumber: maskNumber(a || m), customerName: '—', status: 'Failed' });
-    } finally { setLoading(false); }
-  };
-
-  return (
-    <VerifyShell icon="🔐" title="DigiLocker Verification" onBack={onBack}>
-      {mode === 'intro' ? (
-        <>
-          <p style={{ margin: '0 0 18px', fontSize: 13, color: T.textMuted, lineHeight: 1.6 }}>
-            Securely verify customer documents through DigiLocker. The customer authorises access to their
-            government-issued documents, then verified copies are retrieved automatically.
-          </p>
-          <Btn onClick={() => setMode('auth')}>Connect DigiLocker</Btn>
-        </>
-      ) : (
-        <>
-          {ok && <Banner kind="success">Verification completed successfully.</Banner>}
-          {err && <Banner kind="error">{err}</Banner>}
-          <p style={{ margin: '0 0 16px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Connect with DigiLocker</p>
-          <Input label="Customer Mobile Number" value={mobile} onChange={e => setMobile(e.target.value.replace(/\D/g, ''))} placeholder="10-digit mobile" inputMode="numeric" />
-          <div style={{ textAlign: 'center', color: T.textMuted, fontSize: 12, fontWeight: 700, margin: '-4px 0 12px' }}>or</div>
-          <Input label="Customer Aadhaar Number" value={aadhaar} onChange={e => setAadhaar(e.target.value.replace(/[^\d\s]/g, ''))} placeholder="12-digit Aadhaar" inputMode="numeric" />
-          <Btn onClick={submit} disabled={loading}>{loading ? <><Spinner /> Connecting...</> : 'Continue'}</Btn>
-
-          <div style={{ marginTop: 22 }}>
-            <h3 style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Retrieved Documents</h3>
-            {session?.documents && session.documents.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {session.documents.map((d, i) => (
-                  <Card key={i} style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: T.textMain, flex: '1 1 160px' }}>{d.type}</span>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>{d.status || 'Verified'}</span>
-                    <Btn size="sm" variant="ghost">View</Btn>
-                    <Btn size="sm" variant="secondary">Download</Btn>
-                  </Card>
-                ))}
-              </div>
-            ) : (
-              <p style={{ fontSize: 12, color: T.textMuted, padding: '14px 16px', border: `1px dashed ${T.border}`, borderRadius: 10, margin: 0 }}>
-                No documents retrieved yet. Verified documents appear here after the customer authorises DigiLocker access.
-              </p>
-            )}
-          </div>
-        </>
-      )}
-    </VerifyShell>
-  );
-};
-
 // ─── History table ─────────────────────────────────────────────────────────────
 const HistoryTable: React.FC<{ rows: KycHistoryRow[] }> = ({ rows }) => (
   <Card style={{ marginTop: 24 }}>
@@ -370,17 +350,18 @@ const HistoryTable: React.FC<{ rows: KycHistoryRow[] }> = ({ rows }) => (
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ background: T.canvas }}>
-            {['Date & Time', 'Verification Type', 'Document Number', 'Customer Name', 'Verified By', 'Status', 'Action'].map(h => (
+            {['Date & Time', 'Verification Type', 'Verification Method', 'Document Number', 'Customer Name', 'Verified By', 'Status', 'Action'].map(h => (
               <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}` }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={7} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>No verifications yet.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={8} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>No verifications yet.</td></tr>}
           {rows.map((r, i) => (
             <tr key={r.id} style={{ background: i % 2 === 0 ? T.surface : T.canvas }}>
               <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{r.dateTime}</td>
               <td style={{ padding: '11px 14px', fontWeight: 700, color: T.textMain }}>{r.type}</td>
+              <td style={{ padding: '11px 14px', color: T.textMuted }}>{r.method}</td>
               <td style={{ padding: '11px 14px', color: T.textMuted, fontFamily: 'monospace' }}>{r.docNumber}</td>
               <td style={{ padding: '11px 14px', color: T.textMain }}>{r.customerName}</td>
               <td style={{ padding: '11px 14px', color: T.textMuted }}>{r.verifiedBy}</td>
@@ -425,7 +406,7 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
                 <div style={{ width: 48, height: 48, borderRadius: 14, background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>{c.icon}</div>
                 <div style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{c.title}</div>
                 <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, flex: 1 }}>{c.desc}</div>
-                <Btn size="sm" full onClick={() => setView(c.key)}>{c.key === 'digilocker' ? 'Connect DigiLocker' : c.key === 'ocr' ? 'Open' : `Verify ${TYPE_LABEL[c.key]}`}</Btn>
+                <Btn size="sm" full onClick={() => setView(c.key)}>{c.key === 'ocr' ? 'Open' : `Verify ${TYPE_LABEL[c.key]}`}</Btn>
               </Card>
             ))}
           </div>
@@ -437,7 +418,6 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
       {view === 'pan' && <PanView {...viewProps} />}
       {view === 'passport' && <PassportView {...viewProps} />}
       {view === 'ocr' && <OcrView {...viewProps} />}
-      {view === 'digilocker' && <DigiLockerView {...viewProps} />}
     </div>
   );
 };

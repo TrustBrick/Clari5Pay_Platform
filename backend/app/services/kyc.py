@@ -60,21 +60,19 @@ async def verify_ocr(document_type: str, file_name: str, file_data: str) -> dict
     )
 
 
-# ── DigiLocker (OAuth authorization → fetch verified documents) ─────────────────
-async def digilocker_connect(mobile: str | None, aadhaar: str | None) -> dict:
-    """Begin a DigiLocker authorization session for the given customer identifier.
+# ── DigiLocker (OAuth authorization → fetch the verified Aadhaar document) ──────
+async def verify_via_digilocker() -> dict:
+    """Verify a customer's Aadhaar through DigiLocker.
+
+    The customer authenticates with DigiLocker (OAuth), then the verified Aadhaar document
+    is retrieved — no manual Aadhaar number entry is needed. The returned shape matches the
+    Aadhaar-number result so the UI can render both methods in one unified details card
+    (plus a ``lastSynced`` timestamp DigiLocker provides).
 
     TODO(integration): once DIGILOCKER_CLIENT_ID / DIGILOCKER_CLIENT_SECRET are configured,
-    initiate the DigiLocker OAuth flow against ``settings.DIGILOCKER_BASE_URL`` and return
-    the authorization URL / session handle.
+    run the DigiLocker OAuth flow against ``settings.DIGILOCKER_BASE_URL``, pull the Aadhaar
+    document, and return it normalised to the Aadhaar result fields.
     """
-    if not settings.digilocker_configured:
-        raise KYCNotConfigured("DigiLocker")
-    raise KYCNotConfigured("DigiLocker")
-
-
-async def digilocker_documents(session_id: str) -> dict:
-    """List the verified documents available for an authorized DigiLocker session."""
     if not settings.digilocker_configured:
         raise KYCNotConfigured("DigiLocker")
     raise KYCNotConfigured("DigiLocker")
