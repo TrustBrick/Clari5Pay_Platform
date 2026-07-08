@@ -43,23 +43,153 @@ def _kind(tx: Transaction) -> str:
     return "Transaction"
 
 
-def _format(tx: Transaction, status_label: str, action: str | None, reason: str | None = None) -> str:
-    """The fixed Clari5Pay Telegram layout: Membership ID / Reference ID / Transaction / Status,
-    an optional Reason, an optional Action Required block, and the IST timestamp."""
-    lines = [
-        "📢 Clari5Pay Notification",
-        "",
-        f"Membership ID: {tx.member_id or '-'}",
-        f"Reference ID: {tx.ref}",
-        f"Transaction: {_kind(tx)}",
-        f"Status: {status_label}",
-    ]
-    if reason:
-        lines += ["", f"Reason: {reason}"]
-    if action:
-        lines += ["", "Action Required:", action]
-    lines += ["", "Date & Time:", datetime.now(_IST).strftime("%d %b %Y, %I:%M %p IST")]
-    return "\n".join(lines)
+def _inr(amount) -> str:
+    """Format an amount as ``INR 2,50,000.00`` using Indian digit grouping."""
+    try:
+        n = float(amount)
+    except (TypeError, ValueError):
+        return "-"
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+    whole = int(n)
+    dec = int(round((n - whole) * 100))
+    if dec == 100:  # rounding spilled over
+        whole, dec = whole + 1, 0
+    s = str(whole)
+    if len(s) > 3:
+        last3, rest = s[-3:], s[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.insert(0, rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.insert(0, rest)
+        grouped = ",".join(groups) + "," + last3
+    else:
+        grouped = s
+    return f"INR {sign}{grouped}.{dec:02d}"
+
+
+def _row(label: str, value: str) -> str:
+    """Aligned ``Label        : value`` line (colon aligned to a 13-char label column)."""
+    return f"{label:<13} : {value}"
+
+
+def _ts() -> str:
+    return datetime.now(_IST).strftime("%d %b %Y, %I:%M %p IST")
+
+
+# Per-event message templates. Each returns the full Telegram text for one workflow step, shaped
+# for the ONE recipient role that owns the next action. ``a`` = actor name (reviewer), ``r`` = reason.
+def _build(tx: Transaction, event: str, actor: str | None = None, reason: str | None = None) -> str:
+    mid = tx.member_id or "-"
+    ref = tx.ref
+    amt = _inr(tx.amount)
+    who = tx.merchant_name or tx.creator_username or "-"
+    utr = tx.utr or "-"
+    kind = _kind(tx)
+    ts = _ts()
+
+    if event == "deposit_request":            # → ADMIN (bank/UPI: upload account details next)
+        return "\n".join([
+            "🔔 New Deposit Request", "",
+            _row("Membership ID", mid), _row("Reference ID", ref),
+            _row("Amount", amt), _row("Requested By", who), "",
+            "Action Required:", "Please upload the deposit account details.", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "deposit_request_review":     # → SUPERVISOR (cash/crypto: proof already attached)
+        return "\n".join([
+            "📄 New Deposit — Verify Payment", "",
+            _row("Membership ID", mid), _row("Reference ID", ref),
+            _row("Amount", amt), _row("Requested By", who), "",
+            "Action Required:", "Verify the payment and approve the deposit.", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "withdrawal_request":         # → MANAGER
+        return "\n".join([
+            "💸 New Withdrawal Request", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), _row("Amount", amt), "",
+            "Action Required:", "Verify the customer's bank account details.", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "settlement_request":         # → ADMIN (our flow has no Manager step)
+        return "\n".join([
+            "💰 New Settlement Request", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), _row("Amount", amt), "",
+            "Action Required:", "Review and approve the settlement.", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "account_submitted":          # → USER
+        return "\n".join([
+            "🏦 Deposit Account Details Submitted", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), "",
+            "Your deposit account details are ready.", "",
+            "Please complete the payment and upload:", "",
+            "• Payment Screenshot", "• UTR Number", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "slip_submitted":             # → SUPERVISOR
+        return "\n".join([
+            "📄 Payment Slip Submitted", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), _row("Amount", amt), "",
+            "The customer has uploaded:", "",
+            "• Payment Screenshot", "• UTR Number", "",
+            "Action Required:", "Verify the payment.", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "supervisor_approved":        # → ADMIN
+        return "\n".join([
+            "✅ Deposit Approved by Supervisor", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), _row("Supervisor", actor or "-"), "",
+            "Action Required:", "Complete the final deposit approval.", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "manager_verified":           # → ADMIN
+        return "\n".join([
+            "✅ Withdrawal Verified by Manager", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), _row("Manager", actor or "-"), "",
+            "Action Required:", "Complete the withdrawal payment.", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "deposit_done":               # → USER
+        return "\n".join([
+            "✅ Deposit Successful", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), "",
+            "Your deposit has been approved successfully.", "",
+            f"Amount : {amt}", "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "withdrawal_done":            # → USER
+        return "\n".join([
+            "✅ Withdrawal Completed", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), "",
+            f"Amount : {amt}", "",
+            "UTR Number:", utr, "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "settlement_done":            # → USER
+        return "\n".join([
+            "✅ Settlement Completed", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), "",
+            f"Amount : {amt}", "",
+            "UTR Number:", utr, "",
+            f"Date & Time : {ts}",
+        ])
+    if event == "returned":                   # → USER (returned for correction)
+        return "\n".join([
+            f"⚠ {kind} Requires Re-verification", "",
+            _row("Membership ID", mid), _row("Reference ID", ref), "",
+            "Reason:", reason or "-", "",
+            f"Date & Time : {ts}",
+        ])
+    # default: rejection → USER
+    return "\n".join([
+        f"❌ {kind} Rejected", "",
+        _row("Membership ID", mid), _row("Reference ID", ref), "",
+        "Reason:", reason or "-", "",
+        f"Date & Time : {ts}",
+    ])
 
 
 async def _recipients(db: AsyncSession, tx: Transaction, target: str) -> list[User]:
@@ -81,18 +211,19 @@ async def _recipients(db: AsyncSession, tx: Transaction, target: str) -> list[Us
     return []
 
 
-async def notify(db: AsyncSession, tx: Transaction, target: str, status_label: str,
-                 action: str | None = None, reason: str | None = None) -> None:
-    """Send ONE Telegram message to the role responsible for the next workflow step. Demo-only and
-    best-effort: writes a ``whatsapp_logs`` row per recipient (SENT / FAILED / no-telegram-linked)
-    and swallows all errors so the workflow is never affected. Uses the caller's session, so the
-    log rows commit together with the transaction."""
+async def notify(db: AsyncSession, tx: Transaction, target: str, event: str,
+                 actor: str | None = None, reason: str | None = None) -> None:
+    """Send ONE Telegram message to the role responsible for the next workflow step. ``event`` picks
+    the message template (see ``_build``) and is also stored as the log's notification_type; ``actor``
+    is the reviewer's name (supervisor/manager approvals) and ``reason`` the reject/return remark.
+    Demo-only and best-effort: writes a ``whatsapp_logs`` row per recipient (SENT / FAILED /
+    no-telegram-linked) and swallows all errors so the workflow is never affected. Uses the caller's
+    session, so the log rows commit together with the transaction."""
     if not (settings.is_demo and settings.telegram_configured):
         return
     try:
         users = await _recipients(db, tx, target)
-        body = _format(tx, status_label, action, reason)
-        event = f"{_kind(tx).lower()}:{target.lower()}"
+        body = _build(tx, event, actor=actor, reason=reason)
         seen: set[str] = set()
         for u in users:
             role_str = str(u.merchant_role or getattr(u.role, "value", u.role))
