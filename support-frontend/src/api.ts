@@ -55,6 +55,13 @@ export interface MerchantDetail {
   payOut?: string;
   active: boolean;
   created: string;
+  online?: boolean;
+  lastSeen?: string | null;
+}
+
+export interface Presence {
+  online: boolean;
+  lastSeen?: string | null;
 }
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
@@ -101,6 +108,7 @@ async function getJSON<T>(path: string): Promise<T> {
 export const fetchConversations = () => getJSON<Conversation[]>('/api/support/conversations');
 export const fetchMessages = (merchantId: number) => getJSON<Message[]>(`/api/support/messages/${merchantId}`);
 export const fetchMerchant = (merchantId: number) => getJSON<MerchantDetail>(`/api/support/merchant/${merchantId}`);
+export const fetchMerchantPresence = (merchantId: number) => getJSON<Presence>(`/api/support/merchant/${merchantId}/presence`);
 
 export async function setAvailability(availability: Availability): Promise<Availability> {
   const res = await fetch(`${BASE_URL}/api/support-management/me/availability`, {

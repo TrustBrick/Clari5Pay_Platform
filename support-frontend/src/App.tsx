@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   login, getUser, clearAuth, fetchConversations, fetchMessages, fetchMerchant,
-  sendMessage, wsUrl, setAvailability, type Availability,
+  fetchMerchantPresence, sendMessage, wsUrl, setAvailability, type Availability,
   type Conversation, type Message, type MerchantDetail, type SupportUser,
 } from './api';
 import { ThemeToggle } from './theme';
@@ -27,6 +27,34 @@ function useIsMobile(breakpoint = 760): boolean {
   }, [breakpoint]);
   return isMobile;
 }
+
+// Last-seen timestamp for the offline badge — always rendered in Indian Standard Time.
+const IST_TZ = 'Asia/Kolkata';
+const lastSeenLabel = (iso: string): string => {
+  const d = new Date(iso);
+  const date = d.toLocaleDateString('en-GB', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric' });
+  const time = d.toLocaleTimeString('en-US', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: true });
+  return `${date} ${time} IST`;
+};
+
+// Customer online/offline badge for the support sidebar. Presence comes from the shared
+// Active Users presence service (session heartbeat) — no separate tracking here.
+const PresenceBadge: React.FC<{ online?: boolean; lastSeen?: string | null }> = ({ online, lastSeen }) => (
+  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 7, padding: '4px 12px', borderRadius: 999,
+      fontSize: 12, fontWeight: 800,
+      background: online ? T.successBg : 'rgba(148,163,184,0.14)',
+      color: online ? T.success : T.textMuted,
+    }}>
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: online ? T.success : '#94a3b8', display: 'inline-block' }} />
+      {online ? 'Online' : 'Offline'}
+    </span>
+    {!online && lastSeen && (
+      <span style={{ fontSize: 10.5, color: T.textMuted }}>Last seen {lastSeenLabel(lastSeen)}</span>
+    )}
+  </div>
+);
 
 // ─── Login ─────────────────────────────────────────────────────────────────────
 const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => {
@@ -149,6 +177,18 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
     };
     return () => ws.close();
   }, []);
+
+  // Poll the open customer's online status so the sidebar badge stays current without a page
+  // refresh. Uses the shared presence service (same heartbeat that powers Active Users).
+  useEffect(() => {
+    if (activeId == null) return;
+    let cancelled = false;
+    const apply = (p: { online: boolean; lastSeen?: string | null }) =>
+      !cancelled && setMerchant(prev => (prev && prev.id === activeId ? { ...prev, online: p.online, lastSeen: p.lastSeen } : prev));
+    fetchMerchantPresence(activeId).then(apply).catch(() => {});
+    const t = window.setInterval(() => fetchMerchantPresence(activeId).then(apply).catch(() => {}), 5000);
+    return () => { cancelled = true; window.clearInterval(t); };
+  }, [activeId]);
 
   const openConversation = async (id: number) => {
     setActiveId(id);
@@ -330,6 +370,7 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
               <div style={{ width: 60, height: 60, borderRadius: '50%', background: T.grad, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, fontWeight: 800, color: '#fff', margin: '0 auto 10px' }}>{merchant.name.charAt(0)}</div>
               <p style={{ margin: 0, fontWeight: 800, fontSize: 15, color: T.textMain }}>{merchant.name}</p>
               <span style={{ display: 'inline-block', marginTop: 6, padding: '2px 10px', borderRadius: 12, fontSize: 11, fontWeight: 700, background: merchant.active ? T.successBg : 'rgba(220,38,38,0.1)', color: merchant.active ? T.success : T.danger }}>{merchant.active ? 'Active' : 'Inactive'}</span>
+              <PresenceBadge online={merchant.online} lastSeen={merchant.lastSeen} />
             </div>
             <h4 style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Merchant Details</h4>
             {([

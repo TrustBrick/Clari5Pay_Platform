@@ -18,7 +18,7 @@ from app.core.security import decode_token
 from app.core.deps import get_current_user
 from app.schemas.schemas import SupportMessageCreate
 from app.api.routes.transactions import compute_balance
-from app.services import support_routing
+from app.services import support_routing, presence
 
 router = APIRouter(prefix="/api/support", tags=["support"])
 
@@ -418,8 +418,37 @@ async def merchant_details(
     if not m:
         raise HTTPException(status_code=404, detail="Merchant not found")
     summary = await compute_balance(db, m)  # live, business-shared available balance
+    pres = await _customer_presence(db, m.id)  # real-time online status (shared presence service)
     return {
         "id": m.id, "name": m.name, "username": m.username, "email": m.email,
         "phone": m.phone, "balance": round(summary["available"], 2), "risk": m.risk, "profile": m.profile,
         "payIn": m.pay_in, "payOut": m.pay_out, "active": m.active, "created": str(m.created),
+        "online": pres["online"], "lastSeen": pres["lastSeen"],
     }
+
+
+async def _customer_presence(db: AsyncSession, merchant_id: int) -> dict:
+    """Online status + last-seen for a customer, derived from the shared presence service
+    (the same session-heartbeat mechanism that powers Active Users). Never raises."""
+    sessions = await presence.latest_sessions(db, [merchant_id])
+    sess = sessions.get(merchant_id)
+    return {
+        "online": presence.is_online(sess),
+        "lastSeen": (sess.last_activity_at.isoformat() + "Z") if sess else None,
+    }
+
+
+@router.get("/merchant/{merchant_id}/presence")
+async def merchant_presence(
+    merchant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Lightweight real-time online status for the support sidebar — polled by the agent's
+    console so the customer's Online/Offline badge updates without a page refresh. Reuses the
+    existing presence service (no separate presence system)."""
+    if current_user.role != UserRole.SUPPORT_AGENT:
+        raise HTTPException(status_code=403, detail="Support agent access required")
+    if not await _owns_open(db, current_user.id, merchant_id):
+        raise HTTPException(status_code=403, detail="Conversation not assigned to you")
+    return await _customer_presence(db, merchant_id)

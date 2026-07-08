@@ -728,10 +728,11 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: stri
         return { date: r.date, time: r.time, description: `${RTYPE_LABEL[r.type || ''] || 'Transaction'} — ${memberLabel(r.memberId, r.member)}`, ref: r.ref, amount: d, balance: bal };
       });
     })();
-    // Clari5Pay business rule (not a bank statement): Opening Balance displays the amount of
-    // the FIRST transaction shown in the report — 0 only when the filtered report is empty.
-    // Display value only; it does not feed the Running Balance (which still starts from zero).
-    const opening = ledger.length ? ledger[0].amount : 0;
+    // Clari5Pay business rule (not a bank statement): Opening Balance displays the Running
+    // Balance of the FIRST transaction shown in the report — 0 only when the filtered report
+    // is empty. Display value only; it does not feed the Running Balance (which still starts
+    // from zero).
+    const opening = ledger.length ? ledger[0].balance : 0;
     const closing = ledger.length ? ledger[ledger.length - 1].balance : 0;
     const csvRows: Array<Array<string | number>> = [['', '', 'Opening Balance', '', '', opening], ...ledger.map(l => [l.date, l.time, l.description, l.ref, l.amount, l.balance])];
     const pdfRows: Array<Array<string | number>> = [['—', '—', 'Opening Balance', '—', '—', fmt(opening)], ...ledger.map(l => [l.date, l.time, l.description, l.ref, signed(l.amount), fmt(l.balance)])];
