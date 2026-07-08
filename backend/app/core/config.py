@@ -91,9 +91,13 @@ class Settings(BaseSettings):
     SMS_API_URL: str = ""                       # optional base-URL override
 
     # ── Telegram notifications — mirror in-app notifications to a Telegram bot. Set the bot token
-    # (from @BotFather); each recipient must /start the bot so their telegram_chat_id is captured.
-    # Empty → Telegram inert. ──
+    # (from @BotFather); recipients self-register by sending /start and sharing their phone number
+    # via the bot — the webhook matches that number to their Clari5Pay account and links the chat,
+    # so notifications then route to them automatically by role. Empty token → Telegram inert. ──
     TELEGRAM_BOT_TOKEN: str = ""
+    # Optional shared secret set on Telegram's setWebhook (secret_token) and checked on every
+    # incoming webhook call (X-Telegram-Bot-Api-Secret-Token header). Empty → check skipped.
+    TELEGRAM_WEBHOOK_SECRET: str = ""
 
     # ── KYC verification (Melento.ai for Aadhaar/PAN/Passport/OCR + DigiLocker) ──
     # All empty by default → the KYC service layer stays inert: endpoints validate input

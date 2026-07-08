@@ -363,6 +363,84 @@ async def _send_telegram(chat_id: str, text: str) -> tuple[bool, Optional[str], 
     return ok, msg_id, f"{r.status_code} {r.text[:500]}"
 
 
+# ── Telegram self-service registration (webhook side) ────────────────────────────
+# A recipient sends /start to the bot, then taps a "Share my phone number" button. Telegram
+# posts their contact to our webhook; we match that phone to a Clari5Pay account and store the
+# chat id on it, so notifications route to them by role — no manual linking, no phone kept in
+# Telegram beyond the chat mapping.
+
+def _role_label(user: "User") -> str:
+    """Human-readable role for the confirmation reply (uses merchant sub-role when present)."""
+    role = getattr(user.role, "value", user.role)
+    if user.role == UserRole.MERCHANT:
+        mr = (user.merchant_role or "").strip()
+        pretty = {"DEO": "Data Entry Operator", "SUPERVISOR": "Supervisor", "MANAGER": "Manager",
+                  "DEPOSIT_OPERATOR": "Deposit Operator", "WITHDRAWAL_OPERATOR": "Withdrawal Operator"}
+        return pretty.get(mr.upper(), mr or "Merchant")
+    return {"ADMIN": "Admin", "SUPER_ADMIN": "Super Admin",
+            "SUPPORT_AGENT": "Support Agent"}.get(str(role), str(role).replace("_", " ").title())
+
+
+async def tg_send(chat_id: str, text: str, request_contact: bool = False) -> tuple[bool, Optional[str], str]:
+    """Reply to a chat. When ``request_contact`` is set, attach a one-tap keyboard button that asks
+    the user to share their phone number (so we can match their account); otherwise remove any
+    keyboard. Inert (no-op) unless a bot token is configured."""
+    if not settings.telegram_configured:
+        return False, None, "telegram not configured"
+    payload: dict = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if request_contact:
+        payload["reply_markup"] = {
+            "keyboard": [[{"text": "📱 Share my phone number", "request_contact": True}]],
+            "resize_keyboard": True, "one_time_keyboard": True,
+        }
+    else:
+        payload["reply_markup"] = {"remove_keyboard": True}
+    url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(url, json=payload)
+    except Exception as e:
+        return False, None, repr(e)
+    ok = r.status_code < 300
+    msg_id = None
+    try:
+        msg_id = str(r.json().get("result", {}).get("message_id")) if ok else None
+    except Exception:
+        msg_id = None
+    return ok, msg_id, f"{r.status_code} {r.text[:300]}"
+
+
+async def link_telegram_by_phone(db: AsyncSession, chat_id: str, phone: str) -> Optional["User"]:
+    """Match a shared phone number to a Clari5Pay account and store the Telegram chat id on it.
+    Matching is on digits only (DB numbers carry spaces / country codes): exact first, then a
+    unique last-10-digits fallback. The chat id is removed from any other account that held it
+    (a person can only be one recipient). Returns the linked User, or None if no unique match.
+    Caller commits."""
+    digits = re.sub(r"\D", "", phone or "")
+    if not digits:
+        return None
+    users = (await db.execute(select(User))).scalars().all()
+
+    def d(u: "User") -> str:
+        return re.sub(r"\D", "", u.phone or "")
+
+    match = next((u for u in users if d(u) == digits), None)
+    if match is None:
+        last10 = digits[-10:]
+        cands = [u for u in users if len(d(u)) >= 10 and d(u)[-10:] == last10]
+        if len(cands) == 1:
+            match = cands[0]
+    if match is None:
+        return None
+    cid = str(chat_id)
+    for u in users:
+        if u.id != match.id and getattr(u, "telegram_chat_id", None) == cid:
+            u.telegram_chat_id = None
+    match.telegram_chat_id = cid
+    await db.flush()
+    return match
+
+
 # Exceptions that mean the request never reached the provider (connection never established), so
 # no message could have been created — safe to retry without risking a duplicate. A ReadTimeout /
 # protocol error, by contrast, means the request WAS sent and the response was lost: the provider
@@ -549,8 +627,13 @@ async def send_test(user: User) -> dict:
     return {"ok": ok, "messageId": msg_id, "reason": reason}
 
 
+def _any_channel_configured() -> bool:
+    """Any delivery channel active — the mirror hook runs if WhatsApp, SMS, or Telegram is set up."""
+    return bool(settings.whatsapp_configured or settings.sms_configured or settings.telegram_configured)
+
+
 def _schedule(user_id: int, message: str) -> None:
-    if not settings.whatsapp_configured or _LOOP is None:
+    if not _any_channel_configured() or _LOOP is None:
         return
     try:
         _LOOP.call_soon_threadsafe(lambda: _LOOP.create_task(_deliver(user_id, message)))
@@ -562,7 +645,7 @@ def install_whatsapp_hook() -> None:
     """Register the ORM listeners once, at startup, inside the running event loop. No-op unless
     a provider is configured, so a plain deployment carries zero overhead."""
     global _LOOP, _INSTALLED
-    if not settings.whatsapp_configured:
+    if not _any_channel_configured():
         return
     try:
         _LOOP = asyncio.get_running_loop()
