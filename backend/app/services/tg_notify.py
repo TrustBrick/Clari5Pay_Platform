@@ -32,167 +32,59 @@ log = logging.getLogger("clari5pay.telegram")
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def _kind(tx: Transaction) -> str:
-    v = str(getattr(tx.type, "value", tx.type) or "").upper()
-    if "DEPOSIT" in v:
-        return "Deposit"
-    if "WITHDRAWAL" in v:
-        return "Withdrawal"
-    if "SETTLEMENT" in v:
-        return "Settlement"
-    return "Transaction"
+def _fmt_ist(dt) -> str:
+    """Format a stored timestamp in IST as ``DD Mon YYYY, hh:mm AM/PM IST`` (e.g.
+    ``08 Jul 2026, 12:51 PM IST``). Stored timestamps are naive UTC (``datetime.utcnow`` default),
+    so a tz-naive value is treated as UTC before converting to IST. Falls back to "now" if the row
+    has no usable timestamp."""
+    if not isinstance(dt, datetime):
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_IST).strftime("%d %b %Y, %I:%M %p IST")
 
 
-def _inr(amount) -> str:
-    """Format an amount as ``INR 2,50,000.00`` using Indian digit grouping."""
-    try:
-        n = float(amount)
-    except (TypeError, ValueError):
-        return "-"
-    sign = "-" if n < 0 else ""
-    n = abs(n)
-    whole = int(n)
-    dec = int(round((n - whole) * 100))
-    if dec == 100:  # rounding spilled over
-        whole, dec = whole + 1, 0
-    s = str(whole)
-    if len(s) > 3:
-        last3, rest = s[-3:], s[:-3]
-        groups = []
-        while len(rest) > 2:
-            groups.insert(0, rest[-2:])
-            rest = rest[:-2]
-        if rest:
-            groups.insert(0, rest)
-        grouped = ",".join(groups) + "," + last3
-    else:
-        grouped = s
-    return f"INR {sign}{grouped}.{dec:02d}"
+# Per-event "Action Required" line — the single next step owed by THIS recipient role (same wording
+# used before the template simplification). Events that are purely informational to their recipient
+# (successful completions, rejections, returns) have no next action and omit the block entirely.
+_ACTIONS = {
+    "deposit_request":        "Please upload the deposit account details.",       # → ADMIN
+    "deposit_request_review": "Verify the payment and approve the deposit.",       # → SUPERVISOR
+    "withdrawal_request":     "Verify the customer's bank account details.",       # → MANAGER
+    "settlement_request":     "Review and approve the settlement.",                # → ADMIN
+    "account_submitted":      "Complete the payment and upload the payment screenshot and UTR number.",  # → USER
+    "slip_submitted":         "Verify the payment.",                               # → SUPERVISOR
+    "supervisor_approved":    "Complete the final deposit approval.",              # → ADMIN
+    "manager_verified":       "Complete the withdrawal payment.",                  # → ADMIN
+}
 
 
-def _row(label: str, value: str) -> str:
-    """Aligned ``Label        : value`` line (colon aligned to a 13-char label column)."""
-    return f"{label:<13} : {value}"
-
-
-def _ts() -> str:
-    return datetime.now(_IST).strftime("%d %b %Y, %I:%M %p IST")
-
-
-# Per-event message templates. Each returns the full Telegram text for one workflow step, shaped
-# for the ONE recipient role that owns the next action. ``a`` = actor name (reviewer), ``r`` = reason.
+# Single simplified Telegram template for EVERY workflow event: the four core fields (Reference ID,
+# Requested By = Membership ID - Member Name, request creation Date & Time in IST) plus a per-role
+# "Action Required" line naming the recipient's next step, closed by the standard footer.
+# ``actor``/``reason`` are still accepted so the workflow callers (triggers/routing) stay unchanged.
 def _build(tx: Transaction, event: str, actor: str | None = None, reason: str | None = None,
            requested_by: str | None = None) -> str:
-    mid = tx.member_id or "-"
-    ref = tx.ref
-    amt = _inr(tx.amount)
-    # "Requested By" is the person who raised the request (resolved by notify); fall back to the
-    # creator username / business name if no personal name is available.
-    who = requested_by or tx.creator_username or tx.merchant_name or "-"
-    utr = tx.utr or "-"
-    kind = _kind(tx)
-    ts = _ts()
-
-    if event == "deposit_request":            # → ADMIN (bank/UPI: upload account details next)
-        return "\n".join([
-            "🔔 New Deposit Request", "",
-            _row("Membership ID", mid), _row("Reference ID", ref),
-            _row("Amount", amt), _row("Requested By", who), "",
-            "Action Required:", "Please upload the deposit account details.", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "deposit_request_review":     # → SUPERVISOR (cash/crypto: proof already attached)
-        return "\n".join([
-            "📄 New Deposit — Verify Payment", "",
-            _row("Membership ID", mid), _row("Reference ID", ref),
-            _row("Amount", amt), _row("Requested By", who), "",
-            "Action Required:", "Verify the payment and approve the deposit.", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "withdrawal_request":         # → MANAGER
-        return "\n".join([
-            "💸 New Withdrawal Request", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), _row("Amount", amt), "",
-            "Action Required:", "Verify the customer's bank account details.", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "settlement_request":         # → ADMIN (our flow has no Manager step)
-        return "\n".join([
-            "💰 New Settlement Request", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), _row("Amount", amt), "",
-            "Action Required:", "Review and approve the settlement.", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "account_submitted":          # → USER
-        return "\n".join([
-            "🏦 Deposit Account Details Submitted", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), "",
-            "Your deposit account details are ready.", "",
-            "Please complete the payment and upload:", "",
-            "• Payment Screenshot", "• UTR Number", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "slip_submitted":             # → SUPERVISOR
-        return "\n".join([
-            "📄 Payment Slip Submitted", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), _row("Amount", amt), "",
-            "The customer has uploaded:", "",
-            "• Payment Screenshot", "• UTR Number", "",
-            "Action Required:", "Verify the payment.", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "supervisor_approved":        # → ADMIN
-        return "\n".join([
-            "✅ Deposit Approved by Supervisor", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), _row("Supervisor", actor or "-"), "",
-            "Action Required:", "Complete the final deposit approval.", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "manager_verified":           # → ADMIN
-        return "\n".join([
-            "✅ Withdrawal Verified by Manager", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), _row("Manager", actor or "-"), "",
-            "Action Required:", "Complete the withdrawal payment.", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "deposit_done":               # → USER
-        return "\n".join([
-            "✅ Deposit Successful", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), "",
-            "Your deposit has been approved successfully.", "",
-            f"Amount : {amt}", "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "withdrawal_done":            # → USER
-        return "\n".join([
-            "✅ Withdrawal Completed", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), "",
-            f"Amount : {amt}", "",
-            "UTR Number:", utr, "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "settlement_done":            # → USER
-        return "\n".join([
-            "✅ Settlement Completed", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), "",
-            f"Amount : {amt}", "",
-            "UTR Number:", utr, "",
-            f"Date & Time : {ts}",
-        ])
-    if event == "returned":                   # → USER (returned for correction)
-        return "\n".join([
-            f"⚠ {kind} Requires Re-verification", "",
-            _row("Membership ID", mid), _row("Reference ID", ref), "",
-            "Reason:", reason or "-", "",
-            f"Date & Time : {ts}",
-        ])
-    # default: rejection → USER
-    return "\n".join([
-        f"❌ {kind} Rejected", "",
-        _row("Membership ID", mid), _row("Reference ID", ref), "",
-        "Reason:", reason or "-", "",
-        f"Date & Time : {ts}",
-    ])
+    ref = tx.ref or "-"
+    # "Requested By" = Membership ID - Member Name (e.g. "WININ20270 - B S NAGAPRASAD"). The member
+    # name is resolved by notify() (full_name → username); fall back to creator/business only if
+    # nothing else is available. Blank parts are dropped so the separator never dangles.
+    mid = tx.member_id or None
+    who = requested_by or tx.creator_username or tx.merchant_name or None
+    requested = " - ".join(p for p in (mid, who) if p) or "-"
+    # Always the request's stored creation time, converted to IST (never send-time / UTC).
+    ts = _fmt_ist(getattr(tx, "created_at", None))
+    lines = [
+        "🔔 Clari5Pay Notification", "",
+        "Reference ID:", ref, "",
+        "Requested By:", requested, "",
+        "Date & Time:", ts, "",
+    ]
+    action = _ACTIONS.get(event)
+    if action:
+        lines += ["Action Required:", action, ""]
+    lines.append("Please login to Clari5Pay.")
+    return "\n".join(lines)
 
 
 async def _recipients(db: AsyncSession, tx: Transaction, target: str) -> list[User]:
