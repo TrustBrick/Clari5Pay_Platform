@@ -44,18 +44,14 @@ def _fmt_ist(dt) -> str:
     return dt.astimezone(_IST).strftime("%d %b %Y, %I:%M %p IST")
 
 
-# Per-event "Action Required" line — the single next step owed by THIS recipient role (same wording
-# used before the template simplification). Events that are purely informational to their recipient
-# (successful completions, rejections, returns) have no next action and omit the block entirely.
+# Per-event "Action Required" line — shown for ADMIN-bound messages ONLY. User, Supervisor and
+# Manager notifications intentionally omit the block (only their four core fields + footer). The
+# four events below are the ones routed to an Admin (see the notify() calls in transactions.py).
 _ACTIONS = {
-    "deposit_request":        "Please upload the deposit account details.",       # → ADMIN
-    "deposit_request_review": "Verify the payment and approve the deposit.",       # → SUPERVISOR
-    "withdrawal_request":     "Verify the customer's bank account details.",       # → MANAGER
-    "settlement_request":     "Review and approve the settlement.",                # → ADMIN
-    "account_submitted":      "Complete the payment and upload the payment screenshot and UTR number.",  # → USER
-    "slip_submitted":         "Verify the payment.",                               # → SUPERVISOR
-    "supervisor_approved":    "Complete the final deposit approval.",              # → ADMIN
-    "manager_verified":       "Complete the withdrawal payment.",                  # → ADMIN
+    "deposit_request":     "Please upload the deposit account details.",   # → ADMIN
+    "settlement_request":  "Review and approve the settlement.",           # → ADMIN
+    "supervisor_approved": "Complete the final deposit approval.",          # → ADMIN
+    "manager_verified":    "Complete the withdrawal payment.",              # → ADMIN
 }
 
 
