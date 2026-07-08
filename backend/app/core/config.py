@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     SMS_FROM: str = ""                          # Twilio SMS-capable sender number (e.g. +16592187958)
     SMS_API_URL: str = ""                       # optional base-URL override
 
+    # ── Telegram notifications — mirror in-app notifications to a Telegram bot. Set the bot token
+    # (from @BotFather); each recipient must /start the bot so their telegram_chat_id is captured.
+    # Empty → Telegram inert. ──
+    TELEGRAM_BOT_TOKEN: str = ""
+
     # ── KYC verification (Melento.ai for Aadhaar/PAN/Passport/OCR + DigiLocker) ──
     # All empty by default → the KYC service layer stays inert: endpoints validate input
     # and return a clear "provider not configured yet" response, and the Merchant KYC
@@ -113,6 +118,10 @@ class Settings(BaseSettings):
     @property
     def sms_configured(self) -> bool:
         return bool(self.SMS_FROM and self.WHATSAPP_ACCOUNT_SID and self.WHATSAPP_TOKEN)
+
+    @property
+    def telegram_configured(self) -> bool:
+        return bool(self.TELEGRAM_BOT_TOKEN)
 
     @property
     def is_demo(self) -> bool:

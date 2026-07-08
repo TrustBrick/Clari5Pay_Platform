@@ -349,6 +349,20 @@ def _sms_body(message: str, tx: Optional["Transaction"] = None) -> str:
     return f"{company}: {body}"
 
 
+async def _send_telegram(chat_id: str, text: str) -> tuple[bool, Optional[str], str]:
+    """Send a message via the Telegram Bot API to a captured chat id. Returns (ok, msg_id, resp)."""
+    url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.post(url, json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True})
+    ok = r.status_code < 300
+    msg_id = None
+    try:
+        msg_id = str(r.json().get("result", {}).get("message_id")) if ok else None
+    except Exception:
+        msg_id = None
+    return ok, msg_id, f"{r.status_code} {r.text[:500]}"
+
+
 # Exceptions that mean the request never reached the provider (connection never established), so
 # no message could have been created — safe to retry without risking a duplicate. A ReadTimeout /
 # protocol error, by contrast, means the request WAS sent and the response was lost: the provider
@@ -452,6 +466,23 @@ async def _deliver(user_id: int, message: str) -> None:
                 ))
                 if not s_ok:
                     log.warning("SMS delivery failed for user %s: %s", user_id, s_resp)
+            # Also mirror to Telegram for users who have started the bot (telegram_chat_id set).
+            if settings.telegram_configured and getattr(user, "telegram_chat_id", None):
+                t_ok, t_id, t_resp = False, None, None
+                try:
+                    t_ok, t_id, t_resp = await _send_telegram(user.telegram_chat_id, body)
+                except Exception as e:
+                    t_resp = repr(e)
+                db.add(WhatsAppLog(
+                    user_id=user.id, username=user.username,
+                    role=str(user.merchant_role or user.role.value), phone=user.telegram_chat_id,
+                    notification_type=ntype, message=message,
+                    status="SENT" if t_ok else "FAILED", provider="telegram",
+                    message_id=t_id, delivery_status="sent" if t_ok else "failed",
+                    provider_response=t_resp, failure_reason=None if t_ok else t_resp,
+                ))
+                if not t_ok:
+                    log.warning("Telegram delivery failed for user %s: %s", user_id, t_resp)
             await db.commit()
             if not ok:
                 log.warning("WhatsApp delivery failed for user %s: %s", user_id, reason)

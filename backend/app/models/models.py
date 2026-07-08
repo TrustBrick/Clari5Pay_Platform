@@ -107,6 +107,8 @@ class User(Base):
     profile: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # Per-user preference: also deliver notifications to WhatsApp (internal users only). Default on.
     whatsapp_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Telegram chat id (set once the user starts the notification bot) — enables Telegram delivery.
+    telegram_chat_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     # ── Support member fields (a SUPPORT_AGENT enriched via the Support Management module) ──
     # Unique auto Support ID (e.g. SUP000001). Only members onboarded through the module have one.

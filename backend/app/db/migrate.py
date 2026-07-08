@@ -19,6 +19,7 @@ _NEW_COLUMNS = [
     ("users", "avatar", "TEXT"),
     ("users", "merchant_code", "VARCHAR(16)"),
     ("users", "whatsapp_enabled", "BOOLEAN DEFAULT TRUE NOT NULL"),
+    ("users", "telegram_chat_id", "VARCHAR(32)"),   # Telegram notifications: recipient's chat id
     # Merchant-company onboarding: business country, settlement fee %, per-user personal name.
     ("users", "settlement_fee", "DOUBLE PRECISION"),
     ("users", "country", "VARCHAR(64)"),
