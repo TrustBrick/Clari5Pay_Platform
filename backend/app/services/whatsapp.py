@@ -551,23 +551,10 @@ async def _deliver(user_id: int, message: str) -> None:
                 ))
                 if not s_ok:
                     log.warning("SMS delivery failed for user %s: %s", user_id, s_resp)
-            # Also mirror to Telegram for users who have started the bot (telegram_chat_id set).
-            if settings.telegram_configured and getattr(user, "telegram_chat_id", None):
-                t_ok, t_id, t_resp = False, None, None
-                try:
-                    t_ok, t_id, t_resp = await _send_telegram(user.telegram_chat_id, body)
-                except Exception as e:
-                    t_resp = repr(e)
-                db.add(WhatsAppLog(
-                    user_id=user.id, username=user.username,
-                    role=str(user.merchant_role or user.role.value), phone=user.telegram_chat_id,
-                    notification_type=ntype, message=message,
-                    status="SENT" if t_ok else "FAILED", provider="telegram",
-                    message_id=t_id, delivery_status="sent" if t_ok else "failed",
-                    provider_response=t_resp, failure_reason=None if t_ok else t_resp,
-                ))
-                if not t_ok:
-                    log.warning("Telegram delivery failed for user %s: %s", user_id, t_resp)
+            # Telegram is delivered exclusively by app.services.tg_notify (a single next-step message
+            # per workflow event, using the Telegram template) whenever a bot token is configured.
+            # This in-app mirror therefore no longer sends Telegram — otherwise each event would be
+            # delivered twice (once here, once via tg_notify). WhatsApp/SMS mirroring above is unchanged.
             await db.commit()
             if not ok:
                 log.warning("WhatsApp delivery failed for user %s: %s", user_id, reason)

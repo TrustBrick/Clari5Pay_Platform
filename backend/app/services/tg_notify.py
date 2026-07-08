@@ -108,10 +108,11 @@ async def notify(db: AsyncSession, tx: Transaction, target: str, event: str,
     """Send ONE Telegram message to the role responsible for the next workflow step. ``event`` picks
     the message template (see ``_build``) and is also stored as the log's notification_type; ``actor``
     is the reviewer's name (supervisor/manager approvals) and ``reason`` the reject/return remark.
-    Demo-only and best-effort: writes a ``whatsapp_logs`` row per recipient (SENT / FAILED /
-    no-telegram-linked) and swallows all errors so the workflow is never affected. Uses the caller's
-    session, so the log rows commit together with the transaction."""
-    if not (settings.is_demo and settings.telegram_configured):
+    Best-effort: writes a ``whatsapp_logs`` row per recipient (SENT / FAILED / no-telegram-linked)
+    and swallows all errors so the workflow is never affected. Uses the caller's session, so the log
+    rows commit together with the transaction. Active wherever a bot token is configured
+    (``telegram_configured``) — demo and, once a token is set, production; empty token → inert."""
+    if not settings.telegram_configured:
         return
     try:
         users = await _recipients(db, tx, target)
