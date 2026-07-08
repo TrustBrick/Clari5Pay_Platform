@@ -410,35 +410,37 @@ async def tg_send(chat_id: str, text: str, request_contact: bool = False) -> tup
     return ok, msg_id, f"{r.status_code} {r.text[:300]}"
 
 
-async def link_telegram_by_phone(db: AsyncSession, chat_id: str, phone: str) -> Optional["User"]:
-    """Match a shared phone number to a Clari5Pay account and store the Telegram chat id on it.
+async def link_telegram_by_phone(db: AsyncSession, chat_id: str, phone: str) -> list["User"]:
+    """Match a shared phone number to Clari5Pay account(s) and store the Telegram chat id on them.
     Matching is on digits only (DB numbers carry spaces / country codes): exact first, then a
-    unique last-10-digits fallback. The chat id is removed from any other account that held it
-    (a person can only be one recipient). Returns the linked User, or None if no unique match.
-    Caller commits."""
+    last-10-digits fallback. One person can legitimately hold several accounts on the same number
+    (e.g. Admin + Supervisor + Merchant) — we link the chat to ALL of them so each role's
+    notifications reach them. The chat id is cleared from any account whose number no longer
+    matches (so re-registering with a new number moves the link). Returns the linked Users (empty
+    if no match). Caller commits."""
     digits = re.sub(r"\D", "", phone or "")
     if not digits:
-        return None
+        return []
     users = (await db.execute(select(User))).scalars().all()
 
     def d(u: "User") -> str:
         return re.sub(r"\D", "", u.phone or "")
 
-    match = next((u for u in users if d(u) == digits), None)
-    if match is None:
+    matches = [u for u in users if d(u) == digits]
+    if not matches:
         last10 = digits[-10:]
-        cands = [u for u in users if len(d(u)) >= 10 and d(u)[-10:] == last10]
-        if len(cands) == 1:
-            match = cands[0]
-    if match is None:
-        return None
+        matches = [u for u in users if len(d(u)) >= 10 and d(u)[-10:] == last10]
+    if not matches:
+        return []
     cid = str(chat_id)
-    for u in users:
-        if u.id != match.id and getattr(u, "telegram_chat_id", None) == cid:
+    matched_ids = {u.id for u in matches}
+    for u in users:                                  # drop stale links this chat used to hold
+        if u.id not in matched_ids and getattr(u, "telegram_chat_id", None) == cid:
             u.telegram_chat_id = None
-    match.telegram_chat_id = cid
+    for u in matches:
+        u.telegram_chat_id = cid
     await db.flush()
-    return match
+    return sorted(matches, key=lambda u: u.id)
 
 
 # Exceptions that mean the request never reached the provider (connection never established), so

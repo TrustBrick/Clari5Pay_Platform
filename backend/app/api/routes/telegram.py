@@ -71,14 +71,21 @@ async def telegram_webhook(request: Request):
                 await wa.tg_send(chat_id, _NOT_OWN, request_contact=True)
                 return {"ok": True}
             async with AsyncSessionLocal() as db:
-                user = await wa.link_telegram_by_phone(db, chat_id, contact["phone_number"])
-                if user is not None:
+                users = await wa.link_telegram_by_phone(db, chat_id, contact["phone_number"])
+                if users:
                     await db.commit()
+                    who = users[0].full_name or users[0].username
+                    if len(users) == 1:
+                        role_line = f"Role: {wa._role_label(users[0])}"
+                    else:
+                        # One person, several accounts on this number — link & list every role.
+                        role_line = "Your accounts:\n" + "\n".join(
+                            f"• {u.username} — {wa._role_label(u)}" for u in users)
                     await wa.tg_send(
                         chat_id,
-                        f"✅ You're registered, {user.full_name or user.username}!\n\n"
-                        f"Role: {wa._role_label(user)}\n"
-                        f"You'll now receive your Clari5Pay notifications here.\n\n"
+                        f"✅ You're registered, {who}!\n\n"
+                        f"{role_line}\n\n"
+                        f"You'll now receive your Clari5Pay notifications here.\n"
                         f"Send /stop anytime to unsubscribe.",
                     )
                 else:
