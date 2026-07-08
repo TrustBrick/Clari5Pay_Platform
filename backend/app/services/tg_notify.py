@@ -66,11 +66,12 @@ _ACTIONS = {
 def _build(tx: Transaction, event: str, actor: str | None = None, reason: str | None = None,
            requested_by: str | None = None) -> str:
     ref = tx.ref or "-"
-    # "Requested By" = Membership ID - Member Name (e.g. "WININ20270 - B S NAGAPRASAD"). The member
-    # name is resolved by notify() (full_name → username); fall back to creator/business only if
-    # nothing else is available. Blank parts are dropped so the separator never dangles.
+    # "Requested By" = Membership ID - Member Name, the customer the request is for (e.g.
+    # "WININ20270 - B S NAGAPRASAD"). Fall back to the requester/creator name only when the row has
+    # no member name (e.g. some withdrawals), then to the business name, so the line is never blank.
+    # Blank parts are dropped so the separator never dangles.
     mid = tx.member_id or None
-    who = requested_by or tx.creator_username or tx.merchant_name or None
+    who = tx.member_name or requested_by or tx.creator_username or tx.merchant_name or None
     requested = " - ".join(p for p in (mid, who) if p) or "-"
     # Always the request's stored creation time, converted to IST (never send-time / UTC).
     ts = _fmt_ist(getattr(tx, "created_at", None))
