@@ -81,11 +81,14 @@ def _ts() -> str:
 
 # Per-event message templates. Each returns the full Telegram text for one workflow step, shaped
 # for the ONE recipient role that owns the next action. ``a`` = actor name (reviewer), ``r`` = reason.
-def _build(tx: Transaction, event: str, actor: str | None = None, reason: str | None = None) -> str:
+def _build(tx: Transaction, event: str, actor: str | None = None, reason: str | None = None,
+           requested_by: str | None = None) -> str:
     mid = tx.member_id or "-"
     ref = tx.ref
     amt = _inr(tx.amount)
-    who = tx.merchant_name or tx.creator_username or "-"
+    # "Requested By" is the person who raised the request (resolved by notify); fall back to the
+    # creator username / business name if no personal name is available.
+    who = requested_by or tx.creator_username or tx.merchant_name or "-"
     utr = tx.utr or "-"
     kind = _kind(tx)
     ts = _ts()
@@ -223,7 +226,11 @@ async def notify(db: AsyncSession, tx: Transaction, target: str, event: str,
         return
     try:
         users = await _recipients(db, tx, target)
-        body = _build(tx, event, actor=actor, reason=reason)
+        # Resolve the person who raised the request (full_name preferred, then username) for the
+        # "Requested By" line — falls back inside _build to creator username / business name.
+        creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
+        requested_by = (getattr(creator, "full_name", None) or getattr(creator, "username", None)) if creator else None
+        body = _build(tx, event, actor=actor, reason=reason, requested_by=requested_by)
         seen: set[str] = set()
         for u in users:
             role_str = str(u.merchant_role or getattr(u.role, "value", u.role))
