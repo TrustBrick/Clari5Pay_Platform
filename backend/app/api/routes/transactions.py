@@ -1281,10 +1281,16 @@ async def create_deposit(
         await _save_member_upi(db, current_user, data.memberId, data.senderUpiId.strip())
     await db.flush()
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
-    # Telegram (demo, next-step only): a new deposit request → notify the Admin.
-    await tgn.notify(db, tx, "ADMIN", "Deposit Requested",
-                     "Review the deposit and verify the payment." if direct_review
-                     else "Review the request and upload the account details.")
+    # Telegram (demo, next-step only): route to whoever owns the NEXT step. A normal deposit
+    # waits for the Admin to upload account details (ACCOUNT_REQUESTED); a Cash/Crypto deposit
+    # skips that hop and lands straight in the Supervisor's review queue (SLIP_SUBMITTED), so the
+    # next-step person is the Supervisor, not the Admin.
+    if direct_review:
+        await tgn.notify(db, tx, "SUPERVISOR", "Deposit Requested",
+                         "Verify the payment and approve the deposit.")
+    else:
+        await tgn.notify(db, tx, "ADMIN", "Deposit Requested",
+                         "Review the request and upload the account details.")
     # Cash / Crypto get their own audit action + a rich detail line (membership, member, type, amount).
     if direct_review:
         kind = "Cash" if dep_type == "CASH" else "Crypto"
