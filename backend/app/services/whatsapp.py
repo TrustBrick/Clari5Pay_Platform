@@ -320,6 +320,35 @@ async def _send(phone: str, body: str) -> tuple[bool, Optional[str], str]:
     return ok, msg_id, f"{r.status_code} {r.text[:500]}"
 
 
+async def _send_sms(phone: str, text: str) -> tuple[bool, Optional[str], str]:
+    """Send a plain SMS via Twilio (same account as WhatsApp — reuses WHATSAPP_ACCOUNT_SID/TOKEN,
+    sends from SMS_FROM). Returns (ok, message_sid, provider_response)."""
+    sid = settings.WHATSAPP_ACCOUNT_SID
+    to = re.sub(r"\D", "", phone or "")
+    if not to:
+        return False, None, "no phone digits"
+    url = settings.SMS_API_URL or f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+    data = {"From": settings.SMS_FROM, "To": f"+{to}", "Body": text}
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.post(url, data=data, auth=(sid, settings.WHATSAPP_TOKEN))
+    ok = r.status_code < 300
+    msg_id = None
+    try:
+        msg_id = r.json().get("sid") if ok else None
+    except Exception:
+        msg_id = None
+    return ok, msg_id, f"{r.status_code} {r.text[:500]}"
+
+
+def _sms_body(message: str, tx: Optional["Transaction"] = None) -> str:
+    """Compact SMS text: the notification line (business name hidden on demo), company-prefixed."""
+    company = settings.WHATSAPP_COMPANY_NAME or "Clari5Pay"
+    body = (message or "").strip()
+    if settings.is_demo and tx is not None and getattr(tx, "merchant_name", None) and getattr(tx, "agent_code", None):
+        body = body.replace(tx.merchant_name, tx.agent_code)
+    return f"{company}: {body}"
+
+
 # Exceptions that mean the request never reached the provider (connection never established), so
 # no message could have been created — safe to retry without risking a duplicate. A ReadTimeout /
 # protocol error, by contrast, means the request WAS sent and the response was lost: the provider
@@ -405,6 +434,24 @@ async def _deliver(user_id: int, message: str) -> None:
                 retry_count=max(0, used - 1),
                 provider_response=resp, failure_reason=None if ok else reason,
             ))
+            # Also mirror to SMS when a Twilio SMS sender is configured — reaches numbers that
+            # haven't joined WhatsApp. Same eligibility/dedupe as above; logged as "twilio-sms".
+            if settings.sms_configured:
+                s_ok, s_id, s_resp = False, None, None
+                try:
+                    s_ok, s_id, s_resp = await _send_sms(user.phone, _sms_body(message, tx))
+                except Exception as e:
+                    s_resp = repr(e)
+                db.add(WhatsAppLog(
+                    user_id=user.id, username=user.username,
+                    role=str(user.merchant_role or user.role.value), phone=user.phone,
+                    notification_type=ntype, message=message,
+                    status="SENT" if s_ok else "FAILED", provider="twilio-sms",
+                    message_id=s_id, delivery_status="sent" if s_ok else "failed",
+                    provider_response=s_resp, failure_reason=None if s_ok else s_resp,
+                ))
+                if not s_ok:
+                    log.warning("SMS delivery failed for user %s: %s", user_id, s_resp)
             await db.commit()
             if not ok:
                 log.warning("WhatsApp delivery failed for user %s: %s", user_id, reason)

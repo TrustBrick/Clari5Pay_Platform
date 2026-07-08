@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     WHATSAPP_CONTENT_SID: str = ""              # Twilio Content Template SID ("HX…"), body = {{1}}
     WHATSAPP_MESSAGING_SERVICE_SID: str = ""    # optional Twilio Messaging Service SID ("MG…")
 
+    # ── SMS notifications (Twilio) — mirror in-app notifications to SMS as well, reaching numbers
+    # that have not joined WhatsApp. Reuses the same Twilio account (WHATSAPP_ACCOUNT_SID/TOKEN);
+    # set SMS_FROM to a Twilio SMS-capable sender number to enable. Empty → SMS inert. ──
+    SMS_FROM: str = ""                          # Twilio SMS-capable sender number (e.g. +16592187958)
+    SMS_API_URL: str = ""                       # optional base-URL override
+
     # ── KYC verification (Melento.ai for Aadhaar/PAN/Passport/OCR + DigiLocker) ──
     # All empty by default → the KYC service layer stays inert: endpoints validate input
     # and return a clear "provider not configured yet" response, and the Merchant KYC
@@ -103,6 +109,10 @@ class Settings(BaseSettings):
     @property
     def whatsapp_configured(self) -> bool:
         return bool(self.WHATSAPP_PROVIDER and self.WHATSAPP_TOKEN)
+
+    @property
+    def sms_configured(self) -> bool:
+        return bool(self.SMS_FROM and self.WHATSAPP_ACCOUNT_SID and self.WHATSAPP_TOKEN)
 
     @property
     def is_demo(self) -> bool:
