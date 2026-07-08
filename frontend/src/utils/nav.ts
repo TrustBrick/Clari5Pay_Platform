@@ -119,9 +119,13 @@ export const navForUser = (user: User): NavItem[] => {
   if (user.role !== 'MERCHANT') return base;
   const role = user.merchantRole ? String(user.merchantRole).toUpperCase() : '';
   const allowed = MERCHANT_ROLE_NAV[role];
+  // KYC Update is a Demo-only feature for now — the KYC / DigiLocker integrations are not
+  // configured on Production, so hide the menu there. Flip this to a config-driven flag once
+  // Production has KYC keys. Applied to every merchant menu via this single gate.
+  const gate = (items: NavItem[]): NavItem[] => (IS_DEMO ? items : items.filter((i) => i.key !== 'kyc'));
   // Role-less merchant: full menu minus Settlement Requests (Supervisor-only) and KYC Update
   // (Supervisor/Manager-only).
-  if (!allowed) return base.filter((i) => i.key !== 'settlement' && i.key !== 'kyc');
+  if (!allowed) return gate(base.filter((i) => i.key !== 'settlement' && i.key !== 'kyc'));
   const byKey = new Map(base.map((i) => [i.key, i]));
-  return allowed.map((k) => byKey.get(k)).filter((i): i is NavItem => Boolean(i));
+  return gate(allowed.map((k) => byKey.get(k)).filter((i): i is NavItem => Boolean(i)));
 };
