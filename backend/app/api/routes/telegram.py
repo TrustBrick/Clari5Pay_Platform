@@ -10,13 +10,13 @@ The route is always mounted but inert unless TELEGRAM_BOT_TOKEN is set (telegram
 tg_send() no-ops and Telegram never calls an unconfigured webhook.
 """
 from fastapi import APIRouter, Depends, Request, Response
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.deps import get_current_admin
 from app.db.session import get_db, AsyncSessionLocal
-from app.models.models import User
+from app.models.models import User, UserRole
 from app.services import whatsapp as wa
 
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
@@ -110,12 +110,28 @@ async def telegram_webhook(request: Request):
 
 @router.get("/status")
 async def status(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_admin)):
-    """Admin view: whether Telegram is configured and how many accounts are linked."""
-    linked = (await db.execute(
-        select(func.count()).select_from(User).where(User.telegram_chat_id.isnot(None))
-    )).scalar_one()
+    """Admin view: whether Telegram is configured, and the per-user link status for every account
+    that can receive workflow notifications (Admins + all merchant roles). Powers the Admin console
+    Telegram card so admins can see who has registered their Telegram and chase the rest."""
+    rows = (await db.execute(
+        select(User).where(
+            User.active == True,  # noqa: E712
+            User.role.in_([UserRole.ADMIN, UserRole.MERCHANT]),
+        )
+    )).scalars().all()
+    users = [{
+        "id": u.id,
+        "name": u.full_name or u.username,
+        "username": u.username,
+        "role": wa._role_label(u),
+        "linked": bool(u.telegram_chat_id),
+    } for u in rows]
+    users.sort(key=lambda x: (x["role"], x["name"].lower()))
+    linked = sum(1 for u in users if u["linked"])
     return {
         "configured": settings.telegram_configured,
         "webhookSecretSet": bool(settings.TELEGRAM_WEBHOOK_SECRET),
-        "linkedUsers": int(linked or 0),
+        "linkedUsers": linked,
+        "totalEligible": len(users),
+        "users": users,
     }

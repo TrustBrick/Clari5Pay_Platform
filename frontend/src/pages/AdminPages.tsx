@@ -13,8 +13,8 @@ import { AgentLedgerReport } from './ReportsPage';
 import { useAuth } from '../context/AuthContext';
 import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
 import { usePresenceStream } from '../utils/sse';
-import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, demoAPI, activeUsersAPI } from '../services/api';
-import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats } from '../services/api';
+import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, telegramAPI, demoAPI, activeUsersAPI } from '../services/api';
+import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats, TelegramStatus } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
@@ -2118,6 +2118,84 @@ const WA_EVENT_LABELS: Record<string, string> = {
   LOGIN_ALERTS: 'Login Alerts', SECURITY_ALERTS: 'Security Alerts', OTHER: 'Other',
 };
 
+// Telegram link status — surfaced in the Admin console so admins can see who has registered their
+// Telegram (by sending /start to the bot) and chase the rest. Read-only; linking is self-service.
+export const TelegramStatusCard: React.FC = () => {
+  const [st, setSt] = useState<TelegramStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = () => {
+    setLoading(true);
+    telegramAPI.getStatus().then(setSt).catch(() => setSt(null)).finally(() => setLoading(false));
+  };
+  useEffect(load, []);
+
+  const connected = !!st?.configured;
+  const linked = st?.linkedUsers ?? 0;
+  const total = st?.totalEligible ?? 0;
+  const pct = total ? Math.round((linked / total) * 100) : 0;
+
+  return (
+    <Card style={{ padding: 20, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>✈ Telegram Notifications</h3>
+          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>
+            Who has registered their Telegram. Users link themselves by sending <b>/start</b> to the bot and sharing their phone number.
+          </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, padding: '4px 12px', borderRadius: 20, background: connected ? T.successBg : T.warningBg, color: connected ? T.success : T.warning }}>
+            {connected ? '● Connected' : '● Not Connected'}
+          </span>
+          <Btn size="sm" variant="ghost" onClick={load}>↻ Refresh</Btn>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 14, marginBottom: 16 }}>
+        {([
+          ['Bot Configured', connected ? '✓ Yes' : '—'],
+          ['Webhook Secret', st?.webhookSecretSet ? '✓ Set' : '—'],
+          ['Linked Users', `${linked} / ${total}  (${pct}%)`],
+        ] as [string, string][]).map(([k, v]) => (
+          <div key={k}>
+            <span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>{k}</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: T.textMain }}>{v}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ overflowX: 'auto', maxHeight: 360, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: T.canvas }}>
+              {['Name', 'Username', 'Role', 'Telegram'].map(h => (
+                <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: `2px solid ${T.border}`, position: 'sticky', top: 0, background: T.canvas }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(!st || st.users.length === 0) && (
+              <tr><td colSpan={4} style={{ padding: 24, textAlign: 'center', color: T.textMuted }}>{loading ? 'Loading…' : 'No eligible users.'}</td></tr>
+            )}
+            {st?.users.map(u => (
+              <tr key={u.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
+                <td style={{ padding: '9px 12px', fontWeight: 700, color: T.textMain }}>{u.name}</td>
+                <td style={{ padding: '9px 12px', color: T.textMuted, fontFamily: 'monospace', fontSize: 11 }}>{u.username}</td>
+                <td style={{ padding: '9px 12px', color: T.textMuted }}>{u.role}</td>
+                <td style={{ padding: '9px 12px' }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20, background: u.linked ? T.successBg : T.canvas, color: u.linked ? T.success : T.textMuted, border: u.linked ? 'none' : `1px solid ${T.border}` }}>
+                    {u.linked ? '✓ Linked' : '— Not linked'}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+};
+
 export const WhatsAppSettingsPage: React.FC = () => {
   const { showToast } = useToast();
   const [cfg, setCfg] = useState<WhatsappSettings | null>(null);
@@ -2172,6 +2250,9 @@ export const WhatsAppSettingsPage: React.FC = () => {
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>WhatsApp Settings</h2>
         <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Manage the WhatsApp notification integration. In-app notifications are always delivered regardless of these settings.</p>
       </div>
+
+      {/* Telegram link status */}
+      <TelegramStatusCard />
 
       {/* Provider / Connection */}
       <Card style={{ padding: 20, marginBottom: 16 }}>

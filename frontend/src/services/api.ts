@@ -477,6 +477,15 @@ export const whatsappAPI = {
   getLogs: async (limit = 100) => (await api.get<WhatsappLog[]>('/api/whatsapp/logs', { params: { limit } })).data,
 };
 
+export interface TelegramLinkUser { id: number; name: string; username: string; role: string; linked: boolean }
+export interface TelegramStatus {
+  configured: boolean; webhookSecretSet: boolean; linkedUsers: number; totalEligible: number;
+  users: TelegramLinkUser[];
+}
+export const telegramAPI = {
+  getStatus: async () => (await api.get<TelegramStatus>('/api/telegram/status')).data,
+};
+
 export const demoAPI = {
   reset: async () => (await api.post<{ ok: boolean; resetBy: string; tables: string[] }>('/api/demo/reset', { confirm: 'RESET' })).data,
 };
