@@ -461,6 +461,11 @@ def _status_code(resp: Optional[str]) -> Optional[int]:
 async def _deliver(user_id: int, message: str) -> None:
     """Look up the recipient, send (with retries) and log the attempt — all in its own session
     so it never touches the request's transaction. Any error is swallowed."""
+    # Demo is Telegram-only with explicit single-recipient workflow routing (app.services.
+    # tg_notify): disable this in-app mirror there so WhatsApp/SMS are off and Telegram isn't
+    # double-sent or broadcast to every recipient. Production is unaffected (is_demo False).
+    if settings.is_demo:
+        return
     from app.db.session import AsyncSessionLocal
     try:
         async with AsyncSessionLocal() as db:

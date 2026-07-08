@@ -16,6 +16,7 @@ from app.schemas.schemas import (
 )
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
+from app.services import tg_notify as tgn
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 
 
@@ -1280,6 +1281,10 @@ async def create_deposit(
         await _save_member_upi(db, current_user, data.memberId, data.senderUpiId.strip())
     await db.flush()
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
+    # Telegram (demo, next-step only): a new deposit request → notify the Admin.
+    await tgn.notify(db, tx, "ADMIN", "Deposit Requested",
+                     "Review the deposit and verify the payment." if direct_review
+                     else "Review the request and upload the account details.")
     # Cash / Crypto get their own audit action + a rich detail line (membership, member, type, amount).
     if direct_review:
         kind = "Cash" if dep_type == "CASH" else "Crypto"
@@ -1356,6 +1361,8 @@ async def create_withdrawal(
     await db.flush()
     await _notify_business_role(db, tx, "MANAGER", f"Withdrawal {tx.ref} from {tx.merchant_name} — awaiting your review", "↑")
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
+    # Telegram (demo, next-step only): a new withdrawal request → notify the Manager.
+    await tgn.notify(db, tx, "MANAGER", "Withdrawal Requested", "Verify the account details.")
     await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount}), assigned to Manager", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
     await db.refresh(tx)
@@ -1413,6 +1420,9 @@ async def create_settlement(
     await db.flush()
     await _notify_admin(db, tx, f"Settlement {tx.ref} from {tx.merchant_name} — awaiting your approval", "⇄")
     await notify_tx(db, tx, f"Settlement {tx.ref} submitted by {tx.merchant_name}", "⇄")
+    # Telegram (demo, next-step only): the settlement workflow is Supervisor → Admin → Completed
+    # (no Manager step), so the request is routed to the Admin for approval.
+    await tgn.notify(db, tx, "ADMIN", "Settlement Requested", "Review and approve the settlement.")
     await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} submitted settlement {tx.ref} ({tx.amount}) to Admin", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="settlement", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
     await db.refresh(tx)
@@ -1484,6 +1494,8 @@ async def account_submit(
     # send confirmation. (Previously a single "account details sent to <merchant>" line went to both.)
     await _notify_merchant(db, tx, f"{tx.ref}: account details received — you can now make the payment and submit your slip", "🏦")
     await _notify_admin(db, tx, f"{tx.ref}: account details sent to {tx.merchant_name}", "🏦")
+    # Telegram (demo, next-step only): account details sent → notify ONLY the requesting user.
+    await tgn.notify(db, tx, "USER", "Account Details Sent", "Make the payment and submit your slip.")
     await log_event(db, "ACCOUNT_SUBMITTED", f"{tx.ref}: account details sent to {tx.merchant_name}", actor=actor)
     await record_audit(db, "ACCOUNT_SUBMITTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="ACCOUNT_SUBMITTED")
     await db.refresh(tx)
@@ -1519,6 +1531,8 @@ async def submit_slip(
     await _notify_business_role(db, tx, "SUPERVISOR",
                                 f"{tx.ref}: deposit slip submitted by {tx.merchant_name} — awaiting your review", "🧾")
     await notify_tx(db, tx, f"{tx.ref}: payment slip submitted by {tx.merchant_name}", "🧾")
+    # Telegram (demo, next-step only): slip submitted → notify the Supervisor review queue.
+    await tgn.notify(db, tx, "SUPERVISOR", "Payment Slip Submitted", "Verify the payment and approve.")
     await log_event(db, "PENDING_APPROVAL", f"{tx.ref}: slip submitted by {tx.merchant_name}, assigned to Supervisor", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type=tx.type.value,
                        entity_id=tx.ref, new="SUPERVISOR_REVIEW", ip=_client_ip(request))
@@ -1562,6 +1576,13 @@ async def mark_done(
     await db.flush()
     label = "deposited" if is_deposit else "completed"
     await notify_tx(db, tx, f"{tx.ref}: approved and {label} successfully", "✓")
+    # Telegram (demo, next-step only): admin final approval → notify ONLY the requesting user.
+    if is_deposit:
+        await tgn.notify(db, tx, "USER", "Deposit Approved", "Your deposit has been approved and completed.")
+    elif is_settlement:
+        await tgn.notify(db, tx, "USER", "Settlement Completed", "Your settlement has been completed.")
+    else:
+        await tgn.notify(db, tx, "USER", "Withdrawal Completed", "Your withdrawal has been completed.")
     await log_event(db, "TRANSACTION_COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
     await record_audit(db, "ADMIN_APPROVED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
                        new=tx.status.value, ip=_client_ip(request))
@@ -1710,6 +1731,11 @@ async def _reviewer_action(
         await db.flush()
         await _notify_admin(db, tx, f"{tx.ref}: approved by {cfg['label']} {reviewer.name} — awaiting your final approval", "✅")
         await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and forwarded to Admin for final approval", "✅")
+        # Telegram (demo, next-step only): reviewer approved → notify the Admin for final action.
+        if role == "SUPERVISOR":
+            await tgn.notify(db, tx, "ADMIN", "Approved by Supervisor", "Give final approval for the deposit.")
+        else:
+            await tgn.notify(db, tx, "ADMIN", "Verified by Manager", "Complete the withdrawal.")
     elif decision == "reject":
         action = "REJECTED"
         tx.status = TxStatus.REJECTED
@@ -1717,6 +1743,8 @@ async def _reviewer_action(
         _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
         await _notify_merchant(db, tx, f"{tx.ref}: rejected by the {cfg['label']}. Reason: {remark}", "✕")
+        # Telegram (demo, next-step only): reviewer rejected → notify ONLY the requesting user.
+        await tgn.notify(db, tx, "USER", f"Rejected by {cfg['label']}", None, reason=remark)
     elif decision == "resubmit":
         action = "RESUBMITTED"
         tx.status = TxStatus.RESUBMITTED            # returned to the Data Operator
@@ -1724,6 +1752,8 @@ async def _reviewer_action(
         await db.flush()
         await _notify_merchant(db, tx, f"{tx.ref}: returned by the {cfg['label']} — please correct and resubmit. Reason: {remark}", "↻")
         await _notify_business_role(db, tx, "DEO", f"{tx.ref}: returned for correction by the {cfg['label']} — please fix and resubmit. Reason: {remark}", "↻")
+        # Telegram (demo, next-step only): returned for correction → notify ONLY the requesting user.
+        await tgn.notify(db, tx, "USER", f"Returned by {cfg['label']}", "Correct the details and resubmit.", reason=remark)
     else:
         raise HTTPException(status_code=400, detail="Unknown review decision.")
 
@@ -1835,6 +1865,8 @@ async def reject_transaction(
     _append_remark(tx, role="ADMIN", user=actor.name, username=actor.username, action="REJECTED", remark=tx.reject_reason)
     await db.flush()
     db.add(Notification(user_id=tx.merchant_id, message=f"{tx.ref} rejected — {tx.reject_reason}", icon="✕"))
+    # Telegram (demo, next-step only): admin rejection → notify ONLY the requesting user, with reason.
+    await tgn.notify(db, tx, "USER", "Rejected by Admin", None, reason=tx.reject_reason)
     await log_event(db, "ADMIN_REJECTED", f"{tx.ref} rejected by {actor.name} — reason: {tx.reject_reason}", actor=actor)
     await record_audit(db, "ADMIN_REJECTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
                        new="REJECTED", reason=tx.reject_reason, ip=_client_ip(request))
