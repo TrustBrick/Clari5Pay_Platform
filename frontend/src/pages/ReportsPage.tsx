@@ -713,26 +713,34 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
 // sequential running balance (Opening + Deposits − Withdrawals − Settlements). ──
 const LEDGER_HEADERS = ['Date', 'Time', 'Description', 'Transaction Reference', 'Amount', 'Running Balance'];
 const signed = (n: number) => `${n >= 0 ? '+' : '−'}${fmt(Math.abs(n))}`;
-export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
-  ({ rows, businessName, generatedBy, rangeLabel }) => {
+export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
+  ({ rows, allRows, businessName, generatedBy, rangeLabel }) => {
     const toast = useToast();
     // Deposits add; withdrawals & settlements subtract (shared Total Available Balance rule).
     const delta = (r: ReportRow) => (r.type === 'deposit' ? r.amount : -r.amount);
-    // Completed transactions, oldest first; running balance starts from zero (unchanged).
-    const ledger = (() => {
-      const completed = rows.filter(r => r.completed).slice().sort((a, b) => rowTs(a) - rowTs(b));
+    // Running Balance is computed over the FULL completed ledger (oldest first), seeded from
+    // zero at the first all-time transaction — the formula is unchanged. Filtering only hides
+    // rows; the balance always carries forward from the transactions before the filter, exactly
+    // like a bank statement. `rows` are the filtered rows to display; `allRows` is the full,
+    // unfiltered set they came from (falls back to `rows` when a caller doesn't supply it).
+    const shown = new Set(rows);
+    const fullLedger = (() => {
+      const completed = (allRows || rows).filter(r => r.completed).slice().sort((a, b) => rowTs(a) - rowTs(b));
       let bal = 0;
       return completed.map(r => {
         const d = delta(r);
         bal += d;
-        return { date: r.date, time: r.time, description: `${RTYPE_LABEL[r.type || ''] || 'Transaction'} — ${memberLabel(r.memberId, r.member)}`, ref: r.ref, amount: d, balance: bal };
+        return { date: r.date, time: r.time, description: `${RTYPE_LABEL[r.type || ''] || 'Transaction'} — ${memberLabel(r.memberId, r.member)}`, ref: r.ref, amount: d, balance: bal, shown: shown.has(r) };
       });
     })();
-    // Clari5Pay business rule (not a bank statement): Opening Balance displays the Running
-    // Balance of the FIRST transaction shown in the report — 0 only when the filtered report
-    // is empty. Display value only; it does not feed the Running Balance (which still starts
-    // from zero).
-    const opening = ledger.length ? ledger[0].balance : 0;
+    // Rows actually displayed — those passing the active filters — in chronological order.
+    const ledger = fullLedger.filter(l => l.shown);
+    // Opening Balance = the Running Balance immediately BEFORE the first displayed transaction
+    // (bank-statement style). When the first displayed transaction is also the first of all
+    // time there is no prior balance, so we fall back to its own Running Balance. 0 only when
+    // the filtered report is empty.
+    const firstIdx = fullLedger.findIndex(l => l.shown);
+    const opening = firstIdx < 0 ? 0 : (firstIdx > 0 ? fullLedger[firstIdx - 1].balance : fullLedger[0].balance);
     const closing = ledger.length ? ledger[ledger.length - 1].balance : 0;
     const csvRows: Array<Array<string | number>> = [['', '', 'Opening Balance', '', '', opening], ...ledger.map(l => [l.date, l.time, l.description, l.ref, l.amount, l.balance])];
     const pdfRows: Array<Array<string | number>> = [['—', '—', 'Opening Balance', '—', '—', fmt(opening)], ...ledger.map(l => [l.date, l.time, l.description, l.ref, signed(l.amount), fmt(l.balance)])];
@@ -966,7 +974,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 
       {/* Focused report types (Treasury / Agent Ledger) — same filters, same exports */}
       {reportType === 'treasury' && <TreasuryReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
-      {reportType === 'ledger' && <AgentLedgerReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
+      {reportType === 'ledger' && <AgentLedgerReport rows={filtered} allRows={data.transactions} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
 
       {reportType === 'full' && <>
       {/* 4 — Membership analytics */}

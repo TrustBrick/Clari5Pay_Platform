@@ -1510,6 +1510,7 @@ export const AdminAccountsPage: React.FC = () => {
                 return (
                   <AgentLedgerReport
                     rows={filtered}
+                    allRows={stmtRows}
                     businessName={`${stmtAcc.accountName} (${stmtAcc.referenceNumber})`}
                     generatedBy={user?.name || user?.username || 'Admin'}
                     rangeLabel={rangeLabel}
