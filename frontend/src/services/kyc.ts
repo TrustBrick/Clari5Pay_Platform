@@ -53,8 +53,90 @@ export interface OcrResult {
   status?: string;
 }
 
-// ── Service methods (placeholders — backend integration added later) ────────────
+// ── Live Melento.ai integration (membership-based Aadhaar + PAN) ────────────────
+export interface KycHistoryItem {
+  id: number;
+  membershipId?: string | null;
+  memberName?: string | null;
+  verificationType: 'AADHAAR' | 'PAN' | string;
+  referenceId?: string | null;
+  transactionId?: string | null;
+  status: 'PENDING' | 'SUCCESS' | 'FAILED' | string;
+  createdBy?: string | null;
+  createdAt?: string | null;
+}
+
+export interface KycHistoryDetail extends KycHistoryItem {
+  generatedLink?: string | null;
+  apiStatus?: string | null;
+  errorMessage?: string | null;
+  request?: Record<string, unknown> | null;
+  response?: Record<string, unknown> | null;
+  updatedAt?: string | null;
+}
+
+export interface AadhaarLinkResult {
+  id: number;
+  referenceId: string;
+  transactionId?: string | null;
+  link: string;
+  status: string;
+  message?: string | null;
+}
+
+export interface AadhaarStatusResult {
+  pending: boolean;
+  status: 'PENDING' | 'SUCCESS' | 'FAILED' | string;
+  error?: string;
+  message?: string | null;
+  details?: AadhaarDetails | null;
+}
+
+// Aadhaar getAadhaarDetails response shape.
+export interface AadhaarDetails {
+  status?: string;
+  name?: string;
+  uid?: string;
+  dob?: string;
+  gender?: string;
+  care_of?: string;
+  address?: string;
+  split_address?: Record<string, string> | null;
+  xml_file?: string | null;
+  error?: string;
+  [k: string]: unknown;
+}
+
+export interface PanVerifyResult {
+  id: number;
+  status: string;
+  validPan: boolean;
+  result?: Record<string, unknown>;
+  raw?: Record<string, unknown>;
+}
+
+// ── Service methods ─────────────────────────────────────────────────────────────
 export const kycAPI = {
+  // Membership lookup → Member Name. Throws 404 ("Membership not found.") for unknown IDs.
+  lookupMember: async (membershipId: string): Promise<{ membershipId: string; memberName: string }> =>
+    (await api.get(`/api/kyc/member/${encodeURIComponent(membershipId)}`)).data,
+
+  generateAadhaarLink: async (membershipId: string): Promise<AadhaarLinkResult> =>
+    (await api.post<AadhaarLinkResult>('/api/kyc/aadhaar/generate-link', { membershipId })).data,
+
+  getAadhaarStatus: async (historyId: number): Promise<AadhaarStatusResult> =>
+    (await api.post<AadhaarStatusResult>('/api/kyc/aadhaar/status', { historyId })).data,
+
+  verifyPanMembership: async (membershipId: string, pan: string): Promise<PanVerifyResult> =>
+    (await api.post<PanVerifyResult>('/api/kyc/pan/verify-membership', { membershipId, pan })).data,
+
+  listHistory: async (): Promise<KycHistoryItem[]> =>
+    (await api.get<KycHistoryItem[]>('/api/kyc/history')).data,
+
+  getHistoryDetail: async (id: number): Promise<KycHistoryDetail> =>
+    (await api.get<KycHistoryDetail>(`/api/kyc/history/${id}`)).data,
+
+  // ── Legacy placeholder seams (still used by the Passport / OCR cards) ──
   verifyAadhaar: async (aadhaarNumber: string): Promise<AadhaarResult> =>
     (await api.post<AadhaarResult>('/api/kyc/aadhaar/verify', { aadhaarNumber })).data,
 

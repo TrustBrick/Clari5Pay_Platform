@@ -11,7 +11,67 @@ seams below; nothing in the routes, schemas, or frontend needs to change.
 """
 from __future__ import annotations
 
+import httpx
+
 from app.core.config import settings
+
+# ── Melento.ai staging (UAT) live integration ─────────────────────────────────
+# The Aadhaar (DigiLocker generate-link + poll) and PAN flows call the in-verify-utils
+# host with api_key / api_id headers. These helpers each return (response_dict, http_status)
+# and NEVER raise — network/timeout/parse failures are normalised into an error dict so the
+# route can persist the exact outcome and surface a clean message to the UI.
+_MELENTO_TIMEOUT = 30.0
+
+
+def _melento_headers() -> dict:
+    # The verify host is a Parse Server: the account's api_id is the Parse application id and
+    # api_key is the Parse REST API key (verified against the staging endpoint).
+    return {
+        "x-parse-application-id": settings.MELENTO_API_ID,
+        "x-parse-rest-api-key": settings.MELENTO_API_KEY,
+    }
+
+
+async def _melento_post(path: str, payload: dict) -> tuple[dict, int]:
+    """POST to the Melento verify host. Returns (parsed_json_or_error, http_status).
+
+    On a non-JSON body we wrap the raw text; on a transport error we return status 0 with an
+    error dict. Callers store the returned dict verbatim as the response record.
+    """
+    url = f"{settings.MELENTO_VERIFY_BASE_URL.rstrip('/')}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=_MELENTO_TIMEOUT) as client:
+            resp = await client.post(url, json=payload, headers=_melento_headers())
+    except httpx.HTTPError as exc:
+        return {"status": "error", "error": f"Could not reach the verification service: {exc}"}, 0
+    try:
+        data = resp.json()
+        if not isinstance(data, dict):
+            data = {"status": "error", "error": "Unexpected response format", "raw": data}
+    except ValueError:
+        data = {"status": "error", "error": (resp.text or "Empty response").strip()[:1000]}
+    return data, resp.status_code
+
+
+async def melento_generate_aadhaar_url(reference_id: str) -> tuple[dict, int]:
+    """Generate a DigiLocker Aadhaar verification link for a reference id."""
+    return await _melento_post("/api/digilocker/generateUrl", {"reference_id": reference_id, "source": "AADHAAR"})
+
+
+async def melento_get_aadhaar_details(reference_id: str, transaction_id: str | None) -> tuple[dict, int]:
+    """Fetch the Aadhaar details once the customer has completed DigiLocker for this reference."""
+    return await _melento_post(
+        "/api/digilocker/getAadhaarDetails",
+        {"reference_id": reference_id, "transaction_id": transaction_id},
+    )
+
+
+async def melento_pan_verify(reference_id: str, pan: str) -> tuple[dict, int]:
+    """Verify a PAN number (source_type 'id')."""
+    return await _melento_post(
+        "/api/pan/panVerification",
+        {"reference_id": reference_id, "source_type": "id", "source": pan},
+    )
 
 
 class KYCNotConfigured(Exception):

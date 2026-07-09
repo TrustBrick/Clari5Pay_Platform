@@ -480,6 +480,37 @@ class BlogPost(Base):
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class KycVerificationHistory(Base):
+    """One row per KYC verification API request (Merchant Portal → KYC Update).
+
+    Every Aadhaar generate-link and PAN verification creates a NEW row storing the complete
+    request/response JSON exactly as exchanged with Melento.ai — prior records are never
+    overwritten. The Aadhaar status poll (getAadhaarDetails) updates its own originating row's
+    verification_status/response (the spec's "Update Verification Status → Verified/Failed").
+    Access is limited to Supervisor/Manager merchant users; the list is scoped to the caller's
+    merchant business pool via ``merchant_business``.
+    """
+    __tablename__ = "kyc_verification_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    membership_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    verification_type: Mapped[str] = mapped_column(String(16), nullable=False)  # AADHAAR | PAN
+    reference_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    transaction_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)  # PENDING | SUCCESS | FAILED
+    request_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # full outbound request, as sent
+    response_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)    # full provider response, as received
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    generated_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # Aadhaar DigiLocker verification URL
+    api_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True) # provider "status" field / HTTP status
+    created_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)  # actor name
+    # Merchant business name (scopes the history list to the caller's shared member pool).
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+
+
 class UserSession(Base):
     """Login-session presence tracking for the Active Users feature. One row is created per
     login; the newest active row is a user's current session. Online = an active session with a

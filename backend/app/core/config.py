@@ -104,9 +104,14 @@ class Settings(BaseSettings):
     # and return a clear "provider not configured yet" response, and the Merchant KYC
     # Update UI shows a graceful message. Credentials are supplied later via env ONLY
     # (never hardcoded); once set, only app/services/kyc.py's provider seams need filling.
-    MELENTO_API_KEY: str = ""
-    MELENTO_API_ID: str = ""
+    # Melento.ai UAT (staging) credentials for the live Aadhaar (DigiLocker) + PAN integration.
+    # Defaults are the supplied staging keys so the Demo build works out of the box; override
+    # via env for other environments. MELENTO_VERIFY_BASE_URL is the in-verify-utils host used
+    # by generateUrl / getAadhaarDetails / panVerification (distinct from MELENTO_BASE_URL).
+    MELENTO_API_KEY: str = "673d4777b6236537fba6aea3c3f81c7a"
+    MELENTO_API_ID: str = "trustbrickrealtyfintechprivatelimited_user_1"
     MELENTO_BASE_URL: str = "https://api.melento.ai"
+    MELENTO_VERIFY_BASE_URL: str = "https://in-verify-utils.staging-melento.ai"
     DIGILOCKER_CLIENT_ID: str = ""
     DIGILOCKER_CLIENT_SECRET: str = ""
     DIGILOCKER_BASE_URL: str = "https://api.digitallocker.gov.in"
