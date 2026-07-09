@@ -424,7 +424,20 @@ const ObjectGrid: React.FC<{ obj?: Record<string, unknown> | null }> = ({ obj })
   return <KVGrid rows={entries.map(([k, v]) => [prettify(k), String(v ?? '—')] as [string, React.ReactNode])} />;
 };
 
-const AadhaarDetailsBody: React.FC<{ data: AadhaarDetails }> = ({ data }) => {
+// Melento nests the actual Aadhaar fields under result.validated_data.result; older/flatter
+// responses may carry them higher up. Unwrap to the first object that holds recognizable fields
+// so Basic Information renders regardless of nesting depth.
+const pickAadhaarData = (raw: AadhaarDetails | Record<string, unknown> | null | undefined): AadhaarDetails => {
+  const r = raw as Record<string, any> | null | undefined;
+  const candidates = [r, r?.result, r?.result?.validated_data, r?.result?.validated_data?.result, r?.validated_data, r?.validated_data?.result];
+  for (const c of candidates) {
+    if (c && typeof c === 'object' && (c.name || c.uid || c.dob)) return c as AadhaarDetails;
+  }
+  return (raw || {}) as AadhaarDetails;
+};
+
+const AadhaarDetailsBody: React.FC<{ data: AadhaarDetails }> = ({ data: raw }) => {
+  const data = pickAadhaarData(raw);
   const split = (data.split_address || {}) as Record<string, string>;
   const photo = extractAadhaarPhoto(data.xml_file);
   const SPLIT_ORDER = ['country', 'state', 'district', 'subdistrict', 'sub_district', 'vtc', 'village', 'town', 'street', 'house', 'landmark', 'po', 'post_office', 'pincode', 'pin_code', 'pc'];
