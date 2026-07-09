@@ -487,6 +487,7 @@ export interface ReportRow {
   type: 'deposit' | 'withdrawal' | 'settlement' | null;
   depositType?: string | null;
   amount: number;
+  commission?: number | null;   // fee already applied by the workflow (amount × pay-in/pay-out rate)
   status: string;
   date: string;
   time: string;

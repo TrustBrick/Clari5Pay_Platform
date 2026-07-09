@@ -1137,10 +1137,26 @@ def _build_report_payload(
     def _payment_method(t: Transaction):
         return t.deposit_type if _kind(t) == "deposit" else (t.payout_mode or None)
 
+    def _commission(t: Transaction) -> float:
+        """Commission (fee) already applied to this transaction by the deposit / withdrawal /
+        settlement workflow — amount × the merchant's own pay-in (deposit) or pay-out
+        (withdrawal / settlement) rate, using that business's own rates. This is the same fee
+        compute_balance nets out of the dashboard Available Balance, so the Agent Ledger's
+        net running balance (Amount − Commission) reconciles to it. Not a new calculation."""
+        biz = business_by_mid.get(t.merchant_id, "")
+        pay_in_rate, pay_out_rate = rates_by_business.get(biz, (0.0, 0.0))
+        k = _kind(t)
+        if k == "deposit":
+            return round(t.amount * pay_in_rate, 2)
+        if k in ("withdrawal", "settlement"):
+            return round(t.amount * pay_out_rate, 2)
+        return 0.0
+
     rows = [{
         "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
         "business": business_by_mid.get(t.merchant_id, ""),
         "type": _kind(t), "depositType": t.deposit_type, "amount": round(t.amount, 2), "status": t.status.value,
+        "commission": _commission(t),
         "date": str(t.tx_date), "time": t.tx_time,
         "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
         "completed": _completed(t),

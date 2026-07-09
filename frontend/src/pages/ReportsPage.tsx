@@ -709,18 +709,22 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
     );
   };
 
-// ── Agent Ledger Report: completed transactions in chronological order, with a
-// sequential running balance (Opening + Deposits − Withdrawals − Settlements). ──
-const LEDGER_HEADERS = ['Date', 'Time', 'Description', 'Transaction Reference', 'Amount', 'Running Balance'];
+// ── Agent Ledger Report: completed transactions in chronological order, with a sequential
+// running balance NET of commission (Opening + Σ(Amount − Commission)). ──
+const LEDGER_HEADERS = ['Date', 'Time', 'Description', 'Transaction Reference', 'Amount', 'Commission', 'Running Balance'];
 const signed = (n: number) => `${n >= 0 ? '+' : '−'}${fmt(Math.abs(n))}`;
+// Commission always reduces the credited amount — show it as a negative, or INR 0.00 when none.
+const commissionText = (c: number) => (c > 0 ? `−${fmt(c)}` : fmt(0));
 export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
   ({ rows, allRows, businessName, generatedBy, rangeLabel }) => {
     const toast = useToast();
-    // Deposits add; withdrawals & settlements subtract (shared Total Available Balance rule).
-    const delta = (r: ReportRow) => (r.type === 'deposit' ? r.amount : -r.amount);
-    // Running Balance is computed over the FULL completed ledger (oldest first), seeded from
-    // zero at the first all-time transaction — the formula is unchanged. Filtering only hides
-    // rows; the balance always carries forward from the transactions before the filter, exactly
+    // Amount is the gross signed transaction (deposits add; withdrawals & settlements subtract).
+    const signedAmount = (r: ReportRow) => (r.type === 'deposit' ? r.amount : -r.amount);
+    // Running Balance is NET of commission: net delta = signed Amount − Commission, where
+    // Commission is the fee already applied by the workflow (supplied by the backend). So the
+    // closing balance reconciles to the dashboard Available Balance / wallet. Computed over the
+    // FULL completed ledger (oldest first), seeded from zero at the first all-time transaction;
+    // filtering only hides rows — the net balance carries forward across the filter, exactly
     // like a bank statement. `rows` are the filtered rows to display; `allRows` is the full,
     // unfiltered set they came from (falls back to `rows` when a caller doesn't supply it).
     const shown = new Set(rows);
@@ -728,9 +732,10 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRo
       const completed = (allRows || rows).filter(r => r.completed).slice().sort((a, b) => rowTs(a) - rowTs(b));
       let bal = 0;
       return completed.map(r => {
-        const d = delta(r);
-        bal += d;
-        return { date: r.date, time: r.time, description: `${RTYPE_LABEL[r.type || ''] || 'Transaction'} — ${memberLabel(r.memberId, r.member)}`, ref: r.ref, amount: d, balance: bal, shown: shown.has(r) };
+        const amt = signedAmount(r);
+        const commission = Math.max(0, r.commission || 0);
+        bal += amt - commission;
+        return { date: r.date, time: r.time, description: `${RTYPE_LABEL[r.type || ''] || 'Transaction'} — ${memberLabel(r.memberId, r.member)}`, ref: r.ref, amount: amt, commission, balance: bal, shown: shown.has(r) };
       });
     })();
     // Rows actually displayed — those passing the active filters — in chronological order.
@@ -742,8 +747,8 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRo
     const firstIdx = fullLedger.findIndex(l => l.shown);
     const opening = firstIdx < 0 ? 0 : (firstIdx > 0 ? fullLedger[firstIdx - 1].balance : fullLedger[0].balance);
     const closing = ledger.length ? ledger[ledger.length - 1].balance : 0;
-    const csvRows: Array<Array<string | number>> = [['', '', 'Opening Balance', '', '', opening], ...ledger.map(l => [l.date, l.time, l.description, l.ref, l.amount, l.balance])];
-    const pdfRows: Array<Array<string | number>> = [['—', '—', 'Opening Balance', '—', '—', fmt(opening)], ...ledger.map(l => [l.date, l.time, l.description, l.ref, signed(l.amount), fmt(l.balance)])];
+    const csvRows: Array<Array<string | number>> = [['', '', 'Opening Balance', '', '', '', opening], ...ledger.map(l => [l.date, l.time, l.description, l.ref, l.amount, l.commission > 0 ? -l.commission : 0, l.balance])];
+    const pdfRows: Array<Array<string | number>> = [['—', '—', 'Opening Balance', '—', '—', '—', fmt(opening)], ...ledger.map(l => [l.date, l.time, l.description, l.ref, signed(l.amount), commissionText(l.commission), fmt(l.balance)])];
     const onExcel = () => {
       downloadXlsx(`clari5pay-agent-ledger-${today()}.xlsx`, [{
         name: 'Agent Ledger',
@@ -753,6 +758,7 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRo
           { header: 'Description', get: l => l.description, width: 32 },
           { header: 'Transaction Reference', get: l => l.ref, width: 22 },
           { header: 'Amount', get: l => Number(l.amount), width: 16, z: INR_NUMFMT },
+          { header: 'Commission', get: l => (l.commission > 0 ? -Number(l.commission) : 0), width: 16, z: INR_NUMFMT },
           { header: 'Running Balance', get: l => Number(l.balance), width: 18, z: INR_NUMFMT },
         ],
         rows: ledger,
@@ -761,12 +767,12 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRo
     };
     const onPdf = (autoPrint: boolean) => printColumnarReport({
       title: 'Agent Ledger Report', businessName, generatedBy, rangeLabel,
-      headers: LEDGER_HEADERS, rows: pdfRows, aligns: ['l', 'l', 'l', 'l', 'r', 'r'],
-      footerNote: `Running Balance = Opening + Deposits − Withdrawals − Settlements (shared Total Available Balance, no commission). Closing ${fmt(closing)}. Honours the selected filters.`, autoPrint,
+      headers: LEDGER_HEADERS, rows: pdfRows, aligns: ['l', 'l', 'l', 'l', 'r', 'r', 'r'],
+      footerNote: `Running Balance = Opening + Σ(Amount − Commission) — the net amount credited after commission, reconciling to the Available Balance. Closing ${fmt(closing)}. Honours the selected filters.`, autoPrint,
     });
     return (
       <div>
-        <RSectionTitle note="Completed transactions in chronological order. Running Balance = Opening + Deposits − Withdrawals − Settlements — the shared Total Available Balance formula (no commission deducted).">📒 Agent Ledger Report</RSectionTitle>
+        <RSectionTitle note="Completed transactions in chronological order. Amount is the gross transaction; Commission is the fee applied by the deposit/withdrawal/settlement workflow; Running Balance is the net credited after commission — it matches your Available Balance.">📒 Agent Ledger Report</RSectionTitle>
         <ReportExportBar count={ledger.length} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={() => downloadCsv(`clari5pay-agent-ledger-${today()}.csv`, LEDGER_HEADERS, csvRows)} onPrint={() => onPdf(true)} />
         <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
           <div style={{ overflowX: 'auto', maxHeight: 560 }}>
@@ -777,9 +783,10 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRo
                   <td style={tdR} /><td style={tdR} />
                   <td style={{ ...tdR, fontWeight: 700, color: T.textMuted }}>Opening Balance</td>
                   <td style={tdR} /><td style={{ ...tdR, textAlign: 'right' }}>—</td>
+                  <td style={{ ...tdR, textAlign: 'right' }}>—</td>
                   <td style={{ ...tdR, textAlign: 'right', fontWeight: 800 }}>{fmt(opening)}</td>
                 </tr>
-                {ledger.length === 0 && <tr><td colSpan={6} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No completed transactions match the selected filters.</td></tr>}
+                {ledger.length === 0 && <tr><td colSpan={7} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No completed transactions match the selected filters.</td></tr>}
                 {ledger.slice(0, 500).map((l, idx) => (
                   <tr key={`${l.ref}-${idx}`} className="c5-row-hover">
                     <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{l.date}</td>
@@ -787,6 +794,7 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRo
                     <td style={tdR}>{l.description}</td>
                     <td style={{ ...tdR, fontFamily: 'monospace', color: T.blue }}>{l.ref}</td>
                     <td style={{ ...tdR, textAlign: 'right', fontWeight: 700, color: l.amount >= 0 ? T.success : T.danger }}>{signed(l.amount)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 700, color: l.commission > 0 ? T.danger : T.textMuted }}>{commissionText(l.commission)}</td>
                     <td style={{ ...tdR, textAlign: 'right', fontWeight: 800 }}>{fmt(l.balance)}</td>
                   </tr>
                 ))}
