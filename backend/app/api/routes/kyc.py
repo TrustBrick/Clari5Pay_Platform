@@ -42,17 +42,6 @@ class PanRequest(BaseModel):
     panNumber: str
 
 
-class PassportRequest(BaseModel):
-    passportNumber: str
-    dateOfBirth: str | None = None
-
-
-class OcrRequest(BaseModel):
-    documentType: str
-    fileName: str
-    fileData: str          # base64 data URL of the uploaded document
-
-
 def _unavailable(exc: kyc_service.KYCNotConfigured) -> HTTPException:
     """Map a not-configured provider to a graceful, client-friendly 503."""
     return HTTPException(
@@ -79,32 +68,6 @@ async def pan_verify(body: PanRequest, _: User = Depends(get_current_kyc_user)):
         raise HTTPException(status_code=400, detail="Invalid PAN Number — expected format ABCDE1234F.")
     try:
         return await kyc_service.verify_pan(number)
-    except kyc_service.KYCNotConfigured as exc:
-        raise _unavailable(exc)
-
-
-@router.post("/passport/verify")
-async def passport_verify(body: PassportRequest, _: User = Depends(get_current_kyc_user)):
-    number = body.passportNumber.upper().strip()
-    if not PASSPORT_RE.match(number):
-        raise HTTPException(status_code=400, detail="Invalid Passport Number — expected format A1234567.")
-    try:
-        return await kyc_service.verify_passport(number, body.dateOfBirth)
-    except kyc_service.KYCNotConfigured as exc:
-        raise _unavailable(exc)
-
-
-@router.post("/ocr/extract")
-async def ocr_extract(body: OcrRequest, _: User = Depends(get_current_kyc_user)):
-    ext = body.fileName.rsplit(".", 1)[-1].lower() if "." in body.fileName else ""
-    if ext not in OCR_ALLOWED_TYPES:
-        raise HTTPException(status_code=400, detail="Unsupported file type — allowed: JPG, JPEG, PNG, PDF.")
-    # base64 payload is ~4/3 of the raw byte size; guard against oversized uploads.
-    approx_bytes = (len(body.fileData) * 3) // 4
-    if approx_bytes > OCR_MAX_BYTES:
-        raise HTTPException(status_code=400, detail="File too large — maximum size is 10 MB.")
-    try:
-        return await kyc_service.verify_ocr(body.documentType, body.fileName, body.fileData)
     except kyc_service.KYCNotConfigured as exc:
         raise _unavailable(exc)
 
@@ -147,6 +110,7 @@ def _history_summary(row: KycVerificationHistory) -> dict:
         "membershipId": row.membership_id,
         "memberName": row.member_name,
         "verificationType": row.verification_type,
+        "documentType": row.document_type,
         "referenceId": row.reference_id,
         "transactionId": row.transaction_id,
         "status": row.verification_status,
@@ -177,6 +141,24 @@ class AadhaarStatusRequest(BaseModel):
 class PanVerifyRequest(BaseModel):
     membershipId: str
     pan: str
+
+
+class PassportVerifyRequest(BaseModel):
+    membershipId: str
+    passportNumber: str
+    dateOfBirth: str | None = None
+
+
+class OcrVerifyRequest(BaseModel):
+    membershipId: str
+    documentType: str
+    fileName: str
+    fileData: str          # base64 data URL of the uploaded document
+    verification: bool = True
+
+
+# OCR doc_type codes accepted by the General-Document API (dropdown → payload value).
+OCR_DOC_TYPES = {"passport", "pan_card", "aadhaar_card", "driving_licence", "voter_card"}
 
 
 @router.get("/member/{membership_id}")
@@ -336,6 +318,117 @@ async def pan_verify_membership(
         raise HTTPException(status_code=502, detail=error_message)
 
     return {"id": row.id, "status": row.verification_status, "validPan": valid_pan, "result": result, "raw": data}
+
+
+@router.post("/passport/verify-membership")
+async def passport_verify_membership(
+    body: PassportVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_kyc_user),
+):
+    """Verify a passport for a member and record the request/response (source_type 'id')."""
+    mid, member_name = await _require_member_name(db, user, body.membershipId)
+    number = (body.passportNumber or "").upper().strip()
+    if not PASSPORT_RE.match(number):
+        raise HTTPException(status_code=400, detail="Invalid Passport Number — expected format A1234567.")
+    dob = (body.dateOfBirth or "").strip() or None
+
+    reference_id = _gen_reference("PASSPORT")
+    request_payload = {"reference_id": reference_id, "source_type": "id", "source": number}
+    if dob:
+        request_payload["dob"] = dob
+    data, http_status = await kyc_service.melento_passport_verify(reference_id, number, dob)
+
+    status_val = str(data.get("status") or "").lower()
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    valid_passport = bool((result or {}).get("valid_passport"))
+    ok = status_val == "success"
+    error_message = None if ok else (data.get("message") or data.get("error") or "Passport verification failed.")
+
+    row = KycVerificationHistory(
+        membership_id=mid,
+        member_name=member_name,
+        verification_type="PASSPORT",
+        reference_id=data.get("reference_id") or reference_id,
+        transaction_id=data.get("transaction_id"),
+        verification_status="SUCCESS" if ok else "FAILED",
+        request_json=json.dumps(request_payload),
+        response_json=json.dumps(data),
+        error_message=error_message,
+        api_status=str(data.get("status") or http_status),
+        created_by=_actor_name(user),
+        merchant_business=user.name,
+    )
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+
+    if not ok:
+        # Persist the FAILED record before raising (get_db rolls back on exception).
+        await db.commit()
+        raise HTTPException(status_code=502, detail=error_message)
+
+    return {"id": row.id, "status": row.verification_status, "validPassport": valid_passport, "result": result, "raw": data}
+
+
+@router.post("/ocr/verify-membership")
+async def ocr_verify_membership(
+    body: OcrVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_kyc_user),
+):
+    """Run General-Document (OCR) verification for a member and record the request/response."""
+    mid, member_name = await _require_member_name(db, user, body.membershipId)
+
+    doc_type = (body.documentType or "").strip().lower()
+    if doc_type not in OCR_DOC_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported document type.")
+    ext = body.fileName.rsplit(".", 1)[-1].lower() if "." in body.fileName else ""
+    if ext not in OCR_ALLOWED_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported file type — allowed: JPG, JPEG, PNG, PDF.")
+    # base64 payload is ~4/3 of the raw byte size; guard against oversized uploads.
+    approx_bytes = (len(body.fileData) * 3) // 4
+    if approx_bytes > OCR_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="File too large — maximum size is 10 MB.")
+
+    reference_id = _gen_reference("OCR")
+    # The provider takes the raw base64 (strip any data-URL prefix). We persist the complete
+    # request exactly as sent (the platform already stores uploads as DB data-URLs), so no
+    # information is discarded; API logs mask the source (see kyc_service._mask_payload).
+    b64 = body.fileData.split(",", 1)[-1] if body.fileData.startswith("data:") else body.fileData
+    request_payload = {"reference_id": reference_id, "source": b64,
+                       "verification": body.verification, "doc_type": doc_type}
+    data, http_status = await kyc_service.melento_ocr_verify(reference_id, b64, doc_type, body.verification)
+
+    status_val = str(data.get("status") or "").lower()
+    ok = status_val == "success"
+    error_message = None if ok else (data.get("message") or data.get("error") or "OCR verification failed.")
+
+    row = KycVerificationHistory(
+        membership_id=mid,
+        member_name=member_name,
+        verification_type="OCR",
+        document_type=doc_type,
+        reference_id=data.get("reference_id") or reference_id,
+        transaction_id=data.get("transaction_id"),
+        verification_status="SUCCESS" if ok else "FAILED",
+        request_json=json.dumps(request_payload),
+        response_json=json.dumps(data),
+        error_message=error_message,
+        api_status=str(data.get("status") or http_status),
+        created_by=_actor_name(user),
+        merchant_business=user.name,
+    )
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+
+    if not ok:
+        # Persist the FAILED record before raising (get_db rolls back on exception).
+        await db.commit()
+        raise HTTPException(status_code=502, detail=error_message)
+
+    return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")), "raw": data}
 
 
 @router.get("/history")

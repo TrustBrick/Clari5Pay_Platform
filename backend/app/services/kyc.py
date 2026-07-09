@@ -11,9 +11,13 @@ seams below; nothing in the routes, schemas, or frontend needs to change.
 """
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger("app.kyc")
 
 # ── Melento.ai staging (UAT) live integration ─────────────────────────────────
 # The Aadhaar (DigiLocker generate-link + poll) and PAN flows call the in-verify-utils
@@ -32,24 +36,50 @@ def _melento_headers() -> dict:
     }
 
 
-async def _melento_post(path: str, payload: dict) -> tuple[dict, int]:
+def _mask_payload(payload: dict) -> dict:
+    """Redact the sensitive source (Aadhaar/PAN/passport number or base64 document) for logs —
+    credentials (api_id/api_key) live in headers and are never logged."""
+    out = dict(payload)
+    src = out.get("source")
+    if isinstance(src, str) and src:
+        out["source"] = (src[:4] + "…") if len(src) <= 32 else f"<{len(src)} chars>"
+    return out
+
+
+async def _melento_post(path_or_url: str, payload: dict) -> tuple[dict, int]:
     """POST to the Melento verify host. Returns (parsed_json_or_error, http_status).
 
-    On a non-JSON body we wrap the raw text; on a transport error we return status 0 with an
-    error dict. Callers store the returned dict verbatim as the response record.
+    ``path_or_url`` may be a path (prefixed with ``MELENTO_VERIFY_BASE_URL``) or an absolute URL
+    (used verbatim). On a non-JSON body we wrap the raw text; on a transport error we return
+    status 0 with an error dict. Every request/response is logged with the sensitive source
+    masked and credentials never emitted. A single retry is made on timeout. Callers store the
+    returned dict verbatim as the response record.
     """
-    url = f"{settings.MELENTO_VERIFY_BASE_URL.rstrip('/')}{path}"
-    try:
-        async with httpx.AsyncClient(timeout=_MELENTO_TIMEOUT) as client:
-            resp = await client.post(url, json=payload, headers=_melento_headers())
-    except httpx.HTTPError as exc:
-        return {"status": "error", "error": f"Could not reach the verification service: {exc}"}, 0
+    url = path_or_url if path_or_url.startswith("http") else f"{settings.MELENTO_VERIFY_BASE_URL.rstrip('/')}{path_or_url}"
+    ref = payload.get("reference_id")
+    logger.info("KYC → POST %s ref=%s payload=%s", url, ref, _mask_payload(payload))
+    last_exc: httpx.HTTPError | None = None
+    for attempt in (1, 2):  # one retry, only on timeout
+        try:
+            async with httpx.AsyncClient(timeout=_MELENTO_TIMEOUT) as client:
+                resp = await client.post(url, json=payload, headers=_melento_headers())
+            break
+        except httpx.TimeoutException as exc:
+            last_exc = exc
+            logger.warning("KYC ⏱ timeout on %s ref=%s (attempt %d/2)", url, ref, attempt)
+            continue
+        except httpx.HTTPError as exc:
+            logger.error("KYC ✗ transport error on %s ref=%s: %s", url, ref, exc)
+            return {"status": "error", "error": f"Could not reach the verification service: {exc}"}, 0
+    else:
+        return {"status": "error", "error": f"Verification service timed out: {last_exc}"}, 0
     try:
         data = resp.json()
         if not isinstance(data, dict):
             data = {"status": "error", "error": "Unexpected response format", "raw": data}
     except ValueError:
         data = {"status": "error", "error": (resp.text or "Empty response").strip()[:1000]}
+    logger.info("KYC ← %s ref=%s http=%s status=%s", url, ref, resp.status_code, data.get("status"))
     return data, resp.status_code
 
 
@@ -71,6 +101,28 @@ async def melento_pan_verify(reference_id: str, pan: str) -> tuple[dict, int]:
     return await _melento_post(
         "/api/pan/panVerification",
         {"reference_id": reference_id, "source_type": "id", "source": pan},
+    )
+
+
+async def melento_passport_verify(reference_id: str, passport: str, dob: str | None) -> tuple[dict, int]:
+    """Verify a passport number (source_type 'id'). ``dob`` is YYYY-MM-DD when supplied.
+
+    The API also supports source_type 'image' (base64) — kept ready for a future upload flow by
+    routing through the same seam; only the request builder here would change.
+    """
+    payload = {"reference_id": reference_id, "source_type": "id", "source": passport}
+    if dob:
+        payload["dob"] = dob
+    return await _melento_post(settings.PASSPORT_VERIFICATION_URL, payload)
+
+
+async def melento_ocr_verify(
+    reference_id: str, source_b64: str, doc_type: str, verification: bool
+) -> tuple[dict, int]:
+    """General-document OCR verification: a base64 document + doc_type, verification toggle."""
+    return await _melento_post(
+        settings.OCR_VERIFICATION_URL,
+        {"reference_id": reference_id, "source": source_b64, "verification": verification, "doc_type": doc_type},
     )
 
 
@@ -107,17 +159,8 @@ async def verify_pan(pan_number: str) -> dict:
     return await _melento_verify("verify/pan", {"pan_number": pan_number})
 
 
-async def verify_passport(passport_number: str, date_of_birth: str | None = None) -> dict:
-    return await _melento_verify(
-        "verify/passport", {"passport_number": passport_number, "date_of_birth": date_of_birth}
-    )
-
-
-async def verify_ocr(document_type: str, file_name: str, file_data: str) -> dict:
-    """OCR extraction from an uploaded identity document (base64 data URL)."""
-    return await _melento_verify(
-        "ocr/extract", {"document_type": document_type, "file_name": file_name, "file": file_data}
-    )
+# Passport and General-Document (OCR) verification are live, membership-driven flows — see
+# ``melento_passport_verify`` / ``melento_ocr_verify`` above (mirroring the PAN integration).
 
 
 # ── DigiLocker (OAuth authorization → fetch the verified Aadhaar document) ──────

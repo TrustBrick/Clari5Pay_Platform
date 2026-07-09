@@ -112,6 +112,11 @@ class Settings(BaseSettings):
     MELENTO_API_ID: str = "trustbrickrealtyfintechprivatelimited_user_1"
     MELENTO_BASE_URL: str = "https://api.melento.ai"
     MELENTO_VERIFY_BASE_URL: str = "https://in-verify-utils.staging-melento.ai"
+    # Full endpoint URLs for the Passport and General-Document (OCR) verification APIs on the
+    # in-verify-utils host. Configurable via env so they can be repointed without a code change;
+    # the defaults are the documented staging endpoints.
+    PASSPORT_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/passport/passportVerification"
+    OCR_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/document/documentVerification"
     DIGILOCKER_CLIENT_ID: str = ""
     DIGILOCKER_CLIENT_SECRET: str = ""
     DIGILOCKER_BASE_URL: str = "https://api.digitallocker.gov.in"

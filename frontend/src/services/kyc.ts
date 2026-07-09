@@ -32,33 +32,13 @@ export interface PanResult {
   status?: string;
 }
 
-export interface PassportResult {
-  passportNumber?: string;
-  fullName?: string;
-  nationality?: string;
-  gender?: string;
-  dateOfBirth?: string;
-  issueDate?: string;
-  expiryDate?: string;
-  status?: string;
-}
-
-export interface OcrResult {
-  documentType?: string;
-  documentNumber?: string;
-  name?: string;
-  dateOfBirth?: string;
-  address?: string;
-  fields?: Record<string, string>;   // any other detected fields
-  status?: string;
-}
-
-// ── Live Melento.ai integration (membership-based Aadhaar + PAN) ────────────────
+// ── Live Melento.ai integration (membership-based Aadhaar / PAN / Passport / OCR) ─
 export interface KycHistoryItem {
   id: number;
   membershipId?: string | null;
   memberName?: string | null;
-  verificationType: 'AADHAAR' | 'PAN' | string;
+  verificationType: 'AADHAAR' | 'PAN' | 'PASSPORT' | 'OCR' | string;
+  documentType?: string | null;     // OCR doc_type (passport / pan_card / …)
   referenceId?: string | null;
   transactionId?: string | null;
   status: 'PENDING' | 'SUCCESS' | 'FAILED' | string;
@@ -115,6 +95,30 @@ export interface PanVerifyResult {
   raw?: Record<string, unknown>;
 }
 
+export interface PassportVerifyResult {
+  id: number;
+  status: string;
+  validPassport: boolean;
+  result?: Record<string, unknown>;
+  raw?: Record<string, unknown>;
+}
+
+export interface OcrVerifyResult {
+  id: number;
+  status: string;
+  verified: boolean;
+  raw?: Record<string, unknown>;
+}
+
+// Document types supported by the General-Document (OCR) API (dropdown value → doc_type).
+export const OCR_DOC_TYPES: Array<{ value: string; label: string }> = [
+  { value: 'passport', label: 'Passport' },
+  { value: 'pan_card', label: 'PAN Card' },
+  { value: 'aadhaar_card', label: 'Aadhaar Card' },
+  { value: 'driving_licence', label: 'Driving Licence' },
+  { value: 'voter_card', label: 'Voter ID' },
+];
+
 // ── Service methods ─────────────────────────────────────────────────────────────
 export const kycAPI = {
   // Membership lookup → Member Name. Throws 404 ("Membership not found.") for unknown IDs.
@@ -130,6 +134,14 @@ export const kycAPI = {
   verifyPanMembership: async (membershipId: string, pan: string): Promise<PanVerifyResult> =>
     (await api.post<PanVerifyResult>('/api/kyc/pan/verify-membership', { membershipId, pan })).data,
 
+  verifyPassportMembership: async (membershipId: string, passportNumber: string, dateOfBirth?: string): Promise<PassportVerifyResult> =>
+    (await api.post<PassportVerifyResult>('/api/kyc/passport/verify-membership', { membershipId, passportNumber, dateOfBirth })).data,
+
+  verifyOcrMembership: async (
+    membershipId: string, documentType: string, fileName: string, fileData: string, verification: boolean,
+  ): Promise<OcrVerifyResult> =>
+    (await api.post<OcrVerifyResult>('/api/kyc/ocr/verify-membership', { membershipId, documentType, fileName, fileData, verification })).data,
+
   listHistory: async (): Promise<KycHistoryItem[]> =>
     (await api.get<KycHistoryItem[]>('/api/kyc/history')).data,
 
@@ -142,12 +154,6 @@ export const kycAPI = {
 
   verifyPAN: async (panNumber: string): Promise<PanResult> =>
     (await api.post<PanResult>('/api/kyc/pan/verify', { panNumber })).data,
-
-  verifyPassport: async (passportNumber: string, dateOfBirth?: string): Promise<PassportResult> =>
-    (await api.post<PassportResult>('/api/kyc/passport/verify', { passportNumber, dateOfBirth })).data,
-
-  verifyOCR: async (documentType: string, fileName: string, fileData: string): Promise<OcrResult> =>
-    (await api.post<OcrResult>('/api/kyc/ocr/extract', { documentType, fileName, fileData })).data,
 
   // Aadhaar via DigiLocker — customer authenticates with DigiLocker; the verified Aadhaar
   // document is returned in the same shape as verifyAadhaar (unified result card).

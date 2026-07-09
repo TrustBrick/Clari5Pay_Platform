@@ -4,16 +4,14 @@ import { T } from '../utils/theme';
 import { Card, Btn, Input, Sel, Modal } from '../components/UI';
 import { useToast } from '../context/ToastContext';
 import {
-  kycAPI, KYC_VALIDATION, OCR_ACCEPT, OCR_MAX_BYTES, kycErrorMessage,
-  type PassportResult, type OcrResult,
+  kycAPI, KYC_VALIDATION, OCR_ACCEPT, OCR_MAX_BYTES, OCR_DOC_TYPES, kycErrorMessage,
   type KycHistoryItem, type KycHistoryDetail, type AadhaarDetails,
 } from '../services/kyc';
 
 // ─── Merchant Portal → KYC Update ──────────────────────────────────────────────
-// Identity-verification workspace for Supervisor / Manager roles. Aadhaar and PAN are the
-// live, membership-driven flows backed by the Melento.ai staging APIs — every request/response
-// is persisted server-side and shown in the Verification History table. Passport and OCR remain
-// placeholder cards until their providers are connected.
+// Identity-verification workspace for Supervisor / Manager roles. Aadhaar, PAN, Passport and OCR
+// are live, membership-driven flows backed by the Melento.ai staging APIs — every request/response
+// is persisted server-side and shown in the Verification History table.
 
 type ViewKey = 'home' | 'aadhaar' | 'pan' | 'passport' | 'ocr';
 
@@ -25,13 +23,7 @@ const CARDS: CardDef[] = [
   { key: 'ocr',      icon: '📄', title: 'OCR Document Verification', desc: 'Extract details from an uploaded identity document.' },
 ];
 const TYPE_LABEL: Record<ViewKey, string> = {
-  home: '', aadhaar: 'Aadhaar', pan: 'PAN', passport: 'Passport', ocr: 'OCR Document',
-};
-
-const maskNumber = (v: string): string => {
-  const s = (v || '').replace(/\s/g, '');
-  if (s.length <= 4) return s || '—';
-  return '•'.repeat(Math.max(0, s.length - 4)) + s.slice(-4);
+  home: '', aadhaar: 'Aadhaar', pan: 'PAN', passport: 'Passport', ocr: 'OCR',
 };
 
 // Format an ISO/UTC timestamp in Indian Standard Time.
@@ -89,28 +81,6 @@ const StatusPill: React.FC<{ status?: string | null }> = ({ status }) => {
   const m = map[s] || { c: T.textMuted, bg: T.borderLight, label: status || '—' };
   return <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 20, color: m.c, background: m.bg, whiteSpace: 'nowrap' }}>{m.label}</span>;
 };
-
-const ResultCard: React.FC<{ title: string; rows: Array<[string, React.ReactNode]>; photo?: string | null; verifiedVia?: string }> = ({ title, rows, photo, verifiedVia }) => (
-  <Card style={{ marginTop: 18 }}>
-    <div style={{ padding: '12px 18px', borderBottom: `1px solid ${T.border}`, background: T.canvas, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <span style={{ fontSize: 13, fontWeight: 800, color: T.textMain }}>{title}</span>
-      <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>
-        ● {verifiedVia ? `Verified via ${verifiedVia}` : 'Verified'}
-      </span>
-    </div>
-    <div style={{ padding: 18, display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-      {photo && <img src={photo} alt="Document" style={{ width: 96, height: 96, objectFit: 'cover', borderRadius: 10, border: `1px solid ${T.border}` }} />}
-      <div style={{ flex: '1 1 320px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '12px 20px' }}>
-        {rows.map(([k, v]) => (
-          <div key={k}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>{k}</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: T.textMain, wordBreak: 'break-word' }}>{v ?? '—'}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  </Card>
-);
 
 // Shell that wraps every verification view: title, back link, and children.
 const VerifyShell: React.FC<{ icon: string; title: string; children: React.ReactNode; onBack: () => void }> = ({ icon, title, children, onBack }) => (
@@ -292,89 +262,98 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   );
 };
 
-// ─── Passport (placeholder — provider not connected) ───────────────────────────
-const PassportView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+// ─── Passport (membership → verify passport number) ────────────────────────────
+const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
+  const { showToast } = useToast();
+  const m = useMemberLookup();
   const [num, setNum] = useState('');
   const [dob, setDob] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState('');
-  const [ok, setOk] = useState(false);
-  const [result, setResult] = useState<PassportResult | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [result, setResult] = useState<{ validPassport: boolean } | null>(null);
 
-  const submit = async () => {
-    setErr(''); setOk(false); setResult(null);
-    if (!KYC_VALIDATION.passport(num)) { setErr('Invalid Passport Number — expected format A1234567.'); return; }
-    setLoading(true);
+  const validFmt = KYC_VALIDATION.passport(num);
+  const canVerify = Boolean(m.memberName) && !m.error && validFmt && !verifying;
+
+  const verify = async () => {
+    if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
+    if (!validFmt) { showToast('Invalid Passport Number — expected format A1234567.', 'error'); return; }
+    setVerifying(true); setResult(null);
     try {
-      const r = await kycAPI.verifyPassport(num.toUpperCase().trim(), dob || undefined);
-      setResult(r); setOk(true);
+      const r = await kycAPI.verifyPassportMembership(m.memberId.trim(), num.toUpperCase().trim(), dob || undefined);
+      setResult({ validPassport: r.validPassport });
+      showToast(r.validPassport ? 'Passport verified successfully.' : 'Passport verification completed.', 'success');
+      onDone();
     } catch (e) {
-      setErr(kycErrorMessage(e, 'Passport Not Found.'));
-    } finally { setLoading(false); }
+      showToast(kycErrorMessage(e, 'Passport verification failed.'), 'error');
+      onDone();   // a FAILED attempt is still persisted — refresh so it appears in history
+    } finally { setVerifying(false); }
   };
 
   return (
     <VerifyShell icon="📘" title="Passport Verification" onBack={onBack}>
-      {ok && <Banner kind="success">Verification completed successfully.</Banner>}
-      {err && <Banner kind="error">{err}</Banner>}
+      <MembershipFields m={m} />
       <Input label="Passport Number" value={num} onChange={e => setNum(e.target.value.toUpperCase())} placeholder="A1234567" hint="8-character passport number" />
-      <Input label="Date of Birth" type="date" value={dob} onChange={e => setDob(e.target.value)} hint="Optional — required by some issuers" />
-      <Btn onClick={submit} disabled={loading}>{loading ? <><Spinner /> Verifying...</> : 'Verify Passport'}</Btn>
+      <Input label="Date of Birth" type="date" value={dob} onChange={e => setDob(e.target.value)} hint="YYYY-MM-DD" />
+      <Btn onClick={verify} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify Passport'}</Btn>
       {result && (
-        <ResultCard title="Passport Details" rows={[
-          ['Passport Number', maskNumber(result.passportNumber || num)], ['Full Name', result.fullName],
-          ['Nationality', result.nationality], ['Gender', result.gender], ['Date of Birth', result.dateOfBirth],
-          ['Issue Date', result.issueDate], ['Expiry Date', result.expiryDate], ['Passport Status', result.status],
-        ]} />
+        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Valid Passport</span>
+          <span style={{ fontSize: 12, fontWeight: 800, padding: '3px 12px', borderRadius: 20, color: result.validPassport ? T.success : T.danger, background: result.validPassport ? T.successBg : T.dangerBg }}>{result.validPassport ? 'YES' : 'NO'}</span>
+          <span style={{ fontSize: 12, color: T.textMuted }}>See the Verification History for full details.</span>
+        </div>
       )}
     </VerifyShell>
   );
 };
 
-// ─── OCR Document (placeholder — provider not connected) ───────────────────────
-const OcrView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const [docType, setDocType] = useState('AADHAAR_FRONT');
+// ─── OCR Document (membership → upload → verify via General-Document API) ───────
+const OcrView: React.FC<FlowProps> = ({ onDone, onBack }) => {
+  const { showToast } = useToast();
+  const m = useMemberLookup();
+  const [docType, setDocType] = useState(OCR_DOC_TYPES[0].value);
+  const [verification, setVerification] = useState(true);
   const [file, setFile] = useState<File | null>(null);
   const [dataUrl, setDataUrl] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState('');
-  const [ok, setOk] = useState(false);
-  const [result, setResult] = useState<OcrResult | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [result, setResult] = useState<{ verified: boolean } | null>(null);
 
   const onFile = (f: File | null) => {
-    setErr(''); setOk(false); setResult(null); setDataUrl(''); setFile(null);
+    setResult(null); setDataUrl(''); setFile(null);
     if (!f) return;
     const ext = f.name.split('.').pop()?.toLowerCase() || '';
-    if (!['jpg', 'jpeg', 'png', 'pdf'].includes(ext)) { setErr('Unsupported file type — allowed: JPG, JPEG, PNG, PDF.'); return; }
-    if (f.size > OCR_MAX_BYTES) { setErr('File too large — maximum size is 10 MB.'); return; }
+    if (!['jpg', 'jpeg', 'png', 'pdf'].includes(ext)) { showToast('Unsupported file type — allowed: JPG, JPEG, PNG, PDF.', 'error'); return; }
+    if (f.size > OCR_MAX_BYTES) { showToast('File too large — maximum size is 10 MB.', 'error'); return; }
     const reader = new FileReader();
     reader.onload = () => { setDataUrl(String(reader.result)); setFile(f); };
-    reader.onerror = () => setErr('Could not read the file — please try again.');
+    reader.onerror = () => showToast('Could not read the file — please try again.', 'error');
     reader.readAsDataURL(f);
   };
 
+  const canVerify = Boolean(m.memberName) && !m.error && Boolean(file) && Boolean(dataUrl) && !verifying;
+
   const submit = async () => {
-    setErr(''); setOk(false); setResult(null);
-    if (!file || !dataUrl) { setErr('Please select a document to extract.'); return; }
-    setLoading(true);
+    if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
+    if (!file || !dataUrl) { showToast('Please select a document to verify.', 'error'); return; }
+    setVerifying(true); setResult(null);
     try {
-      const r = await kycAPI.verifyOCR(docType, file.name, dataUrl);
-      setResult(r); setOk(true);
+      const r = await kycAPI.verifyOcrMembership(m.memberId.trim(), docType, file.name, dataUrl, verification);
+      setResult({ verified: r.verified });
+      showToast(r.verified ? 'Document verified successfully.' : 'OCR verification completed.', 'success');
+      onDone();
     } catch (e) {
-      setErr(kycErrorMessage(e, 'OCR Extraction Failed.'));
-    } finally { setLoading(false); }
+      showToast(kycErrorMessage(e, 'OCR verification failed.'), 'error');
+      onDone();   // a FAILED attempt is still persisted — refresh so it appears in history
+    } finally { setVerifying(false); }
   };
 
   const isImage = file && /\.(jpg|jpeg|png)$/i.test(file.name);
 
   return (
     <VerifyShell icon="📄" title="OCR Document Verification" onBack={onBack}>
-      {ok && <Banner kind="success">Verification completed successfully.</Banner>}
-      {err && <Banner kind="error">{err}</Banner>}
-      <Sel label="Document Type" value={docType} onChange={e => setDocType(e.target.value)} options={[
-        { value: 'AADHAAR_FRONT', label: 'Aadhaar Front' }, { value: 'AADHAAR_BACK', label: 'Aadhaar Back' },
-        { value: 'PAN', label: 'PAN Card' }, { value: 'PASSPORT', label: 'Passport' }, { value: 'OTHER', label: 'Other Identity Document' },
-      ]} />
+      <MembershipFields m={m} />
+      <Sel label="Document Type" value={docType} onChange={e => setDocType(e.target.value)} options={OCR_DOC_TYPES} />
+      <Sel label="Verification" value={verification ? 'yes' : 'no'} onChange={e => setVerification(e.target.value === 'yes')}
+        options={[{ value: 'yes', label: 'Yes — validate the document' }, { value: 'no', label: 'No — extract only' }]} />
       <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Upload Document</label>
       <input type="file" accept={OCR_ACCEPT} onChange={e => onFile(e.target.files?.[0] || null)}
         style={{ width: '100%', padding: '10px 14px', border: `1.5px dashed ${T.border}`, borderRadius: 10, fontSize: 13, color: T.textMain, background: T.canvas, cursor: 'pointer', fontFamily: 'inherit', boxSizing: 'border-box' }} />
@@ -386,19 +365,19 @@ const OcrView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             : <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 14px', border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 13, color: T.textMain }}>📄 {file.name}</div>}
         </div>
       )}
-      <Btn onClick={submit} disabled={loading || !file}>{loading ? <><Spinner /> Extracting...</> : 'Extract Details'}</Btn>
+      <Btn onClick={submit} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify OCR'}</Btn>
       {result && (
-        <ResultCard title="Extracted Information" rows={[
-          ['Document Type', result.documentType || docType], ['Document Number', maskNumber(result.documentNumber || '')],
-          ['Name', result.name], ['Date of Birth', result.dateOfBirth], ['Address', result.address],
-          ...Object.entries(result.fields || {}).map(([k, v]) => [k, v] as [string, React.ReactNode]),
-        ]} />
+        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Verified</span>
+          <span style={{ fontSize: 12, fontWeight: 800, padding: '3px 12px', borderRadius: 20, color: result.verified ? T.success : T.danger, background: result.verified ? T.successBg : T.dangerBg }}>{result.verified ? 'YES' : 'NO'}</span>
+          <span style={{ fontSize: 12, color: T.textMuted }}>See the Verification History for full details.</span>
+        </div>
       )}
     </VerifyShell>
   );
 };
 
-// ─── View Details popup (Aadhaar + PAN) ────────────────────────────────────────
+// ─── View Details popup (Aadhaar / PAN / Passport / OCR) ───────────────────────
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
   <div style={{ marginBottom: 18 }}>
     <div style={{ fontSize: 12, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10, paddingBottom: 6, borderBottom: `1px solid ${T.border}` }}>{title}</div>
@@ -493,6 +472,96 @@ const PanDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ respo
   );
 };
 
+// Passport response → Extracted / Validated / Data-Match sections (mirrors PAN); the exact keys
+// returned by the provider are rendered dynamically so no field is ever dropped.
+const PassportDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ response }) => {
+  const result = (response?.result || {}) as Record<string, unknown>;
+  const extracted = (result.extracted_data || {}) as Record<string, unknown>;
+  const validated = (result.validated_data || {}) as Record<string, unknown>;
+  const match = (result.data_match || {}) as Record<string, unknown>;
+  const validPassport = Boolean(result.valid_passport);
+  return (
+    <>
+      <Section title="Passport Information"><ObjectGrid obj={extracted} /></Section>
+      <Section title="Validation Result"><ObjectGrid obj={validated} /></Section>
+      <Section title="Data Match">
+        <ObjectGrid obj={match} />
+        {result.data_match_aggregate != null && (
+          <div style={{ marginTop: 10, fontSize: 12, color: T.textMuted }}>Aggregate Match: <strong style={{ color: T.textMain }}>{String(result.data_match_aggregate)}</strong></div>
+        )}
+      </Section>
+      <Section title="Passport Status">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted }}>Valid Passport</span>
+          <span style={{ fontSize: 13, fontWeight: 800, padding: '3px 14px', borderRadius: 20, color: validPassport ? T.success : T.danger, background: validPassport ? T.successBg : T.dangerBg }}>{validPassport ? 'YES' : 'NO'}</span>
+        </div>
+      </Section>
+    </>
+  );
+};
+
+// Detect a base64/data-URL image value (graphic fields carry photo/signature crops).
+const asImageSrc = (v: unknown): string | null => {
+  if (typeof v !== 'string' || v.length < 100) return null;
+  if (v.startsWith('data:image')) return v;
+  if (/^[A-Za-z0-9+/=\s]+$/.test(v)) return `data:image/jpeg;base64,${v.replace(/\s+/g, '')}`;
+  return null;
+};
+
+// A grid of base64 image crops (OCR graphic_fields: photo, signature, …).
+const GraphicGrid: React.FC<{ obj?: Record<string, unknown> | null }> = ({ obj }) => {
+  const imgs = obj ? Object.entries(obj).map(([k, v]) => [k, asImageSrc(v)] as const).filter(([, s]) => s) : [];
+  if (!imgs.length) return <ObjectGrid obj={obj} />;
+  return (
+    <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+      {imgs.map(([k, src]) => (
+        <div key={k}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{prettify(k)}</div>
+          <img src={src as string} alt={k} style={{ maxWidth: 130, maxHeight: 160, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}` }} />
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// General-Document (OCR) response — rendered fully dynamically since each doc_type returns a
+// different structure. Every returned key is surfaced under an appropriate section.
+const OcrDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ response }) => {
+  const r = response || {};
+  const result = (r.result || {}) as Record<string, unknown>;
+  const extracted = (r.extracted_data || result.extracted_data || {}) as Record<string, unknown>;
+  const validated = (r.validated_data || result.validated_data || {}) as Record<string, unknown>;
+  const graphic = (r.graphic_fields || result.graphic_fields || {}) as Record<string, unknown>;
+  const verified = Boolean(r.verified);
+  const has = (o: Record<string, unknown>) => o && Object.keys(o).length > 0;
+  return (
+    <>
+      <Section title="Document Details">
+        <KVGrid rows={[
+          ['Document Type', r.document_type ? prettify(String(r.document_type)) : undefined],
+          ['MRZ Validity', r.mrzvalidity != null ? String(r.mrzvalidity) : undefined],
+          ['Message', r.message as React.ReactNode],
+        ]} />
+      </Section>
+      {has(extracted) && <Section title="Extracted Information"><ObjectGrid obj={extracted} /></Section>}
+      {has(validated) && <Section title="Validated Information"><ObjectGrid obj={validated} /></Section>}
+      {/* Any remaining scalar keys inside result that aren't the nested objects above. */}
+      {has(result) && <Section title="Verification Result"><ObjectGrid obj={result} /></Section>}
+      {has(graphic) && <Section title="Graphic Fields"><GraphicGrid obj={graphic} /></Section>}
+      <Section title="Verification Summary">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted }}>Verified</span>
+          <span style={{ fontSize: 13, fontWeight: 800, padding: '3px 14px', borderRadius: 20, color: verified ? T.success : T.danger, background: verified ? T.successBg : T.dangerBg }}>{verified ? 'YES' : 'NO'}</span>
+        </div>
+      </Section>
+    </>
+  );
+};
+
+const TYPE_TITLE: Record<string, string> = {
+  AADHAAR: 'Aadhaar', PAN: 'PAN', PASSPORT: 'Passport', OCR: 'OCR Document',
+};
+
 const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; onRefresh: () => void }> = ({ item, onClose, onRefresh }) => {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<KycHistoryDetail | null>(null);
@@ -531,14 +600,18 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
   }, [item.id]);
 
   const isAadhaar = item.verificationType === 'AADHAAR';
+  const title = TYPE_TITLE[item.verificationType] || item.verificationType;
 
   return (
-    <Modal title={`${isAadhaar ? 'Aadhaar' : 'PAN'} Verification Details`} onClose={onClose} wide>
+    <Modal title={`${title} Verification Details`} onClose={onClose} wide>
       <style>{`@keyframes kycspin{to{transform:rotate(360deg)}}`}</style>
       {/* Header summary */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px', marginBottom: 18, fontSize: 12, color: T.textMuted }}>
         <span>Membership ID: <strong style={{ color: T.textMain }}>{item.membershipId || '—'}</strong></span>
         <span>Member: <strong style={{ color: T.textMain }}>{item.memberName || '—'}</strong></span>
+        {item.verificationType === 'OCR' && item.documentType && (
+          <span>Document: <strong style={{ color: T.textMain }}>{prettify(item.documentType)}</strong></span>
+        )}
         <span>Reference: <strong style={{ color: T.textMain, fontFamily: 'monospace' }}>{item.referenceId || '—'}</strong></span>
         <StatusPill status={detail?.status || item.status} />
       </div>
@@ -559,20 +632,26 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
       {!loading && err && <Banner kind="error">{err}</Banner>}
 
       {!loading && !pendingMsg && isAadhaar && aadhaar && <AadhaarDetailsBody data={aadhaar} />}
-      {!loading && !pendingMsg && !isAadhaar && detail?.response && <PanDetailsBody response={detail.response} />}
+      {!loading && !pendingMsg && item.verificationType === 'PAN' && detail?.response && <PanDetailsBody response={detail.response} />}
+      {!loading && !pendingMsg && item.verificationType === 'PASSPORT' && detail?.response && <PassportDetailsBody response={detail.response} />}
+      {!loading && !pendingMsg && item.verificationType === 'OCR' && detail?.response && <OcrDetailsBody response={detail.response} />}
       {!loading && !pendingMsg && !isAadhaar && !detail?.response && !err && (
         <Banner kind="info">No response data available for this record.</Banner>
+      )}
+      {/* A FAILED record still shows its stored error so no information is hidden. */}
+      {!loading && !pendingMsg && !isAadhaar && detail?.response && detail?.errorMessage && (
+        <Banner kind="error">{detail.errorMessage}</Banner>
       )}
     </Modal>
   );
 };
 
-// ─── History table (DB-backed — both Aadhaar & PAN) ────────────────────────────
+// ─── History table (DB-backed — Aadhaar / PAN / Passport / OCR) ────────────────
 const HistoryTable: React.FC<{ rows: KycHistoryItem[]; loading: boolean; onView: (r: KycHistoryItem) => void }> = ({ rows, loading, onView }) => (
   <Card style={{ marginTop: 24 }}>
     <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
       <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: T.textMain }}>Verification History</h2>
-      <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Every Aadhaar and PAN verification request for your business.</p>
+      <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Every Aadhaar, PAN, Passport and OCR verification request for your business.</p>
     </div>
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -641,7 +720,7 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
                 <div style={{ width: 48, height: 48, borderRadius: 14, background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>{c.icon}</div>
                 <div style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{c.title}</div>
                 <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, flex: 1 }}>{c.desc}</div>
-                <Btn size="sm" full onClick={() => setView(c.key)}>{c.key === 'ocr' ? 'Open' : `Verify ${TYPE_LABEL[c.key]}`}</Btn>
+                <Btn size="sm" full onClick={() => setView(c.key)}>{`Verify ${TYPE_LABEL[c.key]}`}</Btn>
               </Card>
             ))}
           </div>
@@ -651,8 +730,8 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
 
       {view === 'aadhaar' && <AadhaarView {...flowProps} />}
       {view === 'pan' && <PanView {...flowProps} />}
-      {view === 'passport' && <PassportView onBack={back} />}
-      {view === 'ocr' && <OcrView onBack={back} />}
+      {view === 'passport' && <PassportView {...flowProps} />}
+      {view === 'ocr' && <OcrView {...flowProps} />}
 
       {detailItem && <ViewDetailsModal item={detailItem} onClose={() => setDetailItem(null)} onRefresh={loadHistory} />}
     </div>

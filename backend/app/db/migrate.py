@@ -104,6 +104,8 @@ _NEW_COLUMNS = [
     ("support_messages", "attachment_name", "VARCHAR(256)"),
     ("support_messages", "attachment_type", "VARCHAR(128)"),
     ("support_messages", "attachment_size", "INTEGER"),
+    # KYC OCR: store the document type verified (passport/pan_card/aadhaar_card/…).
+    ("kyc_verification_history", "document_type", "VARCHAR(32)"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type

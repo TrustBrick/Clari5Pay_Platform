@@ -495,8 +495,9 @@ class KycVerificationHistory(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     membership_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
     member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    verification_type: Mapped[str] = mapped_column(String(16), nullable=False)  # AADHAAR | PAN
+    verification_type: Mapped[str] = mapped_column(String(16), nullable=False)  # AADHAAR | PAN | PASSPORT | OCR
     reference_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    document_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # OCR doc_type (passport/pan_card/…)
     transaction_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     verification_status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)  # PENDING | SUCCESS | FAILED
     request_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # full outbound request, as sent
