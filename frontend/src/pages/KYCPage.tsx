@@ -476,13 +476,18 @@ const PanDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ respo
 // returned by the provider are rendered dynamically so no field is ever dropped.
 const PassportDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ response }) => {
   const result = (response?.result || {}) as Record<string, unknown>;
-  const extracted = (result.extracted_data || {}) as Record<string, unknown>;
+  // profile_image is a base64 portrait in extracted_data — render it as a photo, not raw text.
+  const { profile_image, ...extracted } = (result.extracted_data || {}) as Record<string, unknown>;
+  const photo = asImageSrc(profile_image);
   const validated = (result.validated_data || {}) as Record<string, unknown>;
   const match = (result.data_match || {}) as Record<string, unknown>;
   const validPassport = Boolean(result.valid_passport);
   return (
     <>
-      <Section title="Passport Information"><ObjectGrid obj={extracted} /></Section>
+      <Section title="Passport Information">
+        <ObjectGrid obj={extracted} />
+        {photo && <img src={photo} alt="Passport photo" style={{ marginTop: 12, width: 110, height: 140, objectFit: 'cover', borderRadius: 10, border: `1px solid ${T.border}` }} />}
+      </Section>
       <Section title="Validation Result"><ObjectGrid obj={validated} /></Section>
       <Section title="Data Match">
         <ObjectGrid obj={match} />
