@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, merchantRoleLabel, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
@@ -17,7 +17,7 @@ import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLo
 import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats, TelegramStatus } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
+import type { Transaction, User, Account, AccountBalance, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
@@ -1234,7 +1234,19 @@ export const AdminAccountsPage: React.FC = () => {
   const [toggleAcc, setToggleAcc] = useState<Account | null>(null);
   const [busy, setBusy] = useState(false);
   const [balances, setBalances] = useState<AccountBalance[]>([]);
-  const [acctMerchants, setAcctMerchants] = useState<AccountBalance | null>(null);
+  // Account → User → Player drill-down popup: the Users actually using the selected account,
+  // each with their Players (Player IDs like WININ25504). Loaded on demand.
+  const [usersAcct, setUsersAcct] = useState<Account | null>(null);   // account whose popup is open
+  const [acctUsers, setAcctUsers] = useState<AccountUsers | null>(null);
+  const [acctUsersLoading, setAcctUsersLoading] = useState(false);
+  const [viewPlayersOf, setViewPlayersOf] = useState<AccountUser | null>(null);
+  const openAcctUsers = async (a: Account) => {
+    setUsersAcct(a); setAcctUsers(null); setViewPlayersOf(null); setAcctUsersLoading(true);
+    try { setAcctUsers(await accountAPI.users(a.referenceNumber)); }
+    catch { showToast('Failed to load users for this account', 'error'); }
+    finally { setAcctUsersLoading(false); }
+  };
+  const closeAcctUsers = () => { setUsersAcct(null); setAcctUsers(null); setViewPlayersOf(null); };
   // Admin UPI IDs (separate from bank accounts).
   const [upis, setUpis] = useState<AdminUpi[]>([]);
   const [showAddUpi, setShowAddUpi] = useState(false);
@@ -1262,7 +1274,7 @@ export const AdminAccountsPage: React.FC = () => {
   };
   const acctName = (ref?: string | null) => accounts.find(a => a.referenceNumber === ref)?.accountName;
   useEffect(() => { reload(); }, []);
-  usePoll(() => { if (!detail && !showCreate && !toggleAcc && !stmtAcc) reload(); });
+  usePoll(() => { if (!detail && !showCreate && !toggleAcc && !stmtAcc && !usersAcct) reload(); });
 
   const doToggle = async (reason: string) => {
     if (!toggleAcc) return;
@@ -1306,7 +1318,7 @@ export const AdminAccountsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Deposit','Lowest Deposit','Deposits Received','Available','Merchants','Status','Details'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Deposit','Lowest Deposit','Deposits Received','Available','Users','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -1327,8 +1339,8 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{fmt(bal?.totalDeposited ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}>
-                    {bal && bal.merchants.length > 0
-                      ? <Btn size="sm" variant="ghost" onClick={()=>setAcctMerchants(bal)}>👥 {bal.merchants.length} merchant{bal.merchants.length>1?'s':''}</Btn>
+                    {bal && (bal.userCount ?? 0) > 0
+                      ? <Btn size="sm" variant="ghost" onClick={()=>openAcctUsers(a)}>👥 {bal.userCount} user{(bal.userCount ?? 0)>1?'s':''}</Btn>
                       : <span style={{ color:T.textLight }}>0</span>}
                   </td>
                   <td style={{ padding:'11px 14px' }}>
@@ -1451,28 +1463,89 @@ export const AdminAccountsPage: React.FC = () => {
         ))}
       </div>
 
-      {acctMerchants && (
-        <Modal title={`Merchants using ${acctMerchants.accountName} (${acctMerchants.referenceNumber})`} onClose={()=>setAcctMerchants(null)} wide>
+      {/* Account → User → Player drill-down: the Users actually using this account. */}
+      {usersAcct && (
+        <Modal title="Users Using Account" onClose={closeAcctUsers} wide>
+          <div style={{ display:'flex',gap:28,flexWrap:'wrap',marginBottom:16 }}>
+            <div>
+              <div style={{ fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Account Holder</div>
+              <div style={{ fontSize:14,fontWeight:800,color:T.textMain }}>{acctUsers?.accountHolder || usersAcct.accountName}</div>
+            </div>
+            <div>
+              <div style={{ fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Account Number</div>
+              <div style={{ fontSize:14,fontWeight:800,color:T.textMain }}>{acctUsers?.accountNumber || usersAcct.accountNumber}</div>
+            </div>
+          </div>
+
+          {acctUsersLoading
+            ? <div style={{ padding:'40px 0' }}><LoadingScreen label="Loading users…"/></div>
+            : (!acctUsers || acctUsers.users.length === 0)
+              ? <div style={{ padding:'24px 0',textAlign:'center',color:T.textMuted,fontSize:13 }}>No users have deposited into this account yet.</div>
+              : (<>
+                  <div style={{ display:'flex',gap:20,flexWrap:'wrap',marginBottom:14,fontSize:13,color:T.textMuted }}>
+                    <span><b style={{ color:T.textMain }}>{acctUsers.totalUsers}</b> User{acctUsers.totalUsers!==1?'s are':' is'} using this account</span>
+                    <span>Total Players: <b style={{ color:T.textMain }}>{acctUsers.totalPlayers}</b></span>
+                    <span>Total Deposited Through This Account: <b style={{ color:T.success }}>{fmt(acctUsers.totalDeposited)}</b></span>
+                  </div>
+                  <div style={{ overflowX:'auto' }}>
+                    <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+                      <thead>
+                        <tr style={{ background:T.canvas }}>
+                          {['User Name','User ID','Total Players','Deposited Through This Account','Action'].map(h=>(
+                            <th key={h} style={{ padding:'9px 12px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {acctUsers.users.map((u,i)=>(
+                          <tr key={u.merchantId} style={{ background:i%2===0?T.surface:'#f8faff' }}>
+                            <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{u.userName}</td>
+                            <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{u.userId||'—'}</code></td>
+                            <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{u.totalPlayers}</td>
+                            <td style={{ padding:'10px 12px',fontWeight:700,color:T.success }}>{fmt(u.deposited)}</td>
+                            <td style={{ padding:'10px 12px' }}>
+                              <Btn size="sm" variant="ghost" disabled={u.totalPlayers===0} onClick={()=>setViewPlayersOf(u)}>👤 View Players</Btn>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>)}
+        </Modal>
+      )}
+
+      {/* All Players belonging to the selected User (Player IDs like WININ25504). */}
+      {viewPlayersOf && (
+        <Modal title={`Players — ${viewPlayersOf.userName}`} onClose={()=>setViewPlayersOf(null)} xl>
           <p style={{ margin:'0 0 12px',fontSize:12,color:T.textMuted }}>
-            {acctMerchants.merchants.length} merchant{acctMerchants.merchants.length>1?'s have':' has'} deposited into this account · Total received: <b style={{ color:T.textMain }}>{fmt(acctMerchants.totalDeposited)}</b>
+            <b style={{ color:T.textMain }}>{viewPlayersOf.totalPlayers}</b> player{viewPlayersOf.totalPlayers!==1?'s':''}
+            {viewPlayersOf.userId ? <> · User ID: <code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontWeight:700 }}>{viewPlayersOf.userId}</code></> : null}
+            {' '}· Deposited through this account: <b style={{ color:T.success }}>{fmt(viewPlayersOf.deposited)}</b>
           </p>
           <div style={{ overflowX:'auto' }}>
             <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
               <thead>
                 <tr style={{ background:T.canvas }}>
-                  {['Merchant','Merchant ID','Deposited (this a/c)'].map(h=>(
+                  {['Player ID','Player Name','Status','Total Deposits','Total Withdrawals','Created Date & Time (IST)'].map(h=>(
                     <th key={h} style={{ padding:'9px 12px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {acctMerchants.merchants.map((m,i)=>(
-                  <tr key={m.merchantName} style={{ background:i%2===0?T.surface:'#f8faff' }}>
-                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{m.merchantName}</td>
-                    <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700 }}>{m.merchantCode||'—'}</code></td>
-                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{fmt(m.deposited)}</td>
+                {viewPlayersOf.players.length === 0 && <tr><td colSpan={6} style={{ padding:24,textAlign:'center',color:T.textMuted }}>No players found for this user.</td></tr>}
+                {viewPlayersOf.players.map((p,i)=>{ const active = (p.status||'').toLowerCase()==='active'; return (
+                  <tr key={p.playerId+String(i)} style={{ background:i%2===0?T.surface:'#f8faff' }}>
+                    <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700,color:T.blue }}>{p.playerId}</code></td>
+                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{p.playerName}</td>
+                    <td style={{ padding:'10px 12px' }}>
+                      <span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:active?T.successBg:T.dangerBg,color:active?T.success:T.danger }}>{p.status}</span>
+                    </td>
+                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.success }}>{fmt(p.deposits)}</td>
+                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{fmt(p.withdrawals)}</td>
+                    <td style={{ padding:'10px 12px',color:T.textMuted }}>{formatDateTimeIST(p.createdAt)}</td>
                   </tr>
-                ))}
+                );})}
               </tbody>
             </table>
           </div>

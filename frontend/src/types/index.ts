@@ -214,7 +214,39 @@ export interface AccountBalance {
   settlements?: number;
   available: number;        // deposits − withdrawals − settlements (all channels)
   linkedUpis?: { id: number; label: string; upiId: string; status: string }[];
+  userCount?: number;       // distinct users (operators) who deposited into this account
   merchants: AccountMerchantBalance[];
+}
+
+// Account → User → Player drill-down (Account Management popup). A "User" is the merchant
+// operator who deposited into the account; a "Player" is the Membership / Player ID (e.g.
+// WININ25504) they transacted for. All figures are scoped to the one account.
+export interface AccountPlayer {
+  playerId: string;
+  playerName: string;
+  status: string;            // Active / Inactive (derived from recent activity)
+  deposits: number;
+  withdrawals: number;
+  createdAt?: string | null;  // ISO (UTC) — rendered in IST
+}
+
+export interface AccountUser {
+  merchantId: number;
+  userName: string;
+  userId?: string | null;
+  totalPlayers: number;
+  deposited: number;         // deposited through this account
+  players: AccountPlayer[];
+}
+
+export interface AccountUsers {
+  referenceNumber: string;
+  accountHolder: string;
+  accountNumber: string;
+  totalUsers: number;
+  totalPlayers: number;
+  totalDeposited: number;
+  users: AccountUser[];
 }
 
 export interface MerchantBalance {

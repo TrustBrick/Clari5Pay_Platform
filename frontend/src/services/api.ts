@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, ActiveUsersData, AdminUpi, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -301,6 +301,12 @@ export const accountAPI = {
   },
   lastForMember: async (memberId: string) => {
     const res = await api.get<{ referenceNumber: string | null }>(`/api/accounts/for-member/${encodeURIComponent(memberId)}`);
+    return res.data;
+  },
+  // Users (merchant operators) who deposited into an account, each with their Players
+  // (Membership / Player IDs). Powers the Account → User → Player drill-down popup.
+  users: async (ref: string) => {
+    const res = await api.get<AccountUsers>(`/api/accounts/${ref}/users`);
     return res.data;
   },
   create: async (data: Record<string, unknown>) => {

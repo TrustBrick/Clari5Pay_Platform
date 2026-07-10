@@ -465,6 +465,19 @@ export const formatDateTime = (d?: string | null) => {
   });
 };
 
+// Date + time ALWAYS in Indian Standard Time, e.g. "01 Jun 2025, 10:15 AM IST", regardless of
+// the viewer's device timezone. Backend sends UTC (…Z). Used where IST is a stated requirement.
+export const formatDateTimeIST = (d?: string | null) => {
+  if (!d) return '—';
+  const dt = parseTs(d);
+  if (isNaN(dt.getTime())) return d;
+  return dt.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  }) + ' IST';
+};
+
 export const CHART_DATA = [
   { day: 'Mon', deposit: 125000, withdrawal: 45000 },
   { day: 'Tue', deposit: 98000, withdrawal: 32000 },

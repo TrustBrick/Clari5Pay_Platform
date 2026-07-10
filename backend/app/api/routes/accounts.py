@@ -76,6 +76,7 @@ async def account_balances(
     # Per-account money movements from completed transactions. Deposits route via admin_ref
     # (bank vs UPI distinguished by admin_upi_id); withdrawals/settlements via the member map.
     dep: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))   # account → merchant → amount
+    acct_users: dict[str, set[int]] = defaultdict(set)   # account → distinct depositing users (operators)
     bank_dep: dict[str, float] = defaultdict(float)
     upi_dep: dict[str, float] = defaultdict(float)
     dep_high: dict[str, float] = {}   # account → highest single successful deposit ever received
@@ -89,6 +90,7 @@ async def account_balances(
         if ty.startswith("DEPOSIT"):
             if t.status in _COMPLETED_STATUSES and t.admin_ref:
                 dep[t.admin_ref][t.merchant_name] += t.amount
+                acct_users[t.admin_ref].add(t.merchant_id)
                 (upi_dep if t.admin_upi_id else bank_dep)[t.admin_ref] += t.amount
                 # Track the largest/smallest individual deposit received into this account.
                 if t.admin_ref not in dep_high or t.amount > dep_high[t.admin_ref]:
@@ -142,6 +144,7 @@ async def account_balances(
             "settlements": round(st, 2),
             "available": round(total_d - wd - st, 2),   # deposits − withdrawals − settlements
             "linkedUpis": upis_by_acct.get(ref, []),
+            "userCount": len(acct_users.get(ref, set())),   # distinct depositing users (operators)
             "merchants": rows,
         })
     return out
@@ -198,6 +201,152 @@ async def account_statement(
     } for t in txns if _belongs(t)]
     rows.sort(key=lambda r: r["createdAt"] or "", reverse=True)
     return {"referenceNumber": ref, "accountName": acc.account_name, "transactions": rows}
+
+
+# A player counts as "Active" if they have moved money through this account within the last
+# 90 days (there is no separate player entity/status in the schema — it is derived from the
+# transaction history, the same source everything else in this popup uses).
+_ACTIVE_WINDOW_DAYS = 90
+
+
+@router.get("/{ref}/users")
+async def account_users(
+    ref: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Drill-down for the Account Management popup: the Users (merchant operators) who have
+    deposited into THIS account, and — nested under each — the Players (Membership / Player
+    IDs like WININ25504) they transacted for.
+
+    Attribution is identical to /balances and /statement so the figures reconcile with the
+    account list: deposits route via ``Transaction.admin_ref``; withdrawals attribute back via
+    the member→receiving-account map. Everything here is scoped to this single account, so a
+    User's "deposited through this account" equals the sum of their Players' deposits shown.
+    """
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == ref)
+    )).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    txns = (await db.execute(select(Transaction))).scalars().all()
+
+    # Member → most recent receiving account — same source as /balances, so a member's
+    # withdrawals attribute back to the account they deposit into.
+    links = (await db.execute(
+        select(AccountTransaction).order_by(AccountTransaction.id.desc())
+    )).scalars().all()
+    member_acct: dict[str, str] = {}
+    for l in links:
+        if l.member_id and l.reference_number and l.member_id not in member_acct:
+            member_acct[l.member_id] = l.reference_number
+
+    def _pid(t: Transaction) -> str:
+        return (t.member_id or "").strip().upper()
+
+    # Per-member money attributed to THIS account (by member id, not creator) — withdrawals
+    # complete as COMPLETED and attribute via the member map. Kept separate from the user→player
+    # deposit hierarchy so a withdrawal made by a different operator still lands on its player.
+    wd_by_member: dict[str, float] = defaultdict(float)
+    last_activity: dict[str, datetime] = {}   # member id → most recent completed movement here
+
+    def _mark_active(pid: str, ts: datetime | None):
+        if pid and ts and (pid not in last_activity or ts > last_activity[pid]):
+            last_activity[pid] = ts
+
+    for t in txns:
+        ty = t.type.value
+        if ty.startswith("WITHDRAWAL") and t.status == TxStatus.COMPLETED and t.member_id:
+            if member_acct.get(t.member_id) == ref:
+                wd_by_member[_pid(t)] += t.amount
+                _mark_active(_pid(t), t.created_at)
+
+    # Deposit-derived hierarchy: creating User → Player. Deposits routed to this account define
+    # which users/players belong here (the business relationship Account → User → Player).
+    users: dict[int, dict] = {}
+    for t in txns:
+        if not t.type.value.startswith("DEPOSIT"):
+            continue
+        if t.status not in _COMPLETED_STATUSES or t.admin_ref != ref:
+            continue
+        uid = t.merchant_id
+        u = users.get(uid)
+        if u is None:
+            u = users[uid] = {
+                "merchant_id": uid,
+                "userName": (t.creator_username or t.merchant_name),
+                "userId": None,
+                "deposited": 0.0,
+                "players": {},   # player id → node
+            }
+        u["deposited"] += t.amount
+
+        pid = _pid(t)
+        players = u["players"]
+        p = players.get(pid)
+        if p is None:
+            p = players[pid] = {
+                "playerId": t.member_id or "—",
+                "playerName": (t.member_name or "").strip() or "—",
+                "deposits": 0.0,
+                "createdAt": t.created_at,
+            }
+        p["deposits"] += t.amount
+        if t.member_name and (p["playerName"] == "—"):
+            p["playerName"] = t.member_name.strip()
+        # Earliest deposit into this account = when this player started using it.
+        if t.created_at and (p["createdAt"] is None or t.created_at < p["createdAt"]):
+            p["createdAt"] = t.created_at
+        _mark_active(pid, t.created_at)
+
+    # Enrich each User with their canonical name / User ID from the users table.
+    uids = list(users.keys())
+    urows = (await db.execute(select(User).where(User.id.in_(uids)))).scalars().all() if uids else []
+    urow_by_id = {u.id: u for u in urows}
+    for uid, u in users.items():
+        rec = urow_by_id.get(uid)
+        if rec:
+            u["userName"] = rec.full_name or u["userName"] or rec.username
+            u["userId"] = rec.merchant_code or rec.username
+
+    cutoff = datetime.utcnow() - timedelta(days=_ACTIVE_WINDOW_DAYS)
+
+    users_out = []
+    total_players = 0
+    for uid, u in users.items():
+        players_out = []
+        for pid, p in u["players"].items():
+            la = last_activity.get(pid)
+            players_out.append({
+                "playerId": p["playerId"],
+                "playerName": p["playerName"],
+                "status": "Active" if (la and la >= cutoff) else "Inactive",
+                "deposits": round(p["deposits"], 2),
+                "withdrawals": round(wd_by_member.get(pid, 0.0), 2),
+                "createdAt": (p["createdAt"].isoformat() + "Z") if p["createdAt"] else None,
+            })
+        players_out.sort(key=lambda r: r["deposits"], reverse=True)
+        total_players += len(players_out)
+        users_out.append({
+            "merchantId": uid,
+            "userName": u["userName"],
+            "userId": u["userId"],
+            "totalPlayers": len(players_out),
+            "deposited": round(u["deposited"], 2),
+            "players": players_out,
+        })
+    users_out.sort(key=lambda r: r["deposited"], reverse=True)
+
+    return {
+        "referenceNumber": ref,
+        "accountHolder": acc.account_name,
+        "accountNumber": acc.account_number,
+        "totalUsers": len(users_out),
+        "totalPlayers": total_players,
+        "totalDeposited": round(sum(u["deposited"] for u in users_out), 2),
+        "users": users_out,
+    }
 
 
 def _a(a: AccountMaster, merchant_name: str | None = None) -> dict:
