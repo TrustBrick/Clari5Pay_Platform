@@ -456,6 +456,29 @@ export interface AgentDashboard {
     agentId: string; agentName?: string | null; accountRef: string; accountType: string;
     assignedBy?: string | null; createdAt?: string | null;
   }>;
+  // Financial enhancement (cumulative, from completed assigned transactions).
+  financial: {
+    openingBalance: number; totalDeposit: number; totalWithdrawal: number;
+    totalCommission: number; netBalance: number; availableBalance: number;
+  };
+  agentFinancials: AgentFinancialRow[];
+  financeCharts: {
+    topDeposit: Array<{ label: string; value: number }>;
+    topCommission: Array<{ label: string; value: number }>;
+    depositByAgent: Array<{ label: string; value: number }>;
+    withdrawalByAgent: Array<{ label: string; value: number }>;
+    commissionTrend: {
+      daily: Array<{ label: string; value: number }>;
+      weekly: Array<{ label: string; value: number }>;
+      monthly: Array<{ label: string; value: number }>;
+    };
+  };
+}
+
+export interface AgentFinancialRow {
+  agentId: string; name: string; category: string;
+  deposit: number; withdrawal: number; commission: number; availableBalance: number;
+  pending: number; completed: number;
 }
 
 // ── Agent Transactions / Audit (Phase 6) ──

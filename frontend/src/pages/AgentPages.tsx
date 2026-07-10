@@ -5,7 +5,7 @@ import { agentAPI, agentAccountAPI, agentAssignmentAPI, agentDashboardAPI, agent
 import { formatDateTimeIST, COUNTRY_CODES, fileToDataUrl, fmt, downloadText } from '../utils/helpers';
 import { downloadXlsx } from '../utils/xlsx';
 import type { Col } from '../utils/xlsx';
-import type { Agent, AgentAccount, AgentAccountType, AgentAssignmentResult, AgentAuditRow, AgentCategory, AgentDashboard, AgentStatus, AgentTxRow, User } from '../types';
+import type { Agent, AgentAccount, AgentAccountType, AgentAssignmentResult, AgentAuditRow, AgentCategory, AgentDashboard, AgentFinancialRow, AgentStatus, AgentTxRow, User } from '../types';
 
 // ─── Agent Management (Merchant Portal — Supervisor & Manager only) ──────────────
 //
@@ -630,7 +630,7 @@ export const AgentAssignmentPanel: React.FC<{ txRef: string; txType: string; ass
 const CATEGORY_LABEL_FULL: Record<string, string> = { CASH: 'Cash', BANK_TRANSFER: 'Bank Transfer', CRYPTO: 'Crypto' };
 const TXTYPE_LABEL: Record<string, string> = { DEPOSIT: 'Deposit', WITHDRAWAL: 'Withdrawal', SETTLEMENT: 'Settlement' };
 
-const BarList: React.FC<{ title: string; icon?: string; color?: string; data: Array<{ label: string; value: number }> }> = ({ title, icon, color = T.blue, data }) => {
+const BarList: React.FC<{ title: string; icon?: string; color?: string; money?: boolean; data: Array<{ label: string; value: number }> }> = ({ title, icon, color = T.blue, money, data }) => {
   const max = Math.max(1, ...data.map((d) => d.value));
   const total = data.reduce((a, d) => a + d.value, 0);
   return (
@@ -642,9 +642,9 @@ const BarList: React.FC<{ title: string; icon?: string; color?: string; data: Ar
         <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
           {data.map((d) => (
             <div key={d.label}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                <span style={{ color: T.textMain, fontWeight: 600 }}>{d.label}</span>
-                <span style={{ color: T.textMuted, fontWeight: 700 }}>{d.value}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4, gap: 10 }}>
+                <span style={{ color: T.textMain, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.label}</span>
+                <span style={{ color: T.textMuted, fontWeight: 700, whiteSpace: 'nowrap' }}>{money ? fmt(d.value) : d.value}</span>
               </div>
               <div style={{ height: 8, background: T.borderLight, borderRadius: 6, overflow: 'hidden' }}>
                 <div style={{ width: `${(d.value / max) * 100}%`, height: '100%', background: color, borderRadius: 6, transition: 'width 0.4s ease' }} />
@@ -663,6 +663,8 @@ const toBars = (rec: Record<string, number>, labels: Record<string, string>): Ar
 export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => {
   const [d, setD] = useState<AgentDashboard | null>(null);
   const [loading, setLoading] = useState(true);
+  const [detailAgent, setDetailAgent] = useState<AgentFinancialRow | null>(null);
+  const [trend, setTrend] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const load = useCallback(async () => {
     setLoading(true);
     try { setD(await agentDashboardAPI.get()); } catch { setD(null); }
@@ -672,6 +674,9 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
 
   if (loading) return <LoadingScreen label="Loading agent analytics…" />;
   if (!d) return <Card><div style={{ padding: 40, textAlign: 'center', color: T.textMuted }}>Could not load the dashboard. <Btn variant="ghost" size="sm" onClick={load}>Retry</Btn></div></Card>;
+
+  const trendData = d.financeCharts.commissionTrend[trend];
+  const trendMax = Math.max(1, ...trendData.map((x) => x.value));
 
   const gridCards: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 16 };
   const gridCharts: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 16 };
@@ -694,6 +699,100 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
         <StatCard icon="🔗" label="Transactions Assigned" value={d.assignments.totalTransactions} sub="currently assigned to an agent" color={T.info} />
         <StatCard icon="⚠️" label="Unassigned Transactions" value={d.assignments.unassignedTransactions} sub="click to assign an agent" color={T.danger} onClick={() => onNavigate?.('agent-unassigned')} />
         <StatCard icon="🔄" label="Reassignments" value={d.assignments.reassignments} sub="total reassign actions" color={T.warning} />
+      </div>
+
+      {/* ── Financial Summary (cumulative lifetime totals from completed assigned transactions) ── */}
+      <p style={{ margin: '4px 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}>💰 Financial Summary <span style={{ fontWeight: 600, color: T.textMuted }}>· cumulative (not today)</span></p>
+      <div style={gridCards}>
+        <StatCard icon="↓" label="Total Deposit Amount" value={fmt(d.financial.totalDeposit)} valueLen={16} sub="completed, assigned to agents" color={T.green} />
+        <StatCard icon="↑" label="Total Withdrawal Amount" value={fmt(d.financial.totalWithdrawal)} valueLen={16} sub="completed, assigned to agents" color={T.danger} />
+        <StatCard icon="₹" label="Total Commission Earned" value={fmt(d.financial.totalCommission)} valueLen={16} sub="agent Fees % on completed txns" color={T.warning} />
+        <StatCard icon="◎" label="Available Balance" value={fmt(d.financial.availableBalance)} valueLen={16} sub="deposit − withdrawal − commission" color={T.blue} />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 16 }}>
+        <Card>
+          <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Agent Financial Summary</h3>
+          </div>
+          <div style={{ padding: '6px 18px 12px' }}>
+            {([
+              ['Opening Balance', d.financial.openingBalance],
+              ['Total Deposit Amount', d.financial.totalDeposit],
+              ['Total Withdrawal Amount', d.financial.totalWithdrawal],
+              ['Total Commission Earned', d.financial.totalCommission],
+              ['Net Balance', d.financial.netBalance],
+              ['Available Balance', d.financial.availableBalance],
+            ] as Array<[string, number]>).map(([label, val], i, arr) => (
+              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 0', borderBottom: i < arr.length - 1 ? `1px solid ${T.borderLight}` : 'none', fontSize: 13.5 }}>
+                <span style={{ color: T.textMuted, fontWeight: 600 }}>{label}</span>
+                <span style={{ color: (label === 'Net Balance' || label === 'Available Balance') ? T.blue : T.textMain, fontWeight: 800 }}>{fmt(val)}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+        {/* Commission trend with Daily / Weekly / Monthly toggle */}
+        <Card style={{ padding: '16px 18px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: T.textMain }}>📈 Commission Trend</p>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {(['daily', 'weekly', 'monthly'] as const).map((m) => (
+                <Btn key={m} size="sm" variant={trend === m ? 'primary' : 'secondary'} onClick={() => setTrend(m)}>{m[0].toUpperCase() + m.slice(1)}</Btn>
+              ))}
+            </div>
+          </div>
+          {trendData.length === 0 ? <p style={{ fontSize: 12.5, color: T.textMuted, margin: 0 }}>No commission recorded yet.</p> : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {trendData.map((pt) => (
+                <div key={pt.label}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                    <span style={{ color: T.textMain, fontWeight: 600 }}>{pt.label}</span>
+                    <span style={{ color: T.textMuted, fontWeight: 700 }}>{fmt(pt.value)}</span>
+                  </div>
+                  <div style={{ height: 8, background: T.borderLight, borderRadius: 6, overflow: 'hidden' }}>
+                    <div style={{ width: `${(pt.value / trendMax) * 100}%`, height: '100%', background: T.warning, borderRadius: 6 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* Agent Performance table (row → Agent Details popup) */}
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Agent Performance</h3>
+        </div>
+        {d.agentFinancials.length === 0 ? <div style={{ padding: '32px', textAlign: 'center', color: T.textMuted, fontSize: 13 }}>No agents yet.</div> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1000 }}>
+              <thead><tr>{['Agent ID', 'Name', 'Category', 'Deposit', 'Withdrawal', 'Commission', 'Available Balance', 'Pending', 'Completed'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>{d.agentFinancials.map((r) => (
+                <tr key={r.agentId} style={{ cursor: 'pointer' }} onClick={() => setDetailAgent(r)}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = T.canvas; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}>
+                  <td style={{ ...td, fontWeight: 700, color: T.blue }}>{r.agentId}</td>
+                  <td style={td}>{r.name}</td>
+                  <td style={td}>{CATEGORY_LABEL_FULL[r.category] || r.category}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{fmt(r.deposit)}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{fmt(r.withdrawal)}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>{fmt(r.commission)}</td>
+                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: T.blue }}>{fmt(r.availableBalance)}</td>
+                  <td style={{ ...td, textAlign: 'center' }}>{r.pending}</td>
+                  <td style={{ ...td, textAlign: 'center' }}>{r.completed}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 16 }}>
+        <BarList title="Top 10 Agents by Deposit" icon="🏆" color={T.green} money data={d.financeCharts.topDeposit} />
+        <BarList title="Top 10 Agents by Commission" icon="💵" color={T.warning} money data={d.financeCharts.topCommission} />
+        <BarList title="Deposit Amount by Agent" icon="↓" color={T.blue} money data={d.financeCharts.depositByAgent} />
+        <BarList title="Withdrawal Amount by Agent" icon="↑" color={T.danger} money data={d.financeCharts.withdrawalByAgent} />
       </div>
 
       <div style={gridCharts}>
@@ -732,6 +831,23 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
           </div>
         )}
       </Card>
+
+      {/* Agent Details popup (cumulative totals — correctly labelled "Total …", not "Today's …") */}
+      {detailAgent && (
+        <Modal title="Agent Details" onClose={() => setDetailAgent(null)}>
+          <div style={{ ...grid2, rowGap: 16 }}>
+            <Field label="Agent ID" value={detailAgent.agentId} />
+            <Field label="Name" value={detailAgent.name} />
+            <Field label="Category" value={CATEGORY_LABEL_FULL[detailAgent.category] || detailAgent.category} />
+            <Field label="Total Deposit Amount" value={fmt(detailAgent.deposit)} />
+            <Field label="Total Withdrawal Amount" value={fmt(detailAgent.withdrawal)} />
+            <Field label="Total Commission Earned" value={fmt(detailAgent.commission)} />
+            <Field label="Available Balance" value={fmt(detailAgent.availableBalance)} />
+            <Field label="Pending Requests" value={String(detailAgent.pending)} />
+            <Field label="Completed Requests" value={String(detailAgent.completed)} />
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

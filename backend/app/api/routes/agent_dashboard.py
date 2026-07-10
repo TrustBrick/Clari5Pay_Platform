@@ -12,7 +12,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.models.models import AgentAccount, AgentAssignmentHistory, AgentMaster, Transaction, User
+from app.models.models import AgentAccount, AgentAssignmentHistory, AgentMaster, Transaction, TxStatus, User
 from app.core.deps import get_current_agent_manager
 from app.api.routes.agent_transactions import TERMINAL_STATUSES
 
@@ -20,6 +20,14 @@ router = APIRouter(prefix="/api/agent-dashboard", tags=["agent-dashboard"])
 
 ACCOUNT_TYPES = ["BANK", "UPI", "QR", "CRYPTO"]
 TX_TYPES = ["DEPOSIT", "WITHDRAWAL", "SETTLEMENT"]
+# Completed = same definition the merchant balance uses (deposits finish COMPLETED/DEPOSITED;
+# withdrawals/settlements finish COMPLETED). Only completed txns count toward agent financials.
+COMPLETED_STATUSES = {TxStatus.COMPLETED, TxStatus.DEPOSITED}
+DEAD_STATUSES = {TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED}
+
+
+def _m(x: float) -> float:
+    return round(x or 0.0, 2)
 
 
 def _bucketed(counter: Counter, keys: list[str]) -> dict:
@@ -71,19 +79,65 @@ async def agent_dashboard(
     accounts_by_type = Counter(a.account_type for a in accounts)
     acct_type_by_id = {a.id: a.account_type for a in accounts}
 
-    # ── Current assignments (what agents are handling now) ──
+    # ── Current assignments + per-agent financials (cumulative, from COMPLETED assigned txns) ──
+    # Commission = the agent's Fees % applied to every completed assigned transaction; Available
+    # Balance = Deposit − Withdrawal − Commission (opening balance is not modelled → treated as 0).
+    agent_by_id = {a.id: a for a in agents}
     by_tx_type: Counter = Counter()
     by_channel: Counter = Counter()           # account type of the assigned account
     per_agent: Counter = Counter()
+    fin: dict = {a.id: {"deposit": 0.0, "withdrawal": 0.0, "commission": 0.0, "pending": 0, "completed": 0} for a in agents}
+    comm_day: dict = {}; comm_week: dict = {}; comm_month: dict = {}
     for t in assigned:
-        by_tx_type[t.type.value.split("_")[0]] += 1
+        base = t.type.value.split("_")[0]
+        by_tx_type[base] += 1
         ch = acct_type_by_id.get(t.assigned_agent_account_id)
         if ch:
             by_channel[ch] += 1
-        if t.assigned_agent_id:
-            per_agent[t.assigned_agent_id] += 1
+        aid = t.assigned_agent_id
+        if aid is None:
+            continue
+        per_agent[aid] += 1
+        f = fin.setdefault(aid, {"deposit": 0.0, "withdrawal": 0.0, "commission": 0.0, "pending": 0, "completed": 0})
+        if t.status in COMPLETED_STATUSES:
+            f["completed"] += 1
+            agent = agent_by_id.get(aid)
+            comm = round((t.amount or 0) * ((agent.fees_pct or 0) / 100.0), 2) if agent else 0.0
+            f["commission"] += comm
+            if base == "DEPOSIT":
+                f["deposit"] += (t.amount or 0)
+            elif base == "WITHDRAWAL":
+                f["withdrawal"] += (t.amount or 0)
+            if t.tx_date and comm:
+                dk = t.tx_date.isoformat(); comm_day[dk] = _m(comm_day.get(dk, 0.0) + comm)
+                wk = t.tx_date.strftime("%G-W%V"); comm_week[wk] = _m(comm_week.get(wk, 0.0) + comm)
+                mo = t.tx_date.strftime("%Y-%m"); comm_month[mo] = _m(comm_month.get(mo, 0.0) + comm)
+        elif t.status not in DEAD_STATUSES:
+            f["pending"] += 1
 
-    agent_by_id = {a.id: a for a in agents}
+    # Per-agent financial rows (every agent; zeros if nothing assigned/completed).
+    agent_financials = []
+    for a in agents:
+        f = fin.get(a.id) or {"deposit": 0.0, "withdrawal": 0.0, "commission": 0.0, "pending": 0, "completed": 0}
+        agent_financials.append({
+            "agentId": a.agent_id, "name": a.full_name, "category": a.category,
+            "deposit": _m(f["deposit"]), "withdrawal": _m(f["withdrawal"]), "commission": _m(f["commission"]),
+            "availableBalance": _m(f["deposit"] - f["withdrawal"] - f["commission"]),
+            "pending": f["pending"], "completed": f["completed"],
+        })
+    agent_financials.sort(key=lambda r: r["deposit"], reverse=True)
+    total_deposit = _m(sum(r["deposit"] for r in agent_financials))
+    total_withdrawal = _m(sum(r["withdrawal"] for r in agent_financials))
+    total_commission = _m(sum(r["commission"] for r in agent_financials))
+    available = _m(total_deposit - total_withdrawal - total_commission)
+
+    def _bars(key, n=None):
+        items = [r for r in sorted(agent_financials, key=lambda r: r[key], reverse=True) if r[key] > 0]
+        return [{"label": f'{r["agentId"]} · {r["name"]}', "value": r[key]} for r in (items[:n] if n else items)]
+
+    def _trend(d, recent):
+        return [{"label": k, "value": v} for k, v in sorted(d.items())[-recent:]]
+
     top_agents = [
         {
             "agentId": agent_by_id[aid].agent_id if aid in agent_by_id else str(aid),
@@ -125,6 +179,26 @@ async def agent_dashboard(
             "reassignments": reassignments,
             "byTxType": _bucketed(by_tx_type, TX_TYPES),
             "byChannel": _bucketed(by_channel, ACCOUNT_TYPES),
+        },
+        "financial": {
+            "openingBalance": 0,
+            "totalDeposit": total_deposit,
+            "totalWithdrawal": total_withdrawal,
+            "totalCommission": total_commission,
+            "netBalance": available,          # Opening(0) + Deposit − Withdrawal − Commission
+            "availableBalance": available,
+        },
+        "agentFinancials": agent_financials,
+        "financeCharts": {
+            "topDeposit": _bars("deposit", 10),
+            "topCommission": _bars("commission", 10),
+            "depositByAgent": _bars("deposit"),
+            "withdrawalByAgent": _bars("withdrawal"),
+            "commissionTrend": {
+                "daily": _trend(comm_day, 14),
+                "weekly": _trend(comm_week, 8),
+                "monthly": _trend(comm_month, 6),
+            },
         },
         "topAgents": top_agents,
         "recent": recent,
