@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, today, depositTypeLabel, memberLabel } from '../utils/helpers';
+import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { transactionAPI, userAPI } from '../services/api';
@@ -649,12 +649,21 @@ const ReportExportBar: React.FC<{ count: number; onPdf: () => void; onExcel: () 
 // filter). Nine columns — the spec's eight plus a Status column for treasury visibility. ──
 const TREASURY_HEADERS = ['Unique Transaction Reference', 'Member Name', 'Membership ID', 'Date & Time', 'Status', 'Approver', 'Operator', 'Transaction Amount', 'Transaction Method'];
 const TREASURY_ALIGNS: Array<'l' | 'r'> = ['l', 'l', 'l', 'l', 'l', 'l', 'l', 'r', 'l'];
+// Operator = the actual logged-in operator who performed the transaction (its creator),
+// shown as "Name (Role)" — e.g. "Rahul Kumar (Deposit Operator)". Distinct from the Approver.
+const operatorLabel = (r: ReportRow): string => {
+  const nm = (r.operator || '').trim();
+  const role = merchantRoleLabel(r.operatorRole);
+  if (nm && role) return `${nm} (${role})`;
+  return nm || '—';
+};
 const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
   ({ rows, businessName, generatedBy, rangeLabel }) => {
     const toast = useToast();
     const data = rows;   // all transactions honouring the advanced filters (incl. Status)
-    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy || '', r.processedBy || '', r.amount, methodLabel(r)]);
-    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy || '—', r.processedBy || '—', fmt(r.amount), methodLabel(r)]);
+    const opCsv = (r: ReportRow) => ((r.operator || '').trim() ? operatorLabel(r) : '');
+    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy || '', opCsv(r), r.amount, methodLabel(r)]);
+    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy || '—', operatorLabel(r), fmt(r.amount), methodLabel(r)]);
     const onExcel = () => {
       downloadXlsx(`clari5pay-treasury-${today()}.xlsx`, [{
         name: 'Treasury Report',
@@ -665,7 +674,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
           { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
           { header: 'Status', get: r => prettyStatusR(r.status) },
           { header: 'Approver', get: r => r.approvedBy || '' },
-          { header: 'Operator', get: r => r.processedBy || '' },
+          { header: 'Operator', get: r => ((r.operator || '').trim() ? operatorLabel(r) : '') },
           { header: 'Transaction Amount', get: r => Number(r.amount), width: 16, z: INR_NUMFMT },
           { header: 'Transaction Method', get: r => methodLabel(r) },
         ],
@@ -696,7 +705,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
                     <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
                     <td style={tdR}>{prettyStatusR(r.status)}</td>
                     <td style={tdR}>{r.approvedBy || '—'}</td>
-                    <td style={tdR}>{r.processedBy || '—'}</td>
+                    <td style={tdR}>{operatorLabel(r)}</td>
                     <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
                     <td style={tdR}>{methodLabel(r)}</td>
                   </tr>

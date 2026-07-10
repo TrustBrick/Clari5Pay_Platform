@@ -912,6 +912,7 @@ def _build_report_payload(
     bal: dict,
     rates_by_business: dict[str, tuple[float, float]],
     business_by_mid: dict[int, str],
+    operator_by_mid: dict[int, str] | None = None,
 ) -> dict:
     """Build the full Reports analytics payload from a transaction set + canonical balance
     figures. SINGLE source of truth shared by the merchant Reports (own business) and the
@@ -1164,6 +1165,12 @@ def _build_report_payload(
         "paymentMethod": _payment_method(t),
         "approvedBy": t.approved_by,
         "processedBy": t.processed_by,
+        # Operator = the logged-in user who actually performed (created) this transaction —
+        # a Deposit/Withdrawal/Settlement Operator, distinct from the Approver. Name resolved
+        # from the permanent creator FK (merchant_id); role/id are audit snapshots on the row.
+        "operator": (operator_by_mid or {}).get(t.merchant_id) or t.creator_username or "",
+        "operatorRole": t.creator_role,
+        "operatorId": t.agent_code,
         "agentCode": t.agent_code,
         "riskLevel": "HIGH" if t.high_risk else "LOW",
         "availableBalance": bal_by_id.get(t.id),
@@ -1188,9 +1195,10 @@ async def merchant_reports(
     if current_user.role != UserRole.MERCHANT:
         raise HTTPException(status_code=403, detail="Merchant only")
 
-    ids = (await db.execute(
-        select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
+    biz_users = (await db.execute(
+        select(User).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
     )).scalars().all()
+    ids = [u.id for u in biz_users]
     txns = (await db.execute(
         select(Transaction).where(Transaction.merchant_id.in_(ids))
     )).scalars().all() if ids else []
@@ -1201,6 +1209,7 @@ async def merchant_reports(
         txns, bal,
         rates_by_business={current_user.name: rates},
         business_by_mid={i: current_user.name for i in ids},
+        operator_by_mid={u.id: (u.full_name or u.username or u.name) for u in biz_users},
     )
 
 
@@ -1220,6 +1229,8 @@ async def admin_reports(
         select(User).where(User.role == UserRole.MERCHANT)
     )).scalars().all()
     business_by_mid = {u.id: u.name for u in merchant_users}
+    # Operator display name per creating user (Treasury Report's Operator column).
+    operator_by_mid = {u.id: (u.full_name or u.username or u.name) for u in merchant_users}
     # One representative + fee-rate pair per business (merchants sharing a name pool one balance).
     rep: dict[str, User] = {}
     rates_by_business: dict[str, tuple[float, float]] = {}
@@ -1239,7 +1250,7 @@ async def admin_reports(
     txns = (await db.execute(
         select(Transaction).where(Transaction.merchant_id.in_(ids))
     )).scalars().all() if ids else []
-    return _build_report_payload(txns, bal, rates_by_business, business_by_mid)
+    return _build_report_payload(txns, bal, rates_by_business, business_by_mid, operator_by_mid)
 
 
 @router.post("/deposit")

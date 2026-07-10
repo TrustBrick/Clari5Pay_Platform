@@ -529,6 +529,9 @@ export interface ReportRow {
   paymentMethod?: string | null;
   approvedBy?: string | null;
   processedBy?: string | null;
+  operator?: string | null;       // logged-in operator who performed (created) the transaction
+  operatorRole?: string | null;   // that operator's role (e.g. DEPOSIT_OPERATOR)
+  operatorId?: string | null;     // that operator's user/merchant code
   agentCode?: string | null;
   riskLevel?: string | null;
   availableBalance?: number | null;
