@@ -265,6 +265,9 @@ class AccountCreate(BaseModel):
     status: str = "ACTIVE"
     merchant_id: Optional[int] = None
     upiId: Optional[str] = None   # optional UPI to link to this account on creation
+    # Configurable initial recorded Highest / Lowest Credit (₹, default 0). Auto-tracked thereafter.
+    highest_credit: Optional[float] = 0.0
+    lowest_credit: Optional[float] = 0.0
 
 
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────

@@ -221,6 +221,11 @@ class AccountMaster(Base):
     created_time: Mapped[str] = mapped_column(String(16), nullable=False)
     last_maintenance_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     last_maintenance_time: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # Recorded Highest / Lowest single Deposit credited to this account (high-water marks).
+    # Configurable at creation (default 0); auto-updated when a deposit is approved. For the
+    # lowest, 0 means "unset" — the first successful deposit sets it.
+    highest_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    lowest_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
 
 class AccountTransaction(Base):

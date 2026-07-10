@@ -209,6 +209,8 @@ export interface AccountBalance {
   totalDeposited: number;
   highestDeposit?: number;
   lowestDeposit?: number;
+  highestCredit?: number;   // recorded high-water mark (stored, auto-updated on deposit approval)
+  lowestCredit?: number;
   totalFees?: number;
   withdrawals?: number;
   settlements?: number;

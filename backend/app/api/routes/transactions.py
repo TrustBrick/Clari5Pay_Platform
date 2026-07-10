@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, case, text
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster
 from app.core.deps import (
     get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer,
     get_current_supervisor, get_current_manager, OVERSIGHT_MERCHANT_ROLES,
@@ -310,6 +310,55 @@ async def notify_tx(db: AsyncSession, tx: Transaction, message: str, icon: str =
     recipients.update(await _all_admin_ids(db))
     for uid in recipients:
         db.add(Notification(user_id=uid, message=message, icon=icon))
+
+
+def _inr(n: float | None) -> str:
+    return f"₹{(n or 0):,.2f}"
+
+
+async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, request: Request | None) -> None:
+    """After a deposit is approved & credited to an account, update that account's recorded
+    Highest / Lowest Credit high-water marks. When a new record is set: persist the new value,
+    notify every admin (same rule as tx events) and write a "system" audit entry. Purely additive
+    — it never alters the deposit, its status, or any workflow.
+
+    Highest: updated when the deposit exceeds the current highest. Lowest: updated when the deposit
+    is below the current lowest, or when the lowest is still 0 (the account's first deposit)."""
+    if not tx.type.value.startswith("DEPOSIT") or not tx.admin_ref:
+        return
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == tx.admin_ref)
+    )).scalar_one_or_none()
+    if acc is None:
+        return
+    amt = round(tx.amount, 2)
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    admin_ids = await _all_admin_ids(db)
+    ip = _client_ip(request)
+
+    async def _record(kind: str, prev: float, icon: str) -> None:
+        msg = (f"New {kind} Credit Recorded — {acc.account_name} · Previous {_inr(prev)} → "
+               f"New {_inr(amt)} · {tx.ref} · {ts}")
+        for uid in admin_ids:
+            db.add(Notification(user_id=uid, message=msg, icon=icon))
+        # Audit: Account ID, Holder, Previous, New, Deposit Ref, Updated By = System, IST time.
+        await record_audit(db, f"ACCOUNT_{kind.upper()}_CREDIT", actor=None,
+                           entity_type="account", entity_id=acc.reference_number,
+                           old=_inr(prev), new=_inr(amt),
+                           reason=f"{acc.account_name} · Deposit {tx.ref} · {ts}", ip=ip)
+        await log_event(db, f"ACCOUNT_{kind.upper()}_CREDIT",
+                        f"{acc.reference_number} ({acc.account_name}) new {kind.lower()} credit "
+                        f"{_inr(amt)} (was {_inr(prev)}) via {tx.ref}", actor=None)
+
+    if amt > (acc.highest_credit or 0):
+        prev = acc.highest_credit or 0.0
+        acc.highest_credit = amt
+        await _record("Highest", prev, "📈")
+    if (acc.lowest_credit or 0) == 0 or amt < acc.lowest_credit:
+        prev = acc.lowest_credit or 0.0
+        acc.lowest_credit = amt
+        await _record("Lowest", prev, "📉")
+    await db.flush()
 
 
 async def _notify_merchant(db: AsyncSession, tx: Transaction, message: str, icon: str = "🔔") -> None:
@@ -1605,6 +1654,10 @@ async def mark_done(
     _append_remark(tx, role="ADMIN", user=actor.name, username=actor.username, action="APPROVED",
                    remark="Deposited" if is_deposit else "Completed")
     await db.flush()
+    # Deposit credited to an account → update that account's recorded Highest/Lowest Credit
+    # (notifies admins + audits on a new record). Additive; does not affect the deposit itself.
+    if is_deposit:
+        await _track_account_credit(db, tx, actor, request)
     label = "deposited" if is_deposit else "completed"
     await notify_tx(db, tx, f"{tx.ref}: approved and {label} successfully", "✓")
     # Telegram (demo, next-step only): admin final approval → notify ONLY the requesting user.

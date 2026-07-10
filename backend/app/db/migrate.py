@@ -106,6 +106,9 @@ _NEW_COLUMNS = [
     ("support_messages", "attachment_size", "INTEGER"),
     # KYC OCR: store the document type verified (passport/pan_card/aadhaar_card/…).
     ("kyc_verification_history", "document_type", "VARCHAR(32)"),
+    # Account Management: recorded Highest / Lowest single Deposit credited to the account.
+    ("account_master", "highest_credit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    ("account_master", "lowest_credit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -187,6 +190,19 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         await conn.execute(text(
             "UPDATE transactions SET status = 'SLIP_SUBMITTED' "
             "WHERE status::text IN ('SUPERVISOR_REVIEW', 'MANAGER_REVIEW') AND type::text LIKE 'SETTLEMENT%'"
+        ))
+        # Seed each account's recorded Highest / Lowest Credit high-water marks from its existing
+        # completed deposits, so already-deployed accounts show real values immediately instead of
+        # 0. Only touches accounts still at the 0/0 default → never overwrites an admin-configured
+        # value, and is a no-op on every subsequent startup (values are non-zero by then).
+        await conn.execute(text(
+            "UPDATE account_master a SET highest_credit = s.hi, lowest_credit = s.lo "
+            "FROM ("
+            "  SELECT admin_ref, MAX(amount) AS hi, MIN(amount) AS lo FROM transactions "
+            "  WHERE type::text LIKE 'DEPOSIT%' AND status::text IN ('COMPLETED','DEPOSITED') "
+            "    AND admin_ref IS NOT NULL GROUP BY admin_ref"
+            ") s "
+            "WHERE a.reference_number = s.admin_ref AND a.highest_credit = 0 AND a.lowest_credit = 0"
         ))
 
     # ── Enum values (ALTER TYPE ... ADD VALUE must run outside a txn block) ──
