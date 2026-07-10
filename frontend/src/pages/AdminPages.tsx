@@ -978,9 +978,9 @@ export const AdminMerchantsPage: React.FC = () => {
       await reload();
       setShowCreate(false);
       setForm(empty);
-      showToast(`Company "${form.name}" onboarded`);
+      showToast(`Merchant "${form.name}" created`);
     } catch {
-      showToast('Failed to onboard company','error');
+      showToast('Failed to create merchant','error');
     }
   };
 
@@ -1038,24 +1038,41 @@ export const AdminMerchantsPage: React.FC = () => {
       </div>
       {showCreate && (
         <Modal title="Onboard Merchant" onClose={()=>setShowCreate(false)} wide>
-          <div style={{ display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:'0 18px' }}>
-            <Input label="Business Name" value={form.name} onChange={e=>set('name',e.target.value)} placeholder="e.g. Nexus Fintech Ltd." required/>
+          {/* Section 1 — Merchant Information */}
+          <p style={{ margin:'0 0 12px',fontSize:12,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Merchant Information</p>
+          <div style={{ display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:'0 18px',marginBottom:20 }}>
+            <Input label="Merchant Name" value={form.name} onChange={e=>set('name',e.target.value)} placeholder="e.g. Nexus Fintech Ltd." required/>
             <Sel label="Country" value={form.country} onChange={e=>set('country',e.target.value)} required options={COUNTRY_NAME_OPTIONS}/>
             <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} placeholder="biz@company.com" required/>
             <PhoneField code={form.countryCode} onCode={v=>set('countryCode',v)} phone={form.phone} onPhone={v=>set('phone',v)} />
-            <Input label="Pay-In Code" value={form.payIn} onChange={e=>set('payIn',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. DEP (max 3 chars)" required/>
-            <Input label="Pay-Out Code" value={form.payOut} onChange={e=>set('payOut',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. WIT" required/>
-            <Input label="Settlement Code" value={form.settlement} onChange={e=>set('settlement',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. SET" required/>
-            <Input label="Pay-In Fee (%)" type="number" value={form.payInFee} onChange={e=>set('payInFee',e.target.value)} required/>
-            <Input label="Pay-Out Fee (%)" type="number" value={form.payOutFee} onChange={e=>set('payOutFee',e.target.value)} required/>
-            <Input label="Settlement Fee (%)" type="number" value={form.settlementFee} onChange={e=>set('settlementFee',e.target.value)} required/>
             <Sel label="Risk Level" value={form.risk} onChange={e=>set('risk',e.target.value)} options={['LOW','MEDIUM','HIGH','CRITICAL'].map(v=>({value:v,label:v}))}/>
+          </div>
+
+          {/* Section 2 — Codes & Fees (two cards) */}
+          <p style={{ margin:'0 0 12px',fontSize:12,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Codes &amp; Fees</p>
+          <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:16,marginBottom:16 }}>
+            {/* A. Reference Codes — the entered code replaces DEP/WIT/SET in generated references. */}
+            <div style={{ background:T.canvas,border:`1px solid ${T.borderLight}`,borderRadius:12,padding:'14px 16px',minWidth:0 }}>
+              <p style={{ margin:'0 0 4px',fontSize:12,fontWeight:800,color:T.textMain }}>Reference Codes</p>
+              <p style={{ margin:'0 0 12px',fontSize:11,color:T.textMuted }}>Prefixed to generated references — replaces DEP/WIT/SET (e.g. <b style={{ color:T.textMain }}>DEP000001</b>).</p>
+              <Input label="Deposit Code" value={form.payIn} onChange={e=>set('payIn',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. DEP (max 3 chars)" required/>
+              <Input label="Withdrawal Code" value={form.payOut} onChange={e=>set('payOut',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. WIT" required/>
+              <Input label="Settlement Code" value={form.settlement} onChange={e=>set('settlement',e.target.value.slice(0,3).toUpperCase())} placeholder="e.g. SET" required/>
+            </div>
+            {/* B. Fees — percentage values. */}
+            <div style={{ background:T.canvas,border:`1px solid ${T.borderLight}`,borderRadius:12,padding:'14px 16px',minWidth:0 }}>
+              <p style={{ margin:'0 0 4px',fontSize:12,fontWeight:800,color:T.textMain }}>Fees</p>
+              <p style={{ margin:'0 0 12px',fontSize:11,color:T.textMuted }}>Percentage values applied per transaction.</p>
+              <Input label="Pay-in Fee (%)" type="number" value={form.payInFee} onChange={e=>set('payInFee',e.target.value)} required/>
+              <Input label="Pay-out Fee (%)" type="number" value={form.payOutFee} onChange={e=>set('payOutFee',e.target.value)} required/>
+              <Input label="Settlement Fee (%)" type="number" value={form.settlementFee} onChange={e=>set('settlementFee',e.target.value)} required/>
+            </div>
           </div>
           <div style={{ background:T.infoBg,border:`1px solid ${T.blue}20`,borderRadius:10,padding:12,margin:'4px 0 16px',fontSize:12,color:T.blue }}>
             ℹ Integration settings are configured and managed by Admins — merchants do not have access.
           </div>
           <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={createMerchant}>Onboard Company</Btn>
+            <Btn onClick={createMerchant}>Create Merchant</Btn>
             <Btn variant="secondary" onClick={()=>setShowCreate(false)}>Cancel</Btn>
           </div>
         </Modal>
@@ -1070,7 +1087,7 @@ export const AdminMerchantsPage: React.FC = () => {
             </colgroup>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Business','Online','Merchant ID','Country','Email','Mobile','Created','Codes','Fees','Available','Running','Status','Action'].map(h=>(
+                {['Merchant Name','Online','Merchant ID','Country','Email','Mobile','Created','Codes','Fees','Available','Running','Status','Action'].map(h=>(
                   <th key={h} style={{ padding:'9px 9px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.04em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
