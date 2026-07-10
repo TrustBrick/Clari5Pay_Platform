@@ -15,6 +15,22 @@ import {
 
 type ViewKey = 'home' | 'aadhaar' | 'pan' | 'passport' | 'ocr';
 
+// Custom document icons (Aadhaar / PAN / Passport) served from /public/kyc. Used both by the
+// dashboard cards and each verification view's header, so the icon is identical in both places.
+const KYC_ICONS: Partial<Record<ViewKey, string>> = {
+  aadhaar: '/kyc/aadhaar.png',
+  pan: '/kyc/pan.png',
+  passport: '/kyc/passport.png',
+};
+// Render a card's icon: the provided image (filling the icon slot, used as-is) or the emoji
+// fallback (OCR). object-fit keeps a consistent size and centering across all cards.
+const KycIcon: React.FC<{ view: ViewKey; emoji: string }> = ({ view, emoji }) => {
+  const src = KYC_ICONS[view];
+  return src
+    ? <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+    : <>{emoji}</>;
+};
+
 interface CardDef { key: ViewKey; icon: string; title: string; desc: string; }
 const CARDS: CardDef[] = [
   { key: 'aadhaar',  icon: '🆔', title: 'Aadhaar Verification',      desc: 'Generate a DigiLocker verification link for a member and track completion.' },
@@ -83,12 +99,12 @@ const StatusPill: React.FC<{ status?: string | null }> = ({ status }) => {
 };
 
 // Shell that wraps every verification view: title, back link, and children.
-const VerifyShell: React.FC<{ icon: string; title: string; children: React.ReactNode; onBack: () => void }> = ({ icon, title, children, onBack }) => (
+const VerifyShell: React.FC<{ icon: string; view?: ViewKey; title: string; children: React.ReactNode; onBack: () => void }> = ({ icon, view, title, children, onBack }) => (
   <div style={{ maxWidth: 720 }}>
     <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.blue, fontWeight: 700, fontSize: 13, cursor: 'pointer', padding: 0, marginBottom: 14, fontFamily: 'inherit' }}>← Back to KYC Dashboard</button>
     <Card style={{ padding: 22 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
-        <div style={{ width: 44, height: 44, borderRadius: 12, background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>{icon}</div>
+        <div style={{ width: 44, height: 44, borderRadius: 12, overflow: 'hidden', background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>{view ? <KycIcon view={view} emoji={icon} /> : icon}</div>
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: T.textMain }}>{title}</h2>
       </div>
       {children}
@@ -187,7 +203,7 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   };
 
   return (
-    <VerifyShell icon="🆔" title="Aadhaar Verification" onBack={onBack}>
+    <VerifyShell icon="🆔" view="aadhaar" title="Aadhaar Verification" onBack={onBack}>
       <MembershipFields m={m} />
 
       <Btn onClick={generate} disabled={!canGenerate}>
@@ -247,7 +263,7 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   };
 
   return (
-    <VerifyShell icon="💳" title="PAN Verification" onBack={onBack}>
+    <VerifyShell icon="💳" view="pan" title="PAN Verification" onBack={onBack}>
       <MembershipFields m={m} />
       <Input label="PAN Number" value={pan} onChange={(e) => setPan(e.target.value.toUpperCase())} placeholder="ABCDE1234F" hint="10-character PAN" />
       <Btn onClick={verify} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify PAN'}</Btn>
@@ -290,7 +306,7 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   };
 
   return (
-    <VerifyShell icon="📘" title="Passport Verification" onBack={onBack}>
+    <VerifyShell icon="📘" view="passport" title="Passport Verification" onBack={onBack}>
       <MembershipFields m={m} />
       <Input label="Passport Number" value={num} onChange={e => setNum(e.target.value.toUpperCase())} placeholder="A1234567" hint="8-character passport number" />
       <Input label="Date of Birth" type="date" value={dob} onChange={e => setDob(e.target.value)} hint="YYYY-MM-DD" />
@@ -722,7 +738,7 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
             {CARDS.map(c => (
               <Card key={c.key} className="c5-hover-lift" onClick={() => setView(c.key)}
                 style={{ padding: 20, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div style={{ width: 48, height: 48, borderRadius: 14, background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>{c.icon}</div>
+                <div style={{ width: 48, height: 48, borderRadius: 14, overflow: 'hidden', background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}><KycIcon view={c.key} emoji={c.icon} /></div>
                 <div style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{c.title}</div>
                 <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, flex: 1 }}>{c.desc}</div>
                 <Btn size="sm" full onClick={() => setView(c.key)}>{`Verify ${TYPE_LABEL[c.key]}`}</Btn>
