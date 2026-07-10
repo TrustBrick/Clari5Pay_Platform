@@ -341,3 +341,104 @@ class AIChatRequest(BaseModel):
 
 class AIChatResponse(BaseModel):
     reply: str
+
+
+# ─── Agent Master Schemas (Agent Management → Agents) ─────────────────────────
+# camelCase in/out to match the frontend convention (see the route serializer). Field
+# validation (required, exactly-3-char code, non-negative fees, category enum) is enforced
+# in the route so error messages stay user-friendly.
+class AgentCreate(BaseModel):
+    fullName: str
+    country: str
+    state: str
+    location: str
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    currency: str
+    dateOfCreation: Optional[str] = None          # IST YYYY-MM-DD; defaults to today
+    reference: Optional[str] = None
+    feesPct: float
+    transactionCode: str                          # exactly 3 alphanumeric chars
+    category: str                                 # CASH | BANK_TRANSFER | CRYPTO
+    notes: Optional[str] = None
+    riskAnalysis: bool = False
+    sendForApproval: bool = False
+
+
+class AgentUpdate(BaseModel):
+    # Agent ID and Transaction Code are immutable — intentionally absent here.
+    fullName: Optional[str] = None
+    country: Optional[str] = None
+    state: Optional[str] = None
+    location: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    currency: Optional[str] = None
+    reference: Optional[str] = None
+    feesPct: Optional[float] = None
+    category: Optional[str] = None
+    notes: Optional[str] = None
+    riskAnalysis: Optional[bool] = None
+    status: Optional[str] = None                   # ACTIVE | INACTIVE
+
+
+class AgentStatusUpdate(BaseModel):
+    status: str                                    # ACTIVE | INACTIVE
+
+
+# ─── Agent Account Schemas (Agent Management → Agent Accounts) ────────────────
+# One agent → many accounts (Bank / UPI / QR / Crypto). Type-specific fields are all optional
+# on the wire; the route validates the ones required for the chosen accountType.
+class AgentAccountCreate(BaseModel):
+    accountType: str                               # BANK | UPI | QR | CRYPTO
+    label: Optional[str] = None
+    currency: Optional[str] = None                 # defaults to the agent's currency
+    notes: Optional[str] = None
+    isDefault: bool = False
+    # Bank
+    accountHolder: Optional[str] = None
+    accountNumber: Optional[str] = None
+    ifsc: Optional[str] = None
+    bankName: Optional[str] = None
+    branch: Optional[str] = None
+    # UPI
+    upiId: Optional[str] = None
+    upiHolder: Optional[str] = None
+    # QR
+    qrImage: Optional[str] = None                  # base64 data-URL
+    qrLinkedRef: Optional[str] = None
+    # Crypto
+    walletAddress: Optional[str] = None
+    cryptoNetwork: Optional[str] = None
+    cryptoAsset: Optional[str] = None
+
+
+class AgentAccountUpdate(BaseModel):
+    # accountType and accountRef are immutable — intentionally absent.
+    label: Optional[str] = None
+    currency: Optional[str] = None
+    notes: Optional[str] = None
+    status: Optional[str] = None                    # ACTIVE | INACTIVE
+    accountHolder: Optional[str] = None
+    accountNumber: Optional[str] = None
+    ifsc: Optional[str] = None
+    bankName: Optional[str] = None
+    branch: Optional[str] = None
+    upiId: Optional[str] = None
+    upiHolder: Optional[str] = None
+    qrImage: Optional[str] = None
+    qrLinkedRef: Optional[str] = None
+    walletAddress: Optional[str] = None
+    cryptoNetwork: Optional[str] = None
+    cryptoAsset: Optional[str] = None
+
+
+class AgentAccountStatusUpdate(BaseModel):
+    status: str                                    # ACTIVE | INACTIVE
+
+
+# ─── Agent Assignment Schemas (Phase 4 — assign an agent+account to a transaction) ──
+class AgentAssignmentCreate(BaseModel):
+    agentId: int                                   # AgentMaster.id
+    agentAccountId: int                            # AgentAccount.id (must belong to the agent)
+    paymentMethod: Optional[str] = None            # account type BANK|UPI|QR|CRYPTO (cross-checked)

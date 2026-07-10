@@ -199,6 +199,15 @@ class Transaction(Base):
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # ── Agent Management (Phase 4): which Non-EPS agent + agent account handles this transaction.
+    # All nullable; only ever written by the demo-gated agent-assignment endpoint. Untouched (NULL)
+    # on Production and by the existing deposit/withdrawal/settlement create/approval logic.
+    assigned_agent_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("agent_master.id"), nullable=True)
+    assigned_agent_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("agent_account.id"), nullable=True)
+    assigned_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)   # actor name
+    assigned_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     merchant_user: Mapped["User"] = relationship("User", back_populates="transactions", foreign_keys=[merchant_id])
@@ -278,6 +287,9 @@ class AuditLog(Base):
     user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     username: Mapped[str] = mapped_column(String(100), default="system", nullable=False)
     role: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # Business name of the actor (merchant users), stored separately so the actor's login username
+    # can live in `username` while still scoping the Agent Management audit trail by business.
+    business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
     action_type: Mapped[str] = mapped_column(String(64), nullable=False)
     entity_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     entity_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -531,3 +543,165 @@ class UserSession(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class AgentMaster(Base):
+    """A Non-EPS Agent (Agent Management module — Merchant Portal, Supervisor/Manager only).
+
+    Agents are operational entities ONLY: they never log in, have no username/password, no
+    dashboard and no portal. Managers/Supervisors contact them out-of-band (phone / WhatsApp /
+    Telegram / email). This table just stores agent information; Phase 4 links agents to the
+    Deposit / Withdrawal / Settlement transactions they help process.
+
+    Agents are shared across a merchant *business* (``merchant_business`` = the owning user's
+    business name), mirroring KYC history and saved bank accounts — every Supervisor/Manager of
+    the same business sees the same agent pool. The ``agent_id`` (AGT000001…) is a global serial
+    and never changes; duplicate name/mobile/email/transaction_code checks are scoped to the
+    business pool.
+    """
+    __tablename__ = "agent_master"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    # System-generated, globally-unique, immutable serial ID (e.g. AGT000001).
+    agent_id: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)
+
+    # ── Basic information ──
+    full_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    country: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(64), nullable=False)
+    location: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    # ── Contact information (both optional) ──
+    mobile: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    email: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # ── Business information ──
+    currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    # User-set "Date of Creation" (date picker, defaults to today) — distinct from the audit
+    # created_at timestamp below.
+    date_of_creation: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
+    reference: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    fees_pct: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # Exactly 3 alphanumeric chars, stored uppercased; unique within the business pool. Immutable
+    # after creation (embedded in transaction references from Phase 4).
+    transaction_code: Mapped[str] = mapped_column(String(3), nullable=False)
+    # Canonical category: CASH | BANK_TRANSFER | CRYPTO.
+    category: Mapped[str] = mapped_column(String(24), nullable=False)
+
+    # ── Additional information ──
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    risk_analysis: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Approval intent + status. The approval *workflow* is Phase 6; here we only record whether the
+    # agent was sent for approval. NOT_REQUIRED | PENDING | APPROVED | REJECTED.
+    sent_for_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    approval_status: Mapped[str] = mapped_column(String(24), default="NOT_REQUIRED", nullable=False)
+
+    # Lifecycle status: ACTIVE | INACTIVE. Inactive agents cannot be picked for new assignments.
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", nullable=False)
+
+    # Scope: shared across the owning user's merchant business.
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+
+    # ── Standard audit columns ──
+    created_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)   # actor name
+    created_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    updated_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AgentAssignmentHistory(Base):
+    """Audit trail of every agent assignment / reassignment on a transaction (Phase 4).
+
+    One row per assign or reassign action. Snapshots the agent + account (code/ref/name/type) so
+    history stays accurate even if the agent or account is later edited, and records the previous
+    agent/account on a reassignment. Powers the "agents/accounts with assignment history cannot be
+    deleted" guards. Business-scoped like the rest of the module.
+    """
+    __tablename__ = "agent_assignment_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    transaction_ref: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    transaction_type: Mapped[str] = mapped_column(String(24), nullable=False)   # DEPOSIT | WITHDRAWAL | SETTLEMENT
+    payment_method: Mapped[str] = mapped_column(String(16), nullable=False)      # account type: BANK | UPI | QR | CRYPTO
+    action: Mapped[str] = mapped_column(String(16), nullable=False)             # ASSIGN | REASSIGN
+
+    # New agent + account (snapshots).
+    agent_master_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(16), nullable=False)            # AGT… snapshot
+    agent_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    agent_account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    account_ref: Mapped[str] = mapped_column(String(16), nullable=False)         # AAC… snapshot
+    account_type: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # Previous agent/account on a reassignment (NULL on the first assignment).
+    prev_agent_master_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    prev_agent_account_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+
+    assigned_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    assigned_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AgentAccount(Base):
+    """A settlement account owned by a Non-EPS Agent (Agent Management → Agent Accounts).
+
+    One Agent can hold MANY accounts across four types — Bank / UPI / QR / Crypto. Type-specific
+    columns are all nullable; ``account_type`` discriminates which apply (single-table design, the
+    same shape as ``transactions`` holding deposit/withdrawal-specific fields). Accounts are
+    shared across the owning agent's merchant *business* (``merchant_business``), exactly like the
+    Agent Master. Phase 4 links accounts to the Deposit/Withdrawal/Settlement they were used in.
+
+    Default account: at most ONE default per (agent, account_type) — used first when an agent is
+    assigned in Phase 4. Setting a new default of a type clears the previous one of that type.
+    """
+    __tablename__ = "agent_account"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    # System-generated, globally-unique, immutable serial ref (e.g. AAC000001).
+    account_ref: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)
+    # Owning agent (FK to AgentMaster.id). Named *_master_id to avoid confusion with the AGT… code.
+    agent_master_id: Mapped[int] = mapped_column(Integer, ForeignKey("agent_master.id"), index=True, nullable=False)
+
+    # BANK | UPI | QR | CRYPTO — determines which type-specific fields apply. Immutable after create.
+    account_type: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # ── Common ──
+    label: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)   # nickname / holder label
+    currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", nullable=False)  # ACTIVE | INACTIVE
+
+    # ── Bank ──
+    account_holder: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # ── UPI ──
+    upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    upi_holder: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # ── QR ──
+    qr_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)          # base64 data-URL (same as proofs)
+    qr_linked_ref: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)  # optional linked UPI/bank note
+
+    # ── Crypto ──
+    wallet_address: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    crypto_network: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)   # e.g. TRC20 / ERC20 / BTC
+    crypto_asset: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)      # e.g. USDT / BTC / ETH
+
+    # Scope: shared across the owning agent's merchant business (denormalized for fast scoping).
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+
+    # ── Standard audit columns ──
+    created_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    created_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    updated_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

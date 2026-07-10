@@ -110,3 +110,18 @@ async def get_current_kyc_user(current_user: User = Depends(get_current_user)) -
     ):
         return current_user
     raise HTTPException(status_code=403, detail="KYC access requires a Supervisor or Manager role")
+
+
+# Merchant roles permitted to use the Agent Management module (Non-EPS agents).
+AGENT_MERCHANT_ROLES = ("SUPERVISOR", "MANAGER")
+
+
+async def get_current_agent_manager(current_user: User = Depends(get_current_user)) -> User:
+    """MERCHANT users whose merchant_role is Supervisor or Manager — the only roles allowed to
+    manage Non-EPS Agents (Agent Management module). Every other role is rejected with 403."""
+    if (
+        current_user.role == UserRole.MERCHANT
+        and str(current_user.merchant_role or "").upper() in AGENT_MERCHANT_ROLES
+    ):
+        return current_user
+    raise HTTPException(status_code=403, detail="Agent Management requires a Supervisor or Manager role")

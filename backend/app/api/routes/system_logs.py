@@ -77,12 +77,22 @@ async def record_audit(
     new: Optional[str] = None,
     reason: Optional[str] = None,
     ip: Optional[str] = None,
+    actor_username: Optional[str] = None,
+    actor_role: Optional[str] = None,
+    business: Optional[str] = None,
 ) -> None:
-    """Record a detailed audit-log entry (action, actor, old/new value, reason, IP, location)."""
+    """Record a detailed audit-log entry (action, actor, old/new value, reason, IP, location).
+
+    By default ``username`` holds ``actor.name`` (the business name for merchant users) — unchanged
+    behaviour for every existing caller. Callers that want to record the *actual operator* can pass
+    ``actor_username`` (login), ``actor_role`` (e.g. the merchant role) and ``business`` separately;
+    see ``record_agent_audit``.
+    """
     db.add(AuditLog(
         user_id=actor.id if actor else None,
-        username=actor.name if actor else "system",
-        role=_role_str(actor),
+        username=actor_username if actor_username is not None else (actor.name if actor else "system"),
+        role=actor_role if actor_role is not None else _role_str(actor),
+        business=business,
         action_type=action_type,
         entity_type=entity_type,
         entity_id=str(entity_id) if entity_id is not None else None,
@@ -92,6 +102,28 @@ async def record_audit(
         ip_address=ip,
         location=(await geolocate(ip)) if action_type in GEO_ACTIONS else None,
     ))
+
+
+async def record_agent_audit(
+    db: AsyncSession,
+    action_type: str,
+    actor: User,
+    *,
+    entity_type: Optional[str] = None,
+    entity_id=None,
+    old: Optional[str] = None,
+    new: Optional[str] = None,
+    ip: Optional[str] = None,
+) -> None:
+    """Audit an Agent Management action, capturing the ACTUAL operator: login username + the
+    merchant role (Supervisor/Manager/DEO/…) + business name (stored separately). The Agent audit
+    trail displays the person, not just the business — consistent with the rest of the platform."""
+    role = str(actor.merchant_role).upper() if getattr(actor, "merchant_role", None) else _role_str(actor)
+    await record_audit(
+        db, action_type, actor=actor, entity_type=entity_type, entity_id=entity_id,
+        old=old, new=new, ip=ip,
+        actor_username=actor.username, actor_role=role, business=actor.name,
+    )
 
 
 def _l(row: SystemLog) -> dict:

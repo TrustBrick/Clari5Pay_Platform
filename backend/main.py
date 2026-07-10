@@ -89,6 +89,18 @@ if settings.is_demo:
     from app.api.routes import demo_admin
     app.include_router(demo_admin.router)
 
+# Agent Management (Non-EPS agents) — demo-gated while the module is built out across phases,
+# matching the demo-gated Merchant-portal menu. A 404 on Production regardless of auth.
+if settings.is_demo:
+    from app.api.routes import (
+        agents, agent_accounts, agent_assignment, agent_dashboard, agent_transactions,
+    )
+    app.include_router(agents.router)
+    app.include_router(agent_accounts.router)
+    app.include_router(agent_assignment.router)
+    app.include_router(agent_dashboard.router)
+    app.include_router(agent_transactions.router)
+
 
 @app.get("/health")
 async def health():

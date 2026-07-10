@@ -337,6 +337,179 @@ export interface NavItem {
   adminOnly?: boolean;
 }
 
+// ── Agent Management (Non-EPS agents) ──
+export type AgentCategory = 'CASH' | 'BANK_TRANSFER' | 'CRYPTO';
+export type AgentStatus = 'ACTIVE' | 'INACTIVE';
+
+export interface Agent {
+  id: number;
+  agentId: string;              // system serial, e.g. AGT000001 (immutable)
+  fullName: string;
+  country: string;
+  state: string;
+  location: string;
+  mobile?: string | null;
+  email?: string | null;
+  currency: string;
+  dateOfCreation?: string | null;   // IST YYYY-MM-DD
+  reference?: string | null;
+  feesPct: number;
+  transactionCode: string;      // exactly 3 chars (immutable)
+  category: AgentCategory;
+  notes?: string | null;
+  riskAnalysis: boolean;
+  sentForApproval: boolean;
+  approvalStatus: string;       // NOT_REQUIRED | PENDING | APPROVED | REJECTED
+  status: AgentStatus;
+  createdBy?: string | null;
+  createdAt?: string | null;    // UTC ISO (…Z) — render in IST
+  updatedBy?: string | null;
+  updatedAt?: string | null;
+}
+
+// ── Agent Accounts (Bank / UPI / QR / Crypto per agent) ──
+export type AgentAccountType = 'BANK' | 'UPI' | 'QR' | 'CRYPTO';
+
+export interface AgentAccount {
+  id: number;
+  accountRef: string;           // AAC000001 (immutable)
+  agentMasterId: number;
+  accountType: AgentAccountType;
+  label?: string | null;
+  currency: string;
+  notes?: string | null;
+  isDefault: boolean;
+  status: AgentStatus;          // ACTIVE | INACTIVE
+  keyDetail: string;            // masked identifier for list rows
+  // Bank
+  accountHolder?: string | null;
+  accountNumber?: string | null;
+  ifsc?: string | null;
+  bankName?: string | null;
+  branch?: string | null;
+  // UPI
+  upiId?: string | null;
+  upiHolder?: string | null;
+  // QR
+  qrImage?: string | null;      // base64 data-URL
+  qrLinkedRef?: string | null;
+  // Crypto
+  walletAddress?: string | null;
+  cryptoNetwork?: string | null;
+  cryptoAsset?: string | null;
+  // Audit
+  createdBy?: string | null;
+  createdAt?: string | null;    // UTC ISO (…Z) — render in IST
+  updatedBy?: string | null;
+  updatedAt?: string | null;
+}
+
+// ── Agent Assignment (Phase 4: agent+account assigned to a transaction) ──
+export interface AgentAssignmentCurrent {
+  transactionRef: string;
+  assigned: boolean;
+  assignedAgentId?: number;
+  assignedAgentAccountId?: number;
+  agentId?: string | null;
+  agentName?: string | null;
+  accountRef?: string | null;
+  accountType?: string | null;
+  accountLabel?: string | null;
+  accountDetail?: string | null;
+  assignedBy?: string | null;
+  assignedAt?: string | null;
+}
+export interface AgentAssignmentHistoryEntry {
+  id: number;
+  action: string;                 // ASSIGN | REASSIGN
+  paymentMethod: string;
+  agentId: string;
+  agentName?: string | null;
+  accountRef: string;
+  accountType: string;
+  prevAgentMasterId?: number | null;
+  prevAgentAccountId?: number | null;
+  assignedBy?: string | null;
+  createdAt?: string | null;
+}
+export interface AgentAssignmentResult {
+  current: AgentAssignmentCurrent;
+  history: AgentAssignmentHistoryEntry[];
+}
+
+// ── Agent Dashboard (Phase 5 analytics) ──
+export interface AgentDashboard {
+  agents: { total: number; active: number; inactive: number };
+  accounts: { total: number; active: number; inactive: number; byType: Record<string, number> };
+  agentsByCountry: Array<{ label: string; count: number }>;
+  agentsByCategory: Record<string, number>;
+  assignments: {
+    totalTransactions: number;
+    unassignedTransactions: number;
+    reassignments: number;
+    byTxType: Record<string, number>;
+    byChannel: Record<string, number>;
+  };
+  topAgents: Array<{ agentId: string; name: string; count: number }>;
+  recent: Array<{
+    id: number; action: string; txRef: string; txType: string;
+    agentId: string; agentName?: string | null; accountRef: string; accountType: string;
+    assignedBy?: string | null; createdAt?: string | null;
+  }>;
+}
+
+// ── Agent Transactions / Audit (Phase 6) ──
+export interface AgentTxRow {
+  id: string;
+  ref: string;
+  type: string;                 // DEPOSIT | WITHDRAWAL | SETTLEMENT
+  typeFull: string;
+  memberId?: string | null;
+  memberName?: string | null;
+  amount: number;
+  status: string;
+  assignedAgentId?: number | null;
+  agentCode?: string | null;
+  agentName?: string | null;
+  accountId?: number | null;
+  accountRef?: string | null;
+  paymentMethod?: string | null;
+  assignedBy?: string | null;
+  assignedAt?: string | null;
+  createdBy?: string | null;
+  createdAt?: string | null;
+  txDate?: string | null;
+  txTime?: string | null;
+}
+export interface AgentAssignmentHistoryRow {
+  id: number;
+  action: string;
+  txRef: string;
+  txType: string;
+  paymentMethod: string;
+  prevAgentId?: string | null;
+  prevAgentName?: string | null;
+  newAgentId: string;
+  newAgentName?: string | null;
+  prevAccountRef?: string | null;
+  newAccountRef: string;
+  newAccountType: string;
+  assignedBy?: string | null;
+  createdAt?: string | null;
+  note?: string | null;
+}
+export interface AgentAuditRow {
+  id: number;
+  user?: string | null;         // actual operator (login username)
+  role?: string | null;         // merchant role (Supervisor/Manager/DEO/…)
+  business?: string | null;
+  action: string;
+  entityType?: string | null;
+  reference?: string | null;
+  note?: string | null;
+  createdAt?: string | null;
+}
+
 export interface Notification {
   id: number;
   icon: string;

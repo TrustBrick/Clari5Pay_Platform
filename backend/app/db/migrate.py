@@ -61,6 +61,15 @@ _NEW_COLUMNS = [
     # Permanent creator snapshot (Merchant Username + Role at creation time).
     ("transactions", "creator_username", "VARCHAR(64)"),
     ("transactions", "creator_role", "VARCHAR(32)"),
+    # Agent Management (Phase 4): Non-EPS agent + agent account assigned to a transaction.
+    # Nullable; only ever written by the demo-gated agent-assignment endpoint (NULL in Production).
+    ("transactions", "assigned_agent_id", "INTEGER"),
+    ("transactions", "assigned_agent_account_id", "INTEGER"),
+    ("transactions", "assigned_by", "VARCHAR(128)"),
+    ("transactions", "assigned_by_id", "INTEGER"),
+    ("transactions", "assigned_at", "TIMESTAMP"),
+    # Audit: actor's business name (kept separate so `username` can hold the login username).
+    ("audit_logs", "business", "VARCHAR(128)"),
     ("login_otps", "purpose", "VARCHAR(16) DEFAULT 'login' NOT NULL"),
     ("login_otps", "attempts", "INTEGER DEFAULT 0 NOT NULL"),
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),

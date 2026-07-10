@@ -21,6 +21,7 @@ import {
   MerchantAnalyticsPage, WhatsAppSettingsPage, DemoToolsPage,
 } from './pages/AdminPages';
 import { KYCPage } from './pages/KYCPage';
+import { AgentDashboardPage, AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
@@ -49,6 +50,10 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (page.startsWith('sa-') || page.startsWith('admin-')) return false;
   // KYC Update is restricted to the Supervisor and Manager merchant roles.
   if (page === 'kyc') return ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
+  // Agent Management — Supervisor & Manager only, and Demo-gated until the module is complete
+  // (mirrors the nav.ts demo gate).
+  if (['agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-unassigned', 'agent-audit', 'agent-reports'].includes(page))
+    return IS_DEMO && ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   // A Manager is an approval-only role — block direct Deposit/Withdrawal/Settlement creation.
   if (String(user.merchantRole || '').toUpperCase() === 'MANAGER' && MANAGER_BLOCKED_PAGES.includes(page)) return false;
   // A Supervisor manages only Settlement Requests — no Deposit/Withdrawal pages, even by
@@ -97,6 +102,16 @@ const App: React.FC = () => {
       cancel: <CancelRequestPage {...props} />,
       transactions: <TransactionHistory {...props} />,
       kyc: <KYCPage user={user} />,
+      // Agent Management — demo-gated (see pageAllowed); keys are inert on Production builds.
+      ...(IS_DEMO ? {
+        'agent-dashboard': <AgentDashboardPage {...props} />,
+        agents: <AgentsPage {...props} />,
+        'agent-accounts': <AgentAccountsPage {...props} />,
+        'agent-transactions': <AgentTransactionsPage {...props} />,
+        'agent-unassigned': <UnassignedTransactionsPage {...props} />,
+        'agent-audit': <AgentAuditPage {...props} />,
+        'agent-reports': <AgentReportsPage {...props} />,
+      } : {}),
       reports: <ReportsPage {...props} />,
       'risk-mgmt': <RiskManagementPage user={user} />,
       complaints: <ComplaintManagementPage user={user} />,

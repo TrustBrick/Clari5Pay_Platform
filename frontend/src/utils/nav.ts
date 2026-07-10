@@ -12,6 +12,20 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'approvals', icon: '✓', label: 'Approvals' },
     { key: 'cancel', icon: '⊘', label: 'Cancel Request' },
     { key: 'transactions', icon: '≡', label: 'Transactions' },
+    // Agent Management — Non-EPS agents (Supervisor & Manager only). Demo-gated until the
+    // module is complete (see navForUser gate + App.tsx pageAllowed). Agents never log in.
+    {
+      key: 'agent-mgmt', icon: '👥', label: 'Agent Management',
+      children: [
+        { key: 'agent-dashboard', icon: '⬡', label: 'Dashboard' },
+        { key: 'agents', icon: '🧑‍💼', label: 'Agents' },
+        { key: 'agent-accounts', icon: '🏦', label: 'Agent Accounts' },
+        { key: 'agent-transactions', icon: '≡', label: 'Transactions' },
+        { key: 'agent-unassigned', icon: '⚠', label: 'Unassigned' },
+        { key: 'agent-audit', icon: '📋', label: 'Audit Trail' },
+        { key: 'agent-reports', icon: '📑', label: 'Reports' },
+      ],
+    },
     { key: 'kyc', icon: '🪪', label: 'KYC Update' },
     { key: 'reports', icon: '📊', label: 'Reports' },
     { key: 'risk-mgmt', icon: '🛡️', label: 'Risk Management' },
@@ -67,6 +81,14 @@ export const PAGE_TITLES: Record<string, string> = {
   approvals: 'Approvals',
   cancel: 'Cancel Request',
   transactions: 'Transactions',
+  'agent-mgmt': 'Agent Management',
+  'agent-dashboard': 'Agent Dashboard',
+  agents: 'Agents',
+  'agent-accounts': 'Agent Accounts',
+  'agent-transactions': 'Agent Transactions',
+  'agent-unassigned': 'Unassigned Transactions',
+  'agent-audit': 'Agent Audit Trail',
+  'agent-reports': 'Agent Reports',
   kyc: 'KYC Update',
   reports: 'Reports',
   'risk-mgmt': 'Risk Management',
@@ -105,8 +127,8 @@ export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
   DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  SUPERVISOR: ['dashboard', 'approvals', 'settlement', 'transactions', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  MANAGER: ['dashboard', 'approvals', 'transactions', 'templates', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  SUPERVISOR: ['dashboard', 'approvals', 'settlement', 'transactions', 'agent-mgmt', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  MANAGER: ['dashboard', 'approvals', 'transactions', 'agent-mgmt', 'templates', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
 };
 
 /**
@@ -119,13 +141,15 @@ export const navForUser = (user: User): NavItem[] => {
   if (user.role !== 'MERCHANT') return base;
   const role = user.merchantRole ? String(user.merchantRole).toUpperCase() : '';
   const allowed = MERCHANT_ROLE_NAV[role];
-  // KYC Update is a Demo-only feature for now — the KYC / DigiLocker integrations are not
-  // configured on Production, so hide the menu there. Flip this to a config-driven flag once
-  // Production has KYC keys. Applied to every merchant menu via this single gate.
-  const gate = (items: NavItem[]): NavItem[] => (IS_DEMO ? items : items.filter((i) => i.key !== 'kyc'));
-  // Role-less merchant: full menu minus Settlement Requests (Supervisor-only) and KYC Update
-  // (Supervisor/Manager-only).
-  if (!allowed) return gate(base.filter((i) => i.key !== 'settlement' && i.key !== 'kyc'));
+  // KYC Update and Agent Management are Demo-only for now — the KYC / DigiLocker integrations
+  // are not configured on Production, and the Agent Management module is still being built out
+  // across phases. Hide both menus on Production; flip these to config-driven flags once ready.
+  // Applied to every merchant menu via this single gate.
+  const demoOnly = new Set(['kyc', 'agent-mgmt']);
+  const gate = (items: NavItem[]): NavItem[] => (IS_DEMO ? items : items.filter((i) => !demoOnly.has(i.key)));
+  // Role-less merchant: full menu minus Settlement Requests (Supervisor-only), KYC Update and
+  // Agent Management (both Supervisor/Manager-only).
+  if (!allowed) return gate(base.filter((i) => i.key !== 'settlement' && i.key !== 'kyc' && i.key !== 'agent-mgmt'));
   const byKey = new Map(base.map((i) => [i.key, i]));
   return gate(allowed.map((k) => byKey.get(k)).filter((i): i is NavItem => Boolean(i)));
 };

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -494,6 +494,87 @@ export const telegramAPI = {
 
 export const demoAPI = {
   reset: async () => (await api.post<{ ok: boolean; resetBy: string; tables: string[] }>('/api/demo/reset', { confirm: 'RESET' })).data,
+};
+
+// Agent Management → Agents (Non-EPS agents). Supervisor/Manager only; demo-gated backend.
+export interface AgentQuery {
+  q?: string; category?: string; country?: string; state?: string; status?: string;
+}
+export interface AgentCreatePayload {
+  fullName: string; country: string; state: string; location: string;
+  mobile?: string; email?: string; currency: string; dateOfCreation?: string;
+  reference?: string; feesPct: number; transactionCode: string; category: string;
+  notes?: string; riskAnalysis?: boolean; sendForApproval?: boolean;
+}
+export type AgentUpdatePayload = Partial<Omit<AgentCreatePayload, 'transactionCode' | 'dateOfCreation' | 'sendForApproval'>> & { status?: string };
+
+const cleanParams = (p?: AgentQuery): Record<string, string> | undefined => {
+  if (!p) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(p)) if (v != null && String(v).trim() !== '') out[k] = String(v);
+  return Object.keys(out).length ? out : undefined;
+};
+
+export const agentAPI = {
+  list: async (params?: AgentQuery) =>
+    (await api.get<Agent[]>('/api/agents', { params: cleanParams(params) })).data,
+  get: async (id: number) => (await api.get<Agent>(`/api/agents/${id}`)).data,
+  create: async (data: AgentCreatePayload) => (await api.post<Agent>('/api/agents', data)).data,
+  update: async (id: number, data: AgentUpdatePayload) => (await api.put<Agent>(`/api/agents/${id}`, data)).data,
+  setStatus: async (id: number, status: 'ACTIVE' | 'INACTIVE') =>
+    (await api.patch<Agent>(`/api/agents/${id}/status`, { status })).data,
+  remove: async (id: number) => (await api.delete<{ ok: boolean }>(`/api/agents/${id}`)).data,
+};
+
+// Agent Accounts (Bank / UPI / QR / Crypto) — nested under an agent (numeric agent_master id).
+export interface AgentAccountQuery { q?: string; accountType?: string; currency?: string; status?: string; }
+export interface AgentAccountPayload {
+  accountType?: string; label?: string; currency?: string; notes?: string; isDefault?: boolean;
+  accountHolder?: string; accountNumber?: string; ifsc?: string; bankName?: string; branch?: string;
+  upiId?: string; upiHolder?: string; qrImage?: string; qrLinkedRef?: string;
+  walletAddress?: string; cryptoNetwork?: string; cryptoAsset?: string;
+}
+const cleanAcctParams = (p?: AgentAccountQuery): Record<string, string> | undefined => {
+  if (!p) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(p)) if (v != null && String(v).trim() !== '') out[k] = String(v);
+  return Object.keys(out).length ? out : undefined;
+};
+
+export const agentAccountAPI = {
+  list: async (agentId: number, params?: AgentAccountQuery) =>
+    (await api.get<AgentAccount[]>(`/api/agents/${agentId}/accounts`, { params: cleanAcctParams(params) })).data,
+  get: async (agentId: number, accId: number) =>
+    (await api.get<AgentAccount>(`/api/agents/${agentId}/accounts/${accId}`)).data,
+  create: async (agentId: number, data: AgentAccountPayload) =>
+    (await api.post<AgentAccount>(`/api/agents/${agentId}/accounts`, data)).data,
+  update: async (agentId: number, accId: number, data: AgentAccountPayload) =>
+    (await api.put<AgentAccount>(`/api/agents/${agentId}/accounts/${accId}`, data)).data,
+  setStatus: async (agentId: number, accId: number, status: 'ACTIVE' | 'INACTIVE') =>
+    (await api.patch<AgentAccount>(`/api/agents/${agentId}/accounts/${accId}/status`, { status })).data,
+  setDefault: async (agentId: number, accId: number) =>
+    (await api.patch<AgentAccount>(`/api/agents/${agentId}/accounts/${accId}/default`, {})).data,
+  remove: async (agentId: number, accId: number) =>
+    (await api.delete<{ ok: boolean }>(`/api/agents/${agentId}/accounts/${accId}`)).data,
+};
+
+// Agent Assignment (Phase 4) — assign/reassign a Non-EPS agent + account to a transaction.
+export const agentAssignmentAPI = {
+  get: async (ref: string) => (await api.get<AgentAssignmentResult>(`/api/transactions/${ref}/agent-assignment`)).data,
+  assign: async (ref: string, data: { agentId: number; agentAccountId: number; paymentMethod?: string }) =>
+    (await api.post<AgentAssignmentCurrent>(`/api/transactions/${ref}/assign-agent`, data)).data,
+};
+
+export const agentDashboardAPI = {
+  get: async () => (await api.get<AgentDashboard>('/api/agent-dashboard')).data,
+};
+
+export const agentTransactionAPI = {
+  assigned: async () => (await api.get<AgentTxRow[]>('/api/agent-transactions')).data,
+  unassigned: async () => (await api.get<AgentTxRow[]>('/api/agent-transactions/unassigned')).data,
+  assignmentHistory: async () => (await api.get<AgentAssignmentHistoryRow[]>('/api/agent-transactions/assignment-history')).data,
+  allAccounts: async () => (await api.get<Record<string, unknown>[]>('/api/agent-transactions/all-accounts')).data,
+  audit: async () => (await api.get<AgentAuditRow[]>('/api/agent-transactions/audit')).data,
 };
 
 export const systemLogAPI = {
