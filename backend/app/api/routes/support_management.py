@@ -141,14 +141,20 @@ def _member_out(u: User, sess, active: int, cfg, now: datetime) -> dict:
 
 
 async def _avg_response_seconds(db: AsyncSession) -> int | None:
-    rows = (await db.execute(
-        select(SupportConversation.created_at, SupportConversation.first_response_at)
-        .where(SupportConversation.first_response_at.isnot(None))
-    )).all()
-    if not rows:
-        return None
-    spans = [(fr - cr).total_seconds() for cr, fr in rows if fr and cr]
-    return int(sum(spans) / len(spans)) if spans else None
+    # Average the (first_response - created) gap in SQL rather than loading every
+    # answered conversation into Python. This runs once per SSE tick (every ~1s per
+    # open dashboard); the old row-by-row version scanned the whole conversation
+    # table each time and grew unbounded, a key driver of the 2026-07-11 connection
+    # pool exhaustion. AVG over an empty set returns NULL → None.
+    avg = (await db.execute(
+        select(func.avg(func.extract(
+            "epoch", SupportConversation.first_response_at - SupportConversation.created_at
+        ))).where(
+            SupportConversation.first_response_at.isnot(None),
+            SupportConversation.created_at.isnot(None),
+        )
+    )).scalar()
+    return int(avg) if avg is not None else None
 
 
 async def _build_payload(db: AsyncSession, caller_role, caller_id: int) -> dict:
