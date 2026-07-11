@@ -29,7 +29,9 @@ router = APIRouter(prefix="/api/kyc", tags=["kyc"])
 # ── Validation patterns (mirror the client-side rules so the API is safe on its own) ──
 AADHAAR_RE = re.compile(r"^\d{12}$")
 PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
-PASSPORT_RE = re.compile(r"^[A-Z][0-9]{7}$")
+# Passport *File Number* (from the passport's back page) — NOT the passport number. The API docs
+# define no strict format, so we only require a non-empty alphanumeric value; Melento validates it.
+PASSPORT_RE = re.compile(r"^[A-Z0-9]+$")
 OCR_ALLOWED_TYPES = {"jpg", "jpeg", "png", "pdf"}
 OCR_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 
@@ -330,7 +332,7 @@ async def passport_verify_membership(
     mid, member_name = await _require_member_name(db, user, body.membershipId)
     number = (body.passportNumber or "").upper().strip()
     if not PASSPORT_RE.match(number):
-        raise HTTPException(status_code=400, detail="Invalid Passport Number — expected format A1234567.")
+        raise HTTPException(status_code=400, detail="Passport File Number is required and must be alphanumeric.")
     dob = (body.dateOfBirth or "").strip() or None
 
     reference_id = _gen_reference("PASSPORT")

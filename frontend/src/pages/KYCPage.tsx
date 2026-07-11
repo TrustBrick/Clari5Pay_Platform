@@ -35,7 +35,7 @@ interface CardDef { key: ViewKey; icon: string; title: string; desc: string; }
 const CARDS: CardDef[] = [
   { key: 'aadhaar',  icon: '🆔', title: 'Aadhaar Verification',      desc: 'Generate a DigiLocker verification link for a member and track completion.' },
   { key: 'pan',      icon: '💳', title: 'PAN Verification',          desc: 'Validate a member’s PAN and fetch the holder’s details.' },
-  { key: 'passport', icon: '📘', title: 'Passport Verification',     desc: 'Verify a passport number and its validity.' },
+  { key: 'passport', icon: '📘', title: 'Passport Verification',     desc: 'Verify a passport using its File Number and check validity.' },
   { key: 'ocr',      icon: '📄', title: 'OCR Document Verification', desc: 'Extract details from an uploaded identity document.' },
 ];
 const TYPE_LABEL: Record<ViewKey, string> = {
@@ -292,7 +292,7 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
 
   const verify = async () => {
     if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
-    if (!validFmt) { showToast('Invalid Passport Number — expected format A1234567.', 'error'); return; }
+    if (!validFmt) { showToast('Passport File Number is required and must be alphanumeric.', 'error'); return; }
     setVerifying(true); setResult(null);
     try {
       const r = await kycAPI.verifyPassportMembership(m.memberId.trim(), num.toUpperCase().trim(), dob || undefined);
@@ -308,7 +308,18 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   return (
     <VerifyShell icon="📘" view="passport" title="Passport Verification" onBack={onBack}>
       <MembershipFields m={m} />
-      <Input label="Passport Number" value={num} onChange={e => setNum(e.target.value.toUpperCase())} placeholder="A1234567" hint="8-character passport number" />
+      <Input
+        label="Passport File Number"
+        value={num}
+        onChange={e => setNum(e.target.value.toUpperCase())}
+        placeholder="Example: DL107624519823"
+        style={{ marginBottom: 6 }}
+      />
+      {/* Informational note: red asterisk + dull-gray guidance (do not enter the Passport Number). */}
+      <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 16px', lineHeight: 1.5 }}>
+        <span style={{ color: T.danger, fontWeight: 700 }}>*</span>{' '}
+        NOTE: Do not enter the Passport Number. Enter the Passport File Number available on the back page of the Passport.
+      </p>
       <Input label="Date of Birth" type="date" value={dob} onChange={e => setDob(e.target.value)} hint="YYYY-MM-DD" />
       <Btn onClick={verify} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify Passport'}</Btn>
       {result && (

@@ -165,7 +165,9 @@ export const kycAPI = {
 export const KYC_VALIDATION = {
   aadhaar: (v: string) => /^\d{12}$/.test(v.replace(/\s/g, '')),
   pan: (v: string) => /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(v.toUpperCase().trim()),
-  passport: (v: string) => /^[A-Z][0-9]{7}$/.test(v.toUpperCase().trim()),
+  // Passport File Number (from the back page) — not the passport number. The API docs define no
+  // strict format, so we only require a non-empty, alphanumeric value and let Melento validate it.
+  passport: (v: string) => /^[A-Z0-9]+$/.test(v.toUpperCase().trim()),
   mobile: (v: string) => /^\d{10}$/.test(v.trim()),
 };
 
