@@ -17,6 +17,7 @@ from app.schemas.schemas import (
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
 from app.services import tg_notify as tgn
+from app.core.cache import cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 
 
@@ -770,7 +771,10 @@ async def global_summary(
     system-wide totals for every Admin and Super Admin — the dashboard finance cards
     consume this so all admins see identical figures. Updates immediately as transactions
     complete because it is recomputed from current transaction data on every call."""
-    return await compute_global_summary(db)
+    # Cached ~5s: this is identical for every admin and recomputing scans all transactions —
+    # a hot path under dashboard load. The short TTL keeps the finance cards effectively live.
+    # Read-only aggregate; financial mutations never touch this cache.
+    return await cached_json("c:txn:global-summary", 5, lambda: compute_global_summary(db))
 
 
 @router.get("/merchant-balances")
@@ -780,15 +784,18 @@ async def merchant_balances(
 ):
     """Available Balance (AB) + Running Balance (RB) per merchant business — for the admin
     Merchants page. Merchants sharing a business name share one balance pool."""
-    merchants = (await db.execute(select(User).where(User.role == UserRole.MERCHANT))).scalars().all()
-    rep: dict[str, User] = {}
-    for m in merchants:
-        rep.setdefault(m.name, m)
-    out = []
-    for name, user in rep.items():
-        s = await compute_balance(db, user)
-        out.append({"name": name, "available": round(s["available"], 2), "runningBalance": round(s["runningBalance"], 2)})
-    return out
+    async def _compute():
+        merchants = (await db.execute(select(User).where(User.role == UserRole.MERCHANT))).scalars().all()
+        rep: dict[str, User] = {}
+        for m in merchants:
+            rep.setdefault(m.name, m)
+        out = []
+        for name, user in rep.items():
+            s = await compute_balance(db, user)
+            out.append({"name": name, "available": round(s["available"], 2), "runningBalance": round(s["runningBalance"], 2)})
+        return out
+    # Cached ~5s: same for every admin; the per-merchant compute_balance loop is a hot N+1. Read-only.
+    return await cached_json("c:txn:merchant-balances", 5, _compute)
 
 
 @router.get("/merchant-stats")
@@ -799,54 +806,57 @@ async def merchant_stats(
     """Per-merchant-business analytics for the Merchant Analytics page. Super Admin sees every
     merchant; an Admin sees only the merchants they created. Merchants sharing a business name
     are aggregated into one row (same pooling as the balance logic)."""
-    q = select(User).where(User.role == UserRole.MERCHANT)
-    if caller.role != UserRole.SUPER_ADMIN:
-        q = q.where(User.created_by == caller.id)
-    merchants = (await db.execute(q)).scalars().all()
+    async def _compute():
+        q = select(User).where(User.role == UserRole.MERCHANT)
+        if caller.role != UserRole.SUPER_ADMIN:
+            q = q.where(User.created_by == caller.id)
+        merchants = (await db.execute(q)).scalars().all()
 
-    rep: dict[str, User] = {}
-    name_ids: dict[str, list[int]] = {}
-    for m in merchants:
-        rep.setdefault(m.name, m)
-        name_ids.setdefault(m.name, []).append(m.id)
+        rep: dict[str, User] = {}
+        name_ids: dict[str, list[int]] = {}
+        for m in merchants:
+            rep.setdefault(m.name, m)
+            name_ids.setdefault(m.name, []).append(m.id)
 
-    out = []
-    for name, user in rep.items():
-        s = await compute_balance(db, user)
-        ids = name_ids[name]
-        txns = (await db.execute(
-            select(Transaction).where(Transaction.merchant_id.in_(ids))
-        )).scalars().all()
-        def cnt(pfx: str) -> int:
-            return sum(1 for t in txns if t.type.value.startswith(pfx))
-        # Canonical balances (compute_balance) drive Merchant Analytics — the three
-        # financial-summary figures shown on the Admin / Super Admin cards.
-        out.append({
-            "name": name,
-            "merchantId": user.id,
-            "merchantIds": ids,
-            "username": user.username,
-            "email": user.email,
-            "payInFee": user.pay_in_fee or 0,
-            "payOutFee": user.pay_out_fee or 0,
-            "depositCount": cnt("DEPOSIT"),
-            "depositAmount": round(s["totalDeposit"], 2),
-            "withdrawalCount": cnt("WITHDRAWAL"),
-            "withdrawalAmount": round(s["totalWithdrawn"], 2),
-            "settlementCount": cnt("SETTLEMENT"),
-            "settlementAmount": round(s["totalSettled"], 2),
-            # New financial-summary figures (single source of truth).
-            "totalAvailableBalance": round(s["totalAvailableBalance"], 2),
-            "available": round(s["available"], 2),
-            "availableBalance": round(s["available"], 2),
-            "depositCommission": round(s["depositCommission"], 2),
-            "withdrawalCommission": round(s["withdrawalCommission"], 2),
-            "settlementCommission": round(s["settlementCommission"], 2),
-            "totalCommission": round(s["totalCommission"], 2),
-            "payoutFee": round(s["payoutFee"], 2),
-        })
-    out.sort(key=lambda r: r["name"].lower())
-    return out
+        out = []
+        for name, user in rep.items():
+            s = await compute_balance(db, user)
+            ids = name_ids[name]
+            txns = (await db.execute(
+                select(Transaction).where(Transaction.merchant_id.in_(ids))
+            )).scalars().all()
+            def cnt(pfx: str) -> int:
+                return sum(1 for t in txns if t.type.value.startswith(pfx))
+            # Canonical balances (compute_balance) drive Merchant Analytics — the three
+            # financial-summary figures shown on the Admin / Super Admin cards.
+            out.append({
+                "name": name,
+                "merchantId": user.id,
+                "merchantIds": ids,
+                "username": user.username,
+                "email": user.email,
+                "payInFee": user.pay_in_fee or 0,
+                "payOutFee": user.pay_out_fee or 0,
+                "depositCount": cnt("DEPOSIT"),
+                "depositAmount": round(s["totalDeposit"], 2),
+                "withdrawalCount": cnt("WITHDRAWAL"),
+                "withdrawalAmount": round(s["totalWithdrawn"], 2),
+                "settlementCount": cnt("SETTLEMENT"),
+                "settlementAmount": round(s["totalSettled"], 2),
+                # New financial-summary figures (single source of truth).
+                "totalAvailableBalance": round(s["totalAvailableBalance"], 2),
+                "available": round(s["available"], 2),
+                "availableBalance": round(s["available"], 2),
+                "depositCommission": round(s["depositCommission"], 2),
+                "withdrawalCommission": round(s["withdrawalCommission"], 2),
+                "settlementCommission": round(s["settlementCommission"], 2),
+                "totalCommission": round(s["totalCommission"], 2),
+                "payoutFee": round(s["payoutFee"], 2),
+            })
+        out.sort(key=lambda r: r["name"].lower())
+        return out
+    # Cached ~5s, scoped per admin (Super Admin sees all; Admin sees own merchants). Hot N+1. Read-only.
+    return await cached_json(f"c:txn:merchant-stats:{caller.role.value}:{caller.id}", 5, _compute)
 
 
 @router.get("/member-profile/{member_id}")
