@@ -47,7 +47,11 @@ from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/support-management", tags=["support-management"])
 
-STREAM_TICK_SECONDS = 1.0
+# 3s (not 1s) tick: each open dashboard rebuilds its payload from the DB every tick,
+# so the interval directly sets the per-stream connection churn. 3s keeps the view
+# effectively live while cutting that load to a third — part of the defense against
+# the 2026-07-11 connection-pool exhaustion.
+STREAM_TICK_SECONDS = 3.0
 STREAM_FORCE_REFRESH_SECONDS = 15.0
 
 DEPARTMENTS = {"Technical Support", "Payments", "Merchant Support", "Finance", "Compliance"}

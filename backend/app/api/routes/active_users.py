@@ -30,7 +30,11 @@ router = APIRouter(prefix="/api/active-users", tags=["active-users"])
 # Stream tuning. The loop re-checks presence every tick and pushes only when something changed;
 # a forced refresh guarantees the derived fields (session duration, "x min ago") keep ticking and
 # doubles as a keep-alive so proxies never see the connection go idle.
-STREAM_TICK_SECONDS = 1.0
+# 3s (not 1s) tick: each open dashboard rebuilds its payload from the DB every tick,
+# so the interval directly sets the per-stream connection churn. 3s keeps the view
+# effectively live while cutting that load to a third — part of the defense against
+# the 2026-07-11 connection-pool exhaustion.
+STREAM_TICK_SECONDS = 3.0
 STREAM_FORCE_REFRESH_SECONDS = 15.0
 
 
