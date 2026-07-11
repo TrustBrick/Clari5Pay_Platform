@@ -45,3 +45,26 @@ async def cached_json(key: str, ttl: int, compute: Callable[[], Awaitable[Any]])
     except Exception as e:
         log.warning("[cache] set failed for %s: %s", key, e)
     return value
+
+
+async def cache_get(key: str):
+    """Return the cached value for ``key``, or None on a miss / any Redis error (fail-open).
+    Pair with ``cache_set`` for endpoints whose body is a long single-return (cleaner than
+    wrapping the whole body in a compute closure)."""
+    try:
+        c = await _client()
+        hit = await c.get(key)
+        if hit is not None:
+            return json.loads(hit)
+    except Exception as e:
+        log.warning("[cache] get failed for %s: %s", key, e)
+    return None
+
+
+async def cache_set(key: str, value, ttl: int) -> None:
+    """Cache ``value`` (JSON-encoded) under ``key`` for ``ttl`` seconds. Fail-open on any error."""
+    try:
+        c = await _client()
+        await c.set(key, json.dumps(jsonable_encoder(value)), ex=ttl)
+    except Exception as e:
+        log.warning("[cache] set failed for %s: %s", key, e)

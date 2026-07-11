@@ -16,6 +16,7 @@ from app.db.session import get_db
 from app.models.models import Transaction, TxStatus, User, UserRole, MerchantBankAccount
 from app.models.cyber import CyberComplaint
 from app.core.deps import get_current_user
+from app.core.cache import cache_get, cache_set
 from app.core.uploads import validate_upload, IMAGE_PDF_TYPES
 from app.api.routes.system_logs import log_event, record_audit
 
@@ -72,6 +73,11 @@ async def list_risk_members(
     user: User = Depends(get_current_user),
 ):
     """Risk dashboard: one row per membership, scoped to the caller. Phase-1 risk = LOW."""
+    # Cached ~5s, scoped per caller (each admin sees only their merchants' members). Read-only.
+    _ck = f"c:risk:members:{user.id}"
+    _hit = await cache_get(_ck)
+    if _hit is not None:
+        return _hit
     ids = await _scoped_merchant_ids(db, user)
     txns = (await db.execute(
         select(Transaction).where(Transaction.merchant_id.in_(ids))
@@ -120,6 +126,7 @@ async def list_risk_members(
             x["volume"] = round(x["volume"], 2)
         out["topMerchants"] = top_merch[:10]
 
+    await cache_set(_ck, out, 5)
     return out
 
 

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.db.session import get_db
 from app.models.models import AccountMaster, AccountTransaction, AdminUpi, Transaction, TxStatus, User, UserRole
 from app.core.deps import get_current_admin
+from app.core.cache import cache_get, cache_set
 from app.schemas.schemas import AccountCreate, ReasonRequest
 from app.api.routes.system_logs import log_event, record_audit
 from app.api.routes.transactions import compute_balance, _COMPLETED_STATUSES, _kind, _completed, _member_label
@@ -42,6 +43,11 @@ async def account_balances(
     """Per admin bank account: how much each merchant has deposited into it, alongside that
     merchant's Available Balance (AB), Running Balance (RB) and Monthly Average Balance (MAB).
     Deposits are routed to an account via the reference the agent sends (Transaction.admin_ref)."""
+    # Cached ~5s: global (identical for every admin) and very heavy — loads all accounts + merchants
+    # + transactions and aggregates. Read-only; financial mutations never touch this cache.
+    _hit = await cache_get("c:accounts:balances")
+    if _hit is not None:
+        return _hit
     accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id.desc()))).scalars().all()
     merchants = (await db.execute(select(User).where(User.role == UserRole.MERCHANT))).scalars().all()
     txns = (await db.execute(select(Transaction))).scalars().all()
@@ -150,6 +156,7 @@ async def account_balances(
             "userCount": len(acct_users.get(ref, set())),   # distinct depositing users (operators)
             "merchants": rows,
         })
+    await cache_set("c:accounts:balances", out, 5)
     return out
 
 
@@ -399,9 +406,16 @@ async def list_accounts(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_admin),
 ):
-    accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id.desc()))).scalars().all()
-    name_map = await _merchant_name_map(db)
-    out = [_a(a, name_map.get(a.reference_number)) for a in accounts]
+    _hit = await cache_get("c:accounts:list")
+    if _hit is not None:
+        out = _hit
+    else:
+        accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id.desc()))).scalars().all()
+        name_map = await _merchant_name_map(db)
+        out = [_a(a, name_map.get(a.reference_number)) for a in accounts]
+        # Cached ~5s: the base account list (global) is the heavy part; the q-filter runs on the
+        # cached result so any search term benefits. Read-only.
+        await cache_set("c:accounts:list", out, 5)
     if q:
         ql = q.lower()
         out = [a for a in out if ql in (a["merchantName"] or "").lower()]
