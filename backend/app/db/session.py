@@ -35,19 +35,20 @@ def _connect_args():
 # pool_recycle keeps connections warm so we rarely pay the (multi-round-trip) TLS
 # cold-connect; pool_pre_ping still reconnects transparently if one did drop.
 #
-# pool_size + max_overflow cap the app at 50 connections. RDS `database-1` allows
-# max_connections=79, so this leaves ~29 for admin/backups/other clients. The old
-# cap of 30 (10+20) was exhausted during a midnight traffic spike (2026-07-11),
-# producing "QueuePool limit ... reached, connection timed out" errors that showed
-# as "no data" in the UI. pool_timeout fails a starved request in 10s instead of
-# hanging the caller for the default 30s. If max_connections is ever raised (bigger
-# RDS class) these can grow accordingly — keep pool_size+max_overflow < max_connections.
+# pool_size + max_overflow cap each worker's connections; defaults (20+30=50) preserve the
+# single-worker Production sizing. RDS `database-1` allows max_connections=79. The old cap of
+# 30 (10+20) was exhausted during a midnight traffic spike (2026-07-11), producing "QueuePool
+# limit ... reached, connection timed out" errors that showed as "no data" in the UI.
+# pool_timeout fails a starved request fast instead of hanging the caller for the default 30s.
+# These are now env-configurable (DB_POOL_SIZE / DB_MAX_OVERFLOW / DB_POOL_TIMEOUT) so a stack
+# running N uvicorn workers can shrink the per-worker pool — keep
+# (pool_size + max_overflow) × worker_count < max_connections.
 _POOL_KW = dict(
     echo=False,
     pool_pre_ping=True,
-    pool_size=20,
-    max_overflow=30,
-    pool_timeout=10,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_timeout=settings.DB_POOL_TIMEOUT,
     pool_recycle=3600,
     pool_reset_on_return=None,
 )

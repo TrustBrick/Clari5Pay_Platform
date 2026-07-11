@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     DB_PASSWORD: str = ""                # RDS master password (raw value, no escaping)
     AWS_REGION: str = "eu-north-1"
 
+    # ── Connection-pool sizing (env-configurable so a stack can be tuned — e.g. when running
+    # multiple uvicorn workers — without a code change). Defaults preserve the single-worker
+    # values. IMPORTANT: each uvicorn worker gets its OWN pool, so keep
+    # (DB_POOL_SIZE + DB_MAX_OVERFLOW) × worker_count < the database's max_connections. ──
+    DB_POOL_SIZE: int = 20               # base persistent connections per worker
+    DB_MAX_OVERFLOW: int = 30            # extra burst connections per worker
+    DB_POOL_TIMEOUT: int = 10            # seconds a request waits for a free connection before failing
+
     # ── Which stack this process is: "production" | "demo". Unset → "production", so
     # Production's .env never needs to change. Gates the demo-only reset endpoint, the
     # [DEMO] email subject prefix, and is echoed on /health for deploy verification. ──
@@ -112,11 +120,14 @@ class Settings(BaseSettings):
     MELENTO_API_ID: str = "trustbrickrealtyfintechprivatelimited_user_1"
     MELENTO_BASE_URL: str = "https://api.melento.ai"
     MELENTO_VERIFY_BASE_URL: str = "https://in-verify-utils.staging-melento.ai"
-    # Full endpoint URLs for the Passport and General-Document (OCR) verification APIs on the
-    # in-verify-utils host. Configurable via env so they can be repointed without a code change;
-    # the defaults are the documented staging endpoints.
+    # Full endpoint URLs for every Melento verification API on the in-verify-utils host. All are
+    # configurable via env so UAT↔Production is a pure config switch (no code change); the defaults
+    # are the documented staging endpoints.
+    PAN_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/pan/panVerification"
     PASSPORT_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/passport/passportVerification"
-    OCR_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/document/documentVerification"
+    AADHAAR_GENERATE_URL: str = "https://in-verify-utils.staging-melento.ai/api/digilocker/generateUrl"
+    AADHAAR_DETAILS_URL: str = "https://in-verify-utils.staging-melento.ai/api/digilocker/getAadhaarDetails"
+    OCR_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/general-document/documentVerification"
     DIGILOCKER_CLIENT_ID: str = ""
     DIGILOCKER_CLIENT_SECRET: str = ""
     DIGILOCKER_BASE_URL: str = "https://api.digitallocker.gov.in"
