@@ -34,11 +34,20 @@ def _connect_args():
 # back) — worth ~1 network round-trip per request on a remote DB. A large
 # pool_recycle keeps connections warm so we rarely pay the (multi-round-trip) TLS
 # cold-connect; pool_pre_ping still reconnects transparently if one did drop.
+#
+# pool_size + max_overflow cap the app at 50 connections. RDS `database-1` allows
+# max_connections=79, so this leaves ~29 for admin/backups/other clients. The old
+# cap of 30 (10+20) was exhausted during a midnight traffic spike (2026-07-11),
+# producing "QueuePool limit ... reached, connection timed out" errors that showed
+# as "no data" in the UI. pool_timeout fails a starved request in 10s instead of
+# hanging the caller for the default 30s. If max_connections is ever raised (bigger
+# RDS class) these can grow accordingly — keep pool_size+max_overflow < max_connections.
 _POOL_KW = dict(
     echo=False,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=20,
+    max_overflow=30,
+    pool_timeout=10,
     pool_recycle=3600,
     pool_reset_on_return=None,
 )
