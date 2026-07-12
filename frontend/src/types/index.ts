@@ -158,6 +158,8 @@ export interface Transaction {
   adminUsername?: string | null;
   remarksHistory?: RemarkEntry[] | null;
   refPrefix?: string;
+  // Agent Management (demo): the assigned Non-EPS agent this request is routed through (NULL in prod).
+  assignedAgentId?: number | null;
 }
 
 export interface RemarkEntry {

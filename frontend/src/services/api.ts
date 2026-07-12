@@ -196,6 +196,12 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/manager/${decision}`, { remark });
     return res.data;
   },
+  // Supervisor completes an AGENT-ASSIGNED settlement (demo) with the mandatory UTR + proof —
+  // no Admin needed. Non-agent settlements are rejected server-side (they still go to the Admin).
+  supervisorSettle: async (id: string, data: { remark: string; utr: string; proof: string }) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/supervisor/settle`, data);
+    return res.data;
+  },
   // Record a "<role> Viewed" audit entry when a reviewer/admin opens a request's details.
   recordView: async (id: string) => {
     try { await api.post(`/api/transactions/${id}/view`); } catch { /* best-effort audit */ }

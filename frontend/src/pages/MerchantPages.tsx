@@ -1015,11 +1015,123 @@ export const DepositManagement: React.FC<{ user: User }> = ({ user }) =>
 export const WithdrawalManagement: React.FC<{ user: User }> = ({ user }) =>
   <ManagementPage user={user} title="Withdrawal Management" prefix="WITHDRAWAL" requestLabel="Withdrawal Request" noun="Withdrawal" FormComp={WithdrawalForm}/>;
 
-// Settlement Requests is a Supervisor-only page (App.tsx gates access): the Supervisor
-// creates settlement requests, views their own submitted requests + status, and submits
-// them straight to the Admin (Supervisor → Admin → Completed; no intermediate approval).
-export const SettlementManagement: React.FC<{ user: User }> = ({ user }) =>
-  <ManagementPage user={user} title="Settlement Requests" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm}/>;
+// ─── Settlement completion by Supervisor (demo: agent-assigned settlements skip Admin) ──
+// When a settlement is routed through a Non-EPS agent (demo), the agent handles the payout, so the
+// Supervisor completes it here by supplying the mandatory UTR + settlement proof (image/PDF) — no
+// Admin approval needed. Non-agent settlements are rejected server-side and still go to the Admin.
+const SETTLE_ACCEPT = 'image/*,application/pdf';
+
+const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () => void }> = ({ tx, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [d, setD] = useState<Transaction>(tx);
+  const [utr, setUtr] = useState('');
+  const [remark, setRemark] = useState('');
+  const [proof, setProof] = useState('');
+  const [proofName, setProofName] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { transactionAPI.getDetail(tx.id).then(setD).catch(() => {}); transactionAPI.recordView(tx.id); }, [tx.id]);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
+    try { setProof(await fileToDataUrl(f)); setProofName(f.name); } catch { showToast('Could not read the file', 'error'); }
+  };
+  const submit = async () => {
+    if (!utr.trim()) { showToast('UTR Number is required', 'error'); return; }
+    if (!proof) { showToast('Settlement proof (image or PDF) is required', 'error'); return; }
+    if (!remark.trim()) { showToast('Remarks are required', 'error'); return; }
+    setBusy(true);
+    try {
+      await transactionAPI.supervisorSettle(tx.id, { remark: remark.trim(), utr: utr.trim(), proof });
+      showToast('Settlement completed successfully');
+      onDone();
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to complete settlement', 'error'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={`Complete Settlement — ${d.ref}`} onClose={onClose} wide>
+      <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <SlipRow k="Member" v={memberLabel(d.memberId, d.member) || '—'} />
+        <SlipRow k="Amount" v={fmt(d.amount)} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} />} />
+        <SlipRow k="Reference" v={d.ref} />
+      </div>
+      <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 12 }}>
+        Routed through an assigned agent — complete it directly (no Admin approval needed). Enter the payment UTR and upload the settlement proof.
+      </p>
+      <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)} placeholder="Enter the payment UTR number" required />
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6 }}>Settlement Proof (image or PDF) *</label>
+        <input type="file" accept={SETTLE_ACCEPT} onChange={onFile} />
+        {proofName && <p style={{ margin: '6px 0 0', fontSize: 11, color: T.success, fontWeight: 700 }}>✓ {proofName}</p>}
+      </div>
+      <div style={{ marginBottom: 8 }}>
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6 }}>Remarks *</label>
+        <textarea value={remark} onChange={e => setRemark(e.target.value)} maxLength={1000} placeholder="Enter your remarks (mandatory)…"
+          style={{ width: '100%', minHeight: 70, padding: '10px 12px', borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.surface, color: T.textMain, fontSize: 13, resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit' }} />
+      </div>
+      <div style={{ display: 'flex', gap: 10, borderTop: `1px solid ${T.border}`, paddingTop: 14 }}>
+        <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : '✓ Complete Settlement'}</Btn>
+        <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+// Demo-only, Supervisor-only queue of agent-assigned settlements awaiting completion. Renders
+// nothing on Production, for non-Supervisors, or when there is nothing to complete.
+const AgentSettlementCompletionQueue: React.FC<{ user: User }> = ({ user }) => {
+  const [rows, setRows] = useState<Transaction[]>([]);
+  const [active, setActive] = useState<Transaction | null>(null);
+  const isSupervisor = String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR';
+  const on = IS_DEMO && isSupervisor;
+  const reload = () => transactionAPI.getAllOverseer()
+    .then(txs => setRows(txs.filter(t => t.type.startsWith('SETTLEMENT') && t.status === 'SLIP_SUBMITTED' && t.assignedAgentId != null && t.merchant === user.name)))
+    .catch(() => setRows([]));
+  useEffect(() => { if (on) reload(); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+  usePoll(() => { if (on && !active) reload(); });
+  if (!on || rows.length === 0) return null;
+
+  return (
+    <Card style={{ marginBottom: 16, borderTop: `3px solid ${T.info}` }}>
+      <div style={{ padding: '14px 16px 0' }}>
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>Agent Settlements — Awaiting Your Completion</h3>
+        <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Routed through an assigned agent — complete each with the UTR + proof. No Admin approval needed.</p>
+      </div>
+      <div style={{ overflowX: 'auto', padding: 12 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead><tr style={{ background: T.canvas }}>{['Reference', 'Member', 'Amount', 'Date & Time', 'Action'].map(h => (
+            <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}` }}>{h}</th>
+          ))}</tr></thead>
+          <tbody>
+            {rows.map(t => (
+              <tr key={t.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
+                <td style={{ padding: '11px 14px', fontWeight: 700, color: T.textMain }}>{t.ref}</td>
+                <td style={{ padding: '11px 14px', color: T.textMuted }}>{memberLabel(t.memberId, t.member) || '—'}</td>
+                <td style={{ padding: '11px 14px', fontWeight: 800, whiteSpace: 'nowrap' }}>{fmt(t.amount)}</td>
+                <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{t.date} {t.time}</td>
+                <td style={{ padding: '11px 14px' }}><Btn size="sm" onClick={() => setActive(t)}>Complete</Btn></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {active && <SettlementCompleteModal tx={active} onClose={() => setActive(null)} onDone={() => { setActive(null); reload(); }} />}
+    </Card>
+  );
+};
+
+// Settlement Requests is a Supervisor-only page (App.tsx gates access): the Supervisor creates
+// settlement requests and views their own submitted requests + status. On demo, agent-assigned
+// settlements are completed by the Supervisor here (UTR + proof, no Admin); on Production they go
+// straight to the Admin (Supervisor → Admin → Completed).
+export const SettlementManagement: React.FC<{ user: User }> = ({ user }) => (
+  <div>
+    <AgentSettlementCompletionQueue user={user} />
+    <ManagementPage user={user} title="Settlement Requests" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm}/>
+  </div>
+);
 
 // ─── Balance Page ─────────────────────────────────────────────────────────────
 export const BalancePage: React.FC<{ user: User }> = ({ user }) => {

@@ -484,6 +484,8 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "managerName": t.manager_name,
         "managerActionAt": (t.manager_action_at.isoformat() + "Z") if t.manager_action_at else None,
         "adminActionAt": (t.admin_action_at.isoformat() + "Z") if t.admin_action_at else None,
+        # Agent Management (demo): which Non-EPS agent a request is routed through (NULL in prod).
+        "assignedAgentId": t.assigned_agent_id,
         "remarksHistory": (json.loads(t.remarks_history) if t.remarks_history else []),
     }
 
