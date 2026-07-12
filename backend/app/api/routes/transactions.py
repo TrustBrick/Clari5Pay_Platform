@@ -1800,6 +1800,14 @@ _REVIEW_CONFIG = {
 }
 
 
+def _deposit_finalized_at_supervisor(tx: Transaction) -> bool:
+    """An agent-assigned deposit skips the Admin's final approval: the Supervisor's approval
+    completes it outright (→ DEPOSITED). This is only ever true on the demo stack, where a
+    Non-EPS agent can be assigned (the agent routes are demo-gated → 404 in prod), so Production
+    keeps the existing Supervisor→Admin flow untouched."""
+    return tx.type.value.startswith("DEPOSIT") and tx.assigned_agent_id is not None
+
+
 async def _reviewer_action(
     db: AsyncSession, request: Request, tx_id: str, reviewer: User,
     role: str, decision: str, remark: str,
@@ -1820,16 +1828,33 @@ async def _reviewer_action(
 
     if decision == "approve":
         action = "APPROVED"
-        tx.status = TxStatus.SLIP_SUBMITTED        # forwarded to Admin for final approval
-        _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
-        await db.flush()
-        await _notify_admin(db, tx, f"{tx.ref}: approved by {cfg['label']} {reviewer.name} — awaiting your final approval", "✅")
-        await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and forwarded to Admin for final approval", "✅")
-        # Telegram (demo, next-step only): reviewer approved → notify the Admin for final action.
-        if role == "SUPERVISOR":
-            await tgn.notify(db, tx, "ADMIN", "supervisor_approved", actor=reviewer.name)
+        if role == "SUPERVISOR" and _deposit_finalized_at_supervisor(tx):
+            # Agent-assigned deposit: the Supervisor's approval is final — complete it now (no Admin
+            # step), running the same finalisation the Admin's Mark-Deposited (/done) would: credit
+            # tracking, user "Deposit Successful" notification, remark + audit. Attributed to the
+            # Supervisor. Only reachable on demo (agent assignment is demo-gated).
+            tx.status = TxStatus.DEPOSITED
+            tx.processed_by = reviewer.name
+            tx.approved_by = tx.approved_by or reviewer.name
+            tx.admin_action_at = datetime.utcnow()
+            _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
+            await db.flush()
+            await _track_account_credit(db, tx, reviewer, request)
+            await notify_tx(db, tx, f"{tx.ref}: approved and deposited successfully", "✓")
+            await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and deposited successfully", "✓")
+            # Telegram (demo, next-step only): final approval → notify ONLY the requesting user.
+            await tgn.notify(db, tx, "USER", "deposit_done")
         else:
-            await tgn.notify(db, tx, "ADMIN", "manager_verified", actor=reviewer.name)
+            tx.status = TxStatus.SLIP_SUBMITTED        # forwarded to Admin for final approval
+            _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
+            await db.flush()
+            await _notify_admin(db, tx, f"{tx.ref}: approved by {cfg['label']} {reviewer.name} — awaiting your final approval", "✅")
+            await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and forwarded to Admin for final approval", "✅")
+            # Telegram (demo, next-step only): reviewer approved → notify the Admin for final action.
+            if role == "SUPERVISOR":
+                await tgn.notify(db, tx, "ADMIN", "supervisor_approved", actor=reviewer.name)
+            else:
+                await tgn.notify(db, tx, "ADMIN", "manager_verified", actor=reviewer.name)
     elif decision == "reject":
         action = "REJECTED"
         tx.status = TxStatus.REJECTED
