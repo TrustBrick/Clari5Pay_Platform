@@ -1800,12 +1800,14 @@ _REVIEW_CONFIG = {
 }
 
 
-def _deposit_finalized_at_supervisor(tx: Transaction) -> bool:
-    """An agent-assigned deposit skips the Admin's final approval: the Supervisor's approval
-    completes it outright (→ DEPOSITED). This is only ever true on the demo stack, where a
-    Non-EPS agent can be assigned (the agent routes are demo-gated → 404 in prod), so Production
-    keeps the existing Supervisor→Admin flow untouched."""
-    return tx.type.value.startswith("DEPOSIT") and tx.assigned_agent_id is not None
+def _reviewer_finalizes_agent_tx(tx: Transaction) -> bool:
+    """An agent-assigned Deposit or Withdrawal skips the Admin's final approval: the reviewer's
+    approval (Supervisor for deposits, Manager for withdrawals) completes it outright — deposit →
+    DEPOSITED, withdrawal → COMPLETED. Only ever true on the demo stack, where a Non-EPS agent can
+    be assigned (agent routes are demo-gated → 404 in prod), so Production keeps the existing
+    reviewer→Admin flow untouched. Settlements are excluded (they have no reviewer gate — they go
+    straight to the Admin, whose completion supplies the mandatory UTR + settlement proof)."""
+    return tx.assigned_agent_id is not None and tx.type.value.startswith(("DEPOSIT", "WITHDRAWAL"))
 
 
 async def _reviewer_action(
@@ -1828,22 +1830,25 @@ async def _reviewer_action(
 
     if decision == "approve":
         action = "APPROVED"
-        if role == "SUPERVISOR" and _deposit_finalized_at_supervisor(tx):
-            # Agent-assigned deposit: the Supervisor's approval is final — complete it now (no Admin
-            # step), running the same finalisation the Admin's Mark-Deposited (/done) would: credit
-            # tracking, user "Deposit Successful" notification, remark + audit. Attributed to the
-            # Supervisor. Only reachable on demo (agent assignment is demo-gated).
-            tx.status = TxStatus.DEPOSITED
+        if _reviewer_finalizes_agent_tx(tx):
+            # Agent-assigned Deposit/Withdrawal: the reviewer's approval is final — complete it now
+            # (no Admin step), running the same finalisation the Admin's /done would (deposit credit
+            # tracking, user "successful" notification, remark + audit), attributed to the reviewer.
+            # Deposit → DEPOSITED, Withdrawal → COMPLETED. Only reachable on demo (agent-gated).
+            is_dep = tx.type.value.startswith("DEPOSIT")
+            tx.status = TxStatus.DEPOSITED if is_dep else TxStatus.COMPLETED
             tx.processed_by = reviewer.name
             tx.approved_by = tx.approved_by or reviewer.name
             tx.admin_action_at = datetime.utcnow()
             _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
             await db.flush()
-            await _track_account_credit(db, tx, reviewer, request)
-            await notify_tx(db, tx, f"{tx.ref}: approved and deposited successfully", "✓")
-            await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and deposited successfully", "✓")
+            if is_dep:
+                await _track_account_credit(db, tx, reviewer, request)
+            label = "deposited" if is_dep else "completed"
+            await notify_tx(db, tx, f"{tx.ref}: approved and {label} successfully", "✓")
+            await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and {label} successfully", "✓")
             # Telegram (demo, next-step only): final approval → notify ONLY the requesting user.
-            await tgn.notify(db, tx, "USER", "deposit_done")
+            await tgn.notify(db, tx, "USER", "deposit_done" if is_dep else "withdrawal_done")
         else:
             tx.status = TxStatus.SLIP_SUBMITTED        # forwarded to Admin for final approval
             _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
