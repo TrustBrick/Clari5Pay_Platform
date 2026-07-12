@@ -233,6 +233,14 @@ class RemarkRequest(BaseModel):
     remark: str
 
 
+class SettlementSupervisorComplete(BaseModel):
+    """Supervisor completion of an agent-assigned settlement (demo): mandatory remark + UTR +
+    settlement proof (image/PDF) — the same evidence the Admin supplies at /done."""
+    remark: str
+    utr: str
+    proof: str   # base64 data-URL, image or PDF
+
+
 class BankAccountCreate(BaseModel):
     accountHolder: str
     accountNumber: str

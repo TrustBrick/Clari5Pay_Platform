@@ -13,6 +13,7 @@ from app.core.deps import (
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
     AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest, RemarkRequest,
+    SettlementSupervisorComplete,
 )
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
@@ -1908,6 +1909,52 @@ async def supervisor_resubmit(tx_id: str, data: RemarkRequest, request: Request,
                               db: AsyncSession = Depends(get_db),
                               reviewer: User = Depends(get_current_supervisor)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "resubmit", data.remark)
+
+
+@router.post("/{tx_id}/supervisor/settle")
+async def supervisor_settle_settlement(
+    tx_id: str,
+    data: SettlementSupervisorComplete,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    reviewer: User = Depends(get_current_supervisor),
+):
+    """Supervisor approval step for an AGENT-ASSIGNED settlement — the agent handles the payout, so
+    no Admin final approval is needed. The Supervisor supplies the mandatory UTR + settlement proof
+    (image/PDF), exactly like the Admin's completion, and it → COMPLETED. Settlements WITHOUT an
+    agent are unaffected (still completed by the Admin via /done). Business-scoped; only reachable
+    on demo (agent assignment is demo-gated → 404 in prod for the assign routes)."""
+    remark = (data.remark or "").strip()
+    if not remark:
+        raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
+    tx = await _get_business_tx(tx_id, db, reviewer)
+    if not tx.type.value.startswith("SETTLEMENT"):
+        raise HTTPException(status_code=400, detail="This action applies to settlements only.")
+    if tx.assigned_agent_id is None:
+        raise HTTPException(status_code=400, detail="Only an agent-assigned settlement can be completed by a Supervisor; others require Admin approval.")
+    if tx.status != TxStatus.SLIP_SUBMITTED:
+        raise HTTPException(status_code=400, detail="This settlement is not awaiting completion.")
+    if not (data.utr or "").strip():
+        raise HTTPException(status_code=400, detail="UTR Number is required to complete a settlement.")
+    if not data.proof:
+        raise HTTPException(status_code=400, detail="Settlement proof (image or PDF) is required to complete a settlement.")
+    tx.admin_proof = validate_upload(data.proof, allowed=IMAGE_PDF_TYPES, label="settlement proof")
+    tx.admin_utr = data.utr.strip()
+    tx.status = TxStatus.COMPLETED
+    tx.processed_by = reviewer.name
+    tx.approved_by = tx.approved_by or reviewer.name
+    tx.admin_action_at = datetime.utcnow()
+    _append_remark(tx, role="SUPERVISOR", user=reviewer.name, username=reviewer.username, action="APPROVED", remark=remark)
+    await db.flush()
+    await notify_tx(db, tx, f"{tx.ref}: settlement approved and completed successfully", "✓")
+    await _notify_merchant(db, tx, f"{tx.ref}: settlement approved and completed by Supervisor {reviewer.name}", "✓")
+    # Telegram (demo, next-step only): completion → notify ONLY the requesting user.
+    await tgn.notify(db, tx, "USER", "settlement_done")
+    await log_event(db, "SUPERVISOR_APPROVED", f"{tx.ref}: settlement completed by Supervisor {reviewer.name} — {remark}", actor=reviewer)
+    await record_audit(db, "SUPERVISOR_APPROVED", actor=reviewer, entity_type=tx.type.value,
+                       entity_id=tx.ref, new="COMPLETED", reason=remark, ip=_client_ip(request))
+    await db.refresh(tx)
+    return _t(tx)
 
 
 @router.post("/{tx_id}/manager/approve")
