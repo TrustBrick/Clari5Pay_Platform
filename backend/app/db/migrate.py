@@ -115,6 +115,8 @@ _NEW_COLUMNS = [
     ("support_messages", "attachment_size", "INTEGER"),
     # KYC OCR: store the document type verified (passport/pan_card/aadhaar_card/…).
     ("kyc_verification_history", "document_type", "VARCHAR(32)"),
+    # KYC: how the verification was performed (ID Number / Image Upload / DigiLocker).
+    ("kyc_verification_history", "verification_method", "VARCHAR(16)"),
     # Account Management: recorded Highest / Lowest single Deposit credited to the account.
     ("account_master", "highest_credit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
     ("account_master", "lowest_credit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),

@@ -38,6 +38,7 @@ export interface KycHistoryItem {
   membershipId?: string | null;
   memberName?: string | null;
   verificationType: 'AADHAAR' | 'PAN' | 'PASSPORT' | 'OCR' | string;
+  verificationMethod?: string | null;   // "ID Number" | "Image Upload" | "DigiLocker"
   documentType?: string | null;     // OCR doc_type (passport / pan_card / …)
   referenceId?: string | null;
   transactionId?: string | null;
@@ -131,11 +132,21 @@ export const kycAPI = {
   getAadhaarStatus: async (historyId: number): Promise<AadhaarStatusResult> =>
     (await api.post<AadhaarStatusResult>('/api/kyc/aadhaar/status', { historyId })).data,
 
-  verifyPanMembership: async (membershipId: string, pan: string): Promise<PanVerifyResult> =>
-    (await api.post<PanVerifyResult>('/api/kyc/pan/verify-membership', { membershipId, pan })).data,
+  // PAN — verify by ID Number (pan) OR by uploaded card image (base64 data URL). The backend
+  // derives source_type ("id" / "base64") from which field is supplied.
+  verifyPanMembership: async (membershipId: string, opts: { pan?: string; image?: string }): Promise<PanVerifyResult> =>
+    (await api.post<PanVerifyResult>('/api/kyc/pan/verify-membership', { membershipId, ...opts })).data,
 
-  verifyPassportMembership: async (membershipId: string, passportNumber: string, dateOfBirth?: string): Promise<PassportVerifyResult> =>
-    (await api.post<PassportVerifyResult>('/api/kyc/passport/verify-membership', { membershipId, passportNumber, dateOfBirth })).data,
+  // Passport — verify by File Number (+ optional dob) OR by front+back card images (base64).
+  verifyPassportMembership: async (
+    membershipId: string,
+    opts: { passportNumber?: string; dateOfBirth?: string; frontImage?: string; backImage?: string },
+  ): Promise<PassportVerifyResult> =>
+    (await api.post<PassportVerifyResult>('/api/kyc/passport/verify-membership', { membershipId, ...opts })).data,
+
+  // Aadhaar — verify from an uploaded card image (General-Document OCR, doc_type=aadhaar_card).
+  verifyAadhaarImage: async (membershipId: string, image: string): Promise<OcrVerifyResult> =>
+    (await api.post<OcrVerifyResult>('/api/kyc/aadhaar/verify-image', { membershipId, image })).data,
 
   verifyOcrMembership: async (
     membershipId: string, documentType: string, fileName: string, fileData: string, verification: boolean,

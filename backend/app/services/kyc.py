@@ -36,13 +36,20 @@ def _melento_headers() -> dict:
     }
 
 
+def _mask_one(src: str) -> str:
+    return (src[:4] + "…") if len(src) <= 32 else f"<{len(src)} chars>"
+
+
 def _mask_payload(payload: dict) -> dict:
-    """Redact the sensitive source (Aadhaar/PAN/passport number or base64 document) for logs —
-    credentials (api_id/api_key) live in headers and are never logged."""
+    """Redact the sensitive source (Aadhaar/PAN/passport number or base64 document(s)) for logs —
+    credentials (api_id/api_key) live in headers and are never logged. ``source`` may be a string
+    (id / single base64) or a list of base64 images (passport front/back)."""
     out = dict(payload)
     src = out.get("source")
     if isinstance(src, str) and src:
-        out["source"] = (src[:4] + "…") if len(src) <= 32 else f"<{len(src)} chars>"
+        out["source"] = _mask_one(src)
+    elif isinstance(src, list):
+        out["source"] = [_mask_one(s) if isinstance(s, str) else s for s in src]
     return out
 
 
@@ -96,21 +103,21 @@ async def melento_get_aadhaar_details(reference_id: str, transaction_id: str | N
     )
 
 
-async def melento_pan_verify(reference_id: str, pan: str) -> tuple[dict, int]:
-    """Verify a PAN number (source_type 'id')."""
+async def melento_pan_verify(reference_id: str, source: str, source_type: str = "id") -> tuple[dict, int]:
+    """Verify a PAN. ``source_type`` 'id' → ``source`` is the PAN number; 'base64' → ``source`` is
+    a base64 PAN-card image. Same endpoint/headers for both methods."""
     return await _melento_post(
-        "/api/pan/panVerification",
-        {"reference_id": reference_id, "source_type": "id", "source": pan},
+        settings.PAN_VERIFICATION_URL,
+        {"reference_id": reference_id, "source_type": source_type, "source": source},
     )
 
 
-async def melento_passport_verify(reference_id: str, passport: str, dob: str | None) -> tuple[dict, int]:
-    """Verify a passport number (source_type 'id'). ``dob`` is YYYY-MM-DD when supplied.
-
-    The API also supports source_type 'image' (base64) — kept ready for a future upload flow by
-    routing through the same seam; only the request builder here would change.
-    """
-    payload = {"reference_id": reference_id, "source_type": "id", "source": passport}
+async def melento_passport_verify(
+    reference_id: str, source: str | list[str], dob: str | None = None, source_type: str = "id"
+) -> tuple[dict, int]:
+    """Verify a passport. ``source_type`` 'id' → ``source`` is the Passport File Number (``dob``
+    YYYY-MM-DD optional); 'base64' → ``source`` is ``[front_b64, back_b64]``. Same endpoint/headers."""
+    payload: dict = {"reference_id": reference_id, "source_type": source_type, "source": source}
     if dob:
         payload["dob"] = dob
     return await _melento_post(settings.PASSPORT_VERIFICATION_URL, payload)

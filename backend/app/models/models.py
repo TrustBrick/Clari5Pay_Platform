@@ -513,6 +513,8 @@ class KycVerificationHistory(Base):
     membership_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
     member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     verification_type: Mapped[str] = mapped_column(String(16), nullable=False)  # AADHAAR | PAN | PASSPORT | OCR
+    # How the verification was performed: "ID Number" | "Image Upload" | "DigiLocker".
+    verification_method: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     reference_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
     document_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # OCR doc_type (passport/pan_card/…)
     transaction_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

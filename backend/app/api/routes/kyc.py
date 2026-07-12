@@ -34,6 +34,13 @@ PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 PASSPORT_RE = re.compile(r"^[A-Z0-9]+$")
 OCR_ALLOWED_TYPES = {"jpg", "jpeg", "png", "pdf"}
 OCR_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+# Image-upload verification (PAN / Passport / Aadhaar) accepts only PNG / JPG / JPEG.
+IMAGE_DATA_URL_RE = re.compile(r"^data:image/(png|jpe?g);base64,", re.IGNORECASE)
+
+# Verification-method labels stored on each history row (spec: "ID Number" / "Image Upload").
+METHOD_ID = "ID Number"
+METHOD_IMAGE = "Image Upload"
+METHOD_DIGILOCKER = "DigiLocker"
 
 
 class AadhaarRequest(BaseModel):
@@ -112,6 +119,7 @@ def _history_summary(row: KycVerificationHistory) -> dict:
         "membershipId": row.membership_id,
         "memberName": row.member_name,
         "verificationType": row.verification_type,
+        "verificationMethod": row.verification_method,
         "documentType": row.document_type,
         "referenceId": row.reference_id,
         "transactionId": row.transaction_id,
@@ -119,6 +127,17 @@ def _history_summary(row: KycVerificationHistory) -> dict:
         "createdBy": row.created_by,
         "createdAt": (row.created_at.isoformat() + "Z") if row.created_at else None,
     }
+
+
+def _image_b64(data_url: str, field: str = "image") -> str:
+    """Validate an uploaded image is PNG/JPG/JPEG and within the size limit, then return the raw
+    base64 (data-URL prefix stripped) that Melento expects as ``source``."""
+    if not data_url or not IMAGE_DATA_URL_RE.match(data_url):
+        raise HTTPException(status_code=400, detail=f"Unsupported {field} — allowed types: PNG, JPG, JPEG.")
+    b64 = data_url.split(",", 1)[-1]
+    if (len(b64) * 3) // 4 > OCR_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Image too large — maximum size is 10 MB.")
+    return b64
 
 
 async def _require_member_name(db: AsyncSession, user: User, membership_id: str) -> tuple[str, str]:
@@ -142,13 +161,21 @@ class AadhaarStatusRequest(BaseModel):
 
 class PanVerifyRequest(BaseModel):
     membershipId: str
-    pan: str
+    pan: str | None = None          # ID Number method
+    image: str | None = None        # Image Upload method (base64 data URL of the PAN card)
 
 
 class PassportVerifyRequest(BaseModel):
     membershipId: str
-    passportNumber: str
+    passportNumber: str | None = None   # ID Number (File Number) method
     dateOfBirth: str | None = None
+    frontImage: str | None = None       # Image Upload method — front page (base64 data URL)
+    backImage: str | None = None        # Image Upload method — back page (base64 data URL)
+
+
+class AadhaarImageRequest(BaseModel):
+    membershipId: str
+    image: str                          # base64 data URL of the Aadhaar card
 
 
 class OcrVerifyRequest(BaseModel):
@@ -198,6 +225,7 @@ async def aadhaar_generate_link(
         membership_id=mid,
         member_name=member_name,
         verification_type="AADHAAR",
+        verification_method=METHOD_DIGILOCKER,
         reference_id=reference_id,
         transaction_id=transaction_id,
         verification_status="PENDING" if ok else "FAILED",
@@ -274,21 +302,76 @@ async def aadhaar_status(
     return {"pending": False, "status": "FAILED", "error": row.error_message, "details": data}
 
 
+@router.post("/aadhaar/verify-image")
+async def aadhaar_verify_image(
+    body: AadhaarImageRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_kyc_user),
+):
+    """Verify Aadhaar from an uploaded card image via the General-Document (OCR) API — an
+    alternative to the DigiLocker flow. Always sends verification=true and doc_type=aadhaar_card
+    (fixed, not user-editable). Recorded as an AADHAAR verification (Image Upload method)."""
+    mid, member_name = await _require_member_name(db, user, body.membershipId)
+    b64 = _image_b64(body.image, "Aadhaar card image")
+
+    reference_id = _gen_reference("AADHAAR")
+    request_payload = {"reference_id": reference_id, "source": b64, "verification": True, "doc_type": "aadhaar_card"}
+    data, http_status = await kyc_service.melento_ocr_verify(reference_id, b64, "aadhaar_card", True)
+
+    status_val = str(data.get("status") or "").lower()
+    ok = status_val == "success"
+    error_message = None if ok else (data.get("message") or data.get("error") or "Aadhaar verification failed.")
+
+    row = KycVerificationHistory(
+        membership_id=mid,
+        member_name=member_name,
+        verification_type="AADHAAR",
+        verification_method=METHOD_IMAGE,
+        document_type="aadhaar_card",
+        reference_id=data.get("reference_id") or reference_id,
+        transaction_id=data.get("transaction_id"),
+        verification_status="SUCCESS" if ok else "FAILED",
+        request_json=json.dumps(request_payload),
+        response_json=json.dumps(data),
+        error_message=error_message,
+        api_status=str(data.get("status") or http_status),
+        created_by=_actor_name(user),
+        merchant_business=user.name,
+    )
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+
+    if not ok:
+        # Persist the FAILED record before raising (get_db rolls back on exception).
+        await db.commit()
+        raise HTTPException(status_code=502, detail=error_message)
+
+    return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")), "raw": data}
+
+
 @router.post("/pan/verify-membership")
 async def pan_verify_membership(
     body: PanVerifyRequest,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_kyc_user),
 ):
-    """Verify a PAN for a member and record the request/response."""
+    """Verify a PAN for a member (by PAN number OR uploaded card image) and record it."""
     mid, member_name = await _require_member_name(db, user, body.membershipId)
-    pan = (body.pan or "").upper().strip()
-    if not PAN_RE.match(pan):
-        raise HTTPException(status_code=400, detail="Invalid PAN Number — expected format ABCDE1234F.")
 
     reference_id = _gen_reference("PAN")
-    request_payload = {"reference_id": reference_id, "source_type": "id", "source": pan}
-    data, http_status = await kyc_service.melento_pan_verify(reference_id, pan)
+    if body.image:
+        # Image Upload → source_type "base64", source is the raw base64 PAN-card image.
+        source = _image_b64(body.image, "PAN card image")
+        method, source_type = METHOD_IMAGE, "base64"
+    else:
+        source = (body.pan or "").upper().strip()
+        if not PAN_RE.match(source):
+            raise HTTPException(status_code=400, detail="Invalid PAN Number — expected format ABCDE1234F.")
+        method, source_type = METHOD_ID, "id"
+
+    request_payload = {"reference_id": reference_id, "source_type": source_type, "source": source}
+    data, http_status = await kyc_service.melento_pan_verify(reference_id, source, source_type)
 
     status_val = str(data.get("status") or "").lower()
     result = data.get("result") if isinstance(data.get("result"), dict) else {}
@@ -300,6 +383,7 @@ async def pan_verify_membership(
         membership_id=mid,
         member_name=member_name,
         verification_type="PAN",
+        verification_method=method,
         reference_id=data.get("reference_id") or reference_id,
         transaction_id=data.get("transaction_id"),
         verification_status="SUCCESS" if ok else "FAILED",
@@ -328,18 +412,30 @@ async def passport_verify_membership(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_kyc_user),
 ):
-    """Verify a passport for a member and record the request/response (source_type 'id')."""
+    """Verify a passport for a member (by File Number OR front+back card images) and record it."""
     mid, member_name = await _require_member_name(db, user, body.membershipId)
-    number = (body.passportNumber or "").upper().strip()
-    if not PASSPORT_RE.match(number):
-        raise HTTPException(status_code=400, detail="Passport File Number is required and must be alphanumeric.")
-    dob = (body.dateOfBirth or "").strip() or None
 
     reference_id = _gen_reference("PASSPORT")
-    request_payload = {"reference_id": reference_id, "source_type": "id", "source": number}
-    if dob:
-        request_payload["dob"] = dob
-    data, http_status = await kyc_service.melento_passport_verify(reference_id, number, dob)
+    dob = (body.dateOfBirth or "").strip() or None
+    if body.frontImage or body.backImage:
+        # Image Upload → both pages are mandatory; source is [front_b64, back_b64].
+        if not (body.frontImage and body.backImage):
+            raise HTTPException(status_code=400, detail="Both the Front and Back passport images are required.")
+        front = _image_b64(body.frontImage, "passport front image")
+        back = _image_b64(body.backImage, "passport back image")
+        source: str | list[str] = [front, back]
+        method, source_type, dob = METHOD_IMAGE, "base64", None
+        request_payload = {"reference_id": reference_id, "source_type": source_type, "source": source}
+    else:
+        source = (body.passportNumber or "").upper().strip()
+        if not PASSPORT_RE.match(source):
+            raise HTTPException(status_code=400, detail="Passport File Number is required and must be alphanumeric.")
+        method, source_type = METHOD_ID, "id"
+        request_payload = {"reference_id": reference_id, "source_type": source_type, "source": source}
+        if dob:
+            request_payload["dob"] = dob
+
+    data, http_status = await kyc_service.melento_passport_verify(reference_id, source, dob, source_type)
 
     status_val = str(data.get("status") or "").lower()
     result = data.get("result") if isinstance(data.get("result"), dict) else {}
@@ -351,6 +447,7 @@ async def passport_verify_membership(
         membership_id=mid,
         member_name=member_name,
         verification_type="PASSPORT",
+        verification_method=method,
         reference_id=data.get("reference_id") or reference_id,
         transaction_id=data.get("transaction_id"),
         verification_status="SUCCESS" if ok else "FAILED",
@@ -410,6 +507,7 @@ async def ocr_verify_membership(
         membership_id=mid,
         member_name=member_name,
         verification_type="OCR",
+        verification_method=METHOD_IMAGE,
         document_type=doc_type,
         reference_id=data.get("reference_id") or reference_id,
         transaction_id=data.get("transaction_id"),

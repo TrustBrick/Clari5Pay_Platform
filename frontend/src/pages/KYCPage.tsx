@@ -3,6 +3,7 @@ import type { User } from '../types';
 import { T } from '../utils/theme';
 import { Card, Btn, Input, Sel, Modal } from '../components/UI';
 import { useToast } from '../context/ToastContext';
+import { fileToDataUrl } from '../utils/helpers';
 import {
   kycAPI, KYC_VALIDATION, OCR_ACCEPT, OCR_MAX_BYTES, OCR_DOC_TYPES, kycErrorMessage,
   type KycHistoryItem, type KycHistoryDetail, type AadhaarDetails,
@@ -153,6 +154,69 @@ const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({
   </>
 );
 
+// ─── Verify-By toggle + reusable image picker (shared by PAN / Passport / Aadhaar) ──
+const IMG_ACCEPT = '.png,.jpg,.jpeg';
+const IMG_EXTS = ['png', 'jpg', 'jpeg'];
+
+// Radio-style "Verify By" selector — only one option active at a time.
+const VerifyBy: React.FC<{ value: string; onChange: (v: string) => void; options: Array<{ value: string; label: string }> }> = ({ value, onChange, options }) => (
+  <div style={{ marginBottom: 18 }}>
+    <div style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Verify By</div>
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      {options.map((o) => {
+        const active = value === o.value;
+        return (
+          <button key={o.value} type="button" onClick={() => onChange(o.value)}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 16px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 700,
+              border: `1.5px solid ${active ? T.blue : T.border}`, background: active ? `${T.blue}12` : T.surface, color: active ? T.blue : T.textMain }}>
+            <span style={{ width: 15, height: 15, borderRadius: '50%', border: `2px solid ${active ? T.blue : T.textMuted}`, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              {active && <span style={{ width: 7, height: 7, borderRadius: '50%', background: T.blue }} />}
+            </span>
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  </div>
+);
+
+// Single image picker — PNG/JPG/JPEG only, with preview + remove/re-upload. Reuses the shared
+// fileToDataUrl (utils/helpers) so the Base64 conversion logic is never duplicated.
+const useImagePick = () => {
+  const { showToast } = useToast();
+  const [file, setFile] = useState<File | null>(null);
+  const [dataUrl, setDataUrl] = useState('');
+  const pick = async (f: File | null) => {
+    setFile(null); setDataUrl('');
+    if (!f) return;
+    const ext = f.name.split('.').pop()?.toLowerCase() || '';
+    if (!IMG_EXTS.includes(ext)) { showToast('Unsupported image — allowed: PNG, JPG, JPEG.', 'error'); return; }
+    if (f.size > OCR_MAX_BYTES) { showToast('Image too large — maximum size is 10 MB.', 'error'); return; }
+    try { setDataUrl(await fileToDataUrl(f)); setFile(f); }
+    catch { showToast('Could not read the image — please try again.', 'error'); }
+  };
+  const clear = () => { setFile(null); setDataUrl(''); };
+  return { file, dataUrl, pick, clear };
+};
+
+const ImageField: React.FC<{ label: string; pick: ReturnType<typeof useImagePick> }> = ({ label, pick }) => (
+  <div style={{ marginBottom: 16 }}>
+    <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</label>
+    {!pick.dataUrl ? (
+      <>
+        <input type="file" accept={IMG_ACCEPT} onChange={(e) => pick.pick(e.target.files?.[0] || null)}
+          style={{ width: '100%', padding: '10px 14px', border: `1.5px dashed ${T.border}`, borderRadius: 10, fontSize: 13, color: T.textMain, background: T.canvas, cursor: 'pointer', fontFamily: 'inherit', boxSizing: 'border-box' }} />
+        <p style={{ fontSize: 11, color: T.textMuted, margin: '4px 0 0' }}>Supported: PNG, JPG, JPEG · Max 10 MB</p>
+      </>
+    ) : (
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
+        <img src={pick.dataUrl} alt={label} style={{ maxWidth: 200, maxHeight: 150, borderRadius: 10, border: `1px solid ${T.border}` }} />
+        <Btn size="sm" variant="ghost" onClick={pick.clear}>✕ Remove</Btn>
+      </div>
+    )}
+  </div>
+);
+
 interface FlowProps { onDone: () => void; onBack: () => void; }
 
 // ─── Aadhaar (membership → generate DigiLocker link → poll status) ─────────────
@@ -165,8 +229,28 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const [referenceId, setReferenceId] = useState('');
   const [historyId, setHistoryId] = useState<number | null>(null);
   const [status, setStatus] = useState<string>('');
+  // Aadhaar image (OCR) alternative — kept alongside DigiLocker (spec: do not remove DigiLocker).
+  const img = useImagePick();
+  const [verifyingImg, setVerifyingImg] = useState(false);
+  const [imgResult, setImgResult] = useState<{ verified: boolean } | null>(null);
 
   const canGenerate = Boolean(m.memberName) && !m.error && !generating;
+  const canVerifyImg = Boolean(m.memberName) && !m.error && Boolean(img.dataUrl) && !verifyingImg;
+
+  const verifyImage = async () => {
+    if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
+    if (!img.dataUrl) { showToast('Please upload the Aadhaar card image.', 'error'); return; }
+    setVerifyingImg(true); setImgResult(null);
+    try {
+      const r = await kycAPI.verifyAadhaarImage(m.memberId.trim(), img.dataUrl);
+      setImgResult({ verified: r.verified });
+      showToast(r.verified ? 'Aadhaar verified successfully.' : 'Aadhaar verification completed.', 'success');
+      onDone();
+    } catch (e) {
+      showToast(kycErrorMessage(e, 'Aadhaar verification failed.'), 'error');
+      onDone();   // a FAILED attempt is still persisted — refresh so it appears in history
+    } finally { setVerifyingImg(false); }
+  };
 
   const generate = async () => {
     if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
@@ -232,27 +316,49 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
           </div>
         </Card>
       )}
+
+      {/* OR — verify Aadhaar from an uploaded card image instead of DigiLocker. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, margin: '24px 0 18px' }}>
+        <div style={{ flex: 1, height: 1, background: T.border }} />
+        <span style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, letterSpacing: '0.08em' }}>OR</span>
+        <div style={{ flex: 1, height: 1, background: T.border }} />
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 800, color: T.textMain, marginBottom: 12 }}>Upload Aadhaar Image</div>
+      <ImageField label="Upload Aadhaar Card" pick={img} />
+      <Btn onClick={verifyImage} disabled={!canVerifyImg}>{verifyingImg ? <><Spinner /> Verifying…</> : 'Verify Aadhaar'}</Btn>
+      {imgResult && (
+        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Verified</span>
+          <span style={{ fontSize: 12, fontWeight: 800, padding: '3px 12px', borderRadius: 20, color: imgResult.verified ? T.success : T.danger, background: imgResult.verified ? T.successBg : T.dangerBg }}>{imgResult.verified ? 'YES' : 'NO'}</span>
+          <span style={{ fontSize: 12, color: T.textMuted }}>See the Verification History for full details.</span>
+        </div>
+      )}
     </VerifyShell>
   );
 };
 
-// ─── PAN (membership → verify PAN) ─────────────────────────────────────────────
+// ─── PAN (membership → verify PAN by number or card image) ─────────────────────
 const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const { showToast } = useToast();
   const m = useMemberLookup();
+  const [mode, setMode] = useState<'id' | 'image'>('id');
   const [pan, setPan] = useState('');
+  const img = useImagePick();
   const [verifying, setVerifying] = useState(false);
   const [result, setResult] = useState<{ validPan: boolean } | null>(null);
 
   const validPanFmt = KYC_VALIDATION.pan(pan);
-  const canVerify = Boolean(m.memberName) && !m.error && validPanFmt && !verifying;
+  const inputReady = mode === 'id' ? validPanFmt : Boolean(img.dataUrl);
+  const canVerify = Boolean(m.memberName) && !m.error && inputReady && !verifying;
 
   const verify = async () => {
     if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
-    if (!validPanFmt) { showToast('Invalid PAN Number — expected format ABCDE1234F.', 'error'); return; }
+    if (mode === 'id' && !validPanFmt) { showToast('Invalid PAN Number — expected format ABCDE1234F.', 'error'); return; }
+    if (mode === 'image' && !img.dataUrl) { showToast('Please upload the PAN card image.', 'error'); return; }
     setVerifying(true); setResult(null);
     try {
-      const r = await kycAPI.verifyPanMembership(m.memberId.trim(), pan.toUpperCase().trim());
+      const r = await kycAPI.verifyPanMembership(m.memberId.trim(),
+        mode === 'id' ? { pan: pan.toUpperCase().trim() } : { image: img.dataUrl });
       setResult({ validPan: r.validPan });
       showToast(r.validPan ? 'PAN verified successfully.' : 'PAN verification completed.', 'success');
       onDone();
@@ -265,7 +371,11 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   return (
     <VerifyShell icon="💳" view="pan" title="PAN Verification" onBack={onBack}>
       <MembershipFields m={m} />
-      <Input label="PAN Number" value={pan} onChange={(e) => setPan(e.target.value.toUpperCase())} placeholder="ABCDE1234F" hint="10-character PAN" />
+      <VerifyBy value={mode} onChange={(v) => { setMode(v as 'id' | 'image'); setResult(null); }}
+        options={[{ value: 'id', label: 'ID Number' }, { value: 'image', label: 'Upload Image' }]} />
+      {mode === 'id'
+        ? <Input label="PAN Number" value={pan} onChange={(e) => setPan(e.target.value.toUpperCase())} placeholder="ABCDE1234F" hint="10-character PAN" />
+        : <ImageField label="Upload PAN Card Image" pick={img} />}
       <Btn onClick={verify} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify PAN'}</Btn>
       {result && (
         <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -282,20 +392,29 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
 const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const { showToast } = useToast();
   const m = useMemberLookup();
+  const [mode, setMode] = useState<'id' | 'image'>('id');
   const [num, setNum] = useState('');
   const [dob, setDob] = useState('');
+  const front = useImagePick();
+  const back = useImagePick();
   const [verifying, setVerifying] = useState(false);
   const [result, setResult] = useState<{ validPassport: boolean } | null>(null);
 
   const validFmt = KYC_VALIDATION.passport(num);
-  const canVerify = Boolean(m.memberName) && !m.error && validFmt && !verifying;
+  const bothImages = Boolean(front.dataUrl) && Boolean(back.dataUrl);
+  const inputReady = mode === 'id' ? validFmt : bothImages;
+  const canVerify = Boolean(m.memberName) && !m.error && inputReady && !verifying;
 
   const verify = async () => {
     if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
-    if (!validFmt) { showToast('Passport File Number is required and must be alphanumeric.', 'error'); return; }
+    if (mode === 'id' && !validFmt) { showToast('Passport File Number is required and must be alphanumeric.', 'error'); return; }
+    if (mode === 'image' && !bothImages) { showToast('Both the Front and Back passport images are required.', 'error'); return; }
     setVerifying(true); setResult(null);
     try {
-      const r = await kycAPI.verifyPassportMembership(m.memberId.trim(), num.toUpperCase().trim(), dob || undefined);
+      const r = await kycAPI.verifyPassportMembership(m.memberId.trim(),
+        mode === 'id'
+          ? { passportNumber: num.toUpperCase().trim(), dateOfBirth: dob || undefined }
+          : { frontImage: front.dataUrl, backImage: back.dataUrl });
       setResult({ validPassport: r.validPassport });
       showToast(r.validPassport ? 'Passport verified successfully.' : 'Passport verification completed.', 'success');
       onDone();
@@ -308,19 +427,30 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   return (
     <VerifyShell icon="📘" view="passport" title="Passport Verification" onBack={onBack}>
       <MembershipFields m={m} />
-      <Input
-        label="Passport File Number"
-        value={num}
-        onChange={e => setNum(e.target.value.toUpperCase())}
-        placeholder="Example: DL107624519823"
-        style={{ marginBottom: 6 }}
-      />
-      {/* Informational note: red asterisk + dull-gray guidance (do not enter the Passport Number). */}
-      <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 16px', lineHeight: 1.5 }}>
-        <span style={{ color: T.danger, fontWeight: 700 }}>*</span>{' '}
-        NOTE: Do not enter the Passport Number. Enter the Passport File Number available on the back page of the Passport.
-      </p>
-      <Input label="Date of Birth" type="date" value={dob} onChange={e => setDob(e.target.value)} hint="YYYY-MM-DD" />
+      <VerifyBy value={mode} onChange={(v) => { setMode(v as 'id' | 'image'); setResult(null); }}
+        options={[{ value: 'id', label: 'Passport File Number' }, { value: 'image', label: 'Upload Image' }]} />
+      {mode === 'id' ? (
+        <>
+          <Input
+            label="Passport File Number"
+            value={num}
+            onChange={e => setNum(e.target.value.toUpperCase())}
+            placeholder="Example: DL107624519823"
+            style={{ marginBottom: 6 }}
+          />
+          {/* Informational note: red asterisk + dull-gray guidance (do not enter the Passport Number). */}
+          <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 16px', lineHeight: 1.5 }}>
+            <span style={{ color: T.danger, fontWeight: 700 }}>*</span>{' '}
+            NOTE: Do not enter the Passport Number. Enter the Passport File Number available on the back page of the Passport.
+          </p>
+          <Input label="Date of Birth" type="date" value={dob} onChange={e => setDob(e.target.value)} hint="YYYY-MM-DD" />
+        </>
+      ) : (
+        <>
+          <ImageField label="Front of Passport" pick={front} />
+          <ImageField label="Back of Passport" pick={back} />
+        </>
+      )}
       <Btn onClick={verify} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify Passport'}</Btn>
       {result && (
         <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -609,11 +739,13 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
         const d = await kycAPI.getHistoryDetail(item.id);
         if (!alive) return;
         setDetail(d);
-        if (item.verificationType === 'AADHAAR') {
+        // Only the DigiLocker Aadhaar flow (no document_type) polls for completion; an Aadhaar
+        // *image* record (document_type = aadhaar_card) is resolved immediately, like PAN/OCR.
+        const isDigilocker = item.verificationType === 'AADHAAR' && !item.documentType;
+        if (isDigilocker) {
           if (d.status === 'SUCCESS' && d.response) {
             setAadhaar(d.response as AadhaarDetails);
           } else {
-            // Poll DigiLocker for the latest status.
             const s = await kycAPI.getAadhaarStatus(item.id);
             if (!alive) return;
             if (s.pending) setPendingMsg('Verification Under Process');
@@ -631,7 +763,8 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.id]);
 
-  const isAadhaar = item.verificationType === 'AADHAAR';
+  const isDigilocker = item.verificationType === 'AADHAAR' && !item.documentType;
+  const isAadhaarImage = item.verificationType === 'AADHAAR' && Boolean(item.documentType);
   const title = TYPE_TITLE[item.verificationType] || item.verificationType;
 
   return (
@@ -663,15 +796,16 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
 
       {!loading && err && <Banner kind="error">{err}</Banner>}
 
-      {!loading && !pendingMsg && isAadhaar && aadhaar && <AadhaarDetailsBody data={aadhaar} />}
+      {!loading && !pendingMsg && isDigilocker && aadhaar && <AadhaarDetailsBody data={aadhaar} />}
+      {!loading && !pendingMsg && isAadhaarImage && detail?.response && <OcrDetailsBody response={detail.response} />}
       {!loading && !pendingMsg && item.verificationType === 'PAN' && detail?.response && <PanDetailsBody response={detail.response} />}
       {!loading && !pendingMsg && item.verificationType === 'PASSPORT' && detail?.response && <PassportDetailsBody response={detail.response} />}
       {!loading && !pendingMsg && item.verificationType === 'OCR' && detail?.response && <OcrDetailsBody response={detail.response} />}
-      {!loading && !pendingMsg && !isAadhaar && !detail?.response && !err && (
+      {!loading && !pendingMsg && !isDigilocker && !detail?.response && !err && (
         <Banner kind="info">No response data available for this record.</Banner>
       )}
       {/* A FAILED record still shows its stored error so no information is hidden. */}
-      {!loading && !pendingMsg && !isAadhaar && detail?.response && detail?.errorMessage && (
+      {!loading && !pendingMsg && !isDigilocker && detail?.response && detail?.errorMessage && (
         <Banner kind="error">{detail.errorMessage}</Banner>
       )}
     </Modal>
@@ -689,19 +823,20 @@ const HistoryTable: React.FC<{ rows: KycHistoryItem[]; loading: boolean; onView:
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
         <thead>
           <tr style={{ background: T.canvas }}>
-            {['Membership ID', 'Member Name', 'Verification Type', 'Reference ID', 'Transaction ID', 'Status', 'Created By', 'Created Date & Time', 'Action'].map(h => (
+            {['Membership ID', 'Member Name', 'Verification Type', 'Method', 'Reference ID', 'Transaction ID', 'Status', 'Created By', 'Created Date & Time', 'Action'].map(h => (
               <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}`, whiteSpace: 'nowrap' }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {loading && <tr><td colSpan={9} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>Loading…</td></tr>}
-          {!loading && rows.length === 0 && <tr><td colSpan={9} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>No verifications yet.</td></tr>}
+          {loading && <tr><td colSpan={10} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>Loading…</td></tr>}
+          {!loading && rows.length === 0 && <tr><td colSpan={10} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>No verifications yet.</td></tr>}
           {!loading && rows.map((r, i) => (
             <tr key={r.id} style={{ background: i % 2 === 0 ? T.surface : T.canvas }}>
               <td style={{ padding: '11px 14px', fontWeight: 700, color: T.textMain, whiteSpace: 'nowrap' }}>{r.membershipId || '—'}</td>
               <td style={{ padding: '11px 14px', color: T.textMain }}>{r.memberName || '—'}</td>
               <td style={{ padding: '11px 14px', color: T.textMuted }}>{r.verificationType}</td>
+              <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{r.verificationMethod || '—'}</td>
               <td style={{ padding: '11px 14px', color: T.textMuted, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{r.referenceId || '—'}</td>
               <td style={{ padding: '11px 14px', color: T.textMuted, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{r.transactionId || '—'}</td>
               <td style={{ padding: '11px 14px' }}><StatusPill status={r.status} /></td>
