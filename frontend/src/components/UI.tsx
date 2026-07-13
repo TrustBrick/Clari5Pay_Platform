@@ -42,19 +42,19 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
   const sPay = { fontFamily: F, fontWeight: 800, fill: pay, fontSize: '52px', letterSpacing: '-1px' } as const;
   const sTag = { fontFamily: "'Segoe UI',Arial,sans-serif", fontWeight: 500, fill: tag, fontSize: '15px', letterSpacing: '0.3px' } as const;
   return (
-    <svg viewBox="0 0 320 300" width={W} height={W * 300 / 320}
+    <svg viewBox="0 0 320 262" width={W} height={W * 262 / 320}
       style={{ maxWidth: '100%', height: 'auto', display: 'block' }}
       role="img" aria-label="Clari5Pay — Secure Payments. Prevent Fraud.">
       {/* Shield, centred on top */}
       <image href="/logo-mark.png" x="97" y="2" width="126" height="126" preserveAspectRatio="xMidYMid meet" />
-      {/* Wordmark, centred below the shield */}
-      <text x="160" y="208" textAnchor="middle">
+      {/* Wordmark, centred just below the shield (tightened gap — same size, less empty space) */}
+      <text x="160" y="188" textAnchor="middle">
         <tspan style={sClari}>clari</tspan>
         <tspan style={s5}>5</tspan>
         <tspan style={sPay}>pay</tspan>
       </text>
       {/* Tagline with flanking accent dashes */}
-      <g transform="translate(160,244)">
+      <g transform="translate(160,224)">
         <line x1="-150" y1="-5" x2="-126" y2="-5" stroke="#0052cc" strokeWidth="2" strokeLinecap="round" />
         <text x="0" y="0" textAnchor="middle" style={sTag}>Secure Payments. Prevent Fraud.</text>
         <line x1="126" y1="-5" x2="150" y2="-5" stroke="#26d00c" strokeWidth="2" strokeLinecap="round" />

@@ -190,7 +190,7 @@ const LoginPage: React.FC = () => {
           <div style={{ marginBottom:48 }}><Logo size="lg" dark/></div>
           <h2 style={{ color:'#fff',fontSize:28,fontWeight:800,margin:'0 0 12px',lineHeight:1.3 }}>Enterprise Payment<br/>Infrastructure</h2>
           <p style={{ color:'rgba(255,255,255,0.55)',fontSize:15,lineHeight:1.7,marginBottom:40 }}>A unified platform for merchants, admins, and platform teams to manage payments with full audit trails and real-time risk intelligence.</p>
-          {[{icon:'🛡',t:'Bank-grade security',d:'End-to-end encrypted transactions'},{icon:'⚡',t:'Real-time processing',d:'Instant settlement and approvals'},{icon:'📊',t:'Full audit trail',d:'Every action logged and traceable'},{icon:'🤖',t:'AI-Powered Assistant',d:'Claude AI for smart payment insights'}].map(f=>(
+          {[{icon:'🛡',t:'Bank-grade security',d:'End-to-end encrypted transactions'},{icon:'⚡',t:'Real-time processing',d:'Instant settlement and approvals'},{icon:'📊',t:'Full audit trail',d:'Every action logged and traceable'},{icon:'🎧',t:'24/7 Support Team',d:'Dedicated support team available around the clock to assist users whenever needed.'}].map(f=>(
             <div key={f.t} style={{ display:'flex',gap:14,alignItems:'flex-start',marginBottom:20 }}>
               <div style={{ width:40,height:40,borderRadius:12,background:'rgba(0,82,204,0.3)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0 }}>{f.icon}</div>
               <div><p style={{ color:'#fff',fontWeight:700,margin:0,fontSize:14 }}>{f.t}</p><p style={{ color:'rgba(255,255,255,0.45)',fontSize:13,margin:0 }}>{f.d}</p></div>
