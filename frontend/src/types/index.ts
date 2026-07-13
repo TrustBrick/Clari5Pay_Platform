@@ -212,7 +212,7 @@ export interface AccountBalance {
   highestDeposit?: number;
   lowestDeposit?: number;
   highestCredit?: number;   // recorded high-water mark (stored, auto-updated on deposit approval)
-  lowestCredit?: number;
+  highestDebit?: number;    // recorded high-water mark (stored, auto-updated on a completed debit)
   totalFees?: number;
   withdrawals?: number;
   settlements?: number;

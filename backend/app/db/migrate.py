@@ -117,9 +117,11 @@ _NEW_COLUMNS = [
     ("kyc_verification_history", "document_type", "VARCHAR(32)"),
     # KYC: how the verification was performed (ID Number / Image Upload / DigiLocker).
     ("kyc_verification_history", "verification_method", "VARCHAR(16)"),
-    # Account Management: recorded Highest / Lowest single Deposit credited to the account.
+    # Account Management high-water marks: highest single Deposit credited to the account, and
+    # highest single Debit (withdrawal/settlement) processed from it. highest_debit replaces the
+    # former lowest_credit (dropped below in ensure_schema).
     ("account_master", "highest_credit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
-    ("account_master", "lowest_credit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    ("account_master", "highest_debit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -202,19 +204,41 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "UPDATE transactions SET status = 'SLIP_SUBMITTED' "
             "WHERE status::text IN ('SUPERVISOR_REVIEW', 'MANAGER_REVIEW') AND type::text LIKE 'SETTLEMENT%'"
         ))
-        # Seed each account's recorded Highest / Lowest Credit high-water marks from its existing
-        # completed deposits, so already-deployed accounts show real values immediately instead of
-        # 0. Only touches accounts still at the 0/0 default → never overwrites an admin-configured
-        # value, and is a no-op on every subsequent startup (values are non-zero by then).
+        # Seed each account's recorded Highest Credit high-water mark from its existing completed
+        # deposits, so already-deployed accounts show a real value immediately instead of 0. Only
+        # touches accounts still at the 0 default → never overwrites an admin-configured value, and
+        # is a no-op on every subsequent startup (the value is non-zero by then).
         await conn.execute(text(
-            "UPDATE account_master a SET highest_credit = s.hi, lowest_credit = s.lo "
+            "UPDATE account_master a SET highest_credit = s.hi "
             "FROM ("
-            "  SELECT admin_ref, MAX(amount) AS hi, MIN(amount) AS lo FROM transactions "
+            "  SELECT admin_ref, MAX(amount) AS hi FROM transactions "
             "  WHERE type::text LIKE 'DEPOSIT%' AND status::text IN ('COMPLETED','DEPOSITED') "
             "    AND admin_ref IS NOT NULL GROUP BY admin_ref"
             ") s "
-            "WHERE a.reference_number = s.admin_ref AND a.highest_credit = 0 AND a.lowest_credit = 0"
+            "WHERE a.reference_number = s.admin_ref AND a.highest_credit = 0"
         ))
+        # Seed Highest Debit from existing completed withdrawals/settlements, attributed to each
+        # account via the member's most-recent receiving account — the exact attribution used at
+        # runtime by /accounts/balances (debits carry no admin_ref). Only touches accounts still at
+        # the 0 default, so it's idempotent and never overwrites a value tracked since deploy.
+        await conn.execute(text(
+            "UPDATE account_master a SET highest_debit = s.hi "
+            "FROM ("
+            "  SELECT ma.reference_number AS ref, MAX(t.amount) AS hi "
+            "  FROM transactions t "
+            "  JOIN ("
+            "    SELECT DISTINCT ON (member_id) member_id, reference_number "
+            "    FROM account_transaction WHERE member_id IS NOT NULL "
+            "    ORDER BY member_id, id DESC"
+            "  ) ma ON ma.member_id = t.member_id "
+            "  WHERE (t.type::text LIKE 'WITHDRAWAL%' OR t.type::text LIKE 'SETTLEMENT%') "
+            "    AND t.status::text = 'COMPLETED' "
+            "  GROUP BY ma.reference_number"
+            ") s "
+            "WHERE a.reference_number = s.ref AND a.highest_debit = 0"
+        ))
+        # The former Lowest Credit column is superseded by Highest Debit — drop it once (idempotent).
+        await conn.execute(text("ALTER TABLE account_master DROP COLUMN IF EXISTS lowest_credit"))
 
     # ── Enum values (ALTER TYPE ... ADD VALUE must run outside a txn block) ──
     autocommit = engine.execution_options(isolation_level="AUTOCOMMIT")

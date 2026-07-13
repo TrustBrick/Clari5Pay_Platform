@@ -339,12 +339,10 @@ def _inr(n: float | None) -> str:
 
 async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, request: Request | None) -> None:
     """After a deposit is approved & credited to an account, update that account's recorded
-    Highest / Lowest Credit high-water marks. When a new record is set: persist the new value,
-    notify every admin (same rule as tx events) and write a "system" audit entry. Purely additive
-    — it never alters the deposit, its status, or any workflow.
-
-    Highest: updated when the deposit exceeds the current highest. Lowest: updated when the deposit
-    is below the current lowest, or when the lowest is still 0 (the account's first deposit)."""
+    Highest Credit high-water mark. When a new record is set: persist the new value, notify every
+    admin (same rule as tx events) and write a "system" audit entry. Purely additive — it never
+    alters the deposit, its status, or any workflow. Updated only when the deposit exceeds the
+    current highest."""
     if not tx.type.value.startswith("DEPOSIT") or not tx.admin_ref:
         return
     acc = (await db.execute(
@@ -353,32 +351,75 @@ async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, 
     if acc is None:
         return
     amt = round(tx.amount, 2)
+    if amt <= (acc.highest_credit or 0):
+        return
+    prev = acc.highest_credit or 0.0
+    acc.highest_credit = amt
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
-    admin_ids = await _all_admin_ids(db)
     ip = _client_ip(request)
+    msg = (f"New Highest Credit Recorded — {acc.account_name} · Previous {_inr(prev)} → "
+           f"New {_inr(amt)} · {tx.ref} · {ts}")
+    for uid in await _all_admin_ids(db):
+        db.add(Notification(user_id=uid, message=msg, icon="📈"))
+    # Audit: Account ID, Holder, Previous, New, Deposit Ref, Updated By = System, IST time.
+    await record_audit(db, "ACCOUNT_HIGHEST_CREDIT", actor=None,
+                       entity_type="account", entity_id=acc.reference_number,
+                       old=_inr(prev), new=_inr(amt),
+                       reason=f"{acc.account_name} · Deposit {tx.ref} · {ts}", ip=ip)
+    await log_event(db, "ACCOUNT_HIGHEST_CREDIT",
+                    f"{acc.reference_number} ({acc.account_name}) new highest credit "
+                    f"{_inr(amt)} (was {_inr(prev)}) via {tx.ref}", actor=None)
+    await db.flush()
 
-    async def _record(kind: str, prev: float, icon: str) -> None:
-        msg = (f"New {kind} Credit Recorded — {acc.account_name} · Previous {_inr(prev)} → "
-               f"New {_inr(amt)} · {tx.ref} · {ts}")
-        for uid in admin_ids:
-            db.add(Notification(user_id=uid, message=msg, icon=icon))
-        # Audit: Account ID, Holder, Previous, New, Deposit Ref, Updated By = System, IST time.
-        await record_audit(db, f"ACCOUNT_{kind.upper()}_CREDIT", actor=None,
-                           entity_type="account", entity_id=acc.reference_number,
-                           old=_inr(prev), new=_inr(amt),
-                           reason=f"{acc.account_name} · Deposit {tx.ref} · {ts}", ip=ip)
-        await log_event(db, f"ACCOUNT_{kind.upper()}_CREDIT",
-                        f"{acc.reference_number} ({acc.account_name}) new {kind.lower()} credit "
-                        f"{_inr(amt)} (was {_inr(prev)}) via {tx.ref}", actor=None)
 
-    if amt > (acc.highest_credit or 0):
-        prev = acc.highest_credit or 0.0
-        acc.highest_credit = amt
-        await _record("Highest", prev, "📈")
-    if (acc.lowest_credit or 0) == 0 or amt < acc.lowest_credit:
-        prev = acc.lowest_credit or 0.0
-        acc.lowest_credit = amt
-        await _record("Lowest", prev, "📉")
+async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, request: Request | None) -> None:
+    """After a withdrawal/settlement (a debit) completes against a managed account, update that
+    account's recorded Highest Debit high-water mark. Mirrors _track_account_credit: on a new
+    record, persist the value, notify every Admin AND Super Admin, and write a "system" audit
+    entry. Purely additive — never alters the transaction, its status, or any workflow. The value
+    is only ever raised (a larger debit), never decreased.
+
+    A debit carries no admin_ref, so the account it is drawn from is the member's most-recent
+    receiving account — the exact attribution /accounts/balances uses for withdrawals/settlements."""
+    ty = tx.type.value
+    if not (ty.startswith("WITHDRAWAL") or ty.startswith("SETTLEMENT")) or not tx.member_id:
+        return
+    ref = (await db.execute(
+        select(AccountTransaction.reference_number)
+        .where(AccountTransaction.member_id == tx.member_id)
+        .order_by(AccountTransaction.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if not ref:
+        return
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == ref)
+    )).scalar_one_or_none()
+    if acc is None:
+        return
+    amt = round(tx.amount, 2)
+    if amt <= (acc.highest_debit or 0):
+        return
+    prev = acc.highest_debit or 0.0
+    acc.highest_debit = amt
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    ip = _client_ip(request)
+    # Recipients: every active Admin AND Super Admin (Account Management is admin-facing).
+    recipient_ids = (await db.execute(
+        select(User.id).where(User.role.in_([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+                              User.active == True)  # noqa: E712
+    )).scalars().all()
+    msg = (f"Highest Debit Updated — {acc.account_name} · Previous {_inr(prev)} → "
+           f"New {_inr(amt)} · {tx.ref} · {ts}")
+    for uid in recipient_ids:
+        db.add(Notification(user_id=uid, message=msg, icon="📉"))
+    # Audit: Account ID, Holder, Previous, New, Transaction Ref, Updated By = System, IST time.
+    await record_audit(db, "ACCOUNT_HIGHEST_DEBIT", actor=None,
+                       entity_type="account", entity_id=acc.reference_number,
+                       old=_inr(prev), new=_inr(amt),
+                       reason=f"{acc.account_name} · {tx.ref} · {ts}", ip=ip)
+    await log_event(db, "ACCOUNT_HIGHEST_DEBIT",
+                    f"{acc.reference_number} ({acc.account_name}) new highest debit "
+                    f"{_inr(amt)} (was {_inr(prev)}) via {tx.ref}", actor=None)
     await db.flush()
 
 
@@ -1694,10 +1735,13 @@ async def mark_done(
     _append_remark(tx, role="ADMIN", user=actor.name, username=actor.username, action="APPROVED",
                    remark="Deposited" if is_deposit else "Completed")
     await db.flush()
-    # Deposit credited to an account → update that account's recorded Highest/Lowest Credit
-    # (notifies admins + audits on a new record). Additive; does not affect the deposit itself.
+    # Deposit credited to an account → update Highest Credit; withdrawal/settlement debited from an
+    # account → update Highest Debit (notifies + audits on a new record). Additive; never affects
+    # the transaction itself.
     if is_deposit:
         await _track_account_credit(db, tx, actor, request)
+    else:
+        await _track_account_debit(db, tx, actor, request)
     label = "deposited" if is_deposit else "completed"
     await notify_tx(db, tx, f"{tx.ref}: approved and {label} successfully", "✓")
     # Telegram (demo, next-step only): admin final approval → notify ONLY the requesting user.
@@ -1874,6 +1918,8 @@ async def _reviewer_action(
             await db.flush()
             if is_dep:
                 await _track_account_credit(db, tx, reviewer, request)
+            else:
+                await _track_account_debit(db, tx, reviewer, request)
             label = "deposited" if is_dep else "completed"
             await notify_tx(db, tx, f"{tx.ref}: approved and {label} successfully", "✓")
             await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and {label} successfully", "✓")
@@ -1975,6 +2021,8 @@ async def supervisor_settle_settlement(
     tx.admin_action_at = datetime.utcnow()
     _append_remark(tx, role="SUPERVISOR", user=reviewer.name, username=reviewer.username, action="APPROVED", remark=remark)
     await db.flush()
+    # Settlement debited from an account → update that account's recorded Highest Debit.
+    await _track_account_debit(db, tx, reviewer, request)
     await notify_tx(db, tx, f"{tx.ref}: settlement approved and completed successfully", "✓")
     await _notify_merchant(db, tx, f"{tx.ref}: settlement approved and completed by Supervisor {reviewer.name}", "✓")
     # Telegram (demo, next-step only): completion → notify ONLY the requesting user.

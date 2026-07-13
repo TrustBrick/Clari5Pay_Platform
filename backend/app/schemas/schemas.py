@@ -273,9 +273,10 @@ class AccountCreate(BaseModel):
     status: str = "ACTIVE"
     merchant_id: Optional[int] = None
     upiId: Optional[str] = None   # optional UPI to link to this account on creation
-    # Configurable initial recorded Highest / Lowest Credit (₹, default 0). Auto-tracked thereafter.
+    # Configurable initial recorded Highest Credit (₹, default 0). Auto-tracked thereafter.
+    # Highest Debit is intentionally NOT accepted here — it is read-only and only ever set by a
+    # completed debit transaction (defaults to 0 on the account).
     highest_credit: Optional[float] = 0.0
-    lowest_credit: Optional[float] = 0.0
 
 
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────

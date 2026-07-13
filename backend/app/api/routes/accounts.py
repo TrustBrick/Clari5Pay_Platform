@@ -146,9 +146,10 @@ async def account_balances(
             "totalDeposited": round(total_d, 2),
             "highestDeposit": round(dep_high.get(ref, 0.0), 2),
             "lowestDeposit": round(dep_low.get(ref, 0.0), 2),
-            # Recorded high-water marks (stored on the account, auto-updated on deposit approval).
+            # Recorded high-water marks (stored on the account, auto-updated on completion):
+            # highestCredit on deposit approval, highestDebit on a completed withdrawal/settlement.
             "highestCredit": round(a.highest_credit or 0.0, 2),
-            "lowestCredit": round(a.lowest_credit or 0.0, 2),
+            "highestDebit": round(a.highest_debit or 0.0, 2),
             "withdrawals": round(wd, 2),
             "settlements": round(st, 2),
             "available": round(total_d - wd - st, 2),   # deposits − withdrawals − settlements
@@ -375,7 +376,7 @@ def _a(a: AccountMaster, merchant_name: str | None = None) -> dict:
         "lastMaintenanceDate": str(a.last_maintenance_date) if a.last_maintenance_date else None,
         "lastMaintenanceTime": a.last_maintenance_time,
         "highestCredit": round(a.highest_credit or 0.0, 2),
-        "lowestCredit": round(a.lowest_credit or 0.0, 2),
+        "highestDebit": round(a.highest_debit or 0.0, 2),
         "merchantName": merchant_name or a.account_name,
     }
 
@@ -496,7 +497,7 @@ async def create_account(
         last_maintenance_date=date.today(),
         last_maintenance_time=now.strftime("%H:%M:%S"),
         highest_credit=max(0.0, data.highest_credit or 0.0),
-        lowest_credit=max(0.0, data.lowest_credit or 0.0),
+        # highest_debit is read-only — starts at 0 and is only ever raised by a completed debit.
     )
     db.add(acc)
     await db.flush()

@@ -1244,7 +1244,7 @@ export const AdminAccountsPage: React.FC = () => {
     finally { setStmtLoading(false); }
   };
   const [showCreate, setShowCreate] = useState(false);
-  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0',lowest_credit:'0' };
+  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0' };
   const [form, setForm] = useState(empty);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
@@ -1307,7 +1307,7 @@ export const AdminAccountsPage: React.FC = () => {
   const create = async () => {
     if(!form.account_name||!form.account_number||!form.ifsc_code||!form.bank_name||!form.branch){ showToast('Fill all fields','error'); return; }
     try {
-      await accountAPI.create({ ...form, highest_credit: parseFloat(form.highest_credit) || 0, lowest_credit: parseFloat(form.lowest_credit) || 0 });
+      await accountAPI.create({ ...form, highest_credit: parseFloat(form.highest_credit) || 0 });
       await reload();
       setShowCreate(false);
       setForm(empty);
@@ -1335,7 +1335,7 @@ export const AdminAccountsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Lowest Credit','Deposits Received','Available','Users','Status','Details'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Highest Debit','Deposits Received','Available','Users','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -1352,7 +1352,7 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.ifscCode}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.branch}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestCredit ?? 0)}</td>
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.lowestCredit ?? 0)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestDebit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{fmt(bal?.totalDeposited ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}>
@@ -1624,7 +1624,7 @@ export const AdminAccountsPage: React.FC = () => {
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
             <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>
             <Input label="Highest Credit (₹)" type="number" value={form.highest_credit} onChange={e=>set('highest_credit',e.target.value)} hint="Default 0 — auto-updates on higher deposits"/>
-            <Input label="Lowest Credit (₹)" type="number" value={form.lowest_credit} onChange={e=>set('lowest_credit',e.target.value)} hint="Default 0 — first deposit sets it"/>
+            <Input label="Highest Debit (₹)" type="number" value="0" readOnly onChange={()=>{}} hint="Read-only — auto-updates on a larger debit"/>
           </div>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>
