@@ -2277,8 +2277,9 @@ export const TelegramStatusCard: React.FC = () => {
                 <td style={{ padding: '9px 12px', color: T.textMuted, fontFamily: 'monospace', fontSize: 11 }}>{u.username}</td>
                 <td style={{ padding: '9px 12px', color: T.textMuted }}>{u.role}</td>
                 <td style={{ padding: '9px 12px' }}>
-                  <span style={{ fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20, background: u.linked ? T.successBg : T.canvas, color: u.linked ? T.success : T.textMuted, border: u.linked ? 'none' : `1px solid ${T.border}` }}>
-                    {u.linked ? <><Icon name="connected" size={11} weight="fill" /> Linked</> : '— Not linked'}
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 700, color: u.linked ? T.success : T.textMuted }}>
+                    <Icon name="connected" size={11} weight="fill" />
+                    {u.linked ? 'Linked' : 'Not linked'}
                   </span>
                 </td>
               </tr>
