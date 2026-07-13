@@ -714,3 +714,98 @@ class AgentAccount(Base):
     updated_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     updated_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AgentTransaction(Base):
+    """An isolated Agent deposit/withdrawal request (Agent Management → new operator workflow).
+
+    COMPLETELY SEPARATE from the merchant's own payment system: this table has NO foreign key to
+    ``transactions`` and is never read/written by the merchant Deposit/Withdrawal/Settlement,
+    Treasury, Risk, Account-Management or Transaction-History code paths. It records third-party
+    agent transactions purely for reporting, reconciliation and operational visibility — it must
+    never affect merchant balances, settlements, treasury, risk or reports.
+
+    Scope is the owning ``merchant_business`` (like AgentMaster / AgentAccount). Agent fields are
+    snapshotted at creation so historical rows stay stable even if the agent is later edited.
+    """
+    __tablename__ = "agent_transaction"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    # System-generated, unique, immutable serials. reference_number: AGD000001 (deposit) /
+    # AGW000001 (withdrawal). transaction_code embeds the agent's 3-char code, e.g. "ABC-D-000123".
+    reference_number: Mapped[str] = mapped_column(String(24), unique=True, index=True, nullable=False)
+    transaction_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    txn_type: Mapped[str] = mapped_column(String(12), nullable=False)      # DEPOSIT | WITHDRAWAL
+
+    # Scope — owning merchant business (denormalized for fast scoping, like the other agent tables).
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+
+    # ── Agent (FK + snapshot for immutable history) ──
+    agent_master_id: Mapped[int] = mapped_column(Integer, ForeignKey("agent_master.id"), index=True, nullable=False)
+    agent_code: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)     # AGT…
+    agent_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    agent_country: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    agent_state: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    agent_location: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    agent_category: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+
+    # ── Membership (manual or auto-fetched; NOT linked to merchant member records) ──
+    membership_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    membership_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    membership_type: Mapped[str] = mapped_column(String(12), nullable=False)   # ONLINE | OFFLINE
+
+    # ── Transaction body ──
+    amount: Mapped[float] = mapped_column(Float, nullable=False)               # only field editable via Manage
+    txn_country: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    txn_state: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    txn_location: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    mobile: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+
+    # System-generated, immutable.
+    token_details: Mapped[str] = mapped_column(String(48), nullable=False)
+    note_number: Mapped[str] = mapped_column(String(24), unique=True, index=True, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)   # max 100 chars
+    instructions: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+
+    # ── Approval lifecycle (isolated — does not touch the merchant approval workflow) ──
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)  # PENDING|APPROVED|REJECTED
+    sent_for_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    approver_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)     # chosen Authorized Approver
+    approver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    approved_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    approved_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Withdrawal only — the deposit whose agent was auto-fetched (latest deposit for the membership).
+    linked_deposit_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("agent_transaction.id"), nullable=True)
+
+    # ── Standard audit columns ──
+    created_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    created_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    updated_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AgentTransactionAudit(Base):
+    """Immutable audit history for an AgentTransaction — every create, amount correction and
+    approval decision. Powers the Manage-Transaction old→new amount trail. Isolated to the agent
+    subsystem (a parallel AuditLog row with action_type AGENT_TXN_* is also written so the existing
+    Agent Audit Trail keeps a single unified view)."""
+    __tablename__ = "agent_transaction_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    agent_transaction_id: Mapped[int] = mapped_column(Integer, ForeignKey("agent_transaction.id"), index=True, nullable=False)
+    reference_number: Mapped[Optional[str]] = mapped_column(String(24), index=True, nullable=True)  # denormalized for search
+    # CREATED | AMOUNT_UPDATED | SENT_FOR_APPROVAL | APPROVED | REJECTED
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    old_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    new_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    approver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    actor_username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    actor_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

@@ -125,3 +125,25 @@ async def get_current_agent_manager(current_user: User = Depends(get_current_use
     ):
         return current_user
     raise HTTPException(status_code=403, detail="Agent Management requires a Supervisor or Manager role")
+
+
+# ── Isolated Agent Transaction subsystem (operator workflow) ──────────────────────
+# Merchant roles that may access the Agent Transaction module at all (overview + their own
+# workflow tabs). Data Operator = "DEO". Fine-grained per-action gating (create/manage/approve)
+# is enforced in the route layer via agent_role_in() below.
+AGENT_TXN_ROLES = ("SUPERVISOR", "MANAGER", "DEO", "DEPOSIT_OPERATOR", "WITHDRAWAL_OPERATOR")
+
+
+def agent_role_in(user: User, allowed: tuple[str, ...]) -> bool:
+    """True when `user` is a MERCHANT whose merchant_role is in `allowed` — the building block for
+    per-capability checks (deposit/withdrawal/manage/approve) inside the Agent Transaction routes."""
+    return user.role == UserRole.MERCHANT and str(user.merchant_role or "").upper() in allowed
+
+
+async def get_current_agent_operator(current_user: User = Depends(get_current_user)) -> User:
+    """Base access to the isolated Agent Transaction module — any of Supervisor / Manager /
+    Data Operator (DEO) / Deposit Operator / Withdrawal Operator. Read/overview endpoints use this;
+    write endpoints additionally check the specific capability with agent_role_in()."""
+    if agent_role_in(current_user, AGENT_TXN_ROLES):
+        return current_user
+    raise HTTPException(status_code=403, detail="Agent Transaction access requires an operator or manager role")
