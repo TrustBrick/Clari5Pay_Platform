@@ -529,6 +529,8 @@ export const agentAPI = {
   update: async (id: number, data: AgentUpdatePayload) => (await api.put<Agent>(`/api/agents/${id}`, data)).data,
   setStatus: async (id: number, status: 'ACTIVE' | 'INACTIVE') =>
     (await api.patch<Agent>(`/api/agents/${id}/status`, { status })).data,
+  approve: async (id: number) => (await api.patch<Agent>(`/api/agents/${id}/approve`, {})).data,
+  reject: async (id: number) => (await api.patch<Agent>(`/api/agents/${id}/reject`, {})).data,
   remove: async (id: number) => (await api.delete<{ ok: boolean }>(`/api/agents/${id}`)).data,
 };
 

@@ -32,6 +32,15 @@ const CURRENCY_OPTIONS = [
   'USDT', 'BTC', 'ETH',
 ].map((c) => ({ value: c, label: c }));
 
+// Country → default currency (auto-populated on country change). Unmapped countries leave the
+// current currency unchanged. Keep values within CURRENCY_OPTIONS so the Currency select stays valid.
+const COUNTRY_CURRENCY: Record<string, string> = {
+  'India': 'INR', 'United States': 'USD', 'United Kingdom': 'GBP', 'United Arab Emirates': 'AED',
+  'Singapore': 'SGD', 'Australia': 'AUD', 'Canada': 'CAD', 'Japan': 'JPY', 'China': 'CNY',
+  'Germany': 'EUR', 'France': 'EUR', 'Italy': 'EUR', 'Spain': 'EUR', 'Netherlands': 'EUR',
+  'Ireland': 'EUR', 'Portugal': 'EUR', 'Belgium': 'EUR', 'Austria': 'EUR', 'Greece': 'EUR',
+};
+
 const CATEGORY_OPTIONS: Array<{ value: AgentCategory; label: string }> = [
   { value: 'CASH', label: 'Cash' },
   { value: 'BANK_TRANSFER', label: 'Bank Transfer' },
@@ -114,13 +123,13 @@ type FormState = {
   fullName: string; country: string; state: string; location: string;
   mobile: string; email: string; currency: string; dateOfCreation: string;
   reference: string; feesPct: string; transactionCode: string; category: AgentCategory;
-  notes: string; riskAnalysis: boolean; sendForApproval: boolean; status: AgentStatus;
+  notes: string; riskAnalysis: boolean; status: AgentStatus;
 };
 
 const blankForm = (): FormState => ({
   fullName: '', country: '', state: '', location: '', mobile: '', email: '',
   currency: 'INR', dateOfCreation: todayISO(), reference: '', feesPct: '',
-  transactionCode: '', category: 'CASH', notes: '', riskAnalysis: false, sendForApproval: false,
+  transactionCode: '', category: 'CASH', notes: '', riskAnalysis: false,
   status: 'ACTIVE',
 });
 
@@ -138,7 +147,7 @@ const AgentForm: React.FC<{
         currency: initial.currency, dateOfCreation: initial.dateOfCreation || todayISO(),
         reference: initial.reference || '', feesPct: String(initial.feesPct ?? ''),
         transactionCode: initial.transactionCode, category: initial.category,
-        notes: initial.notes || '', riskAnalysis: initial.riskAnalysis, sendForApproval: false,
+        notes: initial.notes || '', riskAnalysis: initial.riskAnalysis,
         status: initial.status,
       };
     }
@@ -149,14 +158,17 @@ const AgentForm: React.FC<{
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((f) => ({ ...f, [k]: v }));
 
   const validate = (): string | null => {
-    if (!form.fullName.trim()) return 'Full Name is required.';
+    if (!form.fullName.trim()) return 'Agent Name is required.';
     if (!form.country.trim()) return 'Country is required.';
     if (!form.state.trim()) return 'State is required.';
     if (!form.location.trim()) return 'Location is required.';
+    if (!/^\d{10}$/.test(form.mobile.trim())) return 'Mobile Number must be exactly 10 digits (numbers only).';
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.email.trim())) return 'Enter a valid email address.';
     if (!form.currency.trim()) return 'Currency is required.';
+    if (!['CASH', 'BANK_TRANSFER', 'CRYPTO'].includes(form.category)) return 'Category is required.';
     if (form.feesPct === '' || isNaN(Number(form.feesPct))) return 'Fees % is required.';
     if (Number(form.feesPct) < 0) return 'Fees % cannot be negative.';
-    if (mode === 'create' && !/^[A-Za-z0-9]{3}$/.test(form.transactionCode)) return 'Transaction Code must be exactly 3 alphanumeric characters.';
+    if (mode === 'create' && !/^[A-Za-z]{3}$/.test(form.transactionCode)) return 'Transaction Code must be exactly 3 alphabetic characters (A–Z).';
     return null;
   };
 
@@ -167,8 +179,8 @@ const AgentForm: React.FC<{
     try {
       const base = {
         fullName: form.fullName.trim(), country: form.country.trim(), state: form.state.trim(),
-        location: form.location.trim(), mobile: form.mobile.trim() || undefined,
-        email: form.email.trim() || undefined, currency: form.currency,
+        location: form.location.trim(), mobile: form.mobile.trim(),
+        email: form.email.trim(), currency: form.currency,
         reference: form.reference || undefined, feesPct: Number(form.feesPct),
         category: form.category, notes: form.notes.trim() || undefined,
         riskAnalysis: form.riskAnalysis,
@@ -176,7 +188,7 @@ const AgentForm: React.FC<{
       const saved = mode === 'create'
         ? await agentAPI.create({
             ...base, transactionCode: form.transactionCode.toUpperCase(),
-            dateOfCreation: form.dateOfCreation, sendForApproval: form.sendForApproval,
+            dateOfCreation: form.dateOfCreation,
           })
         : await agentAPI.update(initial!.id, { ...base, status: form.status });
       onSaved(saved);
@@ -206,7 +218,8 @@ const AgentForm: React.FC<{
           <Input label="Agent ID" value={mode === 'edit' ? initial!.agentId : 'Auto-generated on save'} onChange={() => {}} readOnly hint="System generated — cannot be edited." />
           <div style={grid2}>
             <Input label="Full Name" value={form.fullName} onChange={(e) => set('fullName', e.target.value)} required />
-            <Sel label="Country" value={form.country} onChange={(e) => set('country', e.target.value)} required options={[{ value: '', label: 'Select country' }, ...COUNTRY_OPTIONS]} />
+            <Sel label="Country" value={form.country} required options={[{ value: '', label: 'Select country' }, ...COUNTRY_OPTIONS]}
+              onChange={(e) => { const c = e.target.value; setForm((f) => ({ ...f, country: c, currency: COUNTRY_CURRENCY[c] || f.currency })); }} />
             <Input label="State" value={form.state} onChange={(e) => set('state', e.target.value)} required />
             <Input label="Location" value={form.location} onChange={(e) => set('location', e.target.value)} required />
           </div>
@@ -214,24 +227,25 @@ const AgentForm: React.FC<{
 
         <Section title="Contact Information">
           <div style={grid2}>
-            <Input label="Mobile Number" value={form.mobile} onChange={(e) => set('mobile', e.target.value)} inputMode="tel" hint="Optional" />
-            <Input label="Email Address" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} hint="Optional" />
+            <Input label="Mobile Number" value={form.mobile} onChange={(e) => set('mobile', e.target.value.replace(/\D/g, '').slice(0, 10))} inputMode="numeric" required hint="Exactly 10 digits (numbers only)" />
+            <Input label="Email Address" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} required hint="e.g. name@example.com" />
           </div>
         </Section>
 
         <Section title="Business Information">
           <div style={grid2}>
             <Sel label="Currency" value={form.currency} onChange={(e) => set('currency', e.target.value)} required options={CURRENCY_OPTIONS} />
+            {/* Auto-populated from Country; still editable for unmapped countries. */}
             <Input label="Date of Creation" type="date" value={form.dateOfCreation} onChange={(e) => set('dateOfCreation', e.target.value)} readOnly={mode === 'edit'} />
             <Sel label="Reference" value={form.reference} onChange={(e) => set('reference', e.target.value)} options={REFERENCE_OPTIONS} />
             <Input label="Fees %" type="number" inputMode="decimal" value={form.feesPct} onChange={(e) => set('feesPct', e.target.value)} required />
             <Input
               label="Unique Transaction Code"
               value={form.transactionCode}
-              onChange={(e) => set('transactionCode', e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 3).toUpperCase())}
+              onChange={(e) => set('transactionCode', e.target.value.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase())}
               required={mode === 'create'}
               readOnly={mode === 'edit'}
-              hint={mode === 'edit' ? 'Cannot be edited.' : 'Exactly 3 alphanumeric characters.'}
+              hint={mode === 'edit' ? 'Cannot be edited.' : 'Exactly 3 letters (A–Z), no numbers.'}
             />
             <Sel label="Category" value={form.category} onChange={(e) => set('category', e.target.value as AgentCategory)} required options={CATEGORY_OPTIONS} />
           </div>
@@ -245,7 +259,9 @@ const AgentForm: React.FC<{
           </div>
           <Checkbox label="Perform Risk Analysis" checked={form.riskAnalysis} onChange={(v) => set('riskAnalysis', v)} />
           {mode === 'create' && (
-            <Checkbox label="Send for Approval" hint="Route this agent through the approval workflow (Phase 6)." checked={form.sendForApproval} onChange={(v) => set('sendForApproval', v)} />
+            <p style={{ margin: '0 0 14px', fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+              Agents created by a <b>Supervisor</b> require Manager approval before they become active. Agents created by a <b>Manager</b> are active immediately.
+            </p>
           )}
           {mode === 'edit' && (
             <Sel label="Status" value={form.status} onChange={(e) => set('status', e.target.value as AgentStatus)} style={{ maxWidth: 260 }}
@@ -320,7 +336,8 @@ const AgentView: React.FC<{ agent: Agent; onBack: () => void; onEdit: () => void
 // ── Main page (list + search + filters + pagination) ────────────────────────────
 type Mode = { screen: 'list' } | { screen: 'create' } | { screen: 'edit'; agent: Agent } | { screen: 'view'; agent: Agent };
 
-export const AgentsPage: React.FC<AgentPageProps> = ({ onNavigate }) => {
+export const AgentsPage: React.FC<AgentPageProps> = ({ user, onNavigate }) => {
+  const isManager = String(user.merchantRole || '').toUpperCase() === 'MANAGER';
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<Mode>({ screen: 'list' });
@@ -376,6 +393,16 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ onNavigate }) => {
     finally { setBusyId(null); }
   };
 
+  const decide = async (a: Agent, approve: boolean) => {
+    setBusyId(a.id);
+    try {
+      const updated = approve ? await agentAPI.approve(a.id) : await agentAPI.reject(a.id);
+      setAgents((list) => list.map((x) => (x.id === a.id ? updated : x)));
+      flash(`${updated.fullName} ${approve ? 'approved and activated' : 'rejected'}.`);
+    } catch (e) { flash(errText(e)); }
+    finally { setBusyId(null); }
+  };
+
   const confirmDelete = async () => {
     if (!toDelete) return;
     setBusyId(toDelete.id); setDeleteErr('');
@@ -389,14 +416,15 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ onNavigate }) => {
   };
 
   if (mode.screen === 'create')
-    return <AgentForm mode="create" onCancel={() => setMode({ screen: 'list' })} onSaved={(a) => { setAgents((l) => [a, ...l]); setMode({ screen: 'list' }); flash(`Agent ${a.agentId} created.`); }} />;
+    return <AgentForm mode="create" onCancel={() => setMode({ screen: 'list' })} onSaved={(a) => { setAgents((l) => [a, ...l]); setMode({ screen: 'list' }); flash(a.approvalStatus === 'PENDING' ? `Agent ${a.agentId} submitted for Manager approval.` : `Agent ${a.agentId} created and active.`); }} />;
   if (mode.screen === 'edit')
     return <AgentForm mode="edit" initial={mode.agent} onCancel={() => setMode({ screen: 'list' })} onSaved={(a) => { setAgents((l) => l.map((x) => (x.id === a.id ? a : x))); setMode({ screen: 'list' }); flash(`Agent ${a.agentId} updated.`); }} />;
   if (mode.screen === 'view')
     return <AgentView agent={mode.agent} onBack={() => setMode({ screen: 'list' })} onEdit={() => setMode({ screen: 'edit', agent: mode.agent })} />;
 
-  const th: React.CSSProperties = { textAlign: 'left', padding: '11px 12px', fontSize: 11, fontWeight: 800, color: T.textLight, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' };
-  const td: React.CSSProperties = { padding: '12px', fontSize: 13, color: T.textMain, borderTop: `1px solid ${T.borderLight}`, whiteSpace: 'nowrap' };
+  const th: React.CSSProperties = { textAlign: 'left', padding: '9px 10px', fontSize: 10.5, fontWeight: 800, color: T.textLight, textTransform: 'uppercase', letterSpacing: '0.03em', whiteSpace: 'nowrap' };
+  const td: React.CSSProperties = { padding: '9px 10px', fontSize: 12.5, color: T.textMain, borderTop: `1px solid ${T.borderLight}`, verticalAlign: 'top' };
+  const sub: React.CSSProperties = { fontSize: 11, color: T.textMuted, marginTop: 2 };
 
   return (
     <div>
@@ -426,42 +454,63 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ onNavigate }) => {
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'auto' }}>
               <thead>
                 <tr>
-                  {['Agent ID', 'Full Name', 'Country', 'State', 'Location', 'Category', 'Currency', 'Fees %', 'Txn Code', 'Status', 'Created By', 'Created (IST)', 'Actions'].map((h) => (
+                  {['Agent', 'Location', 'Category', 'Currency', 'Fees %', 'Txn Code', 'Status', 'Created', 'Actions'].map((h) => (
                     <th key={h} style={th}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {pageRows.map((a) => (
-                  <tr key={a.id}>
-                    <td style={{ ...td, fontWeight: 700, color: T.blue }}>{a.agentId}</td>
-                    <td style={td}>{a.fullName}</td>
-                    <td style={td}>{a.country}</td>
-                    <td style={td}>{a.state}</td>
-                    <td style={td}>{a.location}</td>
-                    <td style={td}>{CATEGORY_LABEL[a.category]}</td>
-                    <td style={td}>{a.currency}</td>
-                    <td style={td}>{a.feesPct}%</td>
-                    <td style={{ ...td, fontWeight: 700 }}>{a.transactionCode}</td>
-                    <td style={td}><StatusPill status={a.status} /></td>
-                    <td style={td}>{a.createdBy || '—'}</td>
-                    <td style={{ ...td, color: T.textMuted, fontSize: 12 }}>{a.createdAt ? formatDateTimeIST(a.createdAt) : '—'}</td>
-                    <td style={td}>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        <Btn variant="ghost" size="sm" onClick={() => setMode({ screen: 'view', agent: a })}>View</Btn>
-                        <Btn variant="secondary" size="sm" onClick={() => setMode({ screen: 'edit', agent: a })}>Edit</Btn>
-                        <Btn variant="ghost" size="sm" onClick={() => { openAgentAccounts(a.id); onNavigate?.('agent-accounts'); }}>Accounts</Btn>
-                        <Btn variant={a.status === 'ACTIVE' ? 'secondary' : 'success'} size="sm" disabled={busyId === a.id} onClick={() => toggleStatus(a)}>
-                          {a.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
-                        </Btn>
-                        <Btn variant="danger" size="sm" disabled={busyId === a.id} onClick={() => { setDeleteErr(''); setToDelete(a); }}>Delete</Btn>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {pageRows.map((a) => {
+                  const pending = a.approvalStatus === 'PENDING';
+                  return (
+                    <tr key={a.id}>
+                      <td style={td}>
+                        <div style={{ fontWeight: 700, color: T.blue }}>{a.agentId}</div>
+                        <div style={sub}>{a.fullName}</div>
+                      </td>
+                      <td style={td}>
+                        <div>{a.location}</div>
+                        <div style={sub}>{a.state}{a.country ? ` · ${a.country}` : ''}</div>
+                      </td>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>{CATEGORY_LABEL[a.category]}</td>
+                      <td style={td}>{a.currency}</td>
+                      <td style={td}>{a.feesPct}%</td>
+                      <td style={{ ...td, fontWeight: 700 }}>{a.transactionCode}</td>
+                      <td style={td}>
+                        {pending
+                          ? <span style={{ display: 'inline-block', background: T.warningBg, color: T.warning, fontSize: 10.5, fontWeight: 800, padding: '3px 9px', borderRadius: 20, whiteSpace: 'nowrap' }}>Pending Approval</span>
+                          : <StatusPill status={a.status} />}
+                      </td>
+                      <td style={{ ...td, color: T.textMuted }}>
+                        <div>{a.createdBy || '—'}</div>
+                        <div style={sub}>{a.createdAt ? formatDateTimeIST(a.createdAt) : '—'}</div>
+                      </td>
+                      <td style={td}>
+                        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                          <Btn variant="ghost" size="sm" onClick={() => setMode({ screen: 'view', agent: a })}>View</Btn>
+                          <Btn variant="secondary" size="sm" onClick={() => setMode({ screen: 'edit', agent: a })}>Edit</Btn>
+                          {pending ? (
+                            isManager && <>
+                              <Btn variant="success" size="sm" disabled={busyId === a.id} onClick={() => decide(a, true)}>Approve</Btn>
+                              <Btn variant="danger" size="sm" disabled={busyId === a.id} onClick={() => decide(a, false)}>Reject</Btn>
+                            </>
+                          ) : (
+                            <>
+                              <Btn variant="ghost" size="sm" onClick={() => { openAgentAccounts(a.id); onNavigate?.('agent-accounts'); }}>Accounts</Btn>
+                              <Btn variant={a.status === 'ACTIVE' ? 'secondary' : 'success'} size="sm" disabled={busyId === a.id} onClick={() => toggleStatus(a)}>
+                                {a.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+                              </Btn>
+                            </>
+                          )}
+                          <Btn variant="danger" size="sm" disabled={busyId === a.id} onClick={() => { setDeleteErr(''); setToDelete(a); }}>Delete</Btn>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -702,9 +751,6 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
       <div style={gridCards}>
         <StatCard icon="agent" label="Total Agents" value={d.agents.total} sub={`${d.agents.active} active · ${d.agents.inactive} inactive`} color={T.blue} />
         <StatCard icon="bank" label="Agent Accounts" value={d.accounts.total} sub={`${d.accounts.active} active · ${d.accounts.inactive} inactive`} color={T.green} />
-        <StatCard icon="link" label="Transactions Assigned" value={d.assignments.totalTransactions} sub="currently assigned to an agent" color={T.info} />
-        <StatCard icon="warning" label="Unassigned Transactions" value={d.assignments.unassignedTransactions} sub="click to assign an agent" color={T.danger} onClick={() => onNavigate?.('agent-unassigned')} />
-        <StatCard icon="reassignments" label="Reassignments" value={d.assignments.reassignments} sub="total reassign actions" color={T.warning} />
       </div>
 
       {/* ── Financial Summary (cumulative lifetime totals from completed assigned transactions) ── */}
@@ -717,26 +763,6 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 16 }}>
-        <Card>
-          <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
-            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Agent Financial Summary</h3>
-          </div>
-          <div style={{ padding: '6px 18px 12px' }}>
-            {([
-              ['Opening Balance', d.financial.openingBalance],
-              ['Total Deposit Amount', d.financial.totalDeposit],
-              ['Total Withdrawal Amount', d.financial.totalWithdrawal],
-              ['Total Commission Earned', d.financial.totalCommission],
-              ['Net Balance', d.financial.netBalance],
-              ['Available Balance', d.financial.availableBalance],
-            ] as Array<[string, number]>).map(([label, val], i, arr) => (
-              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 0', borderBottom: i < arr.length - 1 ? `1px solid ${T.borderLight}` : 'none', fontSize: 13.5 }}>
-                <span style={{ color: T.textMuted, fontWeight: 600 }}>{label}</span>
-                <span style={{ color: (label === 'Net Balance' || label === 'Available Balance') ? T.blue : T.textMain, fontWeight: 800 }}>{fmt(val)}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
         {/* Commission trend with Daily / Weekly / Monthly toggle */}
         <Card style={{ padding: '16px 18px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
@@ -802,8 +828,6 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
       </div>
 
       <div style={gridCharts}>
-        <BarList title="Assignments by Transaction Type" icon="≡" color={T.blue} data={toBars(d.assignments.byTxType, TXTYPE_LABEL)} />
-        <BarList title="Assignments by Channel" icon="pan" color={T.green} data={toBars(d.assignments.byChannel, ACCOUNT_TYPE_LABEL)} />
         <BarList title="Agents by Category" icon="tag" color={T.info} data={toBars(d.agentsByCategory, CATEGORY_LABEL_FULL)} />
         <BarList title="Accounts by Type" icon="folder" color={T.blue} data={toBars(d.accounts.byType, ACCOUNT_TYPE_LABEL)} />
         <BarList title="Agents by Country" icon="country" color={T.green} data={d.agentsByCountry.map((c) => ({ label: c.label, value: c.count }))} />

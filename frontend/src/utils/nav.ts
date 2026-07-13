@@ -21,7 +21,6 @@ export const NAV: Record<UserRole, NavItem[]> = {
         { key: 'agents', icon: 'agent', label: 'Agents' },
         { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
         { key: 'agent-transactions', icon: 'transactions', label: 'Transactions' },
-        { key: 'agent-unassigned', icon: 'warning', label: 'Unassigned' },
         { key: 'agent-audit', icon: 'audit', label: 'Audit Trail' },
         { key: 'agent-reports', icon: 'reports', label: 'Reports' },
       ],

@@ -24,7 +24,9 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 CATEGORIES = {"CASH", "BANK_TRANSFER", "CRYPTO"}
 STATUSES = {"ACTIVE", "INACTIVE"}
-_CODE_RE = re.compile(r"^[A-Za-z0-9]{3}$")
+_CODE_RE = re.compile(r"^[A-Za-z]{3}$")          # exactly 3 alphabetic characters (no digits)
+_MOBILE_RE = re.compile(r"^\d{10}$")             # exactly 10 digits, numbers only
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -152,25 +154,30 @@ async def create_agent(
     full_name = (data.fullName or "").strip()
     code = (data.transactionCode or "").strip().upper()
     category = (data.category or "").strip().upper()
-    mobile = (data.mobile or "").strip() or None
-    email = (data.email or "").strip() or None
+    mobile = (data.mobile or "").strip()
+    email = (data.email or "").strip()
 
     # ── Validation (clear, field-specific messages) ──
+    # Mandatory: Name, Country, State, Location, Currency, Mobile, Email, Category, Transaction Code.
     for label, val in (("Full Name", full_name), ("Country", data.country), ("State", data.state),
                        ("Location", data.location), ("Currency", data.currency)):
         if not str(val or "").strip():
             raise HTTPException(status_code=400, detail=f"{label} is required.")
+    if not _MOBILE_RE.match(mobile):
+        raise HTTPException(status_code=400, detail="Mobile Number must be exactly 10 digits (numbers only).")
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
     if category not in CATEGORIES:
         raise HTTPException(status_code=400, detail="Category must be Cash, Bank Transfer or Crypto.")
     if not _CODE_RE.match(code):
-        raise HTTPException(status_code=400, detail="Transaction Code must be exactly 3 alphanumeric characters.")
+        raise HTTPException(status_code=400, detail="Transaction Code must be exactly 3 alphabetic characters.")
     if data.feesPct is None or data.feesPct < 0:
         raise HTTPException(status_code=400, detail="Fees % cannot be negative.")
     if await _duplicate(db, business, field=AgentMaster.full_name, value=full_name):
         raise HTTPException(status_code=409, detail="An agent with this name already exists.")
-    if mobile and await _duplicate(db, business, field=AgentMaster.mobile, value=mobile):
+    if await _duplicate(db, business, field=AgentMaster.mobile, value=mobile):
         raise HTTPException(status_code=409, detail="An agent with this mobile number already exists.")
-    if email and await _duplicate(db, business, field=AgentMaster.email, value=email):
+    if await _duplicate(db, business, field=AgentMaster.email, value=email):
         raise HTTPException(status_code=409, detail="An agent with this email address already exists.")
     if await _duplicate(db, business, field=AgentMaster.transaction_code, value=code):
         raise HTTPException(status_code=409, detail="This Transaction Code is already in use.")
@@ -181,6 +188,13 @@ async def create_agent(
             doc = date.fromisoformat(data.dateOfCreation)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid Date of Creation.")
+
+    # ── Approval workflow (by creator role) ──
+    # Supervisor-created agents start INACTIVE / PENDING and need a Manager to approve before they
+    # can be assigned or do anything. Manager-created agents are APPROVED / ACTIVE immediately.
+    is_supervisor = str(user.merchant_role or "").upper() == "SUPERVISOR"
+    status = "INACTIVE" if is_supervisor else "ACTIVE"
+    approval = "PENDING" if is_supervisor else "APPROVED"
 
     agent = AgentMaster(
         agent_id=await _next_agent_id(db),
@@ -198,9 +212,9 @@ async def create_agent(
         category=category,
         notes=(data.notes or "").strip() or None,
         risk_analysis=bool(data.riskAnalysis),
-        sent_for_approval=bool(data.sendForApproval),
-        approval_status="PENDING" if data.sendForApproval else "NOT_REQUIRED",
-        status="ACTIVE",                       # new agents default to Active
+        sent_for_approval=is_supervisor,
+        approval_status=approval,
+        status=status,
         merchant_business=business,
         created_by=user.name,
         created_by_id=user.id,
@@ -210,7 +224,8 @@ async def create_agent(
     await db.refresh(agent)
     await record_agent_audit(
         db, "AGENT_CREATE", actor=user, entity_type="agent", entity_id=agent.agent_id,
-        new=f"{agent.full_name} ({agent.transaction_code})", ip=request.client.host if request.client else None,
+        new=f"{agent.full_name} ({agent.transaction_code}) · {approval}",
+        ip=request.client.host if request.client else None,
     )
     return _serialize(agent)
 
@@ -236,13 +251,17 @@ async def update_agent(
             raise HTTPException(status_code=409, detail="An agent with this name already exists.")
         agent.full_name = fn
     if data.mobile is not None:
-        mob = data.mobile.strip() or None
-        if mob and await _duplicate(db, business, field=AgentMaster.mobile, value=mob, exclude_id=agent.id):
+        mob = data.mobile.strip()
+        if not _MOBILE_RE.match(mob):
+            raise HTTPException(status_code=400, detail="Mobile Number must be exactly 10 digits (numbers only).")
+        if await _duplicate(db, business, field=AgentMaster.mobile, value=mob, exclude_id=agent.id):
             raise HTTPException(status_code=409, detail="An agent with this mobile number already exists.")
         agent.mobile = mob
     if data.email is not None:
-        em = data.email.strip() or None
-        if em and await _duplicate(db, business, field=AgentMaster.email, value=em, exclude_id=agent.id):
+        em = data.email.strip()
+        if not _EMAIL_RE.match(em):
+            raise HTTPException(status_code=400, detail="Enter a valid email address.")
+        if await _duplicate(db, business, field=AgentMaster.email, value=em, exclude_id=agent.id):
             raise HTTPException(status_code=409, detail="An agent with this email address already exists.")
         agent.email = em
     if data.country is not None:
@@ -300,6 +319,10 @@ async def set_agent_status(
     if st not in STATUSES:
         raise HTTPException(status_code=400, detail="Status must be Active or Inactive.")
     agent = await _get_scoped(db, agent_id, _business(user))
+    # A Supervisor-created agent awaiting approval can't be activated via the toggle — it must go
+    # through the Manager approve/reject flow.
+    if agent.approval_status == "PENDING":
+        raise HTTPException(status_code=400, detail="This agent is pending Manager approval — use Approve / Reject.")
     old = agent.status
     agent.status = st
     agent.updated_by = user.name
@@ -312,6 +335,38 @@ async def set_agent_status(
         old=old, new=st, ip=request.client.host if request.client else None,
     )
     return _serialize(agent)
+
+
+# ── Approval (Manager only) — approve/reject a Supervisor-created pending agent ──
+async def _decide_approval(agent_id: int, request: Request, db: AsyncSession, user: User, *, approve: bool) -> dict:
+    if str(user.merchant_role or "").upper() != "MANAGER":
+        raise HTTPException(status_code=403, detail="Only a Manager can approve or reject agents.")
+    agent = await _get_scoped(db, agent_id, _business(user))
+    if agent.approval_status != "PENDING":
+        raise HTTPException(status_code=400, detail="This agent is not pending approval.")
+    agent.approval_status = "APPROVED" if approve else "REJECTED"
+    agent.status = "ACTIVE" if approve else "INACTIVE"
+    agent.updated_by = user.name
+    agent.updated_by_id = user.id
+    agent.updated_at = datetime.utcnow()
+    await db.flush()
+    await db.refresh(agent)
+    await record_agent_audit(
+        db, "AGENT_APPROVE" if approve else "AGENT_REJECT", actor=user, entity_type="agent",
+        entity_id=agent.agent_id, new=agent.approval_status,
+        ip=request.client.host if request.client else None,
+    )
+    return _serialize(agent)
+
+
+@router.patch("/{agent_id}/approve")
+async def approve_agent(agent_id: int, request: Request, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_agent_manager)):
+    return await _decide_approval(agent_id, request, db, user, approve=True)
+
+
+@router.patch("/{agent_id}/reject")
+async def reject_agent(agent_id: int, request: Request, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_agent_manager)):
+    return await _decide_approval(agent_id, request, db, user, approve=False)
 
 
 async def _has_transaction_history(db: AsyncSession, agent: AgentMaster) -> bool:
