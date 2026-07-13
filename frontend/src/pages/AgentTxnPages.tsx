@@ -2,13 +2,14 @@ import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
 import { fmt } from '../utils/helpers';
-import { Card, Btn, Input, Sel, LoadingScreen } from '../components/UI';
+import { Card, Btn, Input, Sel, Modal, LoadingScreen } from '../components/UI';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import {
   agentTxnsAPI, agentTxnError,
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
   type AgentWithdrawalBody, type AgentMemberLookup, type AgentTxnRow,
+  type AgentTxnAuditRow, type AgentTxnQuery,
 } from '../services/agentTxns';
 
 // ─── Isolated Agent Transaction subsystem — Merchant operator workflow ─────────
@@ -470,6 +471,203 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
           <Btn variant="secondary" onClick={reset} disabled={busy}>Clear</Btn>
         </div>
       </Card>
+    </div>
+  );
+};
+
+// ─── Manage Transaction — correct the amount of a PENDING agent transaction ─────
+const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApprove: boolean; onClose: () => void; onRefresh: () => void }> =
+  ({ row, fd, canApprove, onClose, onRefresh }) => {
+    const { showToast } = useToast();
+    const [amount, setAmount] = useState(String(row.amount));
+    const [notes, setNotes] = useState('');
+    const [sendApproval, setSendApproval] = useState(false);
+    const [approverId, setApproverId] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [current, setCurrent] = useState<AgentTxnRow>(row);
+    const [audit, setAudit] = useState<AgentTxnAuditRow[]>([]);
+
+    const loadAudit = useCallback(() => { agentTxnsAPI.audit(row.id).then(setAudit).catch(() => {}); }, [row.id]);
+    useEffect(() => { loadAudit(); }, [loadAudit]);
+
+    const immutable: Array<[string, React.ReactNode]> = [
+      ['Reference Number', current.referenceNumber], ['Transaction Code', current.transactionCode],
+      ['Type', current.type], ['Agent', `${current.agentCode || '—'}${current.agentName ? ` · ${current.agentName}` : ''}`],
+      ['Membership', `${current.membershipId}${current.membershipName ? ` · ${current.membershipName}` : ''}`],
+      ['Membership Type', current.membershipType], ['Note Number', current.noteNumber],
+      ['Token Details', current.tokenDetails], ['Status', current.status],
+      ['Created (IST)', `${current.createdDate || ''} ${current.createdTime || ''}`],
+    ];
+
+    const saveAmount = async () => {
+      const amt = Number(amount);
+      if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
+      if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
+      if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
+      setBusy(true);
+      try {
+        const updated = await agentTxnsAPI.manage(row.id, {
+          amount: amt, notes: notes || undefined, sentForApproval: sendApproval,
+          approverUserId: sendApproval ? Number(approverId) : undefined,
+        });
+        setCurrent(updated); setNotes('');
+        showToast(`Amount updated for ${updated.referenceNumber}.`, 'success');
+        loadAudit(); onRefresh();
+      } catch (e) { showToast(agentTxnError(e, 'Failed to update the transaction.'), 'error'); }
+      finally { setBusy(false); }
+    };
+
+    const decide = async (approve: boolean) => {
+      setBusy(true);
+      try {
+        await (approve ? agentTxnsAPI.approve(row.id) : agentTxnsAPI.reject(row.id));
+        showToast(approve ? 'Transaction approved.' : 'Transaction rejected.', 'success');
+        onRefresh(); onClose();
+      } catch (e) { showToast(agentTxnError(e, 'Action failed.'), 'error'); }
+      finally { setBusy(false); }
+    };
+
+    return (
+      <Modal title={`Manage ${current.referenceNumber}`} onClose={onClose} wide>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+          {immutable.map(([k, v]) => (
+            <div key={k}><div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div><div style={{ fontSize: 12.5, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v}</div></div>
+          ))}
+        </div>
+        <p style={{ fontSize: 11.5, color: T.textMuted, margin: '0 0 12px' }}>Only the Transaction Amount can be changed. Agent, membership, reference, code, token and note number are immutable.</p>
+
+        <Input label="Transaction Amount" type="number" value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" />
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes <span style={{ color: T.textLight, fontWeight: 600 }}>({notes.length}/100)</span></label>
+        <textarea value={notes} maxLength={100} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Reason for the correction (optional)"
+          style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical', marginBottom: 12 }} />
+
+        <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: T.textMain }}>
+            <input type="checkbox" checked={sendApproval} onChange={e => setSendApproval(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            Send To Approval (optional)
+          </label>
+          {sendApproval && (
+            <div style={{ marginTop: 10, maxWidth: 360 }}>
+              <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
+                options={[{ value: '', label: '— Select approver —' }, ...(fd?.approvers || []).map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+          <Btn onClick={saveAmount} disabled={busy}>{busy ? 'Saving…' : 'Update Amount'}</Btn>
+          {canApprove && <>
+            <Btn variant="success" onClick={() => decide(true)} disabled={busy}>Approve</Btn>
+            <Btn variant="danger" onClick={() => decide(false)} disabled={busy}>Reject</Btn>
+          </>}
+          <Btn variant="secondary" onClick={onClose} disabled={busy}>Close</Btn>
+        </div>
+
+        <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Audit History</h3>
+        <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: T.canvas }}>{['Date & Time (IST)', 'Action', 'Old', 'New', 'By', 'Note'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <tbody>
+              {audit.length === 0 && <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 18 }}>No history yet.</td></tr>}
+              {audit.map(a => (
+                <tr key={a.id} style={{ background: T.surface }}>
+                  <td style={{ ...tdS, whiteSpace: 'nowrap', color: T.textMuted }}>{a.createdDate} {a.createdTime}</td>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{a.action.replace(/_/g, ' ')}</td>
+                  <td style={tdS}>{a.oldAmount == null ? '—' : fmt(a.oldAmount)}</td>
+                  <td style={tdS}>{a.newAmount == null ? '—' : fmt(a.newAmount)}</td>
+                  <td style={tdS}>{a.actor || '—'}{a.role ? ` (${a.role})` : ''}</td>
+                  <td style={{ ...tdS, color: T.textMuted }}>{a.note || (a.approverName ? `→ ${a.approverName}` : '—')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Modal>
+    );
+  };
+
+export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => {
+  const { showToast } = useToast();
+  const canApprove = ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
+  const [fd, setFd] = useState<AgentFormData | null>(null);
+  const [rows, setRows] = useState<AgentTxnRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [manageRow, setManageRow] = useState<AgentTxnRow | null>(null);
+  const [ref, setRef] = useState('');
+  const [agentIdF, setAgentIdF] = useState('');
+  const [memberF, setMemberF] = useState('');
+  const [dateF, setDateF] = useState('');
+  const [fromF, setFromF] = useState('');
+  const [toF, setToF] = useState('');
+
+  useEffect(() => { agentTxnsAPI.formData().then(setFd).catch(() => {}); }, []);
+
+  const search = useCallback(async () => {
+    setLoading(true);
+    try {
+      const q: AgentTxnQuery = { status: 'PENDING' };
+      if (dateF) q.date = dateF; else { if (fromF) q.date_from = fromF; if (toF) q.date_to = toF; }
+      let data = await agentTxnsAPI.list(q);
+      const r = ref.trim().toLowerCase(), ag = agentIdF.trim().toLowerCase(), mem = memberF.trim().toLowerCase();
+      if (r) data = data.filter(x => (x.referenceNumber || '').toLowerCase().includes(r));
+      if (ag) data = data.filter(x => (x.agentCode || '').toLowerCase().includes(ag));
+      if (mem) data = data.filter(x => (x.membershipId || '').toLowerCase().includes(mem));
+      setRows(data);
+    } catch { showToast('Failed to load transactions.', 'error'); }
+    finally { setLoading(false); }
+  }, [ref, agentIdF, memberF, dateF, fromF, toF, showToast]);
+
+  useEffect(() => { search(); /* initial load */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const clearFilters = () => { setRef(''); setAgentIdF(''); setMemberF(''); setDateF(''); setFromF(''); setToF(''); };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Manage Transaction</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Correct the amount of a pending agent transaction. Agent transactions only — merchant transactions are never affected.</p>
+      </div>
+      <IsolationNote />
+
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
+          <Input label="Reference Number" value={ref} onChange={e => setRef(e.target.value)} style={{ marginBottom: 0 }} />
+          <Input label="Agent ID" value={agentIdF} onChange={e => setAgentIdF(e.target.value)} placeholder="AGT…" style={{ marginBottom: 0 }} />
+          <Input label="Membership ID" value={memberF} onChange={e => setMemberF(e.target.value)} style={{ marginBottom: 0 }} />
+          <Input label="Date" type="date" value={dateF} onChange={e => setDateF(e.target.value)} style={{ marginBottom: 0 }} />
+          <Input label="From Date" type="date" value={fromF} onChange={e => setFromF(e.target.value)} style={{ marginBottom: 0 }} />
+          <Input label="To Date" type="date" value={toF} onChange={e => setToF(e.target.value)} style={{ marginBottom: 0 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
+          <Btn size="sm" onClick={search} disabled={loading}>{loading ? 'Searching…' : 'Search'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={() => { clearFilters(); }}>Clear</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted, alignSelf: 'center' }}>{rows.length} pending</span>
+        </div>
+      </Card>
+
+      <Card style={{ overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: T.canvas }}>{['Reference', 'Type', 'Agent', 'Membership', 'Amount', 'Created (IST)', 'Action'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <tbody>
+              {rows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No pending agent transactions match the search.</td></tr>}
+              {rows.map(x => (
+                <tr key={x.id} style={{ background: T.surface }}>
+                  <td style={{ ...tdS, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
+                  <td style={tdS}>{x.type}</td>
+                  <td style={tdS}>{x.agentCode || '—'}</td>
+                  <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                  <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} onClose={() => setManageRow(null)} onRefresh={search} />}
     </div>
   );
 };

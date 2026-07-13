@@ -89,6 +89,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'agent-unassigned': 'Unassigned Transactions',
   'agent-deposit-req': 'Agent Deposit Request',
   'agent-withdrawal-req': 'Agent Withdrawal Request',
+  'agent-manage': 'Manage Transaction',
   'agent-audit': 'Agent Audit Trail',
   'agent-reports': 'Agent Reports',
   kyc: 'KYC Management',
@@ -145,14 +146,15 @@ const AGENT_CHILDREN: NavItem[] = [
   { key: 'agent-transactions', icon: 'transactions', label: 'Transactions' },
   { key: 'agent-deposit-req', icon: 'deposit', label: 'Agent Deposit Request' },
   { key: 'agent-withdrawal-req', icon: 'withdrawal', label: 'Agent Withdrawal Request' },
+  { key: 'agent-manage', icon: 'templates', label: 'Manage Transaction' },
   { key: 'agent-audit', icon: 'audit', label: 'Audit Trail' },
   { key: 'agent-reports', icon: 'reports', label: 'Reports' },
 ];
 const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 const AGENT_SUBTABS: Record<string, string[]> = {
-  SUPERVISOR: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-audit', 'agent-reports'],
-  MANAGER: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-audit', 'agent-reports'],
-  DEO: ['agent-overview', 'agent-deposit-req', 'agent-withdrawal-req'],
+  SUPERVISOR: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-manage', 'agent-audit', 'agent-reports'],
+  MANAGER: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-manage', 'agent-audit', 'agent-reports'],
+  DEO: ['agent-overview', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-manage'],
   DEPOSIT_OPERATOR: ['agent-overview', 'agent-deposit-req'],
   WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-withdrawal-req'],
 };
