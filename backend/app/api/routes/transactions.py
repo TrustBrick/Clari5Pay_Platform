@@ -165,6 +165,26 @@ def _forbid_checker_create(user: User) -> None:
         )
 
 
+def business_representatives(merchants: list[User]) -> dict[str, User]:
+    """One representative User per business name — the MER-coded COMPANY row (the Merchant
+    Master), falling back to the earliest-created (lowest-id) user for any legacy business with
+    no MER company row. Merchants sharing a name pool one balance, so each business is counted
+    exactly once; picking the master row makes every fee/profile figure derived from it come from
+    the same record the Merchant Details popup and /users/merchants expose (never an arbitrary
+    staff login). Matches the frontend's owner-selection logic exactly."""
+    rep: dict[str, User] = {}
+    for m in merchants:
+        cur = rep.get(m.name)
+        if cur is None:
+            rep[m.name] = m
+            continue
+        cur_is_mer = (cur.merchant_code or "").startswith("MER")
+        m_is_mer = (m.merchant_code or "").startswith("MER")
+        if (m_is_mer and not cur_is_mer) or (m_is_mer == cur_is_mer and m.id < cur.id):
+            rep[m.name] = m
+    return rep
+
+
 async def compute_balance(db: AsyncSession, user: User) -> dict:
     """Available balance + counts, aggregated across all merchant users sharing a business name."""
     ids = (await db.execute(
@@ -264,11 +284,10 @@ async def compute_global_summary(db: AsyncSession) -> dict:
     merchants = (await db.execute(
         select(User).where(User.role == UserRole.MERCHANT)
     )).scalars().all()
-    # One representative per business — merchants sharing a name pool one balance, so each
-    # business is counted exactly once (same pooling as compute_balance / merchant-stats).
-    rep: dict[str, User] = {}
-    for m in merchants:
-        rep.setdefault(m.name, m)
+    # One representative per business — the MER-coded Merchant Master row (same pooling and
+    # master selection as compute_balance / merchant-stats), so each business is counted exactly
+    # once and its fees come from the master, keeping this total in sync with Merchant Analytics.
+    rep = business_representatives(merchants)
 
     keys = ("totalDeposit", "totalWithdrawn", "totalSettled",
             "depositCommission", "withdrawalCommission", "settlementCommission",
@@ -789,9 +808,9 @@ async def merchant_balances(
     Merchants page. Merchants sharing a business name share one balance pool."""
     async def _compute():
         merchants = (await db.execute(select(User).where(User.role == UserRole.MERCHANT))).scalars().all()
-        rep: dict[str, User] = {}
-        for m in merchants:
-            rep.setdefault(m.name, m)
+        # Master (MER) representative per business, so this available/running balance uses the same
+        # fees as the Merchant Master — consistent with Merchant Analytics and the Details popup.
+        rep = business_representatives(merchants)
         out = []
         for name, user in rep.items():
             s = await compute_balance(db, user)
@@ -804,21 +823,27 @@ async def merchant_balances(
 @router.get("/merchant-stats")
 async def merchant_stats(
     db: AsyncSession = Depends(get_db),
-    caller: User = Depends(get_current_admin),
+    _: User = Depends(get_current_admin),
 ):
-    """Per-merchant-business analytics for the Merchant Analytics page. Super Admin sees every
-    merchant; an Admin sees only the merchants they created. Merchants sharing a business name
-    are aggregated into one row (same pooling as the balance logic)."""
+    """Per-merchant-business analytics for the Merchant Analytics page. Every admin (Admin and
+    Super Admin alike) sees the SAME rows for every merchant business — identical to the
+    Merchant Master list served by /users/merchants, so Merchant Analytics never varies by which
+    admin created a merchant or is logged in. Merchants sharing a business name are aggregated
+    into one row (same pooling as the balance logic)."""
     async def _compute():
-        q = select(User).where(User.role == UserRole.MERCHANT)
-        if caller.role != UserRole.SUPER_ADMIN:
-            q = q.where(User.created_by == caller.id)
-        merchants = (await db.execute(q)).scalars().all()
+        # No created_by scoping: the Merchant Master (/users/merchants) is visible to every admin,
+        # so Merchant Analytics reads that same full set for a single, admin-independent source.
+        merchants = (await db.execute(
+            select(User).where(User.role == UserRole.MERCHANT)
+        )).scalars().all()
 
-        rep: dict[str, User] = {}
+        # One representative per business name — the MER-coded COMPANY row (the Merchant Master,
+        # the exact record the Merchant Details popup reads), so every profile field (username,
+        # email, fees, id) AND every fee-based balance figure below comes from that master record
+        # — never an arbitrary staff login — keeping the two screens perfectly in sync.
+        rep = business_representatives(merchants)
         name_ids: dict[str, list[int]] = {}
         for m in merchants:
-            rep.setdefault(m.name, m)
             name_ids.setdefault(m.name, []).append(m.id)
 
         out = []
@@ -858,8 +883,9 @@ async def merchant_stats(
             })
         out.sort(key=lambda r: r["name"].lower())
         return out
-    # Cached ~5s, scoped per admin (Super Admin sees all; Admin sees own merchants). Hot N+1. Read-only.
-    return await cached_json(f"c:txn:merchant-stats:{caller.role.value}:{caller.id}", 5, _compute)
+    # Cached ~5s under a single admin-independent key — the result is now identical for every
+    # admin, so all callers share one computation and always see the same Merchant Analytics data.
+    return await cached_json("c:txn:merchant-stats:all", 5, _compute)
 
 
 @router.get("/member-profile/{member_id}")
@@ -1293,12 +1319,13 @@ async def admin_reports(
     business_by_mid = {u.id: u.name for u in merchant_users}
     # Operator display name per creating user (Treasury Report's Operator column).
     operator_by_mid = {u.id: (u.full_name or u.username or u.name) for u in merchant_users}
-    # One representative + fee-rate pair per business (merchants sharing a name pool one balance).
-    rep: dict[str, User] = {}
-    rates_by_business: dict[str, tuple[float, float]] = {}
-    for u in merchant_users:
-        rep.setdefault(u.name, u)
-        rates_by_business.setdefault(u.name, ((u.pay_in_fee or 0) / 100, (u.pay_out_fee or 0) / 100))
+    # One master (MER) representative + fee-rate pair per business (merchants sharing a name pool
+    # one balance). Fees come from the Merchant Master row, so report figures stay in sync with
+    # Merchant Analytics, the global summary and the Merchant Details popup.
+    rep = business_representatives(merchant_users)
+    rates_by_business: dict[str, tuple[float, float]] = {
+        name: ((u.pay_in_fee or 0) / 100, (u.pay_out_fee or 0) / 100) for name, u in rep.items()
+    }
 
     if merchant:
         if merchant not in rep:
