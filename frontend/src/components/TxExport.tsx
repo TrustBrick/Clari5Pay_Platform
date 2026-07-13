@@ -3,6 +3,7 @@ import { T } from '../utils/theme';
 import { fmt, memberLabel } from '../utils/helpers';
 import { exportTransactionsXlsx, txnTypeLabel } from '../utils/xlsx';
 import { Btn, Sel } from './UI';
+import { Icon } from './Icon';
 import type { Transaction } from '../types';
 
 // ─── Branded PDF export of transaction history (print-to-PDF; no extra deps) ──────
@@ -99,7 +100,7 @@ export const TxExportButton: React.FC<{ txns: Transaction[]; title?: string }> =
 
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
-      <Btn size="sm" variant="secondary" onClick={() => setOpen(o => !o)}>⬇ Export</Btn>
+      <Btn size="sm" variant="secondary" onClick={() => setOpen(o => !o)}><Icon name="export" size={14} /> Export</Btn>
       {open && (
         <>
           <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
@@ -121,8 +122,8 @@ export const TxExportButton: React.FC<{ txns: Transaction[]; title?: string }> =
               </div>
             )}
             <div style={{ display: 'flex', gap: 8 }}>
-              <Btn full variant="secondary" onClick={runPdf}>📄 Download PDF</Btn>
-              <Btn full onClick={runExcel}>📊 Download Excel</Btn>
+              <Btn full variant="secondary" onClick={runPdf}><Icon name="pdf" size={15} /> Download PDF</Btn>
+              <Btn full onClick={runExcel}><Icon name="excel" size={15} /> Download Excel</Btn>
             </div>
           </div>
         </>

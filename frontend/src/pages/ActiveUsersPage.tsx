@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { T } from '../utils/theme';
 import { Card, StatCard, Sel, Input, Modal, Skeleton, CountUp } from '../components/UI';
+import { Icon, isIconName } from '../components/Icon';
 import { activeUsersAPI } from '../services/api';
 import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
 import { usePresenceStream } from '../utils/sse';
@@ -57,7 +58,7 @@ const UserGroup: React.FC<{
   return (
     <div style={{ marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, margin: '0 0 10px' }}>
-        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>{icon} {title}</h3>
+        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain, display: 'inline-flex', alignItems: 'center', gap: 6 }}>{isIconName(icon) ? <Icon name={icon} size={16} /> : icon} {title}</h3>
         <span style={{ fontSize: 12, color: T.textMuted, fontWeight: 700 }}>
           <span style={{ color: T.success }}>{online} online</span> · {rows.length} total
         </span>
@@ -173,10 +174,10 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
     <div>
       {/* 1 — Summary cards */}
       <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(210px,1fr))', gap: 14, marginBottom: 18 }}>
-        <StatCard icon="🟢" label="Online Users" value={<CountUp value={s?.online ?? 0} />} color={T.success} />
-        <StatCard icon="⚪" label="Offline Users" value={<CountUp value={s?.offline ?? 0} />} color={T.textMuted} />
-        <StatCard icon="🔓" label="Total Logged In" value={<CountUp value={s?.totalLoggedIn ?? 0} />} color={T.blue} />
-        <StatCard icon="👥" label="Total Registered Users" value={<CountUp value={s?.totalRegistered ?? 0} />} color={T.info || T.blue} />
+        <StatCard icon="online" label="Online Users" value={<CountUp value={s?.online ?? 0} />} color={T.success} />
+        <StatCard icon="offline" label="Offline Users" value={<CountUp value={s?.offline ?? 0} />} color={T.textMuted} />
+        <StatCard icon="logged-in" label="Total Logged In" value={<CountUp value={s?.totalLoggedIn ?? 0} />} color={T.blue} />
+        <StatCard icon="registered-users" label="Total Registered Users" value={<CountUp value={s?.totalRegistered ?? 0} />} color={T.info || T.blue} />
       </div>
 
       {/* 2 — Merchant status */}
@@ -225,9 +226,9 @@ export const ActiveUsersPage: React.FC<{ user: User }> = () => {
       </Card>
 
       {/* Three separate presence containers */}
-      <UserGroup title="Admins" icon="🛡" rows={admins} flash={flash} onSelect={setSel} />
-      <UserGroup title="Support" icon="🎧" rows={support} flash={flash} onSelect={setSel} />
-      <UserGroup title="Users" icon="🏬" rows={users} flash={flash} onSelect={setSel} />
+      <UserGroup title="Admins" icon="admin-management" rows={admins} flash={flash} onSelect={setSel} />
+      <UserGroup title="Support" icon="support" rows={support} flash={flash} onSelect={setSel} />
+      <UserGroup title="Users" icon="users" rows={users} flash={flash} onSelect={setSel} />
 
       {/* User details drawer */}
       {sel && (

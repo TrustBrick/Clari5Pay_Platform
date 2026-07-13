@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { Logo, Btn, Input } from '../components/UI';
+import { Icon, isIconName, type IconName } from '../components/Icon';
 import ThemeToggle from '../components/ThemeToggle';
 import { PORTAL, PORTAL_NAME } from '../utils/portal';
 import { useAuth } from '../context/AuthContext';
@@ -190,9 +191,9 @@ const LoginPage: React.FC = () => {
           <div style={{ marginBottom:48 }}><Logo size="lg" dark/></div>
           <h2 style={{ color:'#fff',fontSize:28,fontWeight:800,margin:'0 0 12px',lineHeight:1.3 }}>Enterprise Payment<br/>Infrastructure</h2>
           <p style={{ color:'rgba(255,255,255,0.55)',fontSize:15,lineHeight:1.7,marginBottom:40 }}>A unified platform for merchants, admins, and platform teams to manage payments with full audit trails and real-time risk intelligence.</p>
-          {[{icon:'🛡',t:'Bank-grade security',d:'End-to-end encrypted transactions'},{icon:'⚡',t:'Real-time processing',d:'Instant settlement and approvals'},{icon:'📊',t:'Full audit trail',d:'Every action logged and traceable'},{icon:'🎧',t:'24/7 Support Team',d:'Dedicated support team available around the clock to assist users whenever needed.'}].map(f=>(
+          {[{icon:'security',t:'Bank-grade security',d:'End-to-end encrypted transactions'},{icon:'velocity',t:'Real-time processing',d:'Instant settlement and approvals'},{icon:'audit-logs',t:'Full audit trail',d:'Every action logged and traceable'},{icon:'support',t:'24/7 Support Team',d:'Dedicated support team available around the clock to assist users whenever needed.'}].map(f=>(
             <div key={f.t} style={{ display:'flex',gap:14,alignItems:'flex-start',marginBottom:20 }}>
-              <div style={{ width:40,height:40,borderRadius:12,background:'rgba(0,82,204,0.3)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0 }}>{f.icon}</div>
+              <div style={{ width:40,height:40,borderRadius:12,background:'rgba(0,82,204,0.3)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0,color:'#7eb8ff' }}>{isIconName(f.icon) ? <Icon name={f.icon as IconName} size={20} /> : f.icon}</div>
               <div><p style={{ color:'#fff',fontWeight:700,margin:0,fontSize:14 }}>{f.t}</p><p style={{ color:'rgba(255,255,255,0.45)',fontSize:13,margin:0 }}>{f.d}</p></div>
             </div>
           ))}
@@ -209,18 +210,18 @@ const LoginPage: React.FC = () => {
               <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>Enter the 6-digit code sent to <b style={{ color:T.textMain }}>{otp.email}</b></p>
             </div>
 
-            {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}>⚠ {error}</div>}
+            {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}><Icon name="warning" size={13} /> {error}</div>}
 
             {otp.devOtp && (
               <div style={{ background:T.infoBg,border:`1px solid ${T.blue}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.blue }}>
-                🧪 Dev mode (no email server): your code is <b style={{ letterSpacing:'0.1em' }}>{otp.devOtp}</b>
+                <Icon name="demo-tools" size={14} /> Dev mode (no email server): your code is <b style={{ letterSpacing:'0.1em' }}>{otp.devOtp}</b>
               </div>
             )}
 
             <div className={shake ? 'c5-shake' : undefined}>
               <Input label="One-Time Password" value={code}
                 onChange={e=>setCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
-                placeholder="6-digit code" icon="🔑" required/>
+                placeholder="6-digit code" icon="login" required/>
             </div>
 
             <Btn size="lg" full onClick={handleVerify} disabled={verifying||code.length<6}>
@@ -241,14 +242,14 @@ const LoginPage: React.FC = () => {
               <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>Sign in to the <b style={{ color:T.blue }}>{PORTAL_NAME[PORTAL]}</b></p>
             </div>
 
-            {sessionExpired && <div style={{ background:T.warningBg,border:`1px solid ${T.warning}40`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.warning,fontWeight:600 }}>⏳ Your session has expired due to 10 minutes of inactivity. Please log in again.</div>}
+            {sessionExpired && <div style={{ background:T.warningBg,border:`1px solid ${T.warning}40`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.warning,fontWeight:600 }}><Icon name="pending" size={13} /> Your session has expired due to 10 minutes of inactivity. Please log in again.</div>}
 
-            {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}>⚠ {error}</div>}
+            {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}><Icon name="warning" size={13} /> {error}</div>}
 
-            <Input label="Username" value={username} onChange={e=>setUsername(e.target.value)} placeholder="Your username" icon="👤" required/>
+            <Input label="Username" value={username} onChange={e=>setUsername(e.target.value)} placeholder="Your username" icon="user" required/>
             <div style={{ position:'relative' }}>
-              <Input label="Password" type={show?'text':'password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Your password" icon="🔒" required/>
-              <span onClick={()=>setShow(!show)} style={{ position:'absolute',right:12,bottom:22,cursor:'pointer',fontSize:16,color:T.textMuted }}>{show?'🙈':'👁'}</span>
+              <Input label="Password" type={show?'text':'password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Your password" icon="password" required/>
+              <span onClick={()=>setShow(!show)} style={{ position:'absolute',right:12,bottom:22,cursor:'pointer',fontSize:16,color:T.textMuted }}>{show ? <Icon name="eye-off" size={16} /> : <Icon name="view" size={16} />}</span>
             </div>
 
             <div style={{ display:'flex',justifyContent:'flex-end',marginBottom:20,marginTop:-8 }}>
@@ -262,7 +263,7 @@ const LoginPage: React.FC = () => {
         ) : (
           <>
             <div style={{ textAlign:'center',marginBottom:24 }}>
-              <div style={{ fontSize:40,marginBottom:12 }}>🔐</div>
+              <div style={{ fontSize:40,marginBottom:12 }}><Icon name="password" size={40} /></div>
               <h2 style={{ fontSize:20,fontWeight:800,color:T.textMain,margin:'0 0 6px' }}>Reset Password</h2>
               <p style={{ color:T.textMuted,fontSize:13,margin:0 }}>
                 {forgotStep==='username' && 'Enter your username to receive a verification code'}
@@ -272,11 +273,11 @@ const LoginPage: React.FC = () => {
               </p>
             </div>
 
-            {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}>⚠ {error}</div>}
+            {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}><Icon name="warning" size={13} /> {error}</div>}
 
             {forgotStep==='username' && (
               <>
-                <Input label="Username" value={forgotUsername} onChange={e=>setForgotUsername(e.target.value)} placeholder="Your username" icon="👤" required/>
+                <Input label="Username" value={forgotUsername} onChange={e=>setForgotUsername(e.target.value)} placeholder="Your username" icon="user" required/>
                 <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 14px' }}>A one-time code will be sent to the email registered for this account.</p>
                 <Btn size="lg" full onClick={sendResetOtp} disabled={forgotBusy||!forgotUsername}>{forgotBusy?'Sending...':'Send OTP'}</Btn>
               </>
@@ -286,12 +287,12 @@ const LoginPage: React.FC = () => {
               <>
                 {resetDevOtp && (
                   <div style={{ background:T.infoBg,border:`1px solid ${T.blue}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.blue }}>
-                    🧪 Dev mode: your code is <b style={{ letterSpacing:'0.1em' }}>{resetDevOtp}</b>
+                    <Icon name="demo-tools" size={14} /> Dev mode: your code is <b style={{ letterSpacing:'0.1em' }}>{resetDevOtp}</b>
                   </div>
                 )}
                 <Input label="One-Time Password" value={resetCode}
                   onChange={e=>setResetCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
-                  placeholder="6-digit code" icon="🔑" required/>
+                  placeholder="6-digit code" icon="login" required/>
                 <Btn size="lg" full onClick={verifyResetCode} disabled={forgotBusy||resetCode.length<6}>{forgotBusy?'Verifying...':'Verify Code →'}</Btn>
                 <div style={{ display:'flex',justifyContent:'flex-end',marginTop:16 }}>
                   <span onClick={resendResetOtp} style={{ fontSize:13,color:resendIn>0?T.textLight:T.blue,cursor:resendIn>0?'default':'pointer',fontWeight:700 }}>{resendIn>0?`Resend in ${resendIn}s`:'Resend OTP'}</span>
@@ -303,10 +304,10 @@ const LoginPage: React.FC = () => {
             {forgotStep==='newpw' && (
               <>
                 <div style={{ position:'relative' }}>
-                  <Input label="New Password" type={show?'text':'password'} value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Enter new password" icon="🔒" required/>
-                  <span onClick={()=>setShow(!show)} style={{ position:'absolute',right:12,bottom:22,cursor:'pointer',fontSize:16,color:T.textMuted }}>{show?'🙈':'👁'}</span>
+                  <Input label="New Password" type={show?'text':'password'} value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Enter new password" icon="password" required/>
+                  <span onClick={()=>setShow(!show)} style={{ position:'absolute',right:12,bottom:22,cursor:'pointer',fontSize:16,color:T.textMuted }}>{show ? <Icon name="eye-off" size={16} /> : <Icon name="view" size={16} />}</span>
                 </div>
-                <Input label="Confirm Password" type={show?'text':'password'} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Re-enter new password" icon="🔒" required/>
+                <Input label="Confirm Password" type={show?'text':'password'} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Re-enter new password" icon="password" required/>
                 {confirmPw && newPw !== confirmPw && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
                 <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 14px' }}>{PASSWORD_POLICY_TEXT}</p>
                 <Btn size="lg" full onClick={submitNewPassword} disabled={forgotBusy||!newPw||!confirmPw}>{forgotBusy?'Updating...':'Update Password'}</Btn>
@@ -315,7 +316,7 @@ const LoginPage: React.FC = () => {
 
             {forgotStep==='done' && (
               <div style={{ textAlign:'center',padding:'8px 0 4px' }}>
-                <div style={{ width:56,height:56,borderRadius:'50%',background:T.successBg,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,margin:'0 auto 12px' }}>✓</div>
+                <div style={{ width:56,height:56,borderRadius:'50%',background:T.successBg,display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,margin:'0 auto 12px' }}><Icon name="verified" size={24} /></div>
                 <p style={{ color:T.success,fontWeight:700,margin:'0 0 4px' }}>Password updated successfully</p>
                 <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Sign in with your new password.</p>
                 <Btn size="lg" full style={{ marginTop:18 }} onClick={closeForgot}>← Back to Sign In</Btn>

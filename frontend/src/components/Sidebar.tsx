@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { T } from '../utils/theme';
 import { navForUser } from '../utils/nav';
 import { Logo } from './UI';
+import { Icon, isIconName } from './Icon';
 import type { User, NavItem } from '../types';
 
 interface SidebarProps {
@@ -46,7 +47,11 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
         onMouseEnter={e => { if(!isActive){ (e.currentTarget as HTMLDivElement).style.background=T.sidebarHover; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.9)'; } }}
         onMouseLeave={e => { if(!isActive){ (e.currentTarget as HTMLDivElement).style.background='transparent'; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.6)'; } }}
       >
-        <span style={{ fontSize:indent ? 13 : 15,width:20,textAlign:'center',flexShrink:0 }}>{it.icon}</span>
+        <span style={{ width:20,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+          {isIconName(it.icon)
+            ? <Icon name={it.icon} size={indent ? 16 : 18} weight={isActive ? 'fill' : 'regular'} />
+            : <span style={{ fontSize:indent ? 13 : 15 }}>{it.icon}</span>}
+        </span>
         <span style={{ flex:1 }}>{it.label}</span>
         {it.badge && (
           <span style={{ background:T.danger,color:'#fff',borderRadius:10,fontSize:10,padding:'1px 7px',fontWeight:800 }}>{it.badge}</span>
@@ -74,7 +79,11 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
           onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background=T.sidebarHover; }}
           onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = (childActive && !opened) ? T.sidebarActive : 'transparent'; }}
         >
-          <span style={{ fontSize:15,width:20,textAlign:'center',flexShrink:0 }}>{item.icon}</span>
+          <span style={{ width:20,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+            {isIconName(item.icon)
+              ? <Icon name={item.icon} size={18} weight={childActive ? 'fill' : 'regular'} />
+              : <span style={{ fontSize:15 }}>{item.icon}</span>}
+          </span>
           <span style={{ flex:1 }}>{item.label}</span>
           <span style={{ fontSize:10,transition:'transform 0.2s ease',transform:opened ? 'rotate(90deg)' : 'none',opacity:0.7 }}>▸</span>
         </div>
@@ -124,8 +133,8 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
           <div
             onClick={onClose}
             className="mob-close"
-            style={{ cursor:'pointer',color:'rgba(255,255,255,0.3)',fontSize:18,display:'none' }}
-          >✕</div>
+            style={{ cursor:'pointer',color:'rgba(255,255,255,0.3)',display:'none',alignItems:'center' }}
+          ><Icon name="close" size={18} /></div>
         </div>
 
         {/* Nav */}
@@ -140,7 +149,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
             onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background='rgba(220,38,38,0.12)'; (e.currentTarget as HTMLDivElement).style.color=T.danger; }}
             onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background='transparent'; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.45)'; }}
           >
-            <img src="https://img.icons8.com/?size=100&id=67651&format=png&color=ffffff" alt="" width={24} height={24} style={{ opacity:1,flexShrink:0 }}/> Sign Out
+            <span style={{ width:20,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}><Icon name="signout" size={18} /></span> Sign Out
           </div>
         </div>
       </aside>

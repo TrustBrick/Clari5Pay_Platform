@@ -1,6 +1,7 @@
 import React from 'react';
 import { T } from '../utils/theme';
 import { Logo } from '../components/UI';
+import { Icon, isIconName } from '../components/Icon';
 import ThemeToggle from '../components/ThemeToggle';
 import { PORTAL_LINKS } from '../utils/portal';
 
@@ -14,10 +15,10 @@ const PortalChooser: React.FC = () => (
       {PORTAL_LINKS.map(p => (
         <a key={p.url} href={p.url}
           style={{ textDecoration: 'none', background: T.surface, borderRadius: 16, padding: '24px 22px', boxShadow: '0 10px 40px rgba(0,0,0,0.28)', display: 'block' }}>
-          <div style={{ fontSize: 32, marginBottom: 10 }}>{p.icon}</div>
+          <div style={{ marginBottom: 10, color: T.blue }}>{isIconName(p.icon) ? <Icon name={p.icon} size={32} weight="fill" /> : <span style={{ fontSize: 32 }}>{p.icon}</span>}</div>
           <div style={{ fontSize: 16, fontWeight: 800, color: T.textMain, marginBottom: 4 }}>{p.name}</div>
           <div style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 14 }}>{p.desc}</div>
-          <span style={{ fontSize: 13, fontWeight: 700, color: T.blue }}>Open →</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: T.blue, display: 'inline-flex', alignItems: 'center', gap: 4 }}>Open <Icon name="arrow" size={14} /></span>
         </a>
       ))}
     </div>

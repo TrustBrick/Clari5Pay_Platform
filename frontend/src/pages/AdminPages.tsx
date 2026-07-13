@@ -3,6 +3,7 @@ import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
+import { Icon, isIconName } from '../components/Icon';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
 import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
@@ -319,7 +320,7 @@ const RequestModal: React.FC<{
               onClick={() => imgs.merchantProof
                 ? downloadDataUrl(imgs.merchantProof, `payment-slip-${tx.ref}.png`)
                 : downloadText(`Payment slip — ${tx.ref}\nReference: ${tx.merchantRef}`, `payment-slip-${tx.ref}.txt`)}>
-              ⬇ Download Payment Slip
+              <Icon name="download" size={14} /> Download Payment Slip
             </Btn>
           )}
         </div>
@@ -351,8 +352,8 @@ const RequestModal: React.FC<{
       {chooseStep && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <div style={{ display:'flex',gap:8,marginBottom:12 }}>
-            <Btn size="sm" variant={sendVia==='BANK'?'primary':'ghost'} onClick={()=>setSendVia('BANK')}>🏦 Bank Account</Btn>
-            <Btn size="sm" variant={sendVia==='UPI'?'primary':'ghost'} onClick={()=>setSendVia('UPI')}>📲 UPI ID</Btn>
+            <Btn size="sm" variant={sendVia==='BANK'?'primary':'ghost'} onClick={()=>setSendVia('BANK')}><Icon name="bank" size={14} /> Bank Account</Btn>
+            <Btn size="sm" variant={sendVia==='UPI'?'primary':'ghost'} onClick={()=>setSendVia('UPI')}><Icon name="upi" size={14} /> UPI ID</Btn>
           </div>
           {sendVia === 'BANK' ? (
             <>
@@ -360,7 +361,7 @@ const RequestModal: React.FC<{
               <Sel label="Account" value={accountRef} onChange={e=>setAccountRef(e.target.value)}
                 options={[{ value:'', label:'— Select an account —' }, ...accounts.map(a => ({ value:a.referenceNumber, label:`${a.accountName} — ${a.bankName} (A/C ${a.accountNumber})` }))]} />
               {reusedRef && accountRef === reusedRef && (
-                <p style={{ fontSize:11,color:T.success,margin:'-8px 0 10px',fontWeight:600 }}>↻ Reused from Member {tx.memberId}'s previous deposit — change it if needed.</p>
+                <p style={{ fontSize:11,color:T.success,margin:'-8px 0 10px',fontWeight:600 }}><Icon name="refresh" size={12} /> Reused from Member {tx.memberId}'s previous deposit — change it if needed.</p>
               )}
               <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>A PNG of the selected account is auto-generated and sent to the merchant.</p>
               {/* Optional: upload a custom bank-details image. When set, it overrides the auto card. */}
@@ -370,13 +371,13 @@ const RequestModal: React.FC<{
                 {bankImage && (
                   <div style={{ marginTop:8 }}>
                     <img src={bankImage} alt="Bank details preview" style={{ display:'block',maxWidth:'100%',maxHeight:180,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,background:T.canvas }} />
-                    <Btn size="sm" variant="ghost" style={{ marginTop:6 }} onClick={()=>setBankImage(null)}>✕ Remove Image</Btn>
+                    <Btn size="sm" variant="ghost" style={{ marginTop:6 }} onClick={()=>setBankImage(null)}><Icon name="reject" size={13} /> Remove Image</Btn>
                   </div>
                 )}
                 <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>JPG, JPEG, PNG or WEBP. Re-select to replace. If uploaded, this image is sent instead of the auto-generated card.</p>
               </div>
               <div style={{ display:'flex',gap:10 }}>
-                <Btn onClick={sendAccount} disabled={saving||(!accountRef && !bankImage)}>{saving ? 'Sending...' : (bankImage ? '🖼 Send Bank Details Image' : '🏦 Send Account')}</Btn>
+                <Btn onClick={sendAccount} disabled={saving||(!accountRef && !bankImage)}>{saving ? 'Sending...' : (bankImage ? <><Icon name="upload-image" size={14} /> Send Bank Details Image</> : <><Icon name="bank" size={14} /> Send Account</>)}</Btn>
                 <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
               </div>
             </>
@@ -389,7 +390,7 @@ const RequestModal: React.FC<{
                     options={[{ value:'', label:'— Select a UPI —' }, ...linkedUpis.map(u => ({ value:u.upiId, label:`${u.upiId}  ·  ${u.label}` }))]} />}
               <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>The deposit is credited to this UPI's parent account. No QR is sent.</p>
               <div style={{ display:'flex',gap:10 }}>
-                <Btn onClick={sendUpi} disabled={saving||!upiId}>{saving ? 'Sending...' : '📲 Send UPI'}</Btn>
+                <Btn onClick={sendUpi} disabled={saving||!upiId}>{saving ? 'Sending...' : '<Icon name="upi" size={14} /> Send UPI'}</Btn>
                 <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
               </div>
             </>
@@ -401,13 +402,13 @@ const RequestModal: React.FC<{
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 12px' }}>Review the merchant's payment slip above, then mark this deposit complete.</p>
           <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={()=>complete(false)} disabled={saving}>{saving ? 'Saving...' : '✓ Mark Deposited'}</Btn>
+            <Btn onClick={()=>complete(false)} disabled={saving}>{saving ? 'Saving...' : '<Icon name="approve" size={14} /> Mark Deposited'}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
           <div style={{ display:'flex',gap:10,flexWrap:'wrap',marginTop:12,paddingTop:12,borderTop:`1px dashed ${T.border}` }}>
-            <Btn size="sm" variant="secondary" onClick={recheck} disabled={saving}>{isCashDeposit ? '↻ Request Additional Information' : '↻ Recheck Payment — request re-upload'}</Btn>
+            <Btn size="sm" variant="secondary" onClick={recheck} disabled={saving}><Icon name="refresh" size={13} /> {isCashDeposit ? 'Request Additional Information' : 'Recheck Payment — request re-upload'}</Btn>
             {!riskConfirm ? (
-              <Btn size="sm" variant="danger" onClick={()=>setRiskConfirm(true)} disabled={saving}>⚠ Mark High Risk</Btn>
+              <Btn size="sm" variant="danger" onClick={()=>setRiskConfirm(true)} disabled={saving}><Icon name="warning" size={14} /> Mark High Risk</Btn>
             ) : (
               <>
                 <Btn size="sm" variant="danger" onClick={flagRisk} disabled={saving}>{saving ? '...' : 'Confirm High Risk'}</Btn>
@@ -430,7 +431,7 @@ const RequestModal: React.FC<{
             {receipt && <img src={receipt} alt="Receipt" style={{ width:'auto',maxWidth:240,maxHeight:200,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,margin:'12px 0',background:T.canvas }} />}
           </>}
           <div style={{ display:'flex',gap:10,marginTop:12 }}>
-            <Btn onClick={()=>complete(true)} disabled={saving||(needReceipt&&!receipt)||(needUtr&&!payUtr.trim())}>{saving ? 'Saving...' : '✓ Complete'}</Btn>
+            <Btn onClick={()=>complete(true)} disabled={saving||(needReceipt&&!receipt)||(needUtr&&!payUtr.trim())}>{saving ? 'Saving...' : '<Icon name="approve" size={14} /> Complete'}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
         </div>
@@ -439,7 +440,7 @@ const RequestModal: React.FC<{
       {canReject && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           {!rejecting ? (
-            <Btn size="sm" variant="danger" onClick={()=>setRejecting(true)}>✕ Reject Request</Btn>
+            <Btn size="sm" variant="danger" onClick={()=>setRejecting(true)}><Icon name="reject" size={13} /> Reject Request</Btn>
           ) : (
             <div>
               <label style={{ display:'block',fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6 }}>Rejection Reason</label>
@@ -519,22 +520,22 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   return (
     <div>
       <div className="ad-stat-money" style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:14 }}>
-        <FinanceCard icon="💰" label="Total Available Balance" value={totalAvailableBalance} color={T.success}
+        <FinanceCard icon="available-balance" label="Total Available Balance" value={totalAvailableBalance} color={T.success}
           rows={[['Total Deposits', totalDepositsAmt], ['Total Withdrawals', totalWithdrawnAmt], ['Total Settlements', totalSettledAmt]]} />
-        <FinanceCard icon="％" label="Total Commission Amount" value={totalCommission} color={T.warning}
+        <FinanceCard icon="commission" label="Total Commission Amount" value={totalCommission} color={T.warning}
           rows={[['Deposit Commission', depositCommission], ['Withdrawal Commission', withdrawalCommission], ['Settlement Commission', settlementCommission], ['Total Commission', totalCommission]]} />
-        <FinanceCard icon="◎" label="Available Balance" value={availableBalance} color={T.green}
+        <FinanceCard icon="balance" label="Available Balance" value={availableBalance} color={T.green}
           rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Pay-Out Fee', payoutFee], ['Available Balance', availableBalance]]} />
       </div>
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:12,marginBottom:20 }}>
         {/* A "merchant" is a company (business), not a login row — count distinct businesses. */}
-        <StatCard icon="🏪" label="Total Merchants" value={new Set(merchants.map(m=>m.name)).size} color={T.blue}/>
-        <StatCard icon="✓" label="Completed" value={completed.length} color={T.success}/>
-        <StatCard icon="⧗" label="Pending" value={pending.length} color={T.warning}/>
-        <StatCard icon="↓" label="No. of Deposit Requests" value={depReqs} color={T.blue}/>
-        <StatCard icon="↑" label="No. of Withdrawal Requests" value={wdReqs} color={T.danger}/>
-        <StatCard icon="⇄" label="No. of Settlement Requests" value={setReqs} color={T.info}/>
-        <StatCard icon="≡" label="Total Requests" value={txns.length} color={T.info}/>
+        <StatCard icon="merchants" label="Total Merchants" value={new Set(merchants.map(m=>m.name)).size} color={T.blue}/>
+        <StatCard icon="completed-requests" label="Completed" value={completed.length} color={T.success}/>
+        <StatCard icon="pending" label="Pending" value={pending.length} color={T.warning}/>
+        <StatCard icon="deposit" label="No. of Deposit Requests" value={depReqs} color={T.blue}/>
+        <StatCard icon="withdrawal" label="No. of Withdrawal Requests" value={wdReqs} color={T.danger}/>
+        <StatCard icon="settlement" label="No. of Settlement Requests" value={setReqs} color={T.info}/>
+        <StatCard icon="transactions" label="Total Requests" value={txns.length} color={T.info}/>
       </div>
       <style>{`
         @media(max-width:1180px){.ad-stat-money{grid-template-columns:repeat(2,minmax(0,1fr))!important;}.ad-stat-counts{grid-template-columns:repeat(3,minmax(0,1fr))!important;}}
@@ -873,8 +874,8 @@ export const MerchantAnalyticsPage: React.FC = () => {
                     <select value={exportScope[s.name] || 'ALL'} onChange={e => setExportScope(m => ({ ...m, [s.name]: e.target.value }))} style={{ ...selStyle, flex: 1 }}>
                       {EXPORT_SCOPES.map(e => <option key={e.value} value={e.value}>{e.label}</option>)}
                     </select>
-                    <Btn size="sm" variant="secondary" onClick={() => runExport(s, 'pdf')}>📄 PDF</Btn>
-                    <Btn size="sm" variant="secondary" onClick={() => runExport(s, 'excel')}>📊 Excel</Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => runExport(s, 'pdf')}><Icon name="pdf" size={14} /> PDF</Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => runExport(s, 'excel')}><Icon name="excel" size={14} /> Excel</Btn>
                   </div>
                 </div>
               </Card>
@@ -1326,7 +1327,7 @@ export const AdminAccountsPage: React.FC = () => {
       <Card>
         <div style={{ padding:'14px 20px',borderBottom:`1px solid ${T.border}` }}>
           <div style={{ position:'relative',maxWidth:320 }}>
-            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
+            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}><Icon name="search" size={14} /></span>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search by Account Name..."
               style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
           </div>
@@ -1357,7 +1358,7 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}>
                     {bal && (bal.userCount ?? 0) > 0
-                      ? <Btn size="sm" variant="ghost" onClick={()=>openAcctUsers(a)}>👥 {bal.userCount} user{(bal.userCount ?? 0)>1?'s':''}</Btn>
+                      ? <Btn size="sm" variant="ghost" onClick={()=>openAcctUsers(a)}><Icon name="users" size={14} /> {bal.userCount} user{(bal.userCount ?? 0)>1?'s':''}</Btn>
                       : <span style={{ color:T.textLight }}>0</span>}
                   </td>
                   <td style={{ padding:'11px 14px' }}>
@@ -1521,7 +1522,7 @@ export const AdminAccountsPage: React.FC = () => {
                             <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{u.totalPlayers}</td>
                             <td style={{ padding:'10px 12px',fontWeight:700,color:T.success }}>{fmt(u.deposited)}</td>
                             <td style={{ padding:'10px 12px' }}>
-                              <Btn size="sm" variant="ghost" disabled={u.totalPlayers===0} onClick={()=>setViewPlayersOf(u)}>👤 View Players</Btn>
+                              <Btn size="sm" variant="ghost" disabled={u.totalPlayers===0} onClick={()=>setViewPlayersOf(u)}><Icon name="user" size={14} /> View Players</Btn>
                             </td>
                           </tr>
                         ))}
@@ -1578,7 +1579,7 @@ export const AdminAccountsPage: React.FC = () => {
             </div>
           ))}
           <div style={{ display:'flex',gap:10,marginTop:16 }}>
-            <Btn onClick={()=>openStatement(detail)}>📒 View Statement</Btn>
+            <Btn onClick={()=>openStatement(detail)}><Icon name="ledger" size={14} /> View Statement</Btn>
             <Btn variant="secondary" onClick={()=>setDetail(null)}>Close</Btn>
           </div>
         </Modal>
@@ -1649,7 +1650,7 @@ export const AdminAccountsPage: React.FC = () => {
 const FinanceCard: React.FC<{ icon: string; label: string; value: number; color: string; rows: Array<[string, number]> }> = ({ icon, label, value, color, rows }) => (
   <Card style={{ padding:18 }}>
     <div style={{ display:'flex',alignItems:'center',gap:8,marginBottom:6 }}>
-      <span style={{ width:30,height:30,borderRadius:9,background:`${color}1a`,display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:16 }}>{icon}</span>
+      <span style={{ width:30,height:30,borderRadius:9,background:`${color}1a`,display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:16,color }}>{isIconName(icon) ? <Icon name={icon} size={17} color={color} /> : icon}</span>
       <span style={{ fontSize:11.5,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}</span>
     </div>
     <p style={{ fontSize:26,fontWeight:800,color,margin:'0 0 10px' }}>{fmt(value)}</p>
@@ -1730,18 +1731,18 @@ export const SaDashboard: React.FC<{ onNavigate?: (p: string) => void }> = ({ on
       </div>
       {/* 3 per row → counts on top, money on the bottom row */}
       <div style={{ display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:14,marginBottom:16 }} className="sa-stat-grid">
-        <StatCard icon="🛡" label="Total Admins" value={admins.length} color={T.blue}/>
+        <StatCard icon="admin-management" label="Total Admins" value={admins.length} color={T.blue}/>
         {/* Count distinct businesses, not merchant login rows. */}
-        <StatCard icon="🏪" label="Total Merchants" value={new Set(merchants.map(m=>m.name)).size} color={T.success}/>
-        <StatCard icon="✅" label="Active Admins" value={admins.filter(a=>a.active).length} color={T.info}/>
-        <StatCard icon="📊" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
+        <StatCard icon="merchants" label="Total Merchants" value={new Set(merchants.map(m=>m.name)).size} color={T.success}/>
+        <StatCard icon="verified" label="Active Admins" value={admins.filter(a=>a.active).length} color={T.info}/>
+        <StatCard icon="volume" label="Monthly Volume" value={fmt(monthlyVolume)} color={T.warning}/>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:14,marginBottom:20 }} className="sa-fin-grid">
-        <FinanceCard icon="💰" label="Total Available Balance" value={totalAvailableBalance} color={T.success}
+        <FinanceCard icon="available-balance" label="Total Available Balance" value={totalAvailableBalance} color={T.success}
           rows={[['Total Deposits', totalDeposits], ['Total Withdrawals', totalWithdrawn], ['Total Settlements', totalSettled]]} />
-        <FinanceCard icon="％" label="Total Commission Amount" value={totalCommission} color={T.warning}
+        <FinanceCard icon="commission" label="Total Commission Amount" value={totalCommission} color={T.warning}
           rows={[['Deposit Commission', depositCommission], ['Withdrawal Commission', withdrawalCommission], ['Settlement Commission', settlementCommission], ['Total Commission', totalCommission]]} />
-        <FinanceCard icon="◎" label="Available Balance" value={availableBalance} color={T.green}
+        <FinanceCard icon="balance" label="Available Balance" value={availableBalance} color={T.green}
           rows={[['Total Available Balance', totalAvailableBalance], ['Deposit Commission', depositCommission], ['Pay-Out Fee', payoutFee], ['Available Balance', availableBalance]]} />
       </div>
       <style>{`@media(max-width:760px){.sa-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;}.sa-fin-grid{grid-template-columns:1fr!important;}}@media(max-width:460px){.sa-stat-grid{grid-template-columns:1fr!important;}}`}</style>
@@ -1896,7 +1897,7 @@ export const SaAdminsPage: React.FC = () => {
       <Card>
         <div style={{ padding:'14px 20px',borderBottom:`1px solid ${T.border}` }}>
           <div style={{ position:'relative',maxWidth:340 }}>
-            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
+            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}><Icon name="search" size={14} /></span>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name, username, email or phone..."
               style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
           </div>
@@ -1921,7 +1922,7 @@ export const SaAdminsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px' }}>
                     <div style={{ display:'flex',flexDirection:'column',gap:3,alignItems:'flex-start' }}>
                       <span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:a.active?T.successBg:T.dangerBg,color:a.active?T.success:T.danger }}>{a.active?'Active':'Inactive'}</span>
-                      {a.locked && <span style={{ padding:'2px 8px',borderRadius:12,fontSize:10,fontWeight:700,background:T.warningBg,color:T.warning }}>🔒 Locked</span>}
+                      {a.locked && <span style={{ padding:'2px 8px',borderRadius:12,fontSize:10,fontWeight:700,background:T.warningBg,color:T.warning }}><Icon name="lock" size={10} /> Locked</span>}
                     </div>
                   </td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue,textAlign:'center' }}>{a.merchantCount ?? 0}</td>
@@ -1950,7 +1951,7 @@ export const SaAdminsPage: React.FC = () => {
               <Row k="Username" v={overview.username} />
               <Row k="Email" v={overview.email} />
               <Row k="Phone" v={overview.phone || '—'} />
-              <Row k="Status" v={<span style={{ color:overview.active?T.success:T.danger,fontWeight:800 }}>{overview.active?'Active':'Inactive'}{overview.locked?' · 🔒 Locked':''}</span>} />
+              <Row k="Status" v={<span style={{ color:overview.active?T.success:T.danger,fontWeight:800 }}>{overview.active?'Active':'Inactive'}{overview.locked?<> · <Icon name="lock" size={11} /> Locked</>:''}</span>} />
               <Row k="Created" v={formatDateTime(overview.createdAt || overview.created)} />
             </div>
             <div>
@@ -2047,7 +2048,7 @@ export const SystemLogsPage: React.FC = () => {
       <Card>
         <div style={{ padding:'14px 20px',borderBottom:`1px solid ${T.border}` }}>
           <div style={{ position:'relative',maxWidth:340 }}>
-            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}>🔍</span>
+            <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:T.textMuted,fontSize:14 }}><Icon name="search" size={14} /></span>
             <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search actor, action or detail..."
               style={{ width:'100%',padding:'8px 12px 8px 32px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',boxSizing:'border-box',fontFamily:'inherit' }}/>
           </div>
@@ -2148,7 +2149,7 @@ export const AuditLogsPage: React.FC = () => {
       <Card>
         <div style={{ padding:'14px 20px',borderBottom:`1px solid ${T.border}` }}>
           <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,alignItems:'end' }}>
-            <Input label="Search" value={q} onChange={e=>setQ(e.target.value)} placeholder="User / action / entity" icon="🔍" style={{ marginBottom:0 }}/>
+            <Input label="Search" value={q} onChange={e=>setQ(e.target.value)} placeholder="User / action / entity" icon="search" style={{ marginBottom:0 }}/>
             <Input label="User" value={userF} onChange={e=>setUserF(e.target.value)} style={{ marginBottom:0 }}/>
             <Sel label="Role" value={roleF} onChange={e=>setRoleF(e.target.value)} style={{ marginBottom:0 }}
               options={[{value:'',label:'All Roles'},...['SUPER_ADMIN','ADMIN','MERCHANT','SUPPORT_AGENT'].map(r=>({value:r,label:r.replace('_',' ')}))]}/>
@@ -2159,8 +2160,8 @@ export const AuditLogsPage: React.FC = () => {
             <Input label="To" type="date" value={toF} onChange={e=>setToF(e.target.value)} style={{ marginBottom:0 }}/>
           </div>
           <div style={{ display:'flex',gap:8,marginTop:12,alignItems:'center',flexWrap:'wrap' }}>
-            <Btn size="sm" variant="secondary" onClick={exportPdf}>📄 Download PDF</Btn>
-            <Btn size="sm" variant="secondary" onClick={exportExcel}>📊 Download Excel</Btn>
+            <Btn size="sm" variant="secondary" onClick={exportPdf}><Icon name="pdf" size={14} /> Download PDF</Btn>
+            <Btn size="sm" variant="secondary" onClick={exportExcel}><Icon name="excel" size={14} /> Download Excel</Btn>
             <span style={{ fontSize:12,color:T.textMuted }}>{filtered.length} record(s)</span>
           </div>
         </div>
@@ -2231,16 +2232,16 @@ export const TelegramStatusCard: React.FC = () => {
     <Card style={{ padding: 20, marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
         <div>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>✈ Telegram Notifications</h3>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}><Icon name="telegram" size={16} /> Telegram Notifications</h3>
           <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>
             Who has registered their Telegram. Users link themselves by sending <b>/start</b> to the bot and sharing their phone number.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, fontWeight: 800, padding: '4px 12px', borderRadius: 20, background: connected ? T.successBg : T.warningBg, color: connected ? T.success : T.warning }}>
-            {connected ? '● Connected' : '● Not Connected'}
+            {connected ? <><Icon name="connected" size={12} weight="fill" /> Connected</> : <><Icon name="disconnected" size={12} /> Not Connected</>}
           </span>
-          <Btn size="sm" variant="ghost" onClick={load}>↻ Refresh</Btn>
+          <Btn size="sm" variant="ghost" onClick={load}><Icon name="refresh" size={13} /> Refresh</Btn>
         </div>
       </div>
 
@@ -2277,7 +2278,7 @@ export const TelegramStatusCard: React.FC = () => {
                 <td style={{ padding: '9px 12px', color: T.textMuted }}>{u.role}</td>
                 <td style={{ padding: '9px 12px' }}>
                   <span style={{ fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20, background: u.linked ? T.successBg : T.canvas, color: u.linked ? T.success : T.textMuted, border: u.linked ? 'none' : `1px solid ${T.border}` }}>
-                    {u.linked ? '✓ Linked' : '— Not linked'}
+                    {u.linked ? <><Icon name="connected" size={11} weight="fill" /> Linked</> : '— Not linked'}
                   </span>
                 </td>
               </tr>
@@ -2355,7 +2356,7 @@ export const WhatsAppSettingsPage: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
           <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>Provider Configuration</h3>
           <span style={{ fontSize: 11, fontWeight: 800, padding: '4px 12px', borderRadius: 20, background: connected ? T.successBg : T.warningBg, color: connected ? T.success : T.warning }}>
-            {connected ? '● Connected' : '● Not Connected'}
+            {connected ? <><Icon name="connected" size={12} weight="fill" /> Connected</> : <><Icon name="disconnected" size={12} /> Not Connected</>}
           </span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 14 }}>
@@ -2372,7 +2373,7 @@ export const WhatsAppSettingsPage: React.FC = () => {
           ))}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
-          <Btn size="sm" onClick={sendTest} disabled={testing || !connected}>{testing ? 'Sending…' : '📤 Send Test Telegram Notification'}</Btn>
+          <Btn size="sm" onClick={sendTest} disabled={testing || !connected}>{testing ? 'Sending…' : '<Icon name="send-test" size={14} /> Send Test Telegram Notification'}</Btn>
           <span style={{ fontSize: 11, color: T.textMuted }}>Bot credentials are configured securely on the server. Sends a test Telegram notification to your linked Telegram account.</span>
         </div>
       </Card>
@@ -2404,7 +2405,7 @@ export const WhatsAppSettingsPage: React.FC = () => {
       <Card style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>Delivery Logs</h3>
-          <Btn size="sm" variant="ghost" onClick={load}>↻ Refresh</Btn>
+          <Btn size="sm" variant="ghost" onClick={load}><Icon name="refresh" size={13} /> Refresh</Btn>
         </div>
         <div style={{ overflowX: 'auto', maxHeight: 460 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -2478,7 +2479,7 @@ export const DemoToolsPage: React.FC = () => {
           and restarts the deposit/withdrawal/settlement reference numbers back to 0000001. Merchant, admin
           and Super Admin accounts, saved bank details / UPIs, and platform settings are kept as-is.
         </p>
-        <Btn variant="danger" onClick={() => setConfirming(true)}>🗑 Reset Demo Environment</Btn>
+        <Btn variant="danger" onClick={() => setConfirming(true)}><Icon name="delete" size={14} /> Reset Demo Environment</Btn>
         {lastResult && (
           <p style={{ marginTop: 14, fontSize: 12, color: T.textMuted }}>
             Last reset by <strong>{lastResult.resetBy}</strong> — cleared: {lastResult.tables.join(', ')}.

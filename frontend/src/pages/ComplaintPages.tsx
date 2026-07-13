@@ -3,6 +3,7 @@ import { T } from '../utils/theme';
 import { formatDateTime, memberLabel } from '../utils/helpers';
 import { downloadXlsx } from '../utils/xlsx';
 import { Card, Btn, Input, Sel, Modal, Skeleton } from '../components/UI';
+import { Icon } from '../components/Icon';
 import { riskAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -148,17 +149,17 @@ const CaseDetail: React.FC<{ id: number; user: User; onClose: () => void; onChan
                 {(c.documents || []).map((d, i) => (
                   <a key={i} href={d.dataUrl} target="_blank" rel="noreferrer" download={d.name}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, padding: '5px 9px', borderRadius: 8, background: T.canvas, border: `1px solid ${T.border}`, color: T.textMain, textDecoration: 'none' }}>
-                    {d.kind === 'aadhaar' ? '🪪' : d.kind === 'pan' ? '💳' : '📎'} {d.name}
+                    {d.kind === 'aadhaar' ? <Icon name="aadhaar" size={14} /> : d.kind === 'pan' ? <Icon name="pan" size={14} /> : <Icon name="attach" size={14} />} {d.name}
                   </a>
                 ))}
               </div>
               <div style={sec}>Complaint Description</div>
               <p style={{ fontSize: 12.5, color: T.textMain, whiteSpace: 'pre-wrap', margin: 0 }}>{c.description || '—'}</p>
               <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-                <Btn size="sm" variant="secondary" onClick={complaintPdf}>📄 Complaint PDF</Btn>
-                <Btn size="sm" variant="secondary" onClick={complaintExcel}>📊 Complaint Excel</Btn>
-                <Btn size="sm" variant="secondary" onClick={riskReport}>🛡️ Risk Report PDF</Btn>
-                <Btn size="sm" variant="secondary" onClick={riskReportExcel}>📊 Risk Report Excel</Btn>
+                <Btn size="sm" variant="secondary" onClick={complaintPdf}><Icon name="pdf" size={14} /> Complaint PDF</Btn>
+                <Btn size="sm" variant="secondary" onClick={complaintExcel}><Icon name="excel" size={14} /> Complaint Excel</Btn>
+                <Btn size="sm" variant="secondary" onClick={riskReport}><Icon name="risk-report" size={14} /> Risk Report PDF</Btn>
+                <Btn size="sm" variant="secondary" onClick={riskReportExcel}><Icon name="excel" size={14} /> Risk Report Excel</Btn>
               </div>
             </div>
           </div>
@@ -201,7 +202,7 @@ const CaseDetail: React.FC<{ id: number; user: User; onClose: () => void; onChan
             style={{ width: '100%', minHeight: 70, padding: '10px 12px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, fontFamily: 'inherit', color: T.textMain, background: T.surface, outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} />
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10, flexWrap: 'wrap' }}>
             <Btn variant="secondary" disabled={busy} onClick={() => patch({ resolutionNotes: resolution }, 'Resolution saved')}>Save Resolution</Btn>
-            {c.status !== 'CLOSED' && <Btn variant="success" disabled={busy} onClick={() => patch({ status: 'CLOSED', resolutionNotes: resolution }, 'Case closed')}>✓ Close Case</Btn>}
+            {c.status !== 'CLOSED' && <Btn variant="success" disabled={busy} onClick={() => patch({ status: 'CLOSED', resolutionNotes: resolution }, 'Case closed')}><Icon name="resolved" size={14} /> Close Case</Btn>}
           </div>
         </div>
       )}
@@ -282,14 +283,14 @@ export const ComplaintManagementPage: React.FC<{ user: User }> = ({ user }) => {
 
       <Card style={{ padding: 14, marginBottom: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
-          <Input label="Search" value={q} onChange={e => setQ(e.target.value)} placeholder="Case ID / membership / member" icon="🔍" style={{ marginBottom: 0 }} />
+          <Input label="Search" value={q} onChange={e => setQ(e.target.value)} placeholder="Case ID / membership / member" icon="search" style={{ marginBottom: 0 }} />
           <Sel label="Status" value={statusF} onChange={e => setStatusF(e.target.value)} style={{ marginBottom: 0 }}
             options={[{ value: '', label: 'All Statuses' }, ...(data?.statuses || []).map(s => ({ value: s, label: pretty(s) }))]} />
           <Sel label="Priority" value={prioF} onChange={e => setPrioF(e.target.value)} style={{ marginBottom: 0 }}
             options={[{ value: '', label: 'All Priorities' }, ...(data?.priorities || []).map(s => ({ value: s, label: pretty(s) }))]} />
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Btn size="sm" variant="secondary" disabled={!total} onClick={exportComplaintsExcel}>📊 Download Excel</Btn>
+          <Btn size="sm" variant="secondary" disabled={!total} onClick={exportComplaintsExcel}><Icon name="excel" size={14} /> Download Excel</Btn>
           <span style={{ fontSize: 12, color: T.textMuted }}>{total} complaint(s)</span>
         </div>
       </Card>

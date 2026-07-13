@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { T } from '../utils/theme';
 import { Btn } from './UI';
+import { Icon } from './Icon';
 import { useAuth } from '../context/AuthContext';
 
 // Auto-logout after 10 minutes of inactivity; warn at 9 minutes (1 minute left).
@@ -88,7 +89,7 @@ const SessionManager: React.FC = () => {
         display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <div style={{ background: T.surface, borderRadius: 16, padding: 28, width: 'min(420px, 100%)',
         boxShadow: '0 24px 70px rgba(0,0,0,0.3)', textAlign: 'center', boxSizing: 'border-box' }}>
-        <div style={{ fontSize: 40, marginBottom: 10 }}>⏳</div>
+        <div style={{ marginBottom: 10, color: T.warning, display: 'flex', justifyContent: 'center' }}><Icon name="pending" size={40} /></div>
         <h2 style={{ margin: '0 0 8px', fontSize: 18, fontWeight: 800, color: T.textMain }}>Session about to expire</h2>
         <p style={{ margin: '0 0 6px', fontSize: 13.5, color: T.textMuted }}>
           Your session will expire in 1 minute due to inactivity.

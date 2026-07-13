@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
+import { Icon } from '../components/Icon';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
 import { TxExportButton } from '../components/TxExport';
@@ -152,7 +153,7 @@ export const ReceiptImage: React.FC<{ src?: string | null; alt?: string }> = ({ 
       {!src
         ? <span style={{ fontSize: 12, color: T.textMuted }}>No image uploaded</span>
         : isPdf
-          ? <a href={src} download={`${alt}.pdf`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, fontSize: 15, fontWeight: 800, color: T.danger, textDecoration: 'none' }}>PDF<span style={{ fontSize: 10, color: T.textMuted }}>Open / Download ⬇</span></a>
+          ? <a href={src} download={`${alt}.pdf`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, fontSize: 15, fontWeight: 800, color: T.danger, textDecoration: 'none' }}>PDF<span style={{ fontSize: 10, color: T.textMuted }}>Open / Download <Icon name="download" size={10} /></span></a>
           : <img src={src} alt={alt} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', margin: '0 auto' }} />}
     </div>
   );
@@ -283,7 +284,7 @@ export const MerchantSlipModal: React.FC<{
     <Modal title={`${canSubmitSlip ? 'Pay & Submit Proof' : 'Request Details'} — ${tx.ref}`} onClose={onClose}>
       {tx.highRisk && (
         <div style={{ display:'flex',gap:10,alignItems:'flex-start',background:'#fdecea',border:'1px solid #f5b5ae',borderRadius:10,padding:'12px 14px',marginBottom:16 }}>
-          <span style={{ fontSize:20,lineHeight:1 }}>⚠</span>
+          <span style={{ fontSize:20,lineHeight:1 }}><Icon name="warning" size={20} /></span>
           <div>
             <p style={{ margin:0,fontSize:13,fontWeight:800,color:'#b71c1c' }}>High Risk — Member {tx.memberId || tx.ref}</p>
             <p style={{ margin:'2px 0 0',fontSize:12,color:'#7f1d1d' }}>{tx.rejectReason || 'Payment was not received in our bank for this member. Please contact support.'}</p>
@@ -332,7 +333,7 @@ export const MerchantSlipModal: React.FC<{
           : imgs.adminProof && <ReceiptImage src={imgs.adminProof} alt="Admin details" />}
         {hasImage && (
           <div style={{ marginTop:10 }}>
-            <Btn size="sm" variant="ghost" onClick={downloadDetails}>⬇ Download Bank Details Image</Btn>
+            <Btn size="sm" variant="ghost" onClick={downloadDetails}><Icon name="download" size={14} /> Download Bank Details Image</Btn>
           </div>
         )}
       </div>
@@ -404,24 +405,24 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
   // Role-scoped dashboard cards (count-up values; click jumps to the relevant page).
   const role = String(user.merchantRole || '').toUpperCase();
   const balLen = fmt(summary?.available ?? 0).length;
-  const pendingCard = <StatCard icon="⧗" label="Pending Requests" value={<CountUp value={inFlight.length} />} sub="In progress" color={T.warning} onClick={()=>go('transactions')}/>;
-  const balanceCard = <StatCard icon="💰" label="Available Balance" value={<CountUp value={summary?.available ?? 0} format={fmt} />} valueLen={balLen} sub="Updated now" color={T.success} onClick={()=>go('balance')}/>;
+  const pendingCard = <StatCard icon="pending-requests" label="Pending Requests" value={<CountUp value={inFlight.length} />} sub="In progress" color={T.warning} onClick={()=>go('transactions')}/>;
+  const balanceCard = <StatCard icon="available-balance" label="Available Balance" value={<CountUp value={summary?.available ?? 0} format={fmt} />} valueLen={balLen} sub="Updated now" color={T.success} onClick={()=>go('balance')}/>;
   let cards: React.ReactNode;
   if (role === 'DEPOSIT_OPERATOR') {
-    cards = <><StatCard icon="↓" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')}/>{pendingCard}</>;
+    cards = <><StatCard icon="deposit" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')}/>{pendingCard}</>;
   } else if (role === 'WITHDRAWAL_OPERATOR') {
-    cards = <>{balanceCard}<StatCard icon="↑" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>{pendingCard}</>;
   } else if (role === 'SUPERVISOR') {
-    cards = <>{balanceCard}<StatCard icon="⇄" label="No. of Settlements" value={<CountUp value={settlementCount} />} color={T.info} onClick={()=>go('settlement')}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="settlement" label="No. of Settlements" value={<CountUp value={settlementCount} />} color={T.info} onClick={()=>go('settlement')}/>{pendingCard}</>;
   } else if (role === 'MANAGER') {
     // Approval-only role: no direct Deposit/Withdrawal creation entry. Balance is view-only;
     // the withdrawals card opens the Approvals (review) queue, not a creation page.
-    cards = <>{balanceCard}<StatCard icon="↑" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('approvals')}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('approvals')}/>{pendingCard}</>;
   } else {
     cards = <>
       {balanceCard}
-      <StatCard icon="↓" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')}/>
-      <StatCard icon="↑" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>
+      <StatCard icon="deposit" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')}/>
+      <StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>
       {pendingCard}
     </>;
   }
@@ -1064,7 +1065,7 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
       <div style={{ marginBottom: 12 }}>
         <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6 }}>Settlement Proof (image or PDF) *</label>
         <input type="file" accept={SETTLE_ACCEPT} onChange={onFile} />
-        {proofName && <p style={{ margin: '6px 0 0', fontSize: 11, color: T.success, fontWeight: 700 }}>✓ {proofName}</p>}
+        {proofName && <p style={{ margin: '6px 0 0', fontSize: 11, color: T.success, fontWeight: 700 }}><Icon name="verified" size={12} /> {proofName}</p>}
       </div>
       <div style={{ marginBottom: 8 }}>
         <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6 }}>Remarks *</label>
@@ -1072,7 +1073,7 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
           style={{ width: '100%', minHeight: 70, padding: '10px 12px', borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.surface, color: T.textMain, fontSize: 13, resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit' }} />
       </div>
       <div style={{ display: 'flex', gap: 10, borderTop: `1px solid ${T.border}`, paddingTop: 14 }}>
-        <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : '✓ Complete Settlement'}</Btn>
+        <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : '<Icon name="approve" size={14} /> Complete Settlement'}</Btn>
         <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
       </div>
     </Modal>
@@ -1283,7 +1284,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
               <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>{isDeposit ? 'Deposit Slip' : 'Payment Proof'}{d.merchantRef ? ` · Ref ${d.merchantRef}` : ''}</p>
               <ProofGallery srcs={slips} />
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-                {slips.map((s, i) => <Btn key={i} size="sm" variant="ghost" onClick={() => downloadDataUrl(s, `slip-${d.ref}-${i + 1}.png`)}>⬇ Download Slip{slips.length > 1 ? ` ${i + 1}` : ''}</Btn>)}
+                {slips.map((s, i) => <Btn key={i} size="sm" variant="ghost" onClick={() => downloadDataUrl(s, `slip-${d.ref}-${i + 1}.png`)}><Icon name="download" size={14} /> Download Slip{slips.length > 1 ? ` ${i + 1}` : ''}</Btn>)}
               </div>
             </>
           )}
@@ -1291,14 +1292,14 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
             <div style={{ marginTop: slips.length ? 12 : 0 }}>
               <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Bank Details Image</p>
               <ProofGallery srcs={[d.adminBankImage]} />
-              <Btn size="sm" variant="ghost" style={{ marginTop: 8 }} onClick={() => downloadDataUrl(d.adminBankImage!, `bank-details-${d.ref}.png`)}>⬇ Download Bank Details Image</Btn>
+              <Btn size="sm" variant="ghost" style={{ marginTop: 8 }} onClick={() => downloadDataUrl(d.adminBankImage!, `bank-details-${d.ref}.png`)}><Icon name="download" size={14} /> Download Bank Details Image</Btn>
             </div>
           )}
           {d.adminProof && (
             <div style={{ marginTop: slips.length ? 12 : 0 }}>
               <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Payment Receipt</p>
               <ProofGallery srcs={[d.adminProof]} />
-              <Btn size="sm" variant="ghost" style={{ marginTop: 8 }} onClick={() => downloadDataUrl(d.adminProof!, `receipt-${d.ref}.png`)}>⬇ Download Receipt</Btn>
+              <Btn size="sm" variant="ghost" style={{ marginTop: 8 }} onClick={() => downloadDataUrl(d.adminProof!, `receipt-${d.ref}.png`)}><Icon name="download" size={14} /> Download Receipt</Btn>
             </div>
           )}
         </DetailSection>
@@ -1441,9 +1442,9 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
       )}
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', borderTop: `1px solid ${T.border}`, paddingTop: 14 }}>
-        <Btn variant="success" onClick={() => setAction('approve')}>✓ Approve</Btn>
-        <Btn variant="danger" onClick={() => setAction('reject')}>✕ Reject</Btn>
-        <Btn variant="secondary" onClick={() => setAction('resubmit')}>↻ Resubmit</Btn>
+        <Btn variant="success" onClick={() => setAction('approve')}><Icon name="approve" size={14} /> Approve</Btn>
+        <Btn variant="danger" onClick={() => setAction('reject')}><Icon name="reject" size={14} /> Reject</Btn>
+        <Btn variant="secondary" onClick={() => setAction('resubmit')}><Icon name="refresh" size={14} /> Resubmit</Btn>
         <Btn variant="ghost" onClick={onClose}>Close</Btn>
       </div>
     </Modal>
@@ -1630,9 +1631,9 @@ export const TemplatesPage: React.FC<{ user: User }> = ({ user }) => {
 export const RiskPage: React.FC<{ user: User }> = ({ user }) => (
   <div style={{ maxWidth:780 }}>
     <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:14,marginBottom:20 }}>
-      <StatCard icon="🛡" label="Risk Score" value="22 / 100" color={T.success}/>
-      <StatCard icon="⚑" label="Flagged Txns" value="0" color={T.warning}/>
-      <StatCard icon="⚡" label="Velocity" value="Normal" color={T.info}/>
+      <StatCard icon="risk-management" label="Risk Score" value="22 / 100" color={T.success}/>
+      <StatCard icon="priority" label="Flagged Txns" value="0" color={T.warning}/>
+      <StatCard icon="velocity" label="Velocity" value="Normal" color={T.info}/>
     </div>
     <Card style={{ padding:24 }}>
       <h3 style={{ margin:'0 0 16px',fontSize:14,fontWeight:800 }}>Risk Factor Breakdown</h3>
@@ -1738,14 +1739,14 @@ export const ChatAttachment: React.FC<{ msg: SupportMessage; mine: boolean }> = 
           style={{ maxWidth: 240, maxHeight: 260, borderRadius: 10, display: 'block', cursor: 'zoom-in', objectFit: 'cover' }} />
         <div style={{ marginTop: 4, display: 'flex', gap: 12 }}>
           <button onClick={() => openDataUrl(msg.attachment!)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 10, color: linkColor, textDecoration: 'underline' }}>Open</button>
-          <a href={msg.attachment} download={name} style={{ fontSize: 10, color: linkColor, textDecoration: 'underline' }}>⬇ Download</a>
+          <a href={msg.attachment} download={name} style={{ fontSize: 10, color: linkColor, textDecoration: 'underline' }}><Icon name="download" size={12} /> Download</a>
         </div>
       </div>
     );
   }
   return (
     <div style={{ marginTop: msg.content ? 8 : 0, display: 'flex', alignItems: 'center', gap: 10, background: mine ? 'rgba(255,255,255,0.15)' : T.surface, border: `1px solid ${mine ? 'rgba(255,255,255,0.25)' : T.border}`, borderRadius: 10, padding: '8px 10px', maxWidth: 260 }}>
-      <div style={{ width: 34, height: 34, borderRadius: 8, background: mine ? 'rgba(255,255,255,0.2)' : T.infoBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>📄</div>
+      <div style={{ width: 34, height: 34, borderRadius: 8, background: mine ? 'rgba(255,255,255,0.2)' : T.infoBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}><Icon name="file" size={18} /></div>
       <div style={{ minWidth: 0, flex: 1 }}>
         <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: mine ? '#fff' : T.textMain, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</p>
         <p style={{ margin: '1px 0 0', fontSize: 10, color: mine ? 'rgba(255,255,255,0.85)' : T.textMuted }}>{formatBytes(msg.attachmentSize)}</p>
@@ -1856,7 +1857,7 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
 
       <Card style={{ padding:'16px 20px' }}>
         <div style={{ display:'flex',alignItems:'center',gap:12 }}>
-          <div style={{ width:44,height:44,borderRadius:14,background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22 }}>💬</div>
+          <div style={{ width:44,height:44,borderRadius:14,background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22 }}><Icon name="chat" size={22} /></div>
           <div>
             <h2 style={{ margin:0,fontSize:15,fontWeight:800 }}>Customer Support</h2>
             <p style={{ margin:0,fontSize:12,color: conv?.queued ? T.warning : conv?.agentName ? T.success : T.textMuted }}>
@@ -1902,11 +1903,11 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
         <div style={{ padding:'12px 16px',borderTop:`1px solid ${T.border}`,display:'flex',gap:10,alignItems:'center' }}>
           <input ref={fileRef} type="file" accept={CHAT_ACCEPT} onChange={onPickFile} style={{ display:'none' }} />
           <button onClick={()=>fileRef.current?.click()} disabled={sending} title="Attach image or document" aria-label="Attach file"
-            style={{ width:40,height:40,flexShrink:0,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.canvas,color:T.textMuted,fontSize:18,cursor:sending?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center' }}>{sending ? '⏳' : '📎'}</button>
+            style={{ width:40,height:40,flexShrink:0,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.canvas,color:T.textMuted,fontSize:18,cursor:sending?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center' }}>{sending ? <Icon name="pending" size={18} /> : <Icon name="attach" size={18} />}</button>
           <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()}
             placeholder={sending ? 'Sending attachment…' : 'Type a message...'} disabled={sending}
             style={{ flex:1,padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:13,outline:'none',fontFamily:'inherit',color:T.textMain,background:T.canvas }}/>
-          <Btn onClick={send} disabled={!input.trim()||sending} style={{ borderRadius:12 }}>→ Send</Btn>
+          <Btn onClick={send} disabled={!input.trim()||sending} style={{ borderRadius:12 }}><Icon name="send" size={14} /> Send</Btn>
         </div>
       </Card>
     </div>
@@ -1993,7 +1994,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
     <div style={{ maxWidth:560,margin:'0 auto',position:'relative' }}>
       <Card style={{ padding:'30px 28px' }}>
         <div style={{ position:'absolute',top:18,right:18 }}>
-          <Btn size="sm" variant="ghost" onClick={openEdit}>✎ Edit</Btn>
+          <Btn size="sm" variant="ghost" onClick={openEdit}><Icon name="edit" size={13} /> Edit</Btn>
         </div>
         <div style={{ display:'flex',flexDirection:'column',alignItems:'center',textAlign:'center',marginBottom:24 }}>
           {user.avatar
@@ -2017,7 +2018,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
       <Card style={{ padding:'20px 24px', marginTop:16 }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
           <h3 style={{ margin:0, fontSize:14, fontWeight:800, color:T.textMain }}>Contact Details</h3>
-          <Btn size="sm" variant="ghost" onClick={openContactEdit}>✎ Edit</Btn>
+          <Btn size="sm" variant="ghost" onClick={openContactEdit}><Icon name="edit" size={13} /> Edit</Btn>
         </div>
         {([['Email ID', user.email],['Phone', user.phone || '—']] as [string,string][]).map(([k,v])=>(
           <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'11px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
@@ -2233,7 +2234,7 @@ export const NewsPage: React.FC<{ user: User }> = ({ user }) => {
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>News &amp; Updates</h2>
           <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Platform announcements and product updates{isSA ? ' — you can create, edit and publish news.' : ''}</p>
         </div>
-        <Input value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 Search news" style={{ marginBottom: 0, width: 200 }} />
+        <Input value={q} onChange={e => setQ(e.target.value)} icon="search" placeholder="Search news" style={{ marginBottom: 0, width: 200 }} />
         <Sel value={cat} onChange={e => setCat(e.target.value)} style={{ marginBottom: 0, width: 180 }}
           options={[{ value: '', label: 'All Categories' }, ...categories.map(c => ({ value: c, label: c }))]} />
         {isSA && <Btn onClick={() => setEditing(null)}>＋ New Post</Btn>}
@@ -2241,16 +2242,16 @@ export const NewsPage: React.FC<{ user: User }> = ({ user }) => {
 
       {isSA && (
         <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 12, marginBottom: 16 }}>
-          <StatCard icon="📰" label="Total News" value={String(stats.total)} color={T.blue} />
-          <StatCard icon="✓" label="Published News" value={String(stats.published)} color={T.success} />
-          <StatCard icon="★" label="Featured News" value={String(stats.featured)} color={T.warning} />
-          <StatCard icon="👁" label="Total Views" value={String(stats.views)} color={T.info} />
+          <StatCard icon="news" label="Total News" value={String(stats.total)} color={T.blue} />
+          <StatCard icon="verified" label="Published News" value={String(stats.published)} color={T.success} />
+          <StatCard icon="star" label="Featured News" value={String(stats.featured)} color={T.warning} />
+          <StatCard icon="view" label="Total Views" value={String(stats.views)} color={T.info} />
         </div>
       )}
 
       {posts.length === 0 ? (
         <Card style={{ padding: 40, textAlign: 'center' }}>
-          <div style={{ fontSize: 40, marginBottom: 10 }}>📰</div>
+          <div style={{ fontSize: 40, marginBottom: 10 }}><Icon name="news" size={40} /></div>
           <p style={{ fontWeight: 800, color: T.textMain, margin: '0 0 4px' }}>No news yet</p>
           <p style={{ fontSize: 12, color: T.textMuted, margin: 0 }}>{isSA ? 'Create the first post with “＋ New Post”.' : 'Announcements and updates will appear here.'}</p>
         </Card>
@@ -2262,9 +2263,9 @@ export const NewsPage: React.FC<{ user: User }> = ({ user }) => {
               <Card style={{ padding: 24 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
                   <span style={{ padding: '3px 12px', borderRadius: 20, fontSize: 11, fontWeight: 800, background: `${catColor(selected.category)}22`, color: catColor(selected.category) }}>{selected.category}</span>
-                  {selected.featured && <span style={{ fontSize: 11, fontWeight: 700, color: T.warning }}>★ Featured</span>}
+                  {selected.featured && <span style={{ fontSize: 11, fontWeight: 700, color: T.warning }}><Icon name="star" size={12} /> Featured</span>}
                   {!selected.published && <span style={{ fontSize: 11, fontWeight: 700, color: T.textMuted }}>(Draft)</span>}
-                  <span style={{ marginLeft: 'auto', fontSize: 11, color: T.textMuted }}>👁 {selected.views} views</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: T.textMuted }}><Icon name="view" size={12} /> {selected.views} views</span>
                 </div>
                 {selected.image && <img src={selected.image} alt="" style={{ display: 'block', width: '100%', maxHeight: 320, objectFit: 'contain', borderRadius: 12, border: `1px solid ${T.border}`, margin: '0 0 14px', background: T.canvas }} />}
                 <h1 style={{ margin: '0 0 8px', fontSize: 22, fontWeight: 800, color: T.textMain, lineHeight: 1.3 }}>{selected.title}</h1>
@@ -2275,9 +2276,9 @@ export const NewsPage: React.FC<{ user: User }> = ({ user }) => {
 
                 {isSA && (
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 20, paddingTop: 16, borderTop: `1px solid ${T.border}` }}>
-                    <Btn size="sm" variant="secondary" onClick={() => setEditing(selected)}>✎ Edit</Btn>
+                    <Btn size="sm" variant="secondary" onClick={() => setEditing(selected)}><Icon name="edit" size={13} /> Edit</Btn>
                     <Btn size="sm" variant="secondary" onClick={() => togglePublish(selected)}>{selected.published ? '⤓ Unpublish' : '⤒ Publish'}</Btn>
-                    <Btn size="sm" variant="danger" onClick={() => remove(selected)}>🗑 Delete</Btn>
+                    <Btn size="sm" variant="danger" onClick={() => remove(selected)}><Icon name="delete" size={13} /> Delete</Btn>
                   </div>
                 )}
               </Card>

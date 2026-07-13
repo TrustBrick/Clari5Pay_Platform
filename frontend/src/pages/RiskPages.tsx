@@ -3,6 +3,7 @@ import { T } from '../utils/theme';
 import { fmt, fileToDataUrl, memberLabel } from '../utils/helpers';
 import { downloadXlsx } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, Skeleton, CountUp } from '../components/UI';
+import { Icon, isIconName } from '../components/Icon';
 import { riskAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -17,27 +18,27 @@ const RISK_META: Record<RiskLevelStr, { dot: string; color: string; bg: string }
 
 const RiskBadge: React.FC<{ level: RiskLevelStr }> = ({ level }) => {
   const m = RISK_META[level];
-  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 10px', borderRadius: 999, background: m.bg, color: m.color, fontWeight: 800, fontSize: 11.5 }}>{m.dot} {level}</span>;
+  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 10px', borderRadius: 999, background: m.bg, color: m.color, fontWeight: 800, fontSize: 11.5 }}><Icon name="dot" size={9} weight="fill" color={m.color} /> {level}</span>;
 };
 
 // 8 business-grouped intelligence categories. Phase-1 status reflects whether we have
 // real data to analyse the checks ("analyzed") or it awaits KYC/location data ("pending").
 const RISK_CATEGORIES: Array<{ title: string; icon: string; purpose: string; checks: string[]; status: 'analyzed' | 'pending' }> = [
-  { title: 'Identity & KYC Intelligence', icon: '🪪', purpose: 'Verifies the member is genuine and not using fake or duplicate identities.', status: 'pending',
+  { title: 'Identity & KYC Intelligence', icon: 'kyc', purpose: 'Verifies the member is genuine and not using fake or duplicate identities.', status: 'pending',
     checks: ['Aadhaar Verification', 'PAN Verification', 'Mobile Verification', 'Address Verification', 'Occupation Verification', 'Income Verification', 'Document Verification', 'Duplicate Identity Detection'] },
-  { title: 'Customer Profile Intelligence', icon: '👤', purpose: "Determines whether the member's activity matches their profile.", status: 'pending',
+  { title: 'Customer Profile Intelligence', icon: 'user', purpose: "Determines whether the member's activity matches their profile.", status: 'pending',
     checks: ['Profession Analysis', 'Age Analysis', 'Income Analysis', 'Customer Category', 'Onboarding Information'] },
-  { title: 'Transaction Behaviour Intelligence', icon: '📈', purpose: 'Identifies abnormal transaction behaviour.', status: 'analyzed',
+  { title: 'Transaction Behaviour Intelligence', icon: 'merchant-analytics', purpose: 'Identifies abnormal transaction behaviour.', status: 'analyzed',
     checks: ['Deposit Patterns', 'Withdrawal Patterns', 'Settlement Patterns', 'Transaction Timing', 'Transaction Frequency', 'Transaction Growth'] },
-  { title: 'Source of Funds Intelligence', icon: '💸', purpose: 'Identifies suspicious incoming money.', status: 'analyzed',
+  { title: 'Source of Funds Intelligence', icon: 'fees', purpose: 'Identifies suspicious incoming money.', status: 'analyzed',
     checks: ['Source Account Analysis', 'Third-Party Deposits', 'Funding Patterns', 'Sender Behaviour', 'High-Risk Source Detection'] },
-  { title: 'Location Intelligence', icon: '📍', purpose: 'Detects geographical anomalies.', status: 'pending',
+  { title: 'Location Intelligence', icon: 'branch', purpose: 'Detects geographical anomalies.', status: 'pending',
     checks: ['Residence Location', 'Transaction Locations', 'Address Changes', 'Foreign Activity', 'High-Risk Regions'] },
-  { title: 'Membership Intelligence', icon: '🧩', purpose: 'Detects account farming and duplicate identities.', status: 'analyzed',
+  { title: 'Membership Intelligence', icon: 'membership-id', purpose: 'Detects account farming and duplicate identities.', status: 'analyzed',
     checks: ['Multiple Memberships', 'Membership Growth', 'Duplicate Memberships', 'Deposit Distribution'] },
-  { title: 'Relationship Intelligence', icon: '🕸️', purpose: 'Detects connected accounts and fraud networks.', status: 'analyzed',
+  { title: 'Relationship Intelligence', icon: 'link', purpose: 'Detects connected accounts and fraud networks.', status: 'analyzed',
     checks: ['Self Accounts', 'Family Relationships', 'Business Relationships', 'Employee Relationships', 'Friend Relationships', 'Hidden Connections'] },
-  { title: 'Historical Intelligence', icon: '🗂️', purpose: 'Uses historical behaviour to identify long-term risk.', status: 'pending',
+  { title: 'Historical Intelligence', icon: 'history', purpose: 'Uses historical behaviour to identify long-term risk.', status: 'pending',
     checks: ['Transaction History', 'Complaint History', 'Address History', 'Income History', 'Risk History'] },
 ];
 
@@ -172,12 +173,12 @@ const ShareMenu: React.FC<{ p: RiskProfile; generatedBy?: string; onClose: () =>
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 60 }} />
       <div style={{ position: 'absolute', right: 0, bottom: 'calc(100% + 8px)', zIndex: 61, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, boxShadow: '0 12px 40px rgba(0,0,0,0.16)', padding: 6, width: 230 }}>
-        <div style={item} onClick={() => { exportRiskPdf(p, generatedBy); onClose(); }}>📄 <span>Download PDF</span></div>
-        <div style={item} onClick={() => { exportRiskXlsx(p, generatedBy); onClose(); }}>📊 <span>Download Excel</span></div>
-        <a style={item} href={`mailto:?subject=Clari5Pay Risk Assessment&body=${txt}`} onClick={onClose}>✉ <span>Email</span></a>
-        <a style={item} href={`https://wa.me/?text=${txt}`} target="_blank" rel="noreferrer" onClick={onClose}>🟢 <span>WhatsApp</span></a>
-        <a style={item} href={`https://t.me/share/url?url=clari5pay&text=${txt}`} target="_blank" rel="noreferrer" onClick={onClose}>✈ <span>Telegram</span></a>
-        <div style={item} onClick={native}>📱 <span>Device Share…</span></div>
+        <div style={item} onClick={() => { exportRiskPdf(p, generatedBy); onClose(); }}><Icon name="pdf" size={15} /> <span>Download PDF</span></div>
+        <div style={item} onClick={() => { exportRiskXlsx(p, generatedBy); onClose(); }}><Icon name="excel" size={15} /> <span>Download Excel</span></div>
+        <a style={item} href={`mailto:?subject=Clari5Pay Risk Assessment&body=${txt}`} onClick={onClose}><Icon name="email" size={15} /> <span>Email</span></a>
+        <a style={item} href={`https://wa.me/?text=${txt}`} target="_blank" rel="noreferrer" onClick={onClose}><Icon name="whatsapp" size={15} /> <span>WhatsApp</span></a>
+        <a style={item} href={`https://t.me/share/url?url=clari5pay&text=${txt}`} target="_blank" rel="noreferrer" onClick={onClose}><Icon name="telegram" size={15} /> <span>Telegram</span></a>
+        <div style={item} onClick={native}><Icon name="phone" size={15} /> <span>Device Share…</span></div>
       </div>
     </>
   );
@@ -341,7 +342,7 @@ const ComplaintModal: React.FC<{ memberId: string; memberName: string; merchantN
     const fileBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 12px', border: `1.5px dashed ${T.border}`, borderRadius: 10, fontSize: 12.5, cursor: 'pointer', color: T.textMain, background: T.canvas };
 
     return (
-      <Modal title="🚨 Cyber Crime Complaint" onClose={onClose} xl>
+      <Modal icon="complaints" title="Cyber Crime Complaint" onClose={onClose} xl>
         <div style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 6 }}>
           Capture the details, attach documents, and either save a draft or submit. Submission requires bank/UPI details, Aadhaar + PAN, and a description.
         </div>
@@ -386,16 +387,16 @@ const ComplaintModal: React.FC<{ memberId: string; memberName: string; merchantN
 
         <h4 style={{ margin: '18px 0 8px', fontSize: 13, color: T.blue }}>Documents <span style={{ fontWeight: 400, color: T.textMuted, fontSize: 11 }}>(max 10 · Aadhaar + PAN required to submit)</span></h4>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-          <label style={{ ...fileBtn, borderColor: hasAadhaar ? T.success : T.border }}>{hasAadhaar ? '✓' : '＋'} Aadhaar Card *<input type="file" accept="image/*,application/pdf" hidden onChange={e => addDoc(e.target.files, 'aadhaar')} /></label>
-          <label style={{ ...fileBtn, borderColor: hasPan ? T.success : T.border }}>{hasPan ? '✓' : '＋'} PAN Card *<input type="file" accept="image/*,application/pdf" hidden onChange={e => addDoc(e.target.files, 'pan')} /></label>
-          <label style={fileBtn}>＋ Evidence files<input type="file" accept="image/*,application/pdf" hidden multiple onChange={e => addDoc(e.target.files, 'evidence')} /></label>
+          <label style={{ ...fileBtn, borderColor: hasAadhaar ? T.success : T.border }}>{hasAadhaar ? <Icon name="verified" size={13} /> : <Icon name="add" size={13} />} Aadhaar Card *<input type="file" accept="image/*,application/pdf" hidden onChange={e => addDoc(e.target.files, 'aadhaar')} /></label>
+          <label style={{ ...fileBtn, borderColor: hasPan ? T.success : T.border }}>{hasPan ? <Icon name="verified" size={13} /> : <Icon name="add" size={13} />} PAN Card *<input type="file" accept="image/*,application/pdf" hidden onChange={e => addDoc(e.target.files, 'pan')} /></label>
+          <label style={fileBtn}><Icon name="add" size={13} /> Evidence files<input type="file" accept="image/*,application/pdf" hidden multiple onChange={e => addDoc(e.target.files, 'evidence')} /></label>
         </div>
         {docs.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
             {docs.map((d, i) => (
               <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, padding: '4px 8px', borderRadius: 8, background: T.canvas, border: `1px solid ${T.border}` }}>
-                {d.kind === 'aadhaar' ? '🪪' : d.kind === 'pan' ? '💳' : '📎'} {d.name}
-                <span onClick={() => removeDoc(i)} style={{ cursor: 'pointer', color: T.danger, fontWeight: 800 }}>✕</span>
+                {d.kind === 'aadhaar' ? <Icon name="aadhaar" size={14} /> : d.kind === 'pan' ? <Icon name="pan" size={14} /> : <Icon name="attach" size={14} />} {d.name}
+                <span onClick={() => removeDoc(i)} style={{ cursor: 'pointer', color: T.danger, fontWeight: 800 }}><Icon name="close" size={13} /></span>
               </span>
             ))}
           </div>
@@ -407,10 +408,10 @@ const ComplaintModal: React.FC<{ memberId: string; memberName: string; merchantN
           style={{ width: '100%', minHeight: 120, padding: '12px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13.5, fontFamily: 'inherit', color: T.textMain, background: T.surface, outline: 'none', resize: 'vertical', boxSizing: 'border-box' }} />
 
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 18, flexWrap: 'wrap' }}>
-          <Btn variant="secondary" onClick={() => exportComplaintPdf({ memberId, memberName, merchantName, bank: chosen, description: desc, documents: docs })}>📄 Download Complaint PDF</Btn>
-          <Btn variant="secondary" onClick={() => exportComplaintXlsx({ memberId, memberName, merchantName, bank: chosen, description: desc, documents: docs })}>📊 Download Excel</Btn>
-          <Btn variant="secondary" disabled={busy} onClick={() => save(false)}>{busy ? 'Saving…' : '💾 Save Draft'}</Btn>
-          <Btn variant="danger" disabled={busy} onClick={() => save(true)}>{busy ? 'Submitting…' : '🚨 Submit Complaint'}</Btn>
+          <Btn variant="secondary" onClick={() => exportComplaintPdf({ memberId, memberName, merchantName, bank: chosen, description: desc, documents: docs })}><Icon name="pdf" size={14} /> Download Complaint PDF</Btn>
+          <Btn variant="secondary" onClick={() => exportComplaintXlsx({ memberId, memberName, merchantName, bank: chosen, description: desc, documents: docs })}><Icon name="excel" size={14} /> Download Excel</Btn>
+          <Btn variant="secondary" disabled={busy} onClick={() => save(false)}>{busy ? 'Saving…' : <><Icon name="save" size={14} /> Save Draft</>}</Btn>
+          <Btn variant="danger" disabled={busy} onClick={() => save(true)}>{busy ? 'Submitting…' : <><Icon name="complaints" size={14} /> Submit Complaint</>}</Btn>
         </div>
       </Modal>
     );
@@ -473,7 +474,7 @@ const RiskProfileModal: React.FC<{ memberId: string; user: User; onClose: () => 
               {RISK_CATEGORIES.map(c => (
                 <Card key={c.title} style={{ padding: 14 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: T.textMain }}>{c.icon} {c.title}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 800, color: T.textMain }}>{isIconName(c.icon) ? <Icon name={c.icon} size={16} color={T.blue} /> : c.icon} {c.title}</span>
                     <span style={{ fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 999, background: c.status === 'analyzed' ? '#dcfce7' : '#fef3c7', color: c.status === 'analyzed' ? '#16a34a' : '#d97706' }}>
                       {c.status === 'analyzed' ? 'ANALYZED' : 'PENDING DATA'}
                     </span>
@@ -482,7 +483,7 @@ const RiskProfileModal: React.FC<{ memberId: string; user: User; onClose: () => 
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
                     {c.checks.map(ch => (
                       <span key={ch} style={{ fontSize: 10.5, padding: '2px 7px', borderRadius: 6, background: T.canvas, color: T.textMuted }}>
-                        {c.status === 'analyzed' ? '✓' : '○'} {ch}
+                        {c.status === 'analyzed' ? <Icon name="verified" size={12} /> : <Icon name="dot" size={9} />} {ch}
                       </span>
                     ))}
                   </div>
@@ -495,12 +496,12 @@ const RiskProfileModal: React.FC<{ memberId: string; user: User; onClose: () => 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <Card style={{ padding: 14 }}>
                 <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 800, color: '#16a34a' }}>STRENGTHS</p>
-                {p.summary.strengths.map((s, i) => <p key={i} style={{ margin: '4px 0', fontSize: 12.5, color: T.textMain }}>✓ {s}</p>)}
+                {p.summary.strengths.map((s, i) => <p key={i} style={{ margin: '4px 0', fontSize: 12.5, color: T.textMain }}><Icon name="verified" size={12} /> {s}</p>)}
               </Card>
               <Card style={{ padding: 14 }}>
                 <p style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 800, color: '#dc2626' }}>RISK INDICATORS</p>
                 {p.summary.indicators.length === 0 && <p style={{ margin: '4px 0', fontSize: 12.5, color: T.textMuted }}>None detected.</p>}
-                {p.summary.indicators.map((s, i) => <p key={i} style={{ margin: '4px 0', fontSize: 12.5, color: T.textMain }}>⚠ {s}</p>)}
+                {p.summary.indicators.map((s, i) => <p key={i} style={{ margin: '4px 0', fontSize: 12.5, color: T.textMain }}><Icon name="warning" size={12} /> {s}</p>)}
               </Card>
             </div>
           </Section>
@@ -548,20 +549,20 @@ const RiskProfileModal: React.FC<{ memberId: string; user: User; onClose: () => 
                 {p.relationships.repeatedSenders.map((s, i) => <p key={i} style={{ margin: '4px 0', fontSize: 12, color: T.textMain }}>{s.upiId} · {s.count}×</p>)}
                 <p style={{ margin: '10px 0 6px', fontSize: 12, fontWeight: 800, color: T.textMain }}>Related Memberships ({p.relationships.relatedMemberships.length})</p>
                 {p.relationships.relatedMemberships.length === 0 && <p style={{ fontSize: 12, color: T.textMuted }}>None detected.</p>}
-                {p.relationships.relatedMemberships.map((r, i) => <p key={i} style={{ margin: '4px 0', fontSize: 12, color: T.danger }}>⚠ {r.memberId} <span style={{ color: T.textMuted }}>(via {r.via})</span></p>)}
+                {p.relationships.relatedMemberships.map((r, i) => <p key={i} style={{ margin: '4px 0', fontSize: 12, color: T.danger }}><Icon name="warning" size={12} /> {r.memberId} <span style={{ color: T.textMuted }}>(via {r.via})</span></p>)}
               </Card>
             </div>
           </Section>
 
           {/* Footer actions */}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 22, flexWrap: 'wrap', position: 'relative' }}>
-            <Btn variant="secondary" onClick={() => exportRiskPdf(p, genBy)}>📄 Download PDF</Btn>
-            <Btn variant="secondary" onClick={() => exportRiskXlsx(p, genBy)}>📊 Download Excel</Btn>
+            <Btn variant="secondary" onClick={() => exportRiskPdf(p, genBy)}><Icon name="pdf" size={14} /> Download PDF</Btn>
+            <Btn variant="secondary" onClick={() => exportRiskXlsx(p, genBy)}><Icon name="excel" size={14} /> Download Excel</Btn>
             <div style={{ position: 'relative' }}>
-              <Btn variant="secondary" onClick={() => setShare(s => !s)}>📤 Share</Btn>
+              <Btn variant="secondary" onClick={() => setShare(s => !s)}><Icon name="share" size={14} /> Share</Btn>
               {share && <ShareMenu p={p} generatedBy={genBy} onClose={() => setShare(false)} />}
             </div>
-            <Btn variant="danger" onClick={() => setComplaint(true)}>🚨 Request Cyber Crime Complaint</Btn>
+            <Btn variant="danger" onClick={() => setComplaint(true)}><Icon name="complaints" size={14} /> Request Cyber Crime Complaint</Btn>
           </div>
 
           {complaint && (
@@ -617,16 +618,16 @@ export const RiskManagementPage: React.FC<{ user: User }> = ({ user }) => {
 
       {/* Risk dashboard cards */}
       <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: 14, marginBottom: 18 }}>
-        <StatCard icon="🟢" label="Low Risk Members" value={<CountUp value={data.stats.low} />} color="#16a34a" />
-        <StatCard icon="🟡" label="Medium Risk" value={<CountUp value={data.stats.medium} />} color="#d97706" />
-        <StatCard icon="🟠" label="High Risk" value={<CountUp value={data.stats.high} />} color="#ea580c" />
-        <StatCard icon="🔴" label="Critical Risk" value={<CountUp value={data.stats.critical} />} color="#dc2626" />
+        <StatCard icon="low-risk" label="Low Risk Members" value={<CountUp value={data.stats.low} />} color="#16a34a" />
+        <StatCard icon="medium-risk" label="Medium Risk" value={<CountUp value={data.stats.medium} />} color="#d97706" />
+        <StatCard icon="high-risk" label="High Risk" value={<CountUp value={data.stats.high} />} color="#ea580c" />
+        <StatCard icon="critical-risk" label="Critical Risk" value={<CountUp value={data.stats.critical} />} color="#dc2626" />
       </div>
 
       {/* Filters */}
       <Card style={{ padding: 14, marginBottom: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
-          <Input label="Search" value={q} onChange={e => setQ(e.target.value)} placeholder="Membership / name" icon="🔍" style={{ marginBottom: 0 }} />
+          <Input label="Search" value={q} onChange={e => setQ(e.target.value)} placeholder="Membership / name" icon="search" style={{ marginBottom: 0 }} />
           <Sel label="Risk Level" value={riskF} onChange={e => setRiskF(e.target.value)} style={{ marginBottom: 0 }}
             options={[{ value: '', label: 'All Levels' }, ...(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const).map(v => ({ value: v, label: v }))]} />
           {isStaff && <Sel label="Merchant" value={merchantF} onChange={e => setMerchantF(e.target.value)} style={{ marginBottom: 0 }}

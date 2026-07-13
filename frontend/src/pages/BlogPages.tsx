@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
 import { fileToDataUrl, formatDateTime } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, StatusChart, LoadingScreen } from '../components/UI';
+import { Icon, isIconName } from '../components/Icon';
 import { blogAPI, blogCategoryAPI } from '../services/api';
 import type { BlogListParams } from '../services/api';
 import type { User, BlogPost, BlogCategory, BlogStats, BlogAnalytics } from '../types';
@@ -76,12 +77,12 @@ const BlogSummaryCards: React.FC = () => {
   useEffect(() => { blogAPI.stats().then(setStats).catch(() => setStats(null)); }, []);
   if (!stats) return null;
   const cards = [
-    { icon:'📚', label:'Total Blogs', value:stats.total, color:T.blue },
-    { icon:'✅', label:'Published', value:stats.published, color:T.success },
-    { icon:'🗒', label:'Drafts', value:stats.draft, color:T.warning },
-    { icon:'👁', label:'Total Views', value:stats.totalViews.toLocaleString(), color:T.info },
-    { icon:'🏷', label:'Categories', value:stats.totalCategories, color:T.blue },
-    { icon:'🔥', label:'Most Viewed', value:stats.mostViewed ? stats.mostViewed.title : '—',
+    { icon:'news', label:'Total Blogs', value:stats.total, color:T.blue },
+    { icon:'verified', label:'Published', value:stats.published, color:T.success },
+    { icon:'edit', label:'Drafts', value:stats.draft, color:T.warning },
+    { icon:'view', label:'Total Views', value:stats.totalViews.toLocaleString(), color:T.info },
+    { icon:'tag', label:'Categories', value:stats.totalCategories, color:T.blue },
+    { icon:'trophy', label:'Most Viewed', value:stats.mostViewed ? stats.mostViewed.title : '—',
       sub:stats.mostViewed ? `${stats.mostViewed.views.toLocaleString()} views` : undefined, color:T.danger },
   ];
   return (
@@ -107,10 +108,10 @@ const BlogDetailsView: React.FC<{ id: number; onBack: () => void }> = ({ id, onB
     ['Status', <StatusPill status={post.status} />],
   ];
   const related = [
-    { label:'Views', value:post.views, icon:'👁' },
-    { label:'Likes', value:post.likes, icon:'❤' },
-    { label:'Shares', value:post.shares, icon:'↗' },
-    { label:'Comments', value:post.commentsCount, icon:'💬' },
+    { label:'Views', value:post.views, icon:'view' },
+    { label:'Likes', value:post.likes, icon:'likes' },
+    { label:'Shares', value:post.shares, icon:'share' },
+    { label:'Comments', value:post.commentsCount, icon:'chat' },
   ];
   return (
     <div>
@@ -148,7 +149,7 @@ const BlogDetailsView: React.FC<{ id: number; onBack: () => void }> = ({ id, onB
         <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:12 }}>
           {related.map(r => (
             <div key={r.label} style={{ background:T.canvas,borderRadius:12,padding:'14px',textAlign:'center' }}>
-              <div style={{ fontSize:18 }}>{r.icon}</div>
+              <div style={{ fontSize:18,display:'flex',justifyContent:'center' }}>{isIconName(r.icon) ? <Icon name={r.icon} size={20} color={T.blue} /> : r.icon}</div>
               <div style={{ fontSize:20,fontWeight:800,color:T.textMain,marginTop:4 }}>{r.value.toLocaleString()}</div>
               <div style={{ fontSize:11,color:T.textMuted }}>{r.label}</div>
             </div>
@@ -260,7 +261,7 @@ const BlogEditor: React.FC<{
                   <div key={i} style={{ position:'relative' }}>
                     <img src={im} alt="" style={{ height:56,width:56,objectFit:'cover',borderRadius:8,border:`1px solid ${T.border}` }} />
                     <span onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}
-                      style={{ position:'absolute',top:-6,right:-6,background:T.danger,color:'#fff',borderRadius:'50%',width:18,height:18,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,cursor:'pointer' }}>✕</span>
+                      style={{ position:'absolute',top:-6,right:-6,background:T.danger,color:'#fff',borderRadius:'50%',width:18,height:18,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,cursor:'pointer' }}><Icon name="close" size={11} /></span>
                   </div>
                 ))}
               </div>
@@ -353,7 +354,7 @@ const BlogTable: React.FC<{ user: User; title: string; subtitle?: string; fixedS
 
       <Card style={{ padding:14,marginBottom:16 }}>
         <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:10,alignItems:'end' }}>
-          <Input label="Search" value={q} onChange={e => setQ(e.target.value)} placeholder="Title / ID / author" icon="🔍" style={{ marginBottom:0 }} />
+          <Input label="Search" value={q} onChange={e => setQ(e.target.value)} placeholder="Title / ID / author" icon="search" style={{ marginBottom:0 }} />
           <Sel label="Category" value={catF} onChange={e => setCatF(e.target.value)} options={catOptions} style={{ marginBottom:0 }} />
           {!fixedStatus && staff && (
             <Sel label="Status" value={statusF} onChange={e => setStatusF(e.target.value)}
@@ -390,8 +391,8 @@ const BlogTable: React.FC<{ user: User; title: string; subtitle?: string; fixedS
                   <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{b.updatedAt ? formatDateTime(b.updatedAt) : '—'}</td>
                   <td style={{ padding:'11px 14px' }}>
                     <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
-                      <Btn size="sm" variant="ghost" onClick={() => setViewId(b.id)}>👁 View</Btn>
-                      {staff && <Btn size="sm" variant="secondary" onClick={() => setEditId(b.id)}>✎ Edit</Btn>}
+                      <Btn size="sm" variant="ghost" onClick={() => setViewId(b.id)}><Icon name="view" size={14} /> View</Btn>
+                      {staff && <Btn size="sm" variant="secondary" onClick={() => setEditId(b.id)}><Icon name="edit" size={14} /> Edit</Btn>}
                       {staff && (b.status === 'PUBLISHED'
                         ? <Btn size="sm" variant="secondary" onClick={() => doStatus(b, 'DRAFT')}>Unpublish</Btn>
                         : <Btn size="sm" variant="primary" onClick={() => doStatus(b, 'PUBLISHED')}>Publish</Btn>)}

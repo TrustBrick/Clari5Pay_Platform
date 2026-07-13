@@ -38,9 +38,9 @@ export const ROLE_PORTAL_URL: Record<string, string> = {
 
 // Cards shown on the app.win365jackpot.com chooser landing.
 export const PORTAL_LINKS = [
-  { name: 'Merchant Portal', url: MERCHANT_URL, icon: '🏪', desc: 'Deposits, withdrawals & settlements' },
-  { name: 'Admin Portal', url: ADMIN_URL, icon: '🛡️', desc: 'Process requests & manage merchants' },
-  { name: 'Super Admin Portal', url: SA_URL, icon: '👑', desc: 'Platform oversight & admin accounts' },
+  { name: 'Merchant Portal', url: MERCHANT_URL, icon: 'merchants', desc: 'Deposits, withdrawals & settlements' },
+  { name: 'Admin Portal', url: ADMIN_URL, icon: 'admin-management', desc: 'Process requests & manage merchants' },
+  { name: 'Super Admin Portal', url: SA_URL, icon: 'crown', desc: 'Platform oversight & admin accounts' },
 ];
 
 // True if a user with this role may use the current portal.

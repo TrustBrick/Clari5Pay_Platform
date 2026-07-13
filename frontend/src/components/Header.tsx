@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
 import { timeAgo, merchantRoleLabel } from '../utils/helpers';
 import ThemeToggle from './ThemeToggle';
+import { Icon } from './Icon';
 import { notificationAPI } from '../services/api';
 import type { Notification, User } from '../types';
 
@@ -110,8 +111,8 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick }) => {
         <button
           onClick={onMenuClick}
           className="hamburger"
-          style={{ display:'none',background:'none',border:'none',fontSize:22,cursor:'pointer',color:T.textMuted,padding:4 }}
-        >☰</button>
+          style={{ display:'none',background:'none',border:'none',cursor:'pointer',color:T.textMuted,padding:4,alignItems:'center' }}
+        ><Icon name="menu" size={22} /></button>
         <div>
           <h1 style={{ fontSize:16,fontWeight:800,color:T.textMain,margin:0 }}>{title}</h1>
           <p style={{ fontSize:10,color:T.textMuted,margin:0 }}>
@@ -127,7 +128,7 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick }) => {
             onClick={toggleOpen}
             style={{ cursor:'pointer',width:36,height:36,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:10,background:open?T.infoBg:'transparent',transition:'background 0.2s',position:'relative' }}
           >
-            <span style={{ fontSize:17 }}>🔔</span>
+            <Icon name="bell" size={19} color={T.textMuted} weight={open ? 'fill' : 'regular'} />
             {unread > 0 && (
               <span style={{ position:'absolute',top:2,right:2,background:T.danger,color:'#fff',borderRadius:'50%',minWidth:15,height:15,padding:'0 3px',display:'flex',alignItems:'center',justifyContent:'center',fontSize:8,fontWeight:800,boxSizing:'border-box' }}>{unread > 9 ? '9+' : unread}</span>
             )}

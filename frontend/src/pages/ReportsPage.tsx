@@ -3,6 +3,7 @@ import { T } from '../utils/theme';
 import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
+import { Icon, type IconName } from '../components/Icon';
 import { transactionAPI, userAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -178,14 +179,14 @@ const OverviewTab: React.FC<{ data: ReportData }> = ({ data }) => {
   const c = data.cards;
   return (
     <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 14 }}>
-      <StatCard icon="≡" label="Total Transactions" value={<CountUp value={c.totalTransactions} />} color={T.blue} />
-      <StatCard icon="↓" label="Total Deposits" value={<CountUp value={c.totalDeposits} />} sub={fmt(c.totalDepositAmount)} color={T.success} />
-      <StatCard icon="↑" label="Total Withdrawals" value={<CountUp value={c.totalWithdrawals} />} sub={fmt(c.totalWithdrawalAmount)} color={T.danger} />
-      <StatCard icon="⇄" label="Total Settlements" value={<CountUp value={c.totalSettlements} />} sub={fmt(c.totalSettlementAmount)} color={T.warning} />
-      <StatCard icon="₹" label="Total Transaction Amount" value={<CountUp value={c.totalTransactionAmount} format={fmt} />} valueLen={fmt(c.totalTransactionAmount).length} color={T.blue} />
-      <StatCard icon="👥" label="Active Memberships" value={<CountUp value={c.activeMemberships} />} sub="transacted in last 30 days" color={T.cyan || T.blue} />
-      <StatCard icon="⭐" label="Most Active Member" value={c.mostActiveMember ? memberLabel(c.mostActiveMember.memberId, c.mostActiveMember.memberName) : '-'} sub={c.mostActiveMember ? `${c.mostActiveMember.count} txns` : undefined} color={T.success} />
-      <StatCard icon="🔝" label="Largest Transaction Today" value={c.largestTransactionToday ? fmt(c.largestTransactionToday.amount) : '-'} sub={c.largestTransactionToday ? memberLabel(c.largestTransactionToday.memberId, c.largestTransactionToday.memberName) : undefined} color={T.warning} />
+      <StatCard icon="transactions" label="Total Transactions" value={<CountUp value={c.totalTransactions} />} color={T.blue} />
+      <StatCard icon="total-deposits" label="Total Deposits" value={<CountUp value={c.totalDeposits} />} sub={fmt(c.totalDepositAmount)} color={T.success} />
+      <StatCard icon="total-withdrawals" label="Total Withdrawals" value={<CountUp value={c.totalWithdrawals} />} sub={fmt(c.totalWithdrawalAmount)} color={T.danger} />
+      <StatCard icon="total-settlements" label="Total Settlements" value={<CountUp value={c.totalSettlements} />} sub={fmt(c.totalSettlementAmount)} color={T.warning} />
+      <StatCard icon="amount" label="Total Transaction Amount" value={<CountUp value={c.totalTransactionAmount} format={fmt} />} valueLen={fmt(c.totalTransactionAmount).length} color={T.blue} />
+      <StatCard icon="users" label="Active Memberships" value={<CountUp value={c.activeMemberships} />} sub="transacted in last 30 days" color={T.cyan || T.blue} />
+      <StatCard icon="trophy" label="Most Active Member" value={c.mostActiveMember ? memberLabel(c.mostActiveMember.memberId, c.mostActiveMember.memberName) : '-'} sub={c.mostActiveMember ? `${c.mostActiveMember.count} txns` : undefined} color={T.success} />
+      <StatCard icon="largest" label="Largest Transaction Today" value={c.largestTransactionToday ? fmt(c.largestTransactionToday.amount) : '-'} sub={c.largestTransactionToday ? memberLabel(c.largestTransactionToday.memberId, c.largestTransactionToday.memberName) : undefined} color={T.warning} />
     </div>
   );
 };
@@ -419,7 +420,7 @@ const SearchTab: React.FC<{ data: ReportData; onPick: (id: string) => void }> = 
           <Input label="Max Amount" type="number" value={maxA} onChange={e => setMaxA(e.target.value)} />
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
-          <Btn size="sm" variant="secondary" onClick={() => exportRowsXlsx(rows, `clari5pay-search-${today()}.xlsx`)}>📊 Download Excel</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => exportRowsXlsx(rows, `clari5pay-search-${today()}.xlsx`)}><Icon name="excel" size={14} /> Download Excel</Btn>
           <span style={{ fontSize: 12, color: T.textMuted }}>{rows.length} result(s)</span>
         </div>
       </Card>
@@ -637,10 +638,10 @@ function printColumnarReport(opts: {
 const ReportExportBar: React.FC<{ count: number; onPdf: () => void; onExcel: () => void; onCsv: () => void; onPrint: () => void }> =
   ({ count, onPdf, onExcel, onCsv, onPrint }) => (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-      <Btn size="sm" variant="secondary" onClick={onPdf}>📄 Download PDF</Btn>
-      <Btn size="sm" variant="secondary" onClick={onExcel}>📊 Download Excel</Btn>
-      <Btn size="sm" variant="secondary" onClick={onCsv}>🧾 Download CSV</Btn>
-      <Btn size="sm" variant="secondary" onClick={onPrint}>🖨 Print Report</Btn>
+      <Btn size="sm" variant="secondary" onClick={onPdf}><Icon name="pdf" size={14} /> Download PDF</Btn>
+      <Btn size="sm" variant="secondary" onClick={onExcel}><Icon name="excel" size={14} /> Download Excel</Btn>
+      <Btn size="sm" variant="secondary" onClick={onCsv}><Icon name="csv" size={14} /> Download CSV</Btn>
+      <Btn size="sm" variant="secondary" onClick={onPrint}><Icon name="print" size={14} /> Print Report</Btn>
       <span style={{ fontSize: 12, color: T.textMuted }}>{count} row(s)</span>
     </div>
   );
@@ -689,7 +690,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
     });
     return (
       <div>
-        <RSectionTitle note="All transactions in their current status (use the Status filter to narrow) — status, approver, operator, amount and method per transaction.">🏦 Treasury Report</RSectionTitle>
+        <RSectionTitle note="All transactions in their current status (use the Status filter to narrow) — status, approver, operator, amount and method per transaction."><Icon name="treasury" size={15} /> Treasury Report</RSectionTitle>
         <ReportExportBar count={data.length} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={() => downloadCsv(`clari5pay-treasury-${today()}.csv`, TREASURY_HEADERS, csvRows)} onPrint={() => onPdf(true)} />
         <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
           <div style={{ overflowX: 'auto', maxHeight: 560 }}>
@@ -781,7 +782,7 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRo
     });
     return (
       <div>
-        <RSectionTitle note="Completed transactions in chronological order. Amount is the gross transaction; Commission is the fee applied by the deposit/withdrawal/settlement workflow; Running Balance is the net credited after commission — it matches your Available Balance.">📒 Agent Ledger Report</RSectionTitle>
+        <RSectionTitle note="Completed transactions in chronological order. Amount is the gross transaction; Commission is the fee applied by the deposit/withdrawal/settlement workflow; Running Balance is the net credited after commission — it matches your Available Balance."><Icon name="ledger" size={15} /> Agent Ledger Report</RSectionTitle>
         <ReportExportBar count={ledger.length} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={() => downloadCsv(`clari5pay-agent-ledger-${today()}.csv`, LEDGER_HEADERS, csvRows)} onPrint={() => onPdf(true)} />
         <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
           <div style={{ overflowX: 'auto', maxHeight: 560 }}>
@@ -918,16 +919,16 @@ const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
         {merchantSelector}
         {reportType === 'full' && <>
-          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}>📄 Download PDF</Btn>
-          <Btn size="sm" variant="secondary" onClick={downloadExcel}>📊 Download Excel</Btn>
-          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}>🖨 Print Report</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}><Icon name="pdf" size={14} /> Download PDF</Btn>
+          <Btn size="sm" variant="secondary" onClick={downloadExcel}><Icon name="excel" size={14} /> Download Excel</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}><Icon name="print" size={14} /> Print Report</Btn>
         </>}
       </div>
 
       {/* Report-type selector — Full dashboard · Treasury Report · Agent Ledger Report */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-        {([['full', '📊 Full Report'], ['treasury', '🏦 Treasury Report'], ['ledger', '📒 Agent Ledger Report']] as const).map(([k, label]) => (
-          <button key={k} className="c5-btn" onClick={() => setReportType(k)} style={pill(reportType === k)}>{label}</button>
+        {([['full', 'analytics', 'Full Report'], ['treasury', 'treasury', 'Treasury Report'], ['ledger', 'ledger', 'Agent Ledger Report']] as const).map(([k, ic, label]) => (
+          <button key={k} className="c5-btn" onClick={() => setReportType(k)} style={{ ...pill(reportType === k), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name={ic as IconName} size={14} /> {label}</button>
         ))}
       </div>
 
@@ -950,7 +951,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
       </Card>
 
       {/* 3 — Advanced filters */}
-      <RSectionTitle note="Set your filters, then click Apply Filters to update the table, footer totals and exports together.">🔎 Advanced Filters</RSectionTitle>
+      <RSectionTitle note="Set your filters, then click Apply Filters to update the table, footer totals and exports together."><Icon name="filter" size={15} /> Advanced Filters</RSectionTitle>
       <Card style={{ padding: 16, marginBottom: 18 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
           {DATE_PRESETS.map(([k, label]) => <button key={k} className="c5-btn" onClick={() => set('datePreset', k)} style={pill(draft.datePreset === k)}>{label}</button>)}
@@ -981,7 +982,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
           <Input label="Exact Amount" type="number" value={draft.exactA} onChange={e => set('exactA', e.target.value)} />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12 }}>
-          <Btn size="sm" onClick={applyFilters} disabled={applying}>{applying ? '⏳ Applying…' : '🔍 Apply Filters'}</Btn>
+          <Btn size="sm" onClick={applyFilters} disabled={applying}>{applying ? <><Icon name="pending" size={14} /> Applying…</> : <><Icon name="search" size={14} /> Apply Filters</>}</Btn>
           <Btn size="sm" variant="ghost" onClick={clearFilters} disabled={applying}>Clear Filters</Btn>
           <span style={{ fontSize: 12, color: T.textMuted }}>
             {applying ? 'Applying filters…' : `${filtered.length} of ${data.transactions.length} transactions`}
@@ -995,19 +996,19 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 
       {reportType === 'full' && <>
       {/* 4 — Membership analytics */}
-      <RSectionTitle>👥 Membership Analytics</RSectionTitle>
+      <RSectionTitle><Icon name="users" size={15} /> Membership Analytics</RSectionTitle>
       <MembersTab data={data} onPick={setProfileId} />
 
       {/* 5 — Transaction intelligence */}
-      <RSectionTitle>🧠 Transaction Intelligence</RSectionTitle>
+      <RSectionTitle><Icon name="brain" size={15} /> Transaction Intelligence</RSectionTitle>
       <IntelTab data={data} />
 
       {/* 6 — Charts */}
-      <RSectionTitle>📈 Trend Charts</RSectionTitle>
+      <RSectionTitle><Icon name="merchant-analytics" size={15} /> Trend Charts</RSectionTitle>
       <TrendsTab data={data} />
 
       {/* 7 — Transaction table (filtered) */}
-      <RSectionTitle note="Reflects the advanced filters above.">📋 Transactions</RSectionTitle>
+      <RSectionTitle note="Reflects the advanced filters above."><Icon name="transactions" size={15} /> Transactions</RSectionTitle>
       <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
         <div style={{ overflowX: 'auto', maxHeight: 520 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -1049,7 +1050,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 
       {profileId && <MemberProfileModal data={data} memberId={profileId} onClose={() => setProfileId(null)} />}
 
-      <RSectionTitle note="Generated automatically from your live transaction data.">💡 Business Insights</RSectionTitle>
+      <RSectionTitle note="Generated automatically from your live transaction data."><Icon name="insight" size={15} /> Business Insights</RSectionTitle>
       <Card style={{ padding: 18 }}>
         {data.insights.length === 0 && <p style={{ margin: 0, color: T.textMuted, fontSize: 13 }}>Not enough activity yet to generate insights.</p>}
         {data.insights.map((i, idx) => (

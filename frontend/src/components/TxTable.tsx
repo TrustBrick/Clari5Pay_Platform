@@ -2,6 +2,7 @@ import React from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, memberLabel } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton } from './UI';
+import { Icon, type IconName } from './Icon';
 import type { Transaction } from '../types';
 
 type ActionMode = 'admin' | 'merchant' | 'view' | 'none';
@@ -15,24 +16,24 @@ interface TxTableProps {
 }
 
 // Pick the per-row action button based on mode + transaction type + status.
-const rowAction = (mode: ActionMode, status: string, type: string): { label: string; action: string; variant: 'primary' | 'ghost' } | null => {
+const rowAction = (mode: ActionMode, status: string, type: string): { label: string; action: string; variant: 'primary' | 'ghost'; icon: IconName } | null => {
   const isDeposit = type.startsWith('DEPOSIT');
   if (mode === 'admin') {
     // Deposits reach the admin (SLIP_SUBMITTED) only after Supervisor approval; withdrawals/
     // settlements (SLIP_SUBMITTED) only after Manager approval. Legacy withdrawals may still
     // sit in ACCOUNT_REQUESTED.
-    if (isDeposit && status === 'ACCOUNT_REQUESTED') return { label: '🏦 Choose Account', action: 'manage', variant: 'primary' };
-    if (isDeposit && status === 'SLIP_SUBMITTED') return { label: '✓ Mark Deposited', action: 'manage', variant: 'primary' };
-    if (!isDeposit && (status === 'ACCOUNT_REQUESTED' || status === 'SLIP_SUBMITTED')) return { label: '💳 Pay & Complete', action: 'manage', variant: 'primary' };
-    return { label: '👁 View Details', action: 'view', variant: 'ghost' };
+    if (isDeposit && status === 'ACCOUNT_REQUESTED') return { label: 'Choose Account', action: 'manage', variant: 'primary', icon: 'bank' };
+    if (isDeposit && status === 'SLIP_SUBMITTED') return { label: 'Mark Deposited', action: 'manage', variant: 'primary', icon: 'approve' };
+    if (!isDeposit && (status === 'ACCOUNT_REQUESTED' || status === 'SLIP_SUBMITTED')) return { label: 'Pay & Complete', action: 'manage', variant: 'primary', icon: 'amount' };
+    return { label: 'View Details', action: 'view', variant: 'ghost', icon: 'view' };
   }
   if (mode === 'merchant') {
     // Slip upload: awaiting payment (ACCOUNT_SUBMITTED) or returned by a Supervisor (RESUBMITTED).
-    if (isDeposit && status === 'ACCOUNT_SUBMITTED') return { label: '⇪ Pay / Submit Proof', action: 'slip', variant: 'primary' };
-    if (isDeposit && status === 'RESUBMITTED') return { label: '↻ Re-submit Proof', action: 'slip', variant: 'primary' };
-    return { label: '👁 View Details', action: 'view', variant: 'ghost' };
+    if (isDeposit && status === 'ACCOUNT_SUBMITTED') return { label: 'Pay / Submit Proof', action: 'slip', variant: 'primary', icon: 'upload' };
+    if (isDeposit && status === 'RESUBMITTED') return { label: 'Re-submit Proof', action: 'slip', variant: 'primary', icon: 'refresh' };
+    return { label: 'View Details', action: 'view', variant: 'ghost', icon: 'view' };
   }
-  if (mode === 'view') return { label: '👁 View', action: 'view', variant: 'ghost' };
+  if (mode === 'view') return { label: 'View', action: 'view', variant: 'ghost', icon: 'view' };
   return null;
 };
 
@@ -45,8 +46,8 @@ const CopyRef: React.FC<{ value: string }> = ({ value }) => {
   };
   return (
     <button onClick={copy} title="Copy reference number" aria-label="Copy reference number"
-      style={{ border:'none',background:'transparent',cursor:'pointer',color:copied?T.success:T.textMuted,fontSize:12,lineHeight:1,padding:'0 2px' }}>
-      {copied ? '✓' : '⧉'}
+      style={{ border:'none',background:'transparent',cursor:'pointer',color:copied?T.success:T.textMuted,lineHeight:1,padding:'0 2px',display:'inline-flex',alignItems:'center' }}>
+      <Icon name={copied ? 'approve' : 'copy'} size={13} />
     </button>
   );
 };
@@ -103,7 +104,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
               <td style={{ padding:'11px 14px' }}>
                 <Badge status={t.status} type={t.type} viewerRole={viewerRole}/>
                 {t.highRisk && (
-                  <span style={{ display:'inline-block',marginLeft:6,padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,background:'#fdecea',color:'#b71c1c',whiteSpace:'nowrap',letterSpacing:'0.04em' }}>⚠ HIGH RISK</span>
+                  <span style={{ display:'inline-flex',alignItems:'center',gap:3,marginLeft:6,padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,background:'#fdecea',color:'#b71c1c',whiteSpace:'nowrap',letterSpacing:'0.04em' }}><Icon name="warning" size={11} weight="fill" /> HIGH RISK</span>
                 )}
               </td>
               {showAction && (
@@ -111,7 +112,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
                   {(() => {
                     const a = rowAction(actionMode, t.status, t.type);
                     if (!a) return <span style={{ color:T.textLight }}>—</span>;
-                    return <Btn size="sm" variant={a.variant} onClick={() => onAction!(t, a.action)}>{a.label}</Btn>;
+                    return <Btn size="sm" variant={a.variant} onClick={() => onAction!(t, a.action)}><Icon name={a.icon} size={14} /> {a.label}</Btn>;
                   })()}
                 </td>
               )}
