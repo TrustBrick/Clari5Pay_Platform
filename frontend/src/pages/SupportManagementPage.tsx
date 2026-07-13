@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { T } from '../utils/theme';
 import { Card, StatCard, Sel, Input, Btn, Modal, Skeleton, CountUp, ReasonModal } from '../components/UI';
+import { Icon } from '../components/Icon';
 import { supportManagementAPI } from '../services/api';
 import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
 import { openSSE } from '../utils/sse';
@@ -128,7 +129,7 @@ const CreateModal: React.FC<{ onClose: () => void; onCreated: () => void }> = ({
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
         <Btn onClick={submit} disabled={!valid || busy}>{busy ? 'Creating…' : 'Create Support Member'}</Btn>
         <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
-        {!valid && !busy && disabledReason && <span style={{ fontSize: 12, color: T.warning, fontWeight: 600 }}>⚠ {disabledReason}</span>}
+        {!valid && !busy && disabledReason && <span style={{ fontSize: 12, color: T.warning, fontWeight: 600 }}><Icon name="warning" size={13} /> {disabledReason}</span>}
       </div>
     </Modal>
   );
@@ -464,14 +465,14 @@ export const SupportManagementPage: React.FC<{ user: User }> = ({ user }) => {
 
       {/* Dashboard cards */}
       <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 14, marginBottom: 14 }}>
-        <StatCard icon="🎧" label="Support Members" value={<CountUp value={s?.members ?? 0} />} color={T.blue} />
-        <StatCard icon="🟢" label="Available" value={<CountUp value={s?.available ?? 0} />} color={T.success} />
-        <StatCard icon="🟡" label="Busy" value={<CountUp value={s?.busy ?? 0} />} color={T.warning} />
-        <StatCard icon="🔴" label="On Break" value={<CountUp value={s?.onBreak ?? 0} />} color={T.danger} />
-        <StatCard icon="⚪" label="Offline" value={<CountUp value={s?.offline ?? 0} />} color={T.textMuted} />
-        <StatCard icon="💬" label="Active Conversations" value={<CountUp value={s?.activeConversations ?? 0} />} color={T.blue} />
-        <StatCard icon="⏳" label="Waiting in Queue" value={<CountUp value={s?.waitingCustomers ?? 0} />} color={(s?.waitingCustomers ?? 0) > 0 ? T.warning : T.textMuted} />
-        <StatCard icon="⚡" label="Avg Response" value={fmtDuration(s?.avgResponseSeconds ?? null)} color={T.textMuted} />
+        <StatCard icon="support" label="Support Members" value={<CountUp value={s?.members ?? 0} />} color={T.blue} />
+        <StatCard icon="available" label="Available" value={<CountUp value={s?.available ?? 0} />} color={T.success} />
+        <StatCard icon="busy" label="Busy" value={<CountUp value={s?.busy ?? 0} />} color={T.warning} />
+        <StatCard icon="on-break" label="On Break" value={<CountUp value={s?.onBreak ?? 0} />} color={T.danger} />
+        <StatCard icon="offline" label="Offline" value={<CountUp value={s?.offline ?? 0} />} color={T.textMuted} />
+        <StatCard icon="chat" label="Active Conversations" value={<CountUp value={s?.activeConversations ?? 0} />} color={T.blue} />
+        <StatCard icon="queue" label="Waiting in Queue" value={<CountUp value={s?.waitingCustomers ?? 0} />} color={(s?.waitingCustomers ?? 0) > 0 ? T.warning : T.textMuted} />
+        <StatCard icon="response-time" label="Avg Response" value={fmtDuration(s?.avgResponseSeconds ?? null)} color={T.textMuted} />
       </div>
 
       {/* Assignment config */}

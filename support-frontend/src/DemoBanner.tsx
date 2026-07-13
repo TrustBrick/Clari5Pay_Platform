@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from './Icon';
 
 const IS_DEMO = (import.meta as any).env.VITE_APP_ENV === 'demo';
 
@@ -17,7 +18,7 @@ const DemoBanner: React.FC = () => {
         letterSpacing: 0.4, fontFamily: "'Inter','Segoe UI',sans-serif",
         boxShadow: '0 1px 6px rgba(0,0,0,0.25)',
       }}>
-        <span>⚠ DEMO ENVIRONMENT — No live transactions</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="warning" size={14} weight="fill" /> DEMO ENVIRONMENT — No live transactions</span>
       </div>
     </>
   );

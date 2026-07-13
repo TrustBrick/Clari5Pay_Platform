@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
 import { Card, Btn, Input, Sel, Modal } from '../components/UI';
+import { Icon, isIconName } from '../components/Icon';
 import { useToast } from '../context/ToastContext';
 import { fileToDataUrl } from '../utils/helpers';
 import {
@@ -29,15 +30,15 @@ const KycIcon: React.FC<{ view: ViewKey; emoji: string }> = ({ view, emoji }) =>
   const src = KYC_ICONS[view];
   return src
     ? <img src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-    : <>{emoji}</>;
+    : isIconName(emoji) ? <Icon name={emoji} size={24} color={T.blue} /> : <>{emoji}</>;
 };
 
 interface CardDef { key: ViewKey; icon: string; title: string; desc: string; }
 const CARDS: CardDef[] = [
-  { key: 'aadhaar',  icon: '🆔', title: 'Aadhaar Verification',      desc: 'Generate a DigiLocker verification link for a member and track completion.' },
-  { key: 'pan',      icon: '💳', title: 'PAN Verification',          desc: 'Validate a member’s PAN and fetch the holder’s details.' },
-  { key: 'passport', icon: '📘', title: 'Passport Verification',     desc: 'Verify a passport using its File Number and check validity.' },
-  { key: 'ocr',      icon: '📄', title: 'OCR Document Verification', desc: 'Extract details from an uploaded identity document.' },
+  { key: 'aadhaar',  icon: 'aadhaar',    title: 'Aadhaar Verification',      desc: 'Generate a DigiLocker verification link for a member and track completion.' },
+  { key: 'pan',      icon: 'pan',        title: 'PAN Verification',          desc: 'Validate a member’s PAN and fetch the holder’s details.' },
+  { key: 'passport', icon: 'passport',   title: 'Passport Verification',     desc: 'Verify a passport using its File Number and check validity.' },
+  { key: 'ocr',      icon: 'ocr-upload', title: 'OCR Document Verification', desc: 'Extract details from an uploaded identity document.' },
 ];
 const TYPE_LABEL: Record<ViewKey, string> = {
   home: '', aadhaar: 'Aadhaar', pan: 'PAN', passport: 'Passport', ocr: 'OCR',
@@ -72,13 +73,13 @@ export const extractAadhaarPhoto = (xmlFile?: string | null): string | null => {
 // ─── Small shared UI atoms (match the app's inline-token styling) ──────────────
 const Banner: React.FC<{ kind: 'success' | 'error' | 'info'; children: React.ReactNode }> = ({ kind, children }) => {
   const map = {
-    success: { c: T.success, bg: T.successBg, icon: '✓' },
-    error:   { c: T.danger,  bg: T.dangerBg,  icon: '⚠' },
-    info:    { c: T.info,    bg: T.infoBg,    icon: 'ℹ' },
+    success: { c: T.success, bg: T.successBg, icon: 'verified' },
+    error:   { c: T.danger,  bg: T.dangerBg,  icon: 'warning' },
+    info:    { c: T.info,    bg: T.infoBg,    icon: 'information' },
   }[kind];
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', borderRadius: 10, background: map.bg, color: map.c, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
-      <span style={{ fontSize: 15 }}>{map.icon}</span>{children}
+      <span style={{ display: 'flex', alignItems: 'center', fontSize: 15 }}>{isIconName(map.icon) ? <Icon name={map.icon} size={16} /> : map.icon}</span>{children}
     </div>
   );
 };
@@ -105,7 +106,7 @@ const VerifyShell: React.FC<{ icon: string; view?: ViewKey; title: string; child
     <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.blue, fontWeight: 700, fontSize: 13, cursor: 'pointer', padding: 0, marginBottom: 14, fontFamily: 'inherit' }}>← Back to KYC Dashboard</button>
     <Card style={{ padding: 22 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
-        <div style={{ width: 44, height: 44, borderRadius: 12, overflow: 'hidden', background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>{view ? <KycIcon view={view} emoji={icon} /> : icon}</div>
+        <div style={{ width: 44, height: 44, borderRadius: 12, overflow: 'hidden', background: `${T.blue}15`, color: T.blue, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>{view ? <KycIcon view={view} emoji={icon} /> : (isIconName(icon) ? <Icon name={icon} size={24} color={T.blue} /> : icon)}</div>
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: T.textMain }}>{title}</h2>
       </div>
       {children}
@@ -211,7 +212,7 @@ const ImageField: React.FC<{ label: string; pick: ReturnType<typeof useImagePick
     ) : (
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
         <img src={pick.dataUrl} alt={label} style={{ maxWidth: 200, maxHeight: 150, borderRadius: 10, border: `1px solid ${T.border}` }} />
-        <Btn size="sm" variant="ghost" onClick={pick.clear}>✕ Remove</Btn>
+        <Btn size="sm" variant="ghost" onClick={pick.clear}><Icon name="close" size={13} /> Remove</Btn>
       </div>
     )}
   </div>
@@ -287,7 +288,7 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   };
 
   return (
-    <VerifyShell icon="🆔" view="aadhaar" title="Aadhaar Verification" onBack={onBack}>
+    <VerifyShell icon="aadhaar" view="aadhaar" title="Aadhaar Verification" onBack={onBack}>
       <MembershipFields m={m} />
 
       <Btn onClick={generate} disabled={!canGenerate}>
@@ -310,8 +311,8 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
             </div>
             {referenceId && <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 14 }}>Reference ID: <span style={{ fontFamily: 'monospace' }}>{referenceId}</span></div>}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <Btn size="sm" onClick={copyLink}>📋 Copy Link</Btn>
-              <Btn size="sm" variant="ghost" onClick={checkStatus} disabled={checking}>{checking ? <><Spinner /> Checking…</> : '↻ Check Verification Status'}</Btn>
+              <Btn size="sm" onClick={copyLink}><Icon name="copy" size={14} /> Copy Link</Btn>
+              <Btn size="sm" variant="ghost" onClick={checkStatus} disabled={checking}>{checking ? <><Spinner /> Checking…</> : <><Icon name="refresh" size={14} /> Check Verification Status</>}</Btn>
             </div>
           </div>
         </Card>
@@ -369,7 +370,7 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   };
 
   return (
-    <VerifyShell icon="💳" view="pan" title="PAN Verification" onBack={onBack}>
+    <VerifyShell icon="pan" view="pan" title="PAN Verification" onBack={onBack}>
       <MembershipFields m={m} />
       <VerifyBy value={mode} onChange={(v) => { setMode(v as 'id' | 'image'); setResult(null); }}
         options={[{ value: 'id', label: 'ID Number' }, { value: 'image', label: 'Upload Image' }]} />
@@ -425,7 +426,7 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   };
 
   return (
-    <VerifyShell icon="📘" view="passport" title="Passport Verification" onBack={onBack}>
+    <VerifyShell icon="passport" view="passport" title="Passport Verification" onBack={onBack}>
       <MembershipFields m={m} />
       <VerifyBy value={mode} onChange={(v) => { setMode(v as 'id' | 'image'); setResult(null); }}
         options={[{ value: 'id', label: 'Passport File Number' }, { value: 'image', label: 'Upload Image' }]} />
@@ -506,7 +507,7 @@ const OcrView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const isImage = file && /\.(jpg|jpeg|png)$/i.test(file.name);
 
   return (
-    <VerifyShell icon="📄" title="OCR Document Verification" onBack={onBack}>
+    <VerifyShell icon="ocr-upload" title="OCR Document Verification" onBack={onBack}>
       <MembershipFields m={m} />
       <Sel label="Document Type" value={docType} onChange={e => setDocType(e.target.value)} options={OCR_DOC_TYPES} />
       <Sel label="Verification" value={verification ? 'yes' : 'no'} onChange={e => setVerification(e.target.value === 'yes')}
@@ -519,7 +520,7 @@ const OcrView: React.FC<FlowProps> = ({ onDone, onBack }) => {
         <div style={{ marginBottom: 16 }}>
           {isImage
             ? <img src={dataUrl} alt="Preview" style={{ maxWidth: 220, maxHeight: 160, borderRadius: 10, border: `1px solid ${T.border}` }} />
-            : <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 14px', border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 13, color: T.textMain }}>📄 {file.name}</div>}
+            : <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 14px', border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 13, color: T.textMain }}><Icon name="file" size={14} /> {file.name}</div>}
         </div>
       )}
       <Btn onClick={submit} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify OCR'}</Btn>
@@ -790,7 +791,7 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
 
       {!loading && pendingMsg && (
         <div style={{ padding: '28px 18px', textAlign: 'center', background: T.warningBg, color: T.warning, borderRadius: 12, fontSize: 15, fontWeight: 700 }}>
-          ⏳ {pendingMsg}
+          <Icon name="pending" size={16} /> {pendingMsg}
         </div>
       )}
 

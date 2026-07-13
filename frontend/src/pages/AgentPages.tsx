@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { T } from '../utils/theme';
 import { Card, Btn, Input, Sel, Modal, TableSkeleton, LoadingScreen, StatCard } from '../components/UI';
+import { Icon, isIconName } from '../components/Icon';
 import { agentAPI, agentAccountAPI, agentAssignmentAPI, agentDashboardAPI, agentTransactionAPI } from '../services/api';
 import { formatDateTimeIST, COUNTRY_CODES, fileToDataUrl, fmt, downloadText } from '../utils/helpers';
 import { downloadXlsx } from '../utils/xlsx';
@@ -59,7 +60,12 @@ const ACCOUNT_TYPE_OPTIONS: Array<{ value: AgentAccountType; label: string }> = 
   { value: 'CRYPTO', label: 'Crypto Wallet' },
 ];
 const ACCOUNT_TYPE_LABEL: Record<string, string> = { BANK: 'Bank Account', UPI: 'UPI ID', QR: 'QR Code', CRYPTO: 'Crypto Wallet' };
-const ACCOUNT_TYPE_ICON: Record<string, string> = { BANK: '🏦', UPI: '📱', QR: '▦', CRYPTO: '₿' };
+const ACCOUNT_TYPE_ICON: Record<string, string> = { BANK: 'bank', UPI: 'upi', QR: 'qr', CRYPTO: 'crypto' };
+// Renders the per-account-type glyph as a consistent Phosphor icon (falls back to raw text).
+const AccTypeIcon: React.FC<{ type: string; size?: number }> = ({ type, size = 16 }) => {
+  const n = ACCOUNT_TYPE_ICON[type];
+  return isIconName(n) ? <Icon name={n} size={size} /> : <span>{n}</span>;
+};
 const errText = (e: unknown): string => {
   const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
   return detail || 'Something went wrong. Please try again.';
@@ -400,7 +406,7 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ onNavigate }) => {
 
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-        <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Agent ID, name, mobile or email" icon="🔍" style={{ marginBottom: 0, flex: '1 1 260px' }} />
+        <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Agent ID, name, mobile or email" icon="search" style={{ marginBottom: 0, flex: '1 1 260px' }} />
         <Sel label="Category" value={fCat} onChange={(e) => setFCat(e.target.value)} style={{ marginBottom: 0, minWidth: 150 }} options={[{ value: '', label: 'All' }, ...CATEGORY_OPTIONS]} />
         <Sel label="Country" value={fCountry} onChange={(e) => setFCountry(e.target.value)} style={{ marginBottom: 0, minWidth: 150 }} options={[{ value: '', label: 'All' }, ...countryOpts.map((c) => ({ value: c, label: c }))]} />
         <Sel label="State" value={fState} onChange={(e) => setFState(e.target.value)} style={{ marginBottom: 0, minWidth: 140 }} options={[{ value: '', label: 'All' }, ...stateOpts.map((s) => ({ value: s, label: s }))]} />
@@ -413,7 +419,7 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ onNavigate }) => {
           <div style={{ padding: 16 }}><TableSkeleton rows={6} cols={7} /></div>
         ) : filtered.length === 0 ? (
           <div style={{ padding: '56px 24px', textAlign: 'center' }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>🧑‍💼</div>
+            <div style={{ fontSize: 40, marginBottom: 10 }}><Icon name="agent" size={40} /></div>
             <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: T.textMain }}>{agents.length === 0 ? 'No agents yet' : 'No agents match your filters'}</p>
             <p style={{ margin: '6px 0 16px', fontSize: 13, color: T.textMuted }}>{agents.length === 0 ? 'Create your first Non-EPS agent to get started.' : 'Try clearing the search or filters.'}</p>
             {agents.length === 0 && <Btn variant="primary" onClick={() => setMode({ screen: 'create' })}>＋ Create Agent</Btn>}
@@ -524,7 +530,7 @@ export const AgentAssignmentSelect: React.FC<{
   }, [value.agentId, value.accountType]);
   return (
     <div style={{ background: T.canvas, borderRadius: 12, padding: '12px 14px', margin: '4px 0 14px' }}>
-      <p style={{ fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 4px' }}>👥 Assign Non-EPS Agent (optional)</p>
+      <p style={{ fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 4px' }}><Icon name="assign-agent" size={12} /> Assign Non-EPS Agent (optional)</p>
       <p style={{ fontSize: 11.5, color: T.textMuted, margin: '0 0 10px' }}>Only active agents and their active accounts of the chosen payment method are shown.</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '0 14px' }}>
         <Sel label="Payment Method" value={value.accountType} onChange={(e) => onChange({ ...value, accountType: e.target.value as AgentAccountType, accountId: '' })} options={ACCOUNT_TYPE_OPTIONS} />
@@ -578,7 +584,7 @@ export const AgentAssignmentPanel: React.FC<{ txRef: string; txType: string; ass
   return (
     <div style={{ marginTop: 10, border: `1px solid ${T.border}`, borderRadius: 12, overflow: 'hidden' }}>
       <div style={{ padding: '10px 16px', background: T.canvas, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-        <span style={{ fontSize: 13, fontWeight: 800, color: T.textMain }}>👥 Agent Assignment</span>
+        <span style={{ fontSize: 13, fontWeight: 800, color: T.textMain }}><Icon name="assign-agent" size={13} /> Agent Assignment</span>
         {canAssign && !open && <Btn size="sm" variant="ghost" onClick={() => { setErr(''); setOpen(true); }}>{cur?.assigned ? 'Reassign' : 'Assign Agent'}</Btn>}
       </div>
       <div style={{ padding: '14px 16px' }}>
@@ -635,7 +641,7 @@ const BarList: React.FC<{ title: string; icon?: string; color?: string; money?: 
   const total = data.reduce((a, d) => a + d.value, 0);
   return (
     <Card style={{ padding: '16px 18px' }}>
-      <p style={{ margin: '0 0 14px', fontSize: 13, fontWeight: 800, color: T.textMain }}>{icon ? `${icon} ` : ''}{title}</p>
+      <p style={{ margin: '0 0 14px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 800, color: T.textMain }}>{icon && (isIconName(icon) ? <Icon name={icon} size={16} color={color} /> : <span>{icon}</span>)}{title}</p>
       {total === 0 ? (
         <p style={{ fontSize: 12.5, color: T.textMuted, margin: 0 }}>No data yet.</p>
       ) : (
@@ -688,26 +694,26 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Overview of your Non-EPS agents and the transactions they are handling.</p>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Btn variant="secondary" size="sm" onClick={load}>↻ Refresh</Btn>
+          <Btn variant="secondary" size="sm" onClick={load}><Icon name="refresh" size={13} /> Refresh</Btn>
           <Btn variant="ghost" size="sm" onClick={() => onNavigate?.('agents')}>Manage Agents →</Btn>
         </div>
       </div>
 
       <div style={gridCards}>
-        <StatCard icon="🧑‍💼" label="Total Agents" value={d.agents.total} sub={`${d.agents.active} active · ${d.agents.inactive} inactive`} color={T.blue} />
-        <StatCard icon="🏦" label="Agent Accounts" value={d.accounts.total} sub={`${d.accounts.active} active · ${d.accounts.inactive} inactive`} color={T.green} />
-        <StatCard icon="🔗" label="Transactions Assigned" value={d.assignments.totalTransactions} sub="currently assigned to an agent" color={T.info} />
-        <StatCard icon="⚠️" label="Unassigned Transactions" value={d.assignments.unassignedTransactions} sub="click to assign an agent" color={T.danger} onClick={() => onNavigate?.('agent-unassigned')} />
-        <StatCard icon="🔄" label="Reassignments" value={d.assignments.reassignments} sub="total reassign actions" color={T.warning} />
+        <StatCard icon="agent" label="Total Agents" value={d.agents.total} sub={`${d.agents.active} active · ${d.agents.inactive} inactive`} color={T.blue} />
+        <StatCard icon="bank" label="Agent Accounts" value={d.accounts.total} sub={`${d.accounts.active} active · ${d.accounts.inactive} inactive`} color={T.green} />
+        <StatCard icon="link" label="Transactions Assigned" value={d.assignments.totalTransactions} sub="currently assigned to an agent" color={T.info} />
+        <StatCard icon="warning" label="Unassigned Transactions" value={d.assignments.unassignedTransactions} sub="click to assign an agent" color={T.danger} onClick={() => onNavigate?.('agent-unassigned')} />
+        <StatCard icon="reassignments" label="Reassignments" value={d.assignments.reassignments} sub="total reassign actions" color={T.warning} />
       </div>
 
       {/* ── Financial Summary (cumulative lifetime totals from completed assigned transactions) ── */}
-      <p style={{ margin: '4px 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}>💰 Financial Summary <span style={{ fontWeight: 600, color: T.textMuted }}>· cumulative (not today)</span></p>
+      <p style={{ margin: '4px 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}><Icon name="available-balance" size={14} /> Financial Summary <span style={{ fontWeight: 600, color: T.textMuted }}>· cumulative (not today)</span></p>
       <div style={gridCards}>
-        <StatCard icon="↓" label="Total Deposit Amount" value={fmt(d.financial.totalDeposit)} valueLen={16} sub="completed, assigned to agents" color={T.green} />
-        <StatCard icon="↑" label="Total Withdrawal Amount" value={fmt(d.financial.totalWithdrawal)} valueLen={16} sub="completed, assigned to agents" color={T.danger} />
-        <StatCard icon="₹" label="Total Commission Earned" value={fmt(d.financial.totalCommission)} valueLen={16} sub="agent Fees % on completed txns" color={T.warning} />
-        <StatCard icon="◎" label="Available Balance" value={fmt(d.financial.availableBalance)} valueLen={16} sub="deposit − withdrawal − commission" color={T.blue} />
+        <StatCard icon="deposit" label="Total Deposit Amount" value={fmt(d.financial.totalDeposit)} valueLen={16} sub="completed, assigned to agents" color={T.green} />
+        <StatCard icon="withdrawal" label="Total Withdrawal Amount" value={fmt(d.financial.totalWithdrawal)} valueLen={16} sub="completed, assigned to agents" color={T.danger} />
+        <StatCard icon="commission" label="Total Commission Earned" value={fmt(d.financial.totalCommission)} valueLen={16} sub="agent Fees % on completed txns" color={T.warning} />
+        <StatCard icon="available-balance" label="Available Balance" value={fmt(d.financial.availableBalance)} valueLen={16} sub="deposit − withdrawal − commission" color={T.blue} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 16 }}>
@@ -734,7 +740,7 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
         {/* Commission trend with Daily / Weekly / Monthly toggle */}
         <Card style={{ padding: '16px 18px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: T.textMain }}>📈 Commission Trend</p>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: T.textMain }}><Icon name="merchant-analytics" size={14} /> Commission Trend</p>
             <div style={{ display: 'flex', gap: 6 }}>
               {(['daily', 'weekly', 'monthly'] as const).map((m) => (
                 <Btn key={m} size="sm" variant={trend === m ? 'primary' : 'secondary'} onClick={() => setTrend(m)}>{m[0].toUpperCase() + m.slice(1)}</Btn>
@@ -789,19 +795,19 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
       </Card>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 16 }}>
-        <BarList title="Top 10 Agents by Deposit" icon="🏆" color={T.green} money data={d.financeCharts.topDeposit} />
-        <BarList title="Top 10 Agents by Commission" icon="💵" color={T.warning} money data={d.financeCharts.topCommission} />
-        <BarList title="Deposit Amount by Agent" icon="↓" color={T.blue} money data={d.financeCharts.depositByAgent} />
-        <BarList title="Withdrawal Amount by Agent" icon="↑" color={T.danger} money data={d.financeCharts.withdrawalByAgent} />
+        <BarList title="Top 10 Agents by Deposit" icon="trophy" color={T.green} money data={d.financeCharts.topDeposit} />
+        <BarList title="Top 10 Agents by Commission" icon="fees" color={T.warning} money data={d.financeCharts.topCommission} />
+        <BarList title="Deposit Amount by Agent" icon="deposit" color={T.blue} money data={d.financeCharts.depositByAgent} />
+        <BarList title="Withdrawal Amount by Agent" icon="withdrawal" color={T.danger} money data={d.financeCharts.withdrawalByAgent} />
       </div>
 
       <div style={gridCharts}>
         <BarList title="Assignments by Transaction Type" icon="≡" color={T.blue} data={toBars(d.assignments.byTxType, TXTYPE_LABEL)} />
-        <BarList title="Assignments by Channel" icon="💳" color={T.green} data={toBars(d.assignments.byChannel, ACCOUNT_TYPE_LABEL)} />
-        <BarList title="Agents by Category" icon="🏷️" color={T.info} data={toBars(d.agentsByCategory, CATEGORY_LABEL_FULL)} />
-        <BarList title="Accounts by Type" icon="🗂️" color={T.blue} data={toBars(d.accounts.byType, ACCOUNT_TYPE_LABEL)} />
-        <BarList title="Agents by Country" icon="🌐" color={T.green} data={d.agentsByCountry.map((c) => ({ label: c.label, value: c.count }))} />
-        <BarList title="Top Agents (by transactions handled)" icon="🏆" color={T.warning} data={d.topAgents.map((a) => ({ label: `${a.agentId} · ${a.name}`, value: a.count }))} />
+        <BarList title="Assignments by Channel" icon="pan" color={T.green} data={toBars(d.assignments.byChannel, ACCOUNT_TYPE_LABEL)} />
+        <BarList title="Agents by Category" icon="tag" color={T.info} data={toBars(d.agentsByCategory, CATEGORY_LABEL_FULL)} />
+        <BarList title="Accounts by Type" icon="folder" color={T.blue} data={toBars(d.accounts.byType, ACCOUNT_TYPE_LABEL)} />
+        <BarList title="Agents by Country" icon="country" color={T.green} data={d.agentsByCountry.map((c) => ({ label: c.label, value: c.count }))} />
+        <BarList title="Top Agents (by transactions handled)" icon="trophy" color={T.warning} data={d.topAgents.map((a) => ({ label: `${a.agentId} · ${a.name}`, value: a.count }))} />
       </div>
 
       <Card>
@@ -1028,7 +1034,7 @@ const AccountView: React.FC<{ account: AgentAccount; agent: Agent; onBack: () =>
   <Card style={{ maxWidth: 760, margin: '0 auto' }}>
     <div style={{ padding: '20px 24px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: T.textMain }}>{ACCOUNT_TYPE_ICON[a.accountType]} {a.label || ACCOUNT_TYPE_LABEL[a.accountType]}</h2>
+        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: T.textMain, display: 'inline-flex', alignItems: 'center', gap: 7 }}><AccTypeIcon type={a.accountType} size={18} /> {a.label || ACCOUNT_TYPE_LABEL[a.accountType]}</h2>
         <StatusPill status={a.status} />
         {a.isDefault && <span style={{ background: T.infoBg, color: T.info, fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 20 }}>DEFAULT</span>}
       </div>
@@ -1222,7 +1228,7 @@ export const AgentAccountsPage: React.FC<AgentPageProps> = () => {
 
       {!selAgent ? (
         <Card><div style={{ padding: '56px 24px', textAlign: 'center' }}>
-          <div style={{ fontSize: 40, marginBottom: 10 }}>🏦</div>
+          <div style={{ fontSize: 40, marginBottom: 10 }}><Icon name="bank" size={40} /></div>
           <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: T.textMain }}>Select an agent to manage their accounts</p>
           <p style={{ margin: '6px 0 0', fontSize: 13, color: T.textMuted }}>Each agent can hold multiple Bank, UPI, QR and Crypto accounts.</p>
         </div></Card>
@@ -1230,7 +1236,7 @@ export const AgentAccountsPage: React.FC<AgentPageProps> = () => {
         <>
           {/* Toolbar */}
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-            <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ref, label, account no, UPI or wallet" icon="🔍" style={{ marginBottom: 0, flex: '1 1 240px' }} />
+            <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ref, label, account no, UPI or wallet" icon="search" style={{ marginBottom: 0, flex: '1 1 240px' }} />
             <Sel label="Type" value={fType} onChange={(e) => setFType(e.target.value)} style={{ marginBottom: 0, minWidth: 160 }} options={[{ value: '', label: 'All' }, ...ACCOUNT_TYPE_OPTIONS]} />
             <Sel label="Status" value={fStatus} onChange={(e) => setFStatus(e.target.value)} style={{ marginBottom: 0, minWidth: 130 }} options={[{ value: '', label: 'All' }, { value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} />
             <Btn variant="primary" onClick={() => setMode({ screen: 'create' })} style={{ marginLeft: 'auto' }}>＋ Add Account</Btn>
@@ -1241,7 +1247,7 @@ export const AgentAccountsPage: React.FC<AgentPageProps> = () => {
               <div style={{ padding: 16 }}><TableSkeleton rows={4} cols={7} /></div>
             ) : filtered.length === 0 ? (
               <div style={{ padding: '48px 24px', textAlign: 'center' }}>
-                <div style={{ fontSize: 34, marginBottom: 10 }}>🗂️</div>
+                <div style={{ fontSize: 34, marginBottom: 10 }}><Icon name="folder" size={34} /></div>
                 <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: T.textMain }}>{accounts.length === 0 ? 'No accounts yet' : 'No accounts match your filters'}</p>
                 <p style={{ margin: '6px 0 16px', fontSize: 13, color: T.textMuted }}>{accounts.length === 0 ? 'Add this agent’s first settlement account.' : 'Try clearing the search or filters.'}</p>
                 {accounts.length === 0 && <Btn variant="primary" onClick={() => setMode({ screen: 'create' })}>＋ Add Account</Btn>}
@@ -1254,7 +1260,7 @@ export const AgentAccountsPage: React.FC<AgentPageProps> = () => {
                     {pageRows.map((a) => (
                       <tr key={a.id}>
                         <td style={{ ...td, fontWeight: 700, color: T.blue }}>{a.accountRef}</td>
-                        <td style={td}>{ACCOUNT_TYPE_ICON[a.accountType]} {ACCOUNT_TYPE_LABEL[a.accountType]}</td>
+                        <td style={{ ...td }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><AccTypeIcon type={a.accountType} /> {ACCOUNT_TYPE_LABEL[a.accountType]}</span></td>
                         <td style={td}>{a.label || a.accountHolder || a.upiHolder || '—'}</td>
                         <td style={{ ...td, fontFamily: 'monospace', fontSize: 12 }}>{a.keyDetail || '—'}</td>
                         <td style={td}>{a.currency}</td>
@@ -1388,11 +1394,11 @@ export const AgentTransactionsPage: React.FC<AgentPageProps> = () => {
   return (
     <div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-        <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ref, membership, player, agent" icon="🔍" style={{ marginBottom: 0, flex: '1 1 260px' }} />
+        <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ref, membership, player, agent" icon="search" style={{ marginBottom: 0, flex: '1 1 260px' }} />
         <Sel label="Type" value={fType} onChange={(e) => setFType(e.target.value)} style={{ marginBottom: 0, minWidth: 150 }} options={[{ value: '', label: 'All' }, ...TXTYPE_FILTER]} />
         <Sel label="Payment Method" value={fPay} onChange={(e) => setFPay(e.target.value)} style={{ marginBottom: 0, minWidth: 150 }} options={[{ value: '', label: 'All' }, ...ACCOUNT_TYPE_OPTIONS]} />
         <Sel label="Status" value={fStatus} onChange={(e) => setFStatus(e.target.value)} style={{ marginBottom: 0, minWidth: 150 }} options={[{ value: '', label: 'All' }, ...statuses.map((s) => ({ value: s, label: prettyStatus(s) }))]} />
-        <Btn variant="secondary" size="sm" onClick={load} style={{ marginLeft: 'auto' }}>↻ Refresh</Btn>
+        <Btn variant="secondary" size="sm" onClick={load} style={{ marginLeft: 'auto' }}><Icon name="refresh" size={13} /> Refresh</Btn>
       </div>
       <Card>
         {filtered.length === 0 ? <div style={{ padding: '48px', textAlign: 'center', color: T.textMuted }}>No assigned transactions{rows.length ? ' match your filters' : ' yet'}.</div> : (
@@ -1507,15 +1513,15 @@ export const UnassignedTransactionsPage: React.FC<AgentPageProps> = () => {
         These Deposit / Withdrawal / Settlement requests have no assigned agent. Assign one to complete the record.
       </div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-        <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ref, membership, player" icon="🔍" style={{ marginBottom: 0, flex: '1 1 260px' }} />
+        <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ref, membership, player" icon="search" style={{ marginBottom: 0, flex: '1 1 260px' }} />
         <Sel label="Type" value={fType} onChange={(e) => setFType(e.target.value)} style={{ marginBottom: 0, minWidth: 150 }} options={[{ value: '', label: 'All' }, ...TXTYPE_FILTER]} />
         <Sel label="Status" value={fStatus} onChange={(e) => setFStatus(e.target.value)} style={{ marginBottom: 0, minWidth: 150 }} options={[{ value: '', label: 'All' }, ...statuses.map((s) => ({ value: s, label: prettyStatus(s) }))]} />
-        <Btn variant="secondary" size="sm" onClick={load} style={{ marginLeft: 'auto' }}>↻ Refresh</Btn>
+        <Btn variant="secondary" size="sm" onClick={load} style={{ marginLeft: 'auto' }}><Icon name="refresh" size={13} /> Refresh</Btn>
       </div>
       <Card>
         {filtered.length === 0 ? (
           <div style={{ padding: '48px', textAlign: 'center', color: T.textMuted }}>
-            <div style={{ fontSize: 34, marginBottom: 8 }}>✅</div>
+            <div style={{ fontSize: 34, marginBottom: 8 }}><Icon name="verified" size={34} /></div>
             <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: T.textMain }}>{rows.length ? 'No transactions match your filters' : 'Every transaction is assigned'}</p>
           </div>
         ) : (
@@ -1579,9 +1585,9 @@ export const AgentAuditPage: React.FC<AgentPageProps> = () => {
   return (
     <div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
-        <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Action, reference, note" icon="🔍" style={{ marginBottom: 0, flex: '1 1 260px' }} />
+        <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Action, reference, note" icon="search" style={{ marginBottom: 0, flex: '1 1 260px' }} />
         <Sel label="Action" value={fAction} onChange={(e) => setFAction(e.target.value)} style={{ marginBottom: 0, minWidth: 220 }} options={[{ value: '', label: 'All' }, ...actions.map((a) => ({ value: a, label: prettyStatus(a) }))]} />
-        <Btn variant="secondary" size="sm" onClick={load} style={{ marginLeft: 'auto' }}>↻ Refresh</Btn>
+        <Btn variant="secondary" size="sm" onClick={load} style={{ marginLeft: 'auto' }}><Icon name="refresh" size={13} /> Refresh</Btn>
       </div>
       <Card>
         <AuditTable rows={pageRows} />
@@ -1654,10 +1660,10 @@ export const AgentReportsPage: React.FC<AgentPageProps> = () => {
   };
 
   const items: Array<{ kind: 'agents' | 'accounts' | 'history' | 'transactions'; icon: string; title: string; desc: string }> = [
-    { kind: 'agents', icon: '🧑‍💼', title: 'Agent Master', desc: 'All agents with their details and status.' },
-    { kind: 'accounts', icon: '🏦', title: 'Agent Accounts', desc: 'All Bank / UPI / QR / Crypto accounts across agents.' },
-    { kind: 'history', icon: '🔁', title: 'Assignment History', desc: 'Every assignment and reassignment.' },
-    { kind: 'transactions', icon: '≡', title: 'Transaction History', desc: 'All transactions assigned to an agent.' },
+    { kind: 'agents', icon: 'agent', title: 'Agent Master', desc: 'All agents with their details and status.' },
+    { kind: 'accounts', icon: 'bank', title: 'Agent Accounts', desc: 'All Bank / UPI / QR / Crypto accounts across agents.' },
+    { kind: 'history', icon: 'assignment-history', title: 'Assignment History', desc: 'Every assignment and reassignment.' },
+    { kind: 'transactions', icon: 'transactions', title: 'Transaction History', desc: 'All transactions assigned to an agent.' },
   ];
   return (
     <div>
@@ -1666,13 +1672,13 @@ export const AgentReportsPage: React.FC<AgentPageProps> = () => {
         {items.map((it) => (
           <Card key={it.kind} style={{ padding: '18px 18px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-              <div style={{ width: 42, height: 42, borderRadius: 12, background: T.grad1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>{it.icon}</div>
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: T.grad1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, color: '#fff' }}>{isIconName(it.icon) ? <Icon name={it.icon} size={22} color="#fff" /> : it.icon}</div>
               <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: T.textMain }}>{it.title}</p>
             </div>
             <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted, lineHeight: 1.5 }}>{it.desc}</p>
             <div style={{ display: 'flex', gap: 10 }}>
-              <Btn variant="secondary" size="sm" disabled={busy === `${it.kind}-csv`} onClick={() => run(it.kind, 'csv')}>{busy === `${it.kind}-csv` ? '…' : '⬇ CSV'}</Btn>
-              <Btn variant="primary" size="sm" disabled={busy === `${it.kind}-xlsx`} onClick={() => run(it.kind, 'xlsx')}>{busy === `${it.kind}-xlsx` ? '…' : '⬇ Excel'}</Btn>
+              <Btn variant="secondary" size="sm" disabled={busy === `${it.kind}-csv`} onClick={() => run(it.kind, 'csv')}>{busy === `${it.kind}-csv` ? '…' : <><Icon name="csv" size={14} /> CSV</>}</Btn>
+              <Btn variant="primary" size="sm" disabled={busy === `${it.kind}-xlsx`} onClick={() => run(it.kind, 'xlsx')}>{busy === `${it.kind}-xlsx` ? '…' : <><Icon name="excel" size={14} /> Excel</>}</Btn>
             </div>
           </Card>
         ))}

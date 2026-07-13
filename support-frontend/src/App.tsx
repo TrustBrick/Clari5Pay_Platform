@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Icon } from './Icon';
 import {
   login, getUser, clearAuth, fetchConversations, fetchMessages, fetchMerchant,
   fetchMerchantPresence, sendMessage, wsUrl, setAvailability, type Availability,
@@ -83,7 +84,7 @@ const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => 
           <p style={{ margin: '6px 0 0', fontSize: 12, color: T.textMuted, letterSpacing: '0.3px' }}>Secure Payments. Prevent Fraud.</p>
           <p style={{ margin: '10px 0 0', fontSize: 13, fontWeight: 700, color: T.textMain }}>Customer Support Portal</p>
         </div>
-        {error && <div style={{ background: 'rgba(220,38,38,0.1)', color: T.danger, padding: '10px 14px', borderRadius: 10, fontSize: 12, marginBottom: 14, fontWeight: 600 }}>⚠ {error}</div>}
+        {error && <div style={{ background: 'rgba(220,38,38,0.1)', color: T.danger, padding: '10px 14px', borderRadius: 10, fontSize: 12, marginBottom: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="warning" size={13} /> {error}</div>}
         <Field label="Username" value={username} onChange={setUsername} placeholder="support1" />
         <Field label="Password" value={password} onChange={setPassword} placeholder="Your password" type="password" onEnter={submit} />
         <button onClick={submit} disabled={loading || !username || !password}
@@ -269,7 +270,7 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
           {!isMobile && <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>{user.name}</span>}
           {isMobile && activeId != null && merchant && (
             <button onClick={() => setShowDetails(true)} aria-label="Merchant details"
-              style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', width: 30, height: 30, borderRadius: 8, fontSize: 14, cursor: 'pointer', lineHeight: 1 }}>ⓘ</button>
+              style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', width: 30, height: 30, borderRadius: 8, fontSize: 14, cursor: 'pointer', lineHeight: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="info" size={16} /></button>
           )}
           <button onClick={onLogout} style={{ background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}>Sign Out</button>
         </div>
@@ -280,8 +281,11 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
         {showList && (
         <aside style={{ width: isMobile ? '100%' : 300, background: T.surface, borderRight: isMobile ? 'none' : `1px solid ${T.border}`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
           <div style={{ padding: 14, borderBottom: `1px solid ${T.border}` }}>
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Search merchant..."
-              style={{ width: '100%', padding: '8px 12px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' }} />
+            <div style={{ position: 'relative' }}>
+              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', display: 'flex', color: T.textMuted }}><Icon name="search" size={15} /></span>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search merchant..."
+                style={{ width: '100%', padding: '8px 12px 8px 32px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' }} />
+            </div>
           </div>
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {filtered.length === 0 && <p style={{ padding: 20, textAlign: 'center', color: T.textMuted, fontSize: 13 }}>No conversations</p>}
@@ -344,12 +348,12 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
                 <div style={{ padding: '12px 16px', display: 'flex', gap: 10, alignItems: 'center' }}>
                   <input ref={fileRef} type="file" accept={CHAT_ACCEPT} onChange={onPickFile} style={{ display: 'none' }} />
                   <button onClick={() => fileRef.current?.click()} disabled={sending} title="Attach image or document" aria-label="Attach file"
-                    style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.canvas, color: T.textMuted, fontSize: 18, cursor: sending ? 'default' : 'pointer' }}>{sending ? '⏳' : '📎'}</button>
+                    style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.canvas, color: T.textMuted, fontSize: 18, cursor: sending ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{sending ? <Icon name="pending" size={18} /> : <Icon name="attach" size={18} />}</button>
                   <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()}
                     placeholder={sending ? 'Sending attachment…' : 'Type your reply...'} disabled={sending}
                     style={{ flex: 1, padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 12, fontSize: 13, outline: 'none', fontFamily: 'inherit', background: T.canvas }} />
                   <button onClick={send} disabled={!input.trim() || sending}
-                    style={{ padding: '10px 20px', borderRadius: 12, border: 'none', background: T.grad, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: (input.trim() && !sending) ? 1 : 0.6 }}>→ Send</button>
+                    style={{ padding: '10px 20px', borderRadius: 12, border: 'none', background: T.grad, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: (input.trim() && !sending) ? 1 : 0.6 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="send" size={14} /> Send</span></button>
                 </div>
               </div>
             </>
@@ -364,7 +368,7 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
             : { width: 260, background: T.surface, borderLeft: `1px solid ${T.border}`, padding: 20, overflowY: 'auto', flexShrink: 0 }}>
             {isMobile && (
               <button onClick={() => setShowDetails(false)}
-                style={{ width: '100%', marginBottom: 14, padding: '9px', borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.canvas, color: T.textMain, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>✕ Close</button>
+                style={{ width: '100%', marginBottom: 14, padding: '9px', borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.canvas, color: T.textMain, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}><Icon name="close" size={13} /> Close</span></button>
             )}
             <div style={{ textAlign: 'center', marginBottom: 18 }}>
               <div style={{ width: 60, height: 60, borderRadius: '50%', background: T.grad, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, fontWeight: 800, color: '#fff', margin: '0 auto 10px' }}>{merchant.name.charAt(0)}</div>

@@ -1,6 +1,7 @@
 import React, { useState, type CSSProperties } from 'react';
 import { T } from '../utils/theme';
 import { Btn } from './UI';
+import { Icon } from './Icon';
 import type { TxQuery } from '../services/api';
 
 /**
@@ -87,7 +88,7 @@ const TxSearchFilters: React.FC<{
         <input type="datetime-local" value={dtTo} onChange={e => setDtTo(e.target.value)} style={inp} />
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        <Btn size="sm" onClick={apply} disabled={loading}>{loading ? '⏳ Applying…' : '🔍 Apply Filters'}</Btn>
+        <Btn size="sm" onClick={apply} disabled={loading}>{loading ? <><Icon name="pending" size={14} /> Applying…</> : <><Icon name="search" size={14} /> Apply Filters</>}</Btn>
         <Btn size="sm" variant="ghost" onClick={clear} disabled={loading}>Clear Filters</Btn>
       </div>
     </div>

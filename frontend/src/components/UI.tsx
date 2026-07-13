@@ -1,6 +1,7 @@
 import React, { CSSProperties, useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
 import { statusStyle, statusLabel } from '../utils/helpers';
+import { Icon, isIconName } from './Icon';
 import type { TxStatus, ChartDataPoint } from '../types';
 
 // ─── CountUp — animate a number from 0 → value on mount / when value changes ────
@@ -109,7 +110,9 @@ export const StatCard: React.FC<{
         {sub && <p style={{ fontSize:11,color:T.textMuted,marginTop:4 }}>{sub}</p>}
         {trend!==undefined && <p style={{ fontSize:11,marginTop:6,color:trend>=0?T.success:T.danger,fontWeight:700 }}>{trend>=0?'▲':'▼'} {Math.abs(trend)}% vs last week</p>}
       </div>
-      <div style={{ width:40,height:40,borderRadius:12,background:gradient||`${color}18`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flexShrink:0 }}>{icon}</div>
+      <div style={{ width:40,height:40,borderRadius:12,background:gradient||`${color}18`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flexShrink:0,color:gradient?'#fff':color }}>
+        {isIconName(icon) ? <Icon name={icon} size={22} color={gradient?'#fff':color} /> : icon}
+      </div>
     </div>
   </Card>
   );
@@ -145,7 +148,7 @@ export const Input: React.FC<{
   <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <div style={{ position:'relative' }}>
-      {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',fontSize:16,color:T.textMuted }}>{icon}</span>}
+      {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',display:'flex',alignItems:'center',fontSize:16,color:T.textMuted }}>{isIconName(icon) ? <Icon name={icon} size={16} color={T.textMuted} /> : icon}</span>}
       <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode} readOnly={readOnly}
         style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:readOnly?T.canvas:T.surface,cursor:readOnly?'not-allowed':'text',outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
         onFocus={e=>{ if(readOnly) return; e.target.style.borderColor=T.blue;e.target.style.boxShadow=`0 0 0 3px ${T.blue}18`;}}
@@ -213,12 +216,12 @@ export const StatusChart: React.FC<{ data: Array<{ label: string; value: number;
 };
 
 // ─── Modal ───────────────────────────────────────────────────────────────────
-export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean; xxl?:boolean }> = ({ title, children, onClose, wide, xl, xxl }) => (
+export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean; xxl?:boolean; icon?:string }> = ({ title, children, onClose, wide, xl, xxl, icon }) => (
   <div className="c5-overlay" style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:xxl?'24px 2.5vw':16,backdropFilter:'blur(4px)' }}>
     <div className="c5-pop" style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xxl?1760:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
       <div style={{ padding:'20px 24px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:T.surface,zIndex:1 }}>
-        <h2 style={{ margin:0,fontSize:16,fontWeight:800,color:T.textMain }}>{title}</h2>
-        <button onClick={onClose} style={{ background:'none',border:'none',fontSize:20,cursor:'pointer',color:T.textMuted,borderRadius:8,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center' }}>✕</button>
+        <h2 style={{ margin:0,fontSize:16,fontWeight:800,color:T.textMain,display:'flex',alignItems:'center',gap:9 }}>{icon && isIconName(icon) && <Icon name={icon} size={19} color={T.blue} />}{title}</h2>
+        <button onClick={onClose} aria-label="Close" style={{ background:'none',border:'none',cursor:'pointer',color:T.textMuted,borderRadius:8,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center' }}><Icon name="close" size={20} /></button>
       </div>
       <div style={{ padding:'20px 24px' }}>{children}</div>
     </div>
