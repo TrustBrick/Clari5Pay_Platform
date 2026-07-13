@@ -81,11 +81,13 @@ export const PAGE_TITLES: Record<string, string> = {
   cancel: 'Cancel Request',
   transactions: 'Transactions',
   'agent-mgmt': 'Agent Management',
+  'agent-overview': 'Agent Overview',
   'agent-dashboard': 'Agent Dashboard',
   agents: 'Agents',
   'agent-accounts': 'Agent Accounts',
   'agent-transactions': 'Agent Transactions',
   'agent-unassigned': 'Unassigned Transactions',
+  'agent-deposit-req': 'Agent Deposit Request',
   'agent-audit': 'Agent Audit Trail',
   'agent-reports': 'Agent Reports',
   kyc: 'KYC Management',
@@ -123,11 +125,34 @@ export const PAGE_TITLES: Record<string, string> = {
 // Maintain Profile + Profile collapse to a single Profile link.
 // Customer Support is available to every merchant role (default for all merchants).
 export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
-  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
-  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'agent-mgmt', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'agent-mgmt', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'agent-mgmt', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   SUPERVISOR: ['dashboard', 'approvals', 'settlement', 'transactions', 'agent-mgmt', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   MANAGER: ['dashboard', 'approvals', 'transactions', 'agent-mgmt', 'templates', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+};
+
+// Agent Management sub-tabs, resolved per merchant role. The isolated Agent Transaction subsystem
+// (Agent Overview + operator request/manage workflow) is added ALONGSIDE the existing
+// assignment-based tabs for Supervisor/Manager; operators (Data Operator = DEO) see only Agent
+// Overview + the request tabs their role permits. Tabs are added as each phase ships.
+const AGENT_CHILDREN: NavItem[] = [
+  { key: 'agent-overview', icon: 'dashboard', label: 'Agent Overview' },
+  { key: 'agent-dashboard', icon: 'dashboard', label: 'Dashboard' },
+  { key: 'agents', icon: 'agent', label: 'Agents' },
+  { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
+  { key: 'agent-transactions', icon: 'transactions', label: 'Transactions' },
+  { key: 'agent-deposit-req', icon: 'deposit', label: 'Agent Deposit Request' },
+  { key: 'agent-audit', icon: 'audit', label: 'Audit Trail' },
+  { key: 'agent-reports', icon: 'reports', label: 'Reports' },
+];
+const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
+const AGENT_SUBTABS: Record<string, string[]> = {
+  SUPERVISOR: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-audit', 'agent-reports'],
+  MANAGER: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-audit', 'agent-reports'],
+  DEO: ['agent-overview', 'agent-deposit-req'],
+  DEPOSIT_OPERATOR: ['agent-overview', 'agent-deposit-req'],
+  WITHDRAWAL_OPERATOR: ['agent-overview'],
 };
 
 /**
@@ -150,5 +175,13 @@ export const navForUser = (user: User): NavItem[] => {
   // Agent Management (both Supervisor/Manager-only).
   if (!allowed) return gate(base.filter((i) => i.key !== 'settlement' && i.key !== 'kyc' && i.key !== 'agent-mgmt'));
   const byKey = new Map(base.map((i) => [i.key, i]));
-  return gate(allowed.map((k) => byKey.get(k)).filter((i): i is NavItem => Boolean(i)));
+  return gate(allowed.map((k) => {
+    const item = byKey.get(k);
+    // Resolve Agent Management's sub-tabs to the ones this role is allowed to see.
+    if (item && k === 'agent-mgmt') {
+      const subs = (AGENT_SUBTABS[role] || []).map((sk) => AGENT_CHILD_BY_KEY.get(sk)).filter((c): c is NavItem => Boolean(c));
+      return { ...item, children: subs };
+    }
+    return item;
+  }).filter((i): i is NavItem => Boolean(i)));
 };
