@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Icon, isIconName } from './Icon';
 
 // Lightweight theme controller for the Support portal (Light / Dark / System),
 // mirroring the main app. Preference persists in localStorage (key shared name,
@@ -28,9 +29,9 @@ export const applyMode = (mode: ThemeMode, animate = false) => {
 };
 
 const OPTS: { m: ThemeMode; icon: string; label: string }[] = [
-  { m: 'light', icon: '☀', label: 'Light' },
-  { m: 'dark', icon: '🌙', label: 'Dark' },
-  { m: 'system', icon: '🖥', label: 'System' },
+  { m: 'light', icon: 'light', label: 'Light' },
+  { m: 'dark', icon: 'dark', label: 'Dark' },
+  { m: 'system', icon: 'system', label: 'System' },
 ];
 
 // 3-way toggle. Styled with theme vars so it reads in both modes.
@@ -53,7 +54,8 @@ export const ThemeToggle: React.FC = () => {
             style={{
               border: 'none', cursor: 'pointer', borderRadius: 999, padding: '4px 8px', fontSize: 13, lineHeight: 1,
               background: active ? '#fff' : 'transparent', color: active ? '#0052cc' : 'rgba(255,255,255,0.85)',
-            }}>{icon}</button>
+              display: 'inline-flex', alignItems: 'center',
+            }}>{isIconName(icon) ? <Icon name={icon} size={15} /> : icon}</button>
         );
       })}
     </div>

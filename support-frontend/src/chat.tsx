@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from './Icon';
 
 // Customer Support chat helpers — mirrors the merchant app's helpers. Timestamps are ALWAYS
 // rendered in Indian Standard Time (Asia/Kolkata), regardless of the viewer's device timezone.
@@ -102,14 +103,14 @@ export const ChatAttachment: React.FC<{ msg: AttachMsg; mine: boolean; theme: Ch
           style={{ maxWidth: 240, maxHeight: 260, borderRadius: 10, display: 'block', cursor: 'zoom-in', objectFit: 'cover' }} />
         <div style={{ marginTop: 4, display: 'flex', gap: 12 }}>
           <button onClick={() => openDataUrl(msg.attachment!)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 10, color: linkColor, textDecoration: 'underline' }}>Open</button>
-          <a href={msg.attachment} download={name} style={{ fontSize: 10, color: linkColor, textDecoration: 'underline' }}>⬇ Download</a>
+          <a href={msg.attachment} download={name} style={{ fontSize: 10, color: linkColor, textDecoration: 'underline', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="download" size={11} /> Download</a>
         </div>
       </div>
     );
   }
   return (
     <div style={{ marginTop: msg.content ? 8 : 0, display: 'flex', alignItems: 'center', gap: 10, background: mine ? 'rgba(255,255,255,0.15)' : theme.surface, border: `1px solid ${mine ? 'rgba(255,255,255,0.25)' : theme.border}`, borderRadius: 10, padding: '8px 10px', maxWidth: 260 }}>
-      <div style={{ width: 34, height: 34, borderRadius: 8, background: mine ? 'rgba(255,255,255,0.2)' : theme.infoBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>📄</div>
+      <div style={{ width: 34, height: 34, borderRadius: 8, background: mine ? 'rgba(255,255,255,0.2)' : theme.infoBg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0, color: mine ? '#fff' : theme.textMuted }}><Icon name="file" size={18} /></div>
       <div style={{ minWidth: 0, flex: 1 }}>
         <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: mine ? '#fff' : theme.textMain, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</p>
         <p style={{ margin: '1px 0 0', fontSize: 10, color: mine ? 'rgba(255,255,255,0.85)' : theme.textMuted }}>{formatBytes(msg.attachmentSize)}</p>
