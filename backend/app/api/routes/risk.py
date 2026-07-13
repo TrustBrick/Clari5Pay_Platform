@@ -64,6 +64,15 @@ async def _scoped_merchant_ids(db: AsyncSession, user: User) -> list[int]:
 
 
 def _completed(t: Transaction) -> bool:
+    """Canonical 'successfully completed' rule — the SAME definition used by compute_balance, the
+    account balances and the Deposit/Withdrawal/Settlement History (single source of truth): a
+    deposit completes as COMPLETED (legacy) or DEPOSITED (admin final-approval); a withdrawal or
+    settlement completes as COMPLETED. Pending / cancelled / rejected are never counted.
+
+    Previously this counted only COMPLETED, so deposits finalised via 'Mark Deposited' (DEPOSITED)
+    were dropped — which is why a member with real completed deposits showed Total Deposits ₹0.00."""
+    if t.type.value.startswith("DEPOSIT"):
+        return t.status in (TxStatus.COMPLETED, TxStatus.DEPOSITED)
     return t.status == TxStatus.COMPLETED
 
 
@@ -149,7 +158,14 @@ async def risk_member_profile(
 
     name = next((t.member_name for t in txns if (t.member_name or "").strip()), "—")
     merchant_name = txns[0].merchant_name
-    dates = sorted(str(t.created_at.date() if t.created_at else t.tx_date) for t in txns)
+    def _tx_day(t: Transaction) -> str:
+        return str(t.created_at.date() if t.created_at else t.tx_date)
+    # Registration date stands in as the member's earliest activity (members aren't user records,
+    # so there is no Member Master row to read it from) — unchanged. First/Last Transaction, by
+    # contrast, must reflect the earliest/latest COMPLETED transaction so they agree with the
+    # totals below and the history views.
+    all_dates = sorted(_tx_day(t) for t in txns)
+    completed_dates = sorted(_tx_day(t) for t in txns if _completed(t))
 
     def stat(kind: str) -> dict:
         rows = [t for t in txns if _kind(t) == kind and _completed(t)]
@@ -204,9 +220,9 @@ async def risk_member_profile(
 
     profile = {
         "memberId": member_id, "memberName": name, "merchantName": merchant_name,
-        "registrationDate": dates[0] if dates else None,   # members aren't users → first activity
-        "firstTransactionDate": dates[0] if dates else None,
-        "lastTransactionDate": dates[-1] if dates else None,
+        "registrationDate": all_dates[0] if all_dates else None,   # members aren't users → first activity
+        "firstTransactionDate": completed_dates[0] if completed_dates else None,
+        "lastTransactionDate": completed_dates[-1] if completed_dates else None,
         "totalDeposits": dep["total"], "totalWithdrawals": wd["total"],
         "totalSettlements": st["total"], "totalVolume": total_volume,
         "riskLevel": "LOW",
