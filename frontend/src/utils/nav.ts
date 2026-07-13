@@ -88,6 +88,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'agent-transactions': 'Agent Transactions',
   'agent-unassigned': 'Unassigned Transactions',
   'agent-deposit-req': 'Agent Deposit Request',
+  'agent-withdrawal-req': 'Agent Withdrawal Request',
   'agent-audit': 'Agent Audit Trail',
   'agent-reports': 'Agent Reports',
   kyc: 'KYC Management',
@@ -143,16 +144,17 @@ const AGENT_CHILDREN: NavItem[] = [
   { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
   { key: 'agent-transactions', icon: 'transactions', label: 'Transactions' },
   { key: 'agent-deposit-req', icon: 'deposit', label: 'Agent Deposit Request' },
+  { key: 'agent-withdrawal-req', icon: 'withdrawal', label: 'Agent Withdrawal Request' },
   { key: 'agent-audit', icon: 'audit', label: 'Audit Trail' },
   { key: 'agent-reports', icon: 'reports', label: 'Reports' },
 ];
 const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 const AGENT_SUBTABS: Record<string, string[]> = {
-  SUPERVISOR: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-audit', 'agent-reports'],
-  MANAGER: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-audit', 'agent-reports'],
-  DEO: ['agent-overview', 'agent-deposit-req'],
+  SUPERVISOR: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-audit', 'agent-reports'],
+  MANAGER: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-audit', 'agent-reports'],
+  DEO: ['agent-overview', 'agent-deposit-req', 'agent-withdrawal-req'],
   DEPOSIT_OPERATOR: ['agent-overview', 'agent-deposit-req'],
-  WITHDRAWAL_OPERATOR: ['agent-overview'],
+  WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-withdrawal-req'],
 };
 
 /**

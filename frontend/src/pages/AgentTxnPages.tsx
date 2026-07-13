@@ -7,7 +7,8 @@ import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import {
   agentTxnsAPI, agentTxnError,
-  type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody, type AgentTxnRow,
+  type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
+  type AgentWithdrawalBody, type AgentMemberLookup, type AgentTxnRow,
 } from '../services/agentTxns';
 
 // ─── Isolated Agent Transaction subsystem — Merchant operator workflow ─────────
@@ -283,6 +284,189 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
           <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : 'Submit Agent Deposit'}</Btn>
+          <Btn variant="secondary" onClick={reset} disabled={busy}>Clear</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+// ─── Agent Withdrawal Request form ─────────────────────────────────────────────
+export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+  const { showToast } = useToast();
+  const [fd, setFd] = useState<AgentFormData | null>(null);
+  const [membershipId, setMembershipId] = useState('');
+  const [membershipName, setMembershipName] = useState('');
+  const [membershipType, setMembershipType] = useState('');
+  const [agentId, setAgentId] = useState('');
+  const [autoAgent, setAutoAgent] = useState<AgentMemberLookup['latestDeposit']>(null);
+  const [manualOverride, setManualOverride] = useState(false);
+  const [looking, setLooking] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [country, setCountry] = useState('');
+  const [state, setState] = useState('');
+  const [location, setLocation] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [notes, setNotes] = useState('');
+  const [instructions, setInstructions] = useState('');
+  const [sendApproval, setSendApproval] = useState(false);
+  const [approverId, setApproverId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<AgentTxnRow | null>(null);
+
+  useEffect(() => {
+    agentTxnsAPI.formData().then(setFd).catch(() => showToast('Failed to load form data', 'error'));
+  }, [showToast]);
+
+  // Membership lookup → auto-fetch the agent from the latest agent DEPOSIT for this membership.
+  const lookupMember = async () => {
+    const id = membershipId.trim();
+    setAutoAgent(null); setManualOverride(false);
+    if (!id) return;
+    setLooking(true);
+    try {
+      const r = await agentTxnsAPI.member(id);
+      if (r.membershipName) setMembershipName(r.membershipName);
+      if (r.latestDeposit) { setAutoAgent(r.latestDeposit); setAgentId(String(r.latestDeposit.agentMasterId)); }
+      else { setManualOverride(true); }   // no prior agent deposit → manual selection
+    } catch {
+      setManualOverride(true);
+    } finally { setLooking(false); }
+  };
+
+  const usingAuto = Boolean(autoAgent) && !manualOverride && !!agentId && String(autoAgent!.agentMasterId) === agentId;
+  const fdAgent: AgentFormAgent | undefined = fd?.agents.find(a => String(a.id) === agentId);
+  const disp = fdAgent
+    ? { code: fdAgent.agentId, name: fdAgent.name, country: fdAgent.country, state: fdAgent.state, location: fdAgent.location, category: fdAgent.category }
+    : (autoAgent && String(autoAgent.agentMasterId) === agentId
+        ? { code: autoAgent.agentCode || '', name: autoAgent.agentName || '', country: autoAgent.country || '', state: autoAgent.state || '', location: autoAgent.location || '', category: autoAgent.category || '' }
+        : undefined);
+
+  const reset = () => {
+    setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
+    setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile('');
+    setNotes(''); setInstructions(''); setSendApproval(false); setApproverId('');
+  };
+
+  const submit = async () => {
+    if (!membershipId.trim()) { showToast('Membership ID is required.', 'error'); return; }
+    if (!membershipType) { showToast('Select a Membership Type.', 'error'); return; }
+    if (!agentId) { showToast('Select an Agent ID.', 'error'); return; }
+    const amt = Number(amount);
+    if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
+    if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
+    if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
+    setBusy(true); setResult(null);
+    const body: AgentWithdrawalBody = {
+      agentMasterId: Number(agentId), membershipId: membershipId.trim(),
+      membershipName: membershipName.trim() || undefined, membershipType,
+      amount: amt, country: country || undefined, state: state || undefined,
+      location: location || undefined, mobile: mobile || undefined, notes: notes || undefined,
+      instructions: instructions || undefined, sentForApproval: sendApproval,
+      approverUserId: sendApproval ? Number(approverId) : undefined,
+      linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
+    };
+    try {
+      const row = await agentTxnsAPI.createWithdrawal(body);
+      setResult(row);
+      showToast(`Agent withdrawal ${row.referenceNumber} created.`, 'success');
+      reset();
+    } catch (e) {
+      showToast(agentTxnError(e, 'Failed to create Agent Withdrawal Request.'), 'error');
+    } finally { setBusy(false); }
+  };
+
+  if (!fd) return <LoadingScreen label="Loading…" />;
+
+  return (
+    <div style={{ maxWidth: 860 }}>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Withdrawal Request</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Record a third-party agent withdrawal in the isolated Agent ledger.</p>
+      </div>
+      <IsolationNote />
+
+      {result && (
+        <Card style={{ padding: 16, marginBottom: 18, borderLeft: `4px solid ${T.success}` }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent Withdrawal Request created</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '10px 18px' }}>
+            {[['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Note Number', result.noteNumber], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', `${result.createdDate} ${result.createdTime}`]].map(([k, v]) => (
+              <div key={k}><div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div><div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v}</div></div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 22 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
+          <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(e.target.value)} onBlur={lookupMember} required placeholder="Enter Membership ID" hint={looking ? 'Looking up…' : undefined} />
+          <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" />
+          <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
+            options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
+          <Input label="Transaction Amount" type="number" value={amount} onChange={e => setAmount(e.target.value)} required inputMode="decimal" />
+        </div>
+
+        {/* Agent — auto-fetched from the latest deposit for this membership, else manual selection */}
+        <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+          {usingAuto ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>✓ Auto-fetched</span>
+                <span style={{ fontSize: 12, color: T.textMuted }}>Agent from the latest agent deposit {autoAgent!.reference} for this membership (view only).</span>
+                <Btn size="sm" variant="ghost" onClick={() => setManualOverride(true)} style={{ marginLeft: 'auto' }}>Select a different agent</Btn>
+              </div>
+              <ReadField label="Agent ID" value={disp?.code} />
+            </>
+          ) : (
+            <>
+              <Sel label="Select Agent ID" value={agentId} onChange={e => setAgentId(e.target.value)} required
+                options={[{ value: '', label: '— Select an agent —' }, ...fd.agents.map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
+              {autoAgent && (
+                <Btn size="sm" variant="ghost" onClick={() => { setManualOverride(false); setAgentId(String(autoAgent.agentMasterId)); }}>↩ Use auto-fetched agent ({autoAgent.agentCode})</Btn>
+              )}
+            </>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px', marginTop: 12 }}>
+            <ReadField label="Agent Name" value={disp?.name} />
+            <ReadField label="Agent Country" value={disp?.country} />
+            <ReadField label="Agent State" value={disp?.state} />
+            <ReadField label="Agent Location" value={disp?.location} />
+            <ReadField label="Agent Category" value={disp?.category} />
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
+          <Input label="Country" value={country} onChange={e => setCountry(e.target.value)} />
+          <Input label="State" value={state} onChange={e => setState(e.target.value)} />
+          <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
+          <Input label="Mobile Number" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d]/g, ''))} placeholder="Optional" inputMode="numeric" />
+          <ReadField label="Token Details" value="Auto-generated on submit" />
+          <ReadField label="Unique Note Number" value="System-generated on submit" />
+          <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
+            options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes <span style={{ color: T.textLight, fontWeight: 600 }}>({notes.length}/100)</span></label>
+          <textarea value={notes} maxLength={100} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Up to 100 characters"
+            style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
+        </div>
+
+        <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: T.textMain }}>
+            <input type="checkbox" checked={sendApproval} onChange={e => setSendApproval(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+            Send To Approval (optional)
+          </label>
+          {sendApproval && (
+            <div style={{ marginTop: 12, maxWidth: 360 }}>
+              <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
+                options={[{ value: '', label: '— Select approver —' }, ...fd.approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+            </div>
+          )}
+        </div>
+
+        <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
+          <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : 'Submit Agent Withdrawal'}</Btn>
           <Btn variant="secondary" onClick={reset} disabled={busy}>Clear</Btn>
         </div>
       </Card>

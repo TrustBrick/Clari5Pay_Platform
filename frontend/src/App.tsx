@@ -22,7 +22,7 @@ import {
 } from './pages/AdminPages';
 import { KYCPage } from './pages/KYCPage';
 import { AgentDashboardPage, AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
-import { AgentOverviewPage, AgentDepositRequestPage } from './pages/AgentTxnPages';
+import { AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage } from './pages/AgentTxnPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
@@ -61,6 +61,8 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'DEPOSIT_OPERATOR', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
   if (page === 'agent-deposit-req')
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'DEPOSIT_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
+  if (page === 'agent-withdrawal-req')
+    return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
   // A Manager is an approval-only role — block direct Deposit/Withdrawal/Settlement creation.
   if (String(user.merchantRole || '').toUpperCase() === 'MANAGER' && MANAGER_BLOCKED_PAGES.includes(page)) return false;
   // A Supervisor manages only Settlement Requests — no Deposit/Withdrawal pages, even by
@@ -121,6 +123,7 @@ const App: React.FC = () => {
         // Isolated Agent Transaction subsystem (Phase 2).
         'agent-overview': <AgentOverviewPage {...props} />,
         'agent-deposit-req': <AgentDepositRequestPage {...props} />,
+        'agent-withdrawal-req': <AgentWithdrawalRequestPage {...props} />,
       } : {}),
       reports: <ReportsPage {...props} />,
       'risk-mgmt': <RiskManagementPage user={user} />,
