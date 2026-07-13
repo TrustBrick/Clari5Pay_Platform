@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { Card, Btn, Input, Sel, Modal } from '../components/UI';
+import { Card, Btn, Input, Modal } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { useToast } from '../context/ToastContext';
 import { fileToDataUrl } from '../utils/helpers';
 import {
-  kycAPI, KYC_VALIDATION, OCR_ACCEPT, OCR_MAX_BYTES, OCR_DOC_TYPES, kycErrorMessage,
+  kycAPI, KYC_VALIDATION, OCR_MAX_BYTES, kycErrorMessage,
   type KycHistoryItem, type KycHistoryDetail, type AadhaarDetails,
 } from '../services/kyc';
 
@@ -15,7 +15,7 @@ import {
 // are live, membership-driven flows backed by the Melento.ai staging APIs — every request/response
 // is persisted server-side and shown in the Verification History table.
 
-type ViewKey = 'home' | 'aadhaar' | 'pan' | 'passport' | 'ocr';
+type ViewKey = 'home' | 'aadhaar' | 'pan' | 'passport';
 
 // Custom document icons (Aadhaar / PAN / Passport) served from /public/kyc. Used both by the
 // dashboard cards and each verification view's header, so the icon is identical in both places.
@@ -38,10 +38,9 @@ const CARDS: CardDef[] = [
   { key: 'aadhaar',  icon: 'aadhaar',    title: 'Aadhaar Verification',      desc: 'Generate a DigiLocker verification link for a member and track completion.' },
   { key: 'pan',      icon: 'pan',        title: 'PAN Verification',          desc: 'Validate a member’s PAN and fetch the holder’s details.' },
   { key: 'passport', icon: 'passport',   title: 'Passport Verification',     desc: 'Verify a passport using its File Number and check validity.' },
-  { key: 'ocr',      icon: 'ocr-upload', title: 'OCR Document Verification', desc: 'Extract details from an uploaded identity document.' },
 ];
 const TYPE_LABEL: Record<ViewKey, string> = {
-  home: '', aadhaar: 'Aadhaar', pan: 'PAN', passport: 'Passport', ocr: 'OCR',
+  home: '', aadhaar: 'Aadhaar', pan: 'PAN', passport: 'Passport',
 };
 
 // Format an ISO/UTC timestamp in Indian Standard Time.
@@ -464,77 +463,6 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   );
 };
 
-// ─── OCR Document (membership → upload → verify via General-Document API) ───────
-const OcrView: React.FC<FlowProps> = ({ onDone, onBack }) => {
-  const { showToast } = useToast();
-  const m = useMemberLookup();
-  const [docType, setDocType] = useState(OCR_DOC_TYPES[0].value);
-  const [verification, setVerification] = useState(true);
-  const [file, setFile] = useState<File | null>(null);
-  const [dataUrl, setDataUrl] = useState('');
-  const [verifying, setVerifying] = useState(false);
-  const [result, setResult] = useState<{ verified: boolean } | null>(null);
-
-  const onFile = (f: File | null) => {
-    setResult(null); setDataUrl(''); setFile(null);
-    if (!f) return;
-    const ext = f.name.split('.').pop()?.toLowerCase() || '';
-    if (!['jpg', 'jpeg', 'png', 'pdf'].includes(ext)) { showToast('Unsupported file type — allowed: JPG, JPEG, PNG, PDF.', 'error'); return; }
-    if (f.size > OCR_MAX_BYTES) { showToast('File too large — maximum size is 10 MB.', 'error'); return; }
-    const reader = new FileReader();
-    reader.onload = () => { setDataUrl(String(reader.result)); setFile(f); };
-    reader.onerror = () => showToast('Could not read the file — please try again.', 'error');
-    reader.readAsDataURL(f);
-  };
-
-  const canVerify = Boolean(m.memberName) && !m.error && Boolean(file) && Boolean(dataUrl) && !verifying;
-
-  const submit = async () => {
-    if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
-    if (!file || !dataUrl) { showToast('Please select a document to verify.', 'error'); return; }
-    setVerifying(true); setResult(null);
-    try {
-      const r = await kycAPI.verifyOcrMembership(m.memberId.trim(), docType, file.name, dataUrl, verification);
-      setResult({ verified: r.verified });
-      showToast(r.verified ? 'Document verified successfully.' : 'OCR verification completed.', 'success');
-      onDone();
-    } catch (e) {
-      showToast(kycErrorMessage(e, 'OCR verification failed.'), 'error');
-      onDone();   // a FAILED attempt is still persisted — refresh so it appears in history
-    } finally { setVerifying(false); }
-  };
-
-  const isImage = file && /\.(jpg|jpeg|png)$/i.test(file.name);
-
-  return (
-    <VerifyShell icon="ocr-upload" title="OCR Document Verification" onBack={onBack}>
-      <MembershipFields m={m} />
-      <Sel label="Document Type" value={docType} onChange={e => setDocType(e.target.value)} options={OCR_DOC_TYPES} />
-      <Sel label="Verification" value={verification ? 'yes' : 'no'} onChange={e => setVerification(e.target.value === 'yes')}
-        options={[{ value: 'yes', label: 'Yes — validate the document' }, { value: 'no', label: 'No — extract only' }]} />
-      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Upload Document</label>
-      <input type="file" accept={OCR_ACCEPT} onChange={e => onFile(e.target.files?.[0] || null)}
-        style={{ width: '100%', padding: '10px 14px', border: `1.5px dashed ${T.border}`, borderRadius: 10, fontSize: 13, color: T.textMain, background: T.canvas, cursor: 'pointer', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-      <p style={{ fontSize: 11, color: T.textMuted, margin: '4px 0 14px' }}>Supported: JPG, JPEG, PNG, PDF · Max 10 MB</p>
-      {file && (
-        <div style={{ marginBottom: 16 }}>
-          {isImage
-            ? <img src={dataUrl} alt="Preview" style={{ maxWidth: 220, maxHeight: 160, borderRadius: 10, border: `1px solid ${T.border}` }} />
-            : <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 14px', border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 13, color: T.textMain }}><Icon name="file" size={14} /> {file.name}</div>}
-        </div>
-      )}
-      <Btn onClick={submit} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify OCR'}</Btn>
-      {result && (
-        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Verified</span>
-          <span style={{ fontSize: 12, fontWeight: 800, padding: '3px 12px', borderRadius: 20, color: result.verified ? T.success : T.danger, background: result.verified ? T.successBg : T.dangerBg }}>{result.verified ? 'YES' : 'NO'}</span>
-          <span style={{ fontSize: 12, color: T.textMuted }}>See the Verification History for full details.</span>
-        </div>
-      )}
-    </VerifyShell>
-  );
-};
-
 // ─── View Details popup (Aadhaar / PAN / Passport / OCR) ───────────────────────
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
   <div style={{ marginBottom: 18 }}>
@@ -899,7 +827,6 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
       {view === 'aadhaar' && <AadhaarView {...flowProps} />}
       {view === 'pan' && <PanView {...flowProps} />}
       {view === 'passport' && <PassportView {...flowProps} />}
-      {view === 'ocr' && <OcrView {...flowProps} />}
 
       {detailItem && <ViewDetailsModal item={detailItem} onClose={() => setDetailItem(null)} onRefresh={loadHistory} />}
     </div>
