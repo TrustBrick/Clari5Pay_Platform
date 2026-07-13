@@ -497,7 +497,11 @@ async def create_account(
         last_maintenance_date=date.today(),
         last_maintenance_time=now.strftime("%H:%M:%S"),
         highest_credit=max(0.0, data.highest_credit or 0.0),
-        # highest_debit is read-only — starts at 0 and is only ever raised by a completed debit.
+        # The entered Highest Debit seeds both the auto-raising high-water mark and the FIXED
+        # low-debit alert threshold. Thereafter highest_debit rises on larger debits; the
+        # threshold stays put so "debit below the set amount" alerts remain stable.
+        highest_debit=max(0.0, data.highest_debit or 0.0),
+        debit_alert_threshold=max(0.0, data.highest_debit or 0.0),
     )
     db.add(acc)
     await db.flush()

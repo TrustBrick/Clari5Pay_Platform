@@ -122,6 +122,9 @@ _NEW_COLUMNS = [
     # former lowest_credit (dropped below in ensure_schema).
     ("account_master", "highest_credit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
     ("account_master", "highest_debit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    # Fixed "Highest Debit" value the admin sets at creation; when >0 a completed debit BELOW it
+    # raises a low-debit alert. Default 0 (no alert). Existing accounts keep 0 → no backfill.
+    ("account_master", "debit_alert_threshold", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type

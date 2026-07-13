@@ -373,14 +373,22 @@ async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, 
 
 
 async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, request: Request | None) -> None:
-    """After a withdrawal/settlement (a debit) completes against a managed account, update that
-    account's recorded Highest Debit high-water mark. Mirrors _track_account_credit: on a new
-    record, persist the value, notify every Admin AND Super Admin, and write a "system" audit
-    entry. Purely additive — never alters the transaction, its status, or any workflow. The value
-    is only ever raised (a larger debit), never decreased.
+    """After a withdrawal/settlement (a debit) completes against a managed account, run TWO
+    independent, additive checks on that account. Neither alters the transaction or any workflow;
+    each notifies every Admin AND Super Admin (Account Management is admin-facing) with a system
+    audit + event entry:
+
+      (A) Highest Debit high-water mark — raised whenever this debit exceeds the current value
+          (never decreased); a new record notifies.
+      (B) Low-debit alert — when the account has a set Highest Debit threshold (>0) and this debit
+          is BELOW it, notify. The threshold is the fixed value the admin entered at creation, so
+          the alert stays stable even as (A) drifts upward.
 
     A debit carries no admin_ref, so the account it is drawn from is the member's most-recent
-    receiving account — the exact attribution /accounts/balances uses for withdrawals/settlements."""
+    receiving account — the exact attribution /accounts/balances uses for withdrawals/settlements.
+    (A) and (B) are mutually exclusive in practice: the threshold seeds highest_debit and the mark
+    only rises, so threshold ≤ highest_debit always → a debit can't be both a new high and below
+    the threshold."""
     ty = tx.type.value
     if not (ty.startswith("WITHDRAWAL") or ty.startswith("SETTLEMENT")) or not tx.member_id:
         return
@@ -397,30 +405,52 @@ async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, r
     if acc is None:
         return
     amt = round(tx.amount, 2)
-    if amt <= (acc.highest_debit or 0):
-        return
-    prev = acc.highest_debit or 0.0
-    acc.highest_debit = amt
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
     ip = _client_ip(request)
-    # Recipients: every active Admin AND Super Admin (Account Management is admin-facing).
+    threshold = acc.debit_alert_threshold or 0.0
+
+    # Recipients computed once and shared by both checks.
     recipient_ids = (await db.execute(
         select(User.id).where(User.role.in_([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
                               User.active == True)  # noqa: E712
     )).scalars().all()
-    msg = (f"Highest Debit Updated — {acc.account_name} · Previous {_inr(prev)} → "
-           f"New {_inr(amt)} · {tx.ref} · {ts}")
-    for uid in recipient_ids:
-        db.add(Notification(user_id=uid, message=msg, icon="📉"))
-    # Audit: Account ID, Holder, Previous, New, Transaction Ref, Updated By = System, IST time.
-    await record_audit(db, "ACCOUNT_HIGHEST_DEBIT", actor=None,
-                       entity_type="account", entity_id=acc.reference_number,
-                       old=_inr(prev), new=_inr(amt),
-                       reason=f"{acc.account_name} · {tx.ref} · {ts}", ip=ip)
-    await log_event(db, "ACCOUNT_HIGHEST_DEBIT",
-                    f"{acc.reference_number} ({acc.account_name}) new highest debit "
-                    f"{_inr(amt)} (was {_inr(prev)}) via {tx.ref}", actor=None)
-    await db.flush()
+    changed = False
+
+    # (A) New Highest Debit record.
+    if amt > (acc.highest_debit or 0):
+        prev = acc.highest_debit or 0.0
+        acc.highest_debit = amt
+        msg = (f"Highest Debit Updated — {acc.account_name} · Previous {_inr(prev)} → "
+               f"New {_inr(amt)} · {tx.ref} · {ts}")
+        for uid in recipient_ids:
+            db.add(Notification(user_id=uid, message=msg, icon="📉"))
+        # Audit: Account ID, Holder, Previous, New, Transaction Ref, Updated By = System, IST time.
+        await record_audit(db, "ACCOUNT_HIGHEST_DEBIT", actor=None,
+                           entity_type="account", entity_id=acc.reference_number,
+                           old=_inr(prev), new=_inr(amt),
+                           reason=f"{acc.account_name} · {tx.ref} · {ts}", ip=ip)
+        await log_event(db, "ACCOUNT_HIGHEST_DEBIT",
+                        f"{acc.reference_number} ({acc.account_name}) new highest debit "
+                        f"{_inr(amt)} (was {_inr(prev)}) via {tx.ref}", actor=None)
+        changed = True
+
+    # (B) Low-debit alert — debit below the account's set Highest Debit threshold.
+    if threshold > 0 and amt < threshold:
+        msg = (f"Low Debit Alert — {acc.account_name} · Debit {_inr(amt)} is below the set "
+               f"Highest Debit {_inr(threshold)} · {tx.ref} · {ts}")
+        for uid in recipient_ids:
+            db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
+        await record_audit(db, "ACCOUNT_LOW_DEBIT_ALERT", actor=None,
+                           entity_type="account", entity_id=acc.reference_number,
+                           old=_inr(threshold), new=_inr(amt),
+                           reason=f"{acc.account_name} · {tx.ref} · {ts}", ip=ip)
+        await log_event(db, "ACCOUNT_LOW_DEBIT_ALERT",
+                        f"{acc.reference_number} ({acc.account_name}) debit {_inr(amt)} below set "
+                        f"Highest Debit {_inr(threshold)} via {tx.ref}", actor=None)
+        changed = True
+
+    if changed:
+        await db.flush()
 
 
 async def _notify_merchant(db: AsyncSession, tx: Transaction, message: str, icon: str = "🔔") -> None:

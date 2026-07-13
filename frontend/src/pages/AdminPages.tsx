@@ -1244,7 +1244,7 @@ export const AdminAccountsPage: React.FC = () => {
     finally { setStmtLoading(false); }
   };
   const [showCreate, setShowCreate] = useState(false);
-  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0' };
+  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0',highest_debit:'0' };
   const [form, setForm] = useState(empty);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
@@ -1307,7 +1307,7 @@ export const AdminAccountsPage: React.FC = () => {
   const create = async () => {
     if(!form.account_name||!form.account_number||!form.ifsc_code||!form.bank_name||!form.branch){ showToast('Fill all fields','error'); return; }
     try {
-      await accountAPI.create({ ...form, highest_credit: parseFloat(form.highest_credit) || 0 });
+      await accountAPI.create({ ...form, highest_credit: parseFloat(form.highest_credit) || 0, highest_debit: parseFloat(form.highest_debit) || 0 });
       await reload();
       setShowCreate(false);
       setForm(empty);
@@ -1624,7 +1624,7 @@ export const AdminAccountsPage: React.FC = () => {
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
             <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>
             <Input label="Highest Credit (₹)" type="number" value={form.highest_credit} onChange={e=>set('highest_credit',e.target.value)} hint="Default 0 — auto-updates on higher deposits"/>
-            <Input label="Highest Debit (₹)" type="number" value="0" readOnly onChange={()=>{}} hint="Read-only — auto-updates on a larger debit"/>
+            <Input label="Highest Debit (₹)" type="number" value={form.highest_debit} onChange={e=>set('highest_debit',e.target.value)} hint="Starting value — auto-rises on a larger debit; alerts on any debit below it"/>
           </div>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>

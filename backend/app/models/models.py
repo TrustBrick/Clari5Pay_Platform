@@ -230,14 +230,18 @@ class AccountMaster(Base):
     created_time: Mapped[str] = mapped_column(String(16), nullable=False)
     last_maintenance_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     last_maintenance_time: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
-    # Recorded high-water marks (auto-updated by completed transactions):
+    # Account high-water marks / thresholds (auto-updated by completed transactions):
     #  • highest_credit — largest single Deposit credited to this account (configurable at
     #    creation, default 0; auto-updated when a deposit is approved).
-    #  • highest_debit  — largest single Debit (withdrawal/settlement) ever processed from this
-    #    account. Read-only: default 0 and only ever raised by a completed debit (never seeded,
-    #    never decreased). Replaces the former "lowest_credit".
+    #  • highest_debit  — largest single Debit (withdrawal/settlement) processed from this account.
+    #    Configurable starting value at creation (default 0); auto-raised whenever a larger debit
+    #    completes (never decreased). Replaces the former "lowest_credit".
+    #  • debit_alert_threshold — the "Highest Debit" value the admin sets at creation, kept FIXED
+    #    (unlike highest_debit, which drifts upward). When >0, a completed debit BELOW it raises a
+    #    low-debit alert. Seeded from the same field as highest_debit's starting value.
     highest_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     highest_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    debit_alert_threshold: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
 
 class AccountTransaction(Base):
