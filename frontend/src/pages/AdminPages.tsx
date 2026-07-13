@@ -2200,7 +2200,7 @@ export const AuditLogsPage: React.FC = () => {
   );
 };
 
-// ─── Admin → WhatsApp Settings (dedicated console) ──────────────────────────────
+// ─── Admin → Telegram Management (dedicated console) ────────────────────────────
 const WA_ROLE_LABELS: Record<string, string> = {
   ADMIN: 'Admin', SUPERVISOR: 'Supervisor', MANAGER: 'Manager', MERCHANT: 'Merchant',
   DATA_OPERATOR: 'Data Operator', DEPOSIT_OPERATOR: 'Deposit Operator', WITHDRAWAL_OPERATOR: 'Withdrawal Operator',
@@ -2296,6 +2296,7 @@ export const WhatsAppSettingsPage: React.FC = () => {
   const [events, setEvents] = useState<Record<string, boolean>>({});
   const [stats, setStats] = useState<WhatsappStats | null>(null);
   const [logs, setLogs] = useState<WhatsappLog[]>([]);
+  const [tg, setTg] = useState<TelegramStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
 
@@ -2303,23 +2304,25 @@ export const WhatsAppSettingsPage: React.FC = () => {
     whatsappAPI.getSettings().then(s => { setCfg(s); setRoles(s.roles); setEvents(s.events); }).catch(() => {});
     whatsappAPI.getStats().then(setStats).catch(() => {});
     whatsappAPI.getLogs(100).then(setLogs).catch(() => setLogs([]));
+    telegramAPI.getStatus().then(setTg).catch(() => setTg(null));
   };
   useEffect(load, []);
 
   const save = async () => {
     setSaving(true);
-    try { const r = await whatsappAPI.setSettings({ roles, events }); setRoles(r.roles); setEvents(r.events); showToast('WhatsApp settings saved'); }
+    try { const r = await whatsappAPI.setSettings({ roles, events }); setRoles(r.roles); setEvents(r.events); showToast('Telegram settings saved'); }
     catch { showToast('Failed to save settings', 'error'); }
     finally { setSaving(false); }
   };
   const sendTest = async () => {
     setTesting(true);
-    try { const r = await whatsappAPI.sendTest(); showToast(r.ok ? 'Test WhatsApp sent' : (r.reason || 'Test failed'), r.ok ? undefined : 'error'); load(); }
+    try { const r = await whatsappAPI.sendTest(); showToast(r.ok ? 'Test Telegram notification sent' : (r.reason || 'Test failed'), r.ok ? undefined : 'error'); load(); }
     catch (e: any) { showToast(e?.response?.data?.detail || 'Test failed', 'error'); }
     finally { setTesting(false); }
   };
 
-  const connected = !!cfg?.configured;
+  // Connection state reflects the Telegram bot (this is the Telegram Management console).
+  const connected = !!tg?.configured;
   const statCard = (label: string, value: React.ReactNode, color: string) => (
     <Card style={{ padding: '14px 16px', borderTop: `3px solid ${color}` }}>
       <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
@@ -2340,8 +2343,8 @@ export const WhatsAppSettingsPage: React.FC = () => {
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>WhatsApp Settings</h2>
-        <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Manage the WhatsApp notification integration. In-app notifications are always delivered regardless of these settings.</p>
+        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Telegram Management</h2>
+        <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Manage Telegram notification integration. In-app notifications are always delivered regardless of these settings.</p>
       </div>
 
       {/* Telegram link status */}
@@ -2357,12 +2360,10 @@ export const WhatsAppSettingsPage: React.FC = () => {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 14 }}>
           {([
-            ['Provider', cfg?.provider ? (cfg.provider === 'meta' ? 'Meta Cloud API' : cfg.provider) : '—'],
-            ['Business Number', cfg?.businessNumber || '—'],
-            ['Business Account ID', cfg?.businessAccountId || '—'],
-            ['Phone Number ID', cfg?.phoneIdSet ? '✓ Set' : '—'],
-            ['Message Template', cfg?.templateSet ? '✓ Set' : 'Not set'],
-            ['Webhook (delivery/read)', cfg?.webhookConfigured ? '✓ Configured' : '—'],
+            ['Bot Connected', tg?.configured ? '✓ Yes' : '— No'],
+            ['Bot Token Status', tg?.configured ? '✓ Set' : 'Not set'],
+            ['Webhook Status', tg?.webhookSecretSet ? '✓ Configured' : 'Not configured'],
+            ['Linked Users', `${tg?.linkedUsers ?? 0} / ${tg?.totalEligible ?? 0}`],
           ] as [string, string][]).map(([k, v]) => (
             <div key={k}>
               <span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>{k}</span>
@@ -2371,8 +2372,8 @@ export const WhatsAppSettingsPage: React.FC = () => {
           ))}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
-          <Btn size="sm" onClick={sendTest} disabled={testing || !connected}>{testing ? 'Sending…' : '📤 Send Test WhatsApp'}</Btn>
-          <span style={{ fontSize: 11, color: T.textMuted }}>Credentials are configured on the server (env) for security. Sends to your registered number.</span>
+          <Btn size="sm" onClick={sendTest} disabled={testing || !connected}>{testing ? 'Sending…' : '📤 Send Test Telegram Notification'}</Btn>
+          <span style={{ fontSize: 11, color: T.textMuted }}>Bot credentials are configured securely on the server. Sends a test Telegram notification to your linked Telegram account.</span>
         </div>
       </Card>
 
@@ -2389,10 +2390,10 @@ export const WhatsAppSettingsPage: React.FC = () => {
       {/* Notification (role) + Event settings */}
       <Card style={{ padding: 20, marginBottom: 16 }}>
         <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 800 }}>Notification Settings — Roles</h3>
-        <p style={{ fontSize: 12, color: T.textMuted, margin: '0 0 12px' }}>Which roles also receive their notifications on WhatsApp.</p>
+        <p style={{ fontSize: 12, color: T.textMuted, margin: '0 0 12px' }}>Select which roles receive Telegram notifications.</p>
         {toggleGrid(cfg?.roleKeys || Object.keys(roles), roles, setRoles, WA_ROLE_LABELS)}
         <h3 style={{ margin: '22px 0 12px', fontSize: 14, fontWeight: 800 }}>Event Settings</h3>
-        <p style={{ fontSize: 12, color: T.textMuted, margin: '0 0 12px' }}>Which events trigger a WhatsApp message.</p>
+        <p style={{ fontSize: 12, color: T.textMuted, margin: '0 0 12px' }}>Select which events trigger a Telegram notification.</p>
         {toggleGrid(cfg?.eventKeys || Object.keys(events), events, setEvents, WA_EVENT_LABELS)}
         <div style={{ marginTop: 16 }}>
           <Btn onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Settings'}</Btn>
@@ -2415,7 +2416,7 @@ export const WhatsAppSettingsPage: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {logs.length === 0 && <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: T.textMuted }}>No WhatsApp deliveries yet.</td></tr>}
+              {logs.length === 0 && <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: T.textMuted }}>No Telegram deliveries yet.</td></tr>}
               {logs.map(l => (
                 <tr key={l.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
                   <td style={{ padding: '9px 12px', fontWeight: 700, color: T.textMain }}>{l.user || '—'}</td>
