@@ -11,6 +11,26 @@ import { SESSION_EXPIRED_KEY } from '../components/SessionManager';
 import { passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
 import type { OtpChallenge } from '../types';
 
+// Map any thrown login/OTP error to a clear, user-facing message.
+//  • no HTTP response (axios network error) → connection problem
+//  • 5xx → generic server error (never leak internals)
+//  • 4xx with a specific backend detail (locked, deactivated, attempts-left…) → show it
+//  • 4xx without a usable detail → the generic fallback (invalid creds / invalid OTP)
+//  • non-HTTP app error (e.g. the wrong-portal guard throws a plain Error) → its message
+const authErrorMessage = (e: any, fallback: string): string => {
+  if (e?.response) {
+    if (e.response.status >= 500) return 'Something went wrong. Please try again later.';
+    const detail = e.response.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    return fallback;
+  }
+  if (e?.request || e?.code === 'ERR_NETWORK' || e?.isAxiosError) {
+    return 'Unable to connect. Please try again.';
+  }
+  if (typeof e?.message === 'string' && e.message.trim()) return e.message;
+  return fallback;
+};
+
 const LoginPage: React.FC = () => {
   const { login, verifyOtp, resendOtp, isLoading } = useAuth();
   const { showToast } = useToast();
@@ -57,6 +77,10 @@ const LoginPage: React.FC = () => {
   }, [resendIn]);
 
   const handleLogin = async () => {
+    if (isLoading) return;                 // guard against double-submit while a request is in flight
+    // Client-side required-field checks (never reveal which credential is wrong on a real attempt).
+    if (!username.trim()) { setError('Username is required.'); return; }
+    if (!password) { setError('Password is required.'); return; }
     setError('');
     try {
       const challenge = await login(username, password);
@@ -67,19 +91,20 @@ const LoginPage: React.FC = () => {
       }
       // otpRequired === false → session already established; App redirects to dashboard.
     } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || 'Login failed. Please try again.');
+      // On failure: no session, no token, no redirect — just an inline message.
+      setError(authErrorMessage(e, 'Invalid username or password.'));
     }
   };
 
   const handleVerify = async () => {
-    if (!otp) return;
+    if (!otp || verifying) return;         // guard against double-submit
     setError('');
     setVerifying(true);
     try {
       await verifyOtp(otp.otpToken, code.trim());
       // success → AuthContext sets the user; App redirects to the dashboard.
     } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || 'Invalid OTP. Please try again.');
+      setError(authErrorMessage(e, 'Invalid OTP. Please try again.'));
       setShake(true); setTimeout(() => setShake(false), 400);
     } finally {
       setVerifying(false);
@@ -256,7 +281,7 @@ const LoginPage: React.FC = () => {
               <span onClick={openForgot} style={{ fontSize:12,color:T.blue,cursor:'pointer',fontWeight:700 }}>Forgot password?</span>
             </div>
 
-            <Btn size="lg" full onClick={handleLogin} disabled={isLoading||!username||!password}>
+            <Btn size="lg" full onClick={handleLogin} disabled={isLoading}>
               {isLoading?'Authenticating...':'Sign In →'}
             </Btn>
           </>

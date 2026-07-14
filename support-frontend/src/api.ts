@@ -83,13 +83,29 @@ export async function login(username: string, password: string): Promise<Support
   const form = new URLSearchParams();
   form.append('username', username);
   form.append('password', password);
-  const res = await fetch(`${BASE_URL}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: form,
-  });
-  if (!res.ok) throw new Error('Invalid credentials');
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form,
+    });
+  } catch {
+    // The request never reached the server (offline, DNS, CORS/network failure).
+    throw new Error('Unable to connect. Please try again.');
+  }
+  if (res.status >= 500) throw new Error('Something went wrong. Please try again later.');
+  if (!res.ok) {
+    // Prefer a specific auth error from the backend (locked, deactivated, attempts-left…);
+    // fall back to a generic message that never reveals which credential was wrong.
+    let detail = '';
+    try { detail = (await res.json())?.detail || ''; } catch { /* non-JSON body */ }
+    throw new Error(detail || 'Invalid username or password.');
+  }
   const data = await res.json();
+  // Defensive: an OTP challenge (or any non-token payload) has no `user` → treat as a failed login
+  // rather than surfacing a raw JS error.
+  if (!data?.user) throw new Error('Invalid username or password.');
   if (data.user.role !== 'SUPPORT_AGENT') {
     throw new Error('This portal is for Customer Support agents only');
   }

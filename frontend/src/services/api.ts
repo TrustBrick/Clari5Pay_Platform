@@ -26,7 +26,14 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    // A 401 on an authenticated request means the session expired → clear it and bounce
+    // to the login screen. But the pre-session auth endpoints (login, verify-otp,
+    // forgot-password, …) legitimately return 401/403 for bad input; those must surface
+    // as inline errors on the login page, NOT trigger a full-page redirect (which would
+    // reload the page and swallow the error message). So skip the redirect for them.
+    const url: string = err.config?.url || '';
+    const isAuthEndpoint = url.includes('/api/auth/');
+    if (err.response?.status === 401 && !isAuthEndpoint) {
       localStorage.removeItem('clari5pay_token');
       localStorage.removeItem('clari5pay_user');
       window.location.href = '/';

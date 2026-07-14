@@ -65,9 +65,13 @@ const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => 
   const [loading, setLoading] = useState(false);
 
   const submit = async () => {
+    if (loading) return;                              // guard against double-submit
+    if (!username.trim()) { setError('Username is required.'); return; }
+    if (!password) { setError('Password is required.'); return; }
     setError(''); setLoading(true);
+    // On failure `login` throws before storing anything — no token, no session, no redirect.
     try { onLogin(await login(username, password)); }
-    catch (e: any) { setError(e.message || 'Login failed'); }
+    catch (e: any) { setError(e.message || 'Invalid username or password.'); }
     finally { setLoading(false); }
   };
 
@@ -85,10 +89,10 @@ const Login: React.FC<{ onLogin: (u: SupportUser) => void }> = ({ onLogin }) => 
           <p style={{ margin: '10px 0 0', fontSize: 13, fontWeight: 700, color: T.textMain }}>Customer Support Portal</p>
         </div>
         {error && <div style={{ background: 'rgba(220,38,38,0.1)', color: T.danger, padding: '10px 14px', borderRadius: 10, fontSize: 12, marginBottom: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="warning" size={13} /> {error}</div>}
-        <Field label="Username" value={username} onChange={setUsername} placeholder="support1" />
+        <Field label="Username" value={username} onChange={setUsername} placeholder="support1" onEnter={submit} />
         <Field label="Password" value={password} onChange={setPassword} placeholder="Your password" type="password" onEnter={submit} />
-        <button onClick={submit} disabled={loading || !username || !password}
-          style={{ width: '100%', marginTop: 8, padding: '12px', borderRadius: 10, border: 'none', background: T.grad, color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer', opacity: loading || !username || !password ? 0.6 : 1 }}>
+        <button onClick={submit} disabled={loading}
+          style={{ width: '100%', marginTop: 8, padding: '12px', borderRadius: 10, border: 'none', background: T.grad, color: '#fff', fontWeight: 700, fontSize: 14, cursor: loading ? 'default' : 'pointer', opacity: loading ? 0.6 : 1 }}>
           {loading ? 'Signing in...' : 'Sign In'}
         </button>
         <p style={{ marginTop: 18, fontSize: 11, color: T.textLight, textAlign: 'center' }}>Demo: <code>support1 / pass123</code></p>
