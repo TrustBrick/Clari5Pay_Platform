@@ -905,3 +905,182 @@ export const AgentSettlementManagementPage: React.FC<{ user: User; onNavigate?: 
     </Card>
   </div>
 );
+
+// ─── Agent Reports (isolated) ──────────────────────────────────────────────────
+// Financial summary comes from the SAME /api/agent-txns/overview endpoint the Agent Overview uses
+// (one shared calculation source), and the detailed exportable ledger comes from /api/agent-txns.
+// Both read ONLY the isolated agent ledger — never any merchant module. CSV export is client-side.
+const csvEscape = (v: string | number) => {
+  const s = String(v ?? '');
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+const downloadAgentCsv = (filename: string, headers: string[], rows: Array<Array<string | number>>) => {
+  const csv = [headers, ...rows].map(r => r.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });   // BOM → Excel-friendly
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename.endsWith('.csv') ? filename : `${filename}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+  const { showToast } = useToast();
+  const [ov, setOv] = useState<AgentOverview | null>(null);
+  const [rows, setRows] = useState<AgentTxnRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('');
+  const [type, setType] = useState('');
+  const [fromF, setFromF] = useState('');
+  const [toF, setToF] = useState('');
+  const [page, setPage] = useState(1);
+
+  const loadSummary = useCallback(() => {
+    agentTxnsAPI.overview().then(setOv).catch(() => showToast('Failed to load financial summary.', 'error'));
+  }, [showToast]);
+
+  const loadRows = useCallback(async () => {
+    setLoading(true);
+    try {
+      const q: AgentTxnQuery = {};
+      if (status) q.status = status;
+      if (type) q.txn_type = type;
+      if (search.trim()) q.search = search.trim();
+      if (fromF) q.date_from = fromF;
+      if (toF) q.date_to = toF;
+      setRows(await agentTxnsAPI.list(q));
+    } catch { showToast('Failed to load agent transactions.', 'error'); }
+    finally { setLoading(false); }
+  }, [status, type, search, fromF, toF, showToast]);
+
+  useEffect(() => { loadSummary(); loadRows(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  usePoll(() => { loadSummary(); loadRows(); });
+
+  const runSearch = () => { setPage(1); loadRows(); };
+  const clearFilters = () => { setSearch(''); setStatus(''); setType(''); setFromF(''); setToF(''); setPage(1); };
+
+  const c = ov?.cards;
+  // Financial summary — every figure from the shared overview endpoint (isolated agent ledger).
+  const fin: Array<[string, React.ReactNode, string]> = c ? [
+    ['Gross Amount (Approved)', fmt(c.grossAmount), T.blue],
+    ['Deposit Commission', fmt(c.depositCommission), T.green],
+    ['Total Withdrawals (Approved)', fmt(c.approvedWithdrawals), T.danger],
+    ['Withdrawal Commission', fmt(c.withdrawalCommission), T.green],
+    ['Total Commission', fmt(c.totalCommission), T.green],
+    ['Net (Approved)', fmt(c.netAmount), '#1d4ed8'],
+  ] : [];
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = rows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  const exportCsv = () => {
+    if (rows.length === 0) { showToast('Nothing to export for the current filters.', 'error'); return; }
+    downloadAgentCsv(`agent-transactions-${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}`,
+      ['Reference', 'Type', 'Agent Code', 'Agent Name', 'Membership ID', 'Membership Name', 'Membership Type', 'Amount', 'Status', 'Instructions', 'Created Date (IST)', 'Created Time (IST)'],
+      rows.map(r => [r.referenceNumber, r.type, r.agentCode || '', r.agentName || '', r.membershipId, r.membershipName || '', r.membershipType, r.amount, r.status, r.instructions ? instrLabel(r.instructions) : '', r.createdDate || '', r.createdTime || '']));
+    showToast(`Exported ${rows.length} agent transaction${rows.length === 1 ? '' : 's'}.`, 'success');
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Reports</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Financial summary and detailed ledger for the isolated Agent Transaction subsystem.</p>
+      </div>
+      <IsolationNote />
+
+      {/* Financial Summary — shared /overview calculation (same as Agent Overview) */}
+      <Card style={{ padding: 18, marginBottom: 16 }}>
+        <h2 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 800, color: T.textMain }}>Financial Summary (Approved)</h2>
+        {!c ? <div style={{ padding: 16, color: T.textMuted, fontSize: 13 }}>Loading…</div> : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: 12 }}>
+              {fin.map(([label, value, color]) => (
+                <div key={label} style={{ padding: '12px 14px', borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, borderTop: `3px solid ${color}` }}>
+                  <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
+                  <p style={{ margin: 0, fontSize: 17, fontWeight: 800, color }}>{value}</p>
+                </div>
+              ))}
+            </div>
+            <p style={{ margin: '12px 0 0', fontSize: 11.5, color: T.textMuted }}>
+              Net (Approved) = Gross Amount − Deposit Commission − Total Withdrawals − Withdrawal Commission. Total Commission = Deposit Commission + Withdrawal Commission. Commission uses each agent's Fees %.
+            </p>
+          </>
+        )}
+      </Card>
+
+      {/* Per-agent breakdown — from the same overview payload */}
+      {ov && ov.byAgent.length > 0 && (
+        <Card style={{ marginBottom: 16, overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', borderBottom: `1px solid ${T.border}` }}><h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>By Agent</h2></div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr style={{ background: T.canvas }}>{['Agent', 'Deposits', 'Withdrawals', 'Transactions'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+              <tbody>
+                {ov.byAgent.map((a, i) => (
+                  <tr key={i} style={{ background: i % 2 ? T.canvas : T.surface }}>
+                    <td style={{ ...tdS, fontWeight: 700 }}>{a.agentCode || '—'}{a.agentName ? ` · ${a.agentName}` : ''}</td>
+                    <td style={{ ...tdS, color: T.success, fontWeight: 700 }}>{fmt(a.deposits)}</td>
+                    <td style={{ ...tdS, color: T.danger, fontWeight: 700 }}>{fmt(a.withdrawals)}</td>
+                    <td style={tdS}>{a.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Detailed ledger — isolated list endpoint, filterable + exportable */}
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 12 }}>
+          <Input label="Search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Reference / Membership / Agent" style={{ marginBottom: 0 }} />
+          <Sel label="Type" value={type} onChange={e => setType(e.target.value)} style={{ marginBottom: 0 }}
+            options={[{ value: '', label: 'All Types' }, { value: 'DEPOSIT', label: 'Deposit' }, { value: 'WITHDRAWAL', label: 'Withdrawal' }]} />
+          <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} style={{ marginBottom: 0 }}
+            options={[{ value: '', label: 'All Statuses' }, { value: 'PENDING', label: 'Pending' }, { value: 'APPROVED', label: 'Approved' }, { value: 'REJECTED', label: 'Rejected' }]} />
+          <Input label="From Date" type="date" value={fromF} onChange={e => setFromF(e.target.value)} style={{ marginBottom: 0 }} />
+          <Input label="To Date" type="date" value={toF} onChange={e => setToF(e.target.value)} style={{ marginBottom: 0 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Btn size="sm" onClick={runSearch} disabled={loading}>{loading ? 'Searching…' : 'Search'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={clearFilters}>Clear</Btn>
+          <Btn size="sm" variant="secondary" onClick={exportCsv}>Export CSV</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted, marginLeft: 'auto' }}>{rows.length} transaction{rows.length === 1 ? '' : 's'}</span>
+        </div>
+      </Card>
+
+      <Card style={{ overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: T.canvas }}>{['Reference', 'Type', 'Agent', 'Membership', 'Amount', 'Status', 'Created (IST)'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <tbody>
+              {loading && rows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
+              {!loading && pageRows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No agent transactions match the filters.</td></tr>}
+              {pageRows.map((x, i) => (
+                <tr key={x.id} style={{ background: i % 2 ? T.canvas : T.surface }}>
+                  <td style={{ ...tdS, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
+                  <td style={tdS}>{x.type}</td>
+                  <td style={tdS}>{x.agentCode || '—'}{x.agentName ? ` · ${x.agentName}` : ''}</td>
+                  <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
+                  <td style={tdS}><StatusPill status={x.status} /></td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {totalPages > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, padding: '12px 16px', borderTop: `1px solid ${T.border}` }}>
+            <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</Btn>
+            <span style={{ fontSize: 12, color: T.textMuted }}>Page {safePage} of {totalPages}</span>
+            <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</Btn>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+};

@@ -22,7 +22,7 @@ import {
 } from './pages/AdminPages';
 import { KYCPage } from './pages/KYCPage';
 import { AgentDashboardPage, AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
-import { AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage } from './pages/AgentTxnPages';
+import { AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage, AgentTxnReportsPage } from './pages/AgentTxnPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
@@ -57,7 +57,8 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
     return IS_DEMO && ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   // Isolated Agent Transaction subsystem (operator workflow) — demo-gated. Agent Overview is open
   // to every agent role.
-  if (page === 'agent-overview')
+  // Agent Overview and the isolated Agent Reports page are open to every agent role.
+  if (page === 'agent-overview' || page === 'agent-txn-reports')
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'DEPOSIT_OPERATOR', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
   // Agent Deposit/Withdrawal Management (and the request forms they embed) are operator-only:
   // Supervisors and Managers are approval-only for agent payments and never create/manage these.
@@ -129,6 +130,7 @@ const App: React.FC = () => {
         'agent-reports': <AgentReportsPage {...props} />,
         // Isolated Agent Transaction subsystem.
         'agent-overview': <AgentOverviewPage {...props} />,
+        'agent-txn-reports': <AgentTxnReportsPage {...props} />,
         'agent-deposit-req': <AgentDepositRequestPage {...props} />,
         'agent-withdrawal-req': <AgentWithdrawalRequestPage {...props} />,
         'agent-deposit-mgmt': <AgentDepositManagementPage {...props} />,
