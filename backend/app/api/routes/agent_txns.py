@@ -461,7 +461,28 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
     dep = [t for t in txns if t.txn_type == "DEPOSIT"]
     wd = [t for t in txns if t.txn_type == "WITHDRAWAL"]
     approved = [t for t in txns if t.status == "APPROVED"]
-    commission = round(sum(t.amount * fees.get(t.agent_master_id, 0.0) / 100 for t in approved), 2)
+
+    # ── Financial summary — mirrors the Merchant canonical formula (transactions.py) applied to
+    # the ISOLATED agent ledger only. Each agent's commission = its fees_pct on the approved
+    # leg's amount (same percentage for deposits and withdrawals). Computed on read (not stored),
+    # exactly like the merchant modules, so figures always reflect the latest approvals.
+    #   Gross Amount (Approved)  = Σ approved deposit amounts (before commission)
+    #   Deposit Commission       = Σ (approved deposit amount × fees_pct)
+    #   Withdrawal Commission    = Σ (approved withdrawal amount × fees_pct)
+    #   Total Commission         = Deposit Commission + Withdrawal Commission
+    #   Net (Approved)           = Gross − Deposit Commission − Withdrawals − Withdrawal Commission
+    approved_dep = [t for t in approved if t.txn_type == "DEPOSIT"]
+    approved_wd = [t for t in approved if t.txn_type == "WITHDRAWAL"]
+
+    def _commission(rows):
+        return sum(t.amount * fees.get(t.agent_master_id, 0.0) / 100 for t in rows)
+
+    gross_amount = sum(t.amount for t in approved_dep)
+    total_withdrawal_amount = sum(t.amount for t in approved_wd)
+    deposit_commission = _commission(approved_dep)
+    withdrawal_commission = _commission(approved_wd)
+    total_commission = deposit_commission + withdrawal_commission
+    net_amount = gross_amount - deposit_commission - total_withdrawal_amount - withdrawal_commission
 
     by_agent: dict = defaultdict(lambda: {"deposits": 0.0, "withdrawals": 0.0, "count": 0})
     for t in txns:
@@ -483,11 +504,13 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
             "pending": sum(1 for t in txns if t.status == "PENDING"),
             "approved": len(approved),
             "rejected": sum(1 for t in txns if t.status == "REJECTED"),
-            "approvedDeposits": _sum(lambda t: t.txn_type == "DEPOSIT" and t.status == "APPROVED"),
-            "approvedWithdrawals": _sum(lambda t: t.txn_type == "WITHDRAWAL" and t.status == "APPROVED"),
-            "netAmount": round(_sum(lambda t: t.txn_type == "DEPOSIT" and t.status == "APPROVED")
-                               - _sum(lambda t: t.txn_type == "WITHDRAWAL" and t.status == "APPROVED"), 2),
-            "totalCommission": commission,
+            "approvedDeposits": round(gross_amount, 2),
+            "approvedWithdrawals": round(total_withdrawal_amount, 2),
+            "grossAmount": round(gross_amount, 2),
+            "depositCommission": round(deposit_commission, 2),
+            "withdrawalCommission": round(withdrawal_commission, 2),
+            "netAmount": round(net_amount, 2),
+            "totalCommission": round(total_commission, 2),
         },
         "byAgent": [{"agentCode": k[0], "agentName": k[1], "deposits": round(v["deposits"], 2),
                      "withdrawals": round(v["withdrawals"], 2), "count": v["count"]}

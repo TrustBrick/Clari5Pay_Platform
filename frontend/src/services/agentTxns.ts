@@ -48,6 +48,7 @@ export interface AgentOverview {
     withdrawalCount: number; withdrawalAmount: number;
     pending: number; approved: number; rejected: number;
     approvedDeposits: number; approvedWithdrawals: number;
+    grossAmount: number; depositCommission: number; withdrawalCommission: number;
     netAmount: number; totalCommission: number;
   };
   byAgent: Array<{ agentCode: string | null; agentName: string | null; deposits: number; withdrawals: number; count: number }>;

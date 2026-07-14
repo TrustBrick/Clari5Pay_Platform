@@ -61,6 +61,7 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
     ['Pending', c.pending, T.warning],
     ['Approved', c.approved, T.success],
     ['Rejected', c.rejected, T.danger],
+    ['Gross Amount (Approved)', fmt(c.grossAmount), T.blue],
     ['Net (Approved)', fmt(c.netAmount), '#1d4ed8'],
     ['Total Commission', fmt(c.totalCommission), T.green],
   ];
