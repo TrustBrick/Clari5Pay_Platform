@@ -22,7 +22,7 @@ import {
 } from './pages/AdminPages';
 import { KYCPage } from './pages/KYCPage';
 import { AgentDashboardPage, AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
-import { AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage } from './pages/AgentTxnPages';
+import { AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage } from './pages/AgentTxnPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
@@ -56,13 +56,18 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (['agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-unassigned', 'agent-audit', 'agent-reports'].includes(page))
     return IS_DEMO && ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   // Isolated Agent Transaction subsystem (operator workflow) — demo-gated. Agent Overview is open
-  // to every agent role; Agent Deposit Request excludes the Withdrawal Operator.
+  // to every agent role.
   if (page === 'agent-overview')
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'DEPOSIT_OPERATOR', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
-  if (page === 'agent-deposit-req')
-    return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'DEPOSIT_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
-  if (page === 'agent-withdrawal-req')
-    return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
+  // Agent Deposit/Withdrawal Management (and the request forms they embed) are operator-only:
+  // Supervisors and Managers are approval-only for agent payments and never create/manage these.
+  if (page === 'agent-deposit-mgmt' || page === 'agent-deposit-req')
+    return IS_DEMO && ['DEO', 'DEPOSIT_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
+  if (page === 'agent-withdrawal-mgmt' || page === 'agent-withdrawal-req')
+    return IS_DEMO && ['DEO', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
+  // Agent Settlement Management — Supervisor only.
+  if (page === 'agent-settlement-mgmt')
+    return IS_DEMO && String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR';
   if (page === 'agent-manage')
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO'].includes(String(user.merchantRole || '').toUpperCase());
   // A Manager is an approval-only role — block direct Deposit/Withdrawal/Settlement creation.
@@ -122,10 +127,13 @@ const App: React.FC = () => {
         'agent-unassigned': <UnassignedTransactionsPage {...props} />,
         'agent-audit': <AgentAuditPage {...props} />,
         'agent-reports': <AgentReportsPage {...props} />,
-        // Isolated Agent Transaction subsystem (Phase 2).
+        // Isolated Agent Transaction subsystem.
         'agent-overview': <AgentOverviewPage {...props} />,
         'agent-deposit-req': <AgentDepositRequestPage {...props} />,
         'agent-withdrawal-req': <AgentWithdrawalRequestPage {...props} />,
+        'agent-deposit-mgmt': <AgentDepositManagementPage {...props} />,
+        'agent-withdrawal-mgmt': <AgentWithdrawalManagementPage {...props} />,
+        'agent-settlement-mgmt': <AgentSettlementManagementPage {...props} />,
         'agent-manage': <AgentManageTransactionPage {...props} />,
       } : {}),
       reports: <ReportsPage {...props} />,

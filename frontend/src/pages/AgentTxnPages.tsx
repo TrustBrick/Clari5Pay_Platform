@@ -19,7 +19,9 @@ import {
 
 const INSTR_LABEL: Record<string, string> = {
   WHATSAPP_ONLY: 'WhatsApp Only', CALL_ONLY: 'Call Only', WHATSAPP_CALL: 'WhatsApp + Call',
-  NO_CALL: 'No Call', HIGH_PRIORITY: 'High Priority', OTHER: 'Other',
+  TELEGRAM: 'Telegram', OTHER: 'Other',
+  // Retired options — kept for display of legacy records only (no longer offered in the dropdown).
+  NO_CALL: 'No Call', HIGH_PRIORITY: 'High Priority',
 };
 const instrLabel = (v: string) => INSTR_LABEL[v] || v;
 
@@ -149,12 +151,15 @@ const ReadField: React.FC<{ label: string; value?: string | null }> = ({ label, 
 );
 
 // ─── Agent Deposit Request form ────────────────────────────────────────────────
-export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+// `embedded` renders the bare form (no page heading / isolation note) for use inside the Agent
+// Deposit Management modal; `onSubmitted` closes that modal and refreshes its list on success.
+export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: string) => void; embedded?: boolean; onSubmitted?: () => void }> = ({ embedded, onSubmitted }) => {
   const { showToast } = useToast();
   const [fd, setFd] = useState<AgentFormData | null>(null);
   const [agentId, setAgentId] = useState('');
   const [membershipId, setMembershipId] = useState('');
   const [membershipName, setMembershipName] = useState('');
+  const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
   const [membershipType, setMembershipType] = useState('');
   const [amount, setAmount] = useState('');
   const [country, setCountry] = useState('');
@@ -174,17 +179,24 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
 
   const agent: AgentFormAgent | undefined = fd?.agents.find(a => String(a.id) === agentId);
 
-  const lookupMember = async () => {
+  // Auto-fetch the Membership Name as the ID is entered (debounced), mirroring the Merchant Deposit
+  // Request flow: an existing membership auto-fills + locks the name; a new ID stays manually editable.
+  useEffect(() => {
     const id = membershipId.trim();
-    if (!id) return;
-    try {
-      const r = await agentTxnsAPI.member(id);
-      if (r.membershipName) setMembershipName(r.membershipName);
-    } catch { /* new membership — manual entry */ }
-  };
+    if (id.length < 3) { setMemberLocked(false); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      agentTxnsAPI.member(id).then(r => {
+        if (!alive) return;
+        if (r.membershipName) { setMembershipName(r.membershipName); setMemberLocked(true); }
+        else setMemberLocked(false);
+      }).catch(() => { if (alive) setMemberLocked(false); });
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+  }, [membershipId]);
 
   const reset = () => {
-    setAgentId(''); setMembershipId(''); setMembershipName(''); setMembershipType(''); setAmount('');
+    setAgentId(''); setMembershipId(''); setMembershipName(''); setMemberLocked(false); setMembershipType(''); setAmount('');
     setCountry(''); setState(''); setLocation(''); setMobile(''); setNotes(''); setInstructions('');
     setSendApproval(false); setApproverId('');
   };
@@ -211,6 +223,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       setResult(row);
       showToast(`Agent deposit ${row.referenceNumber} created.`, 'success');
       reset();
+      onSubmitted?.();
     } catch (e) {
       showToast(agentTxnError(e, 'Failed to create Agent Deposit Request.'), 'error');
     } finally { setBusy(false); }
@@ -219,14 +232,16 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   if (!fd) return <LoadingScreen label="Loading…" />;
 
   return (
-    <div style={{ maxWidth: 860 }}>
+    <div style={embedded ? undefined : { maxWidth: 860 }}>
+      {!embedded && (<>
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Deposit Request</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Record a third-party agent deposit in the isolated Agent ledger.</p>
       </div>
       <IsolationNote />
+      </>)}
 
-      {result && (
+      {result && !embedded && (
         <Card style={{ padding: 16, marginBottom: 18, borderLeft: `4px solid ${T.success}` }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent Deposit Request created</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '10px 18px' }}>
@@ -247,8 +262,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
           <ReadField label="Agent Location" value={agent?.location} />
           <ReadField label="Agent Category" value={agent?.category} />
 
-          <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(e.target.value)} onBlur={lookupMember} required placeholder="Enter Membership ID" />
-          <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" />
+          <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(e.target.value)} required placeholder="Enter Membership ID" />
+          <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined} />
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
           <Input label="Transaction Amount" type="number" value={amount} onChange={e => setAmount(e.target.value)} required inputMode="decimal" />
@@ -293,7 +308,9 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
 };
 
 // ─── Agent Withdrawal Request form ─────────────────────────────────────────────
-export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+// `embedded` / `onSubmitted` mirror AgentDepositRequestPage — used inside the Agent Withdrawal
+// Management modal.
+export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p: string) => void; embedded?: boolean; onSubmitted?: () => void }> = ({ embedded, onSubmitted }) => {
   const { showToast } = useToast();
   const [fd, setFd] = useState<AgentFormData | null>(null);
   const [membershipId, setMembershipId] = useState('');
@@ -372,6 +389,7 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
       setResult(row);
       showToast(`Agent withdrawal ${row.referenceNumber} created.`, 'success');
       reset();
+      onSubmitted?.();
     } catch (e) {
       showToast(agentTxnError(e, 'Failed to create Agent Withdrawal Request.'), 'error');
     } finally { setBusy(false); }
@@ -380,14 +398,16 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
   if (!fd) return <LoadingScreen label="Loading…" />;
 
   return (
-    <div style={{ maxWidth: 860 }}>
+    <div style={embedded ? undefined : { maxWidth: 860 }}>
+      {!embedded && (<>
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Withdrawal Request</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Record a third-party agent withdrawal in the isolated Agent ledger.</p>
       </div>
       <IsolationNote />
+      </>)}
 
-      {result && (
+      {result && !embedded && (
         <Card style={{ padding: 16, marginBottom: 18, borderLeft: `4px solid ${T.success}` }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent Withdrawal Request created</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '10px 18px' }}>
@@ -671,3 +691,216 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
     </div>
   );
 };
+
+// ─── Read-only View Details modal (Agent Deposit / Withdrawal Management) ───────
+const DField: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
+  <div>
+    <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div>
+    <div style={{ fontSize: 12.5, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v == null || v === '' ? '—' : v}</div>
+  </div>
+);
+
+const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> = ({ row, onClose }) => {
+  const [audit, setAudit] = useState<AgentTxnAuditRow[]>([]);
+  useEffect(() => { agentTxnsAPI.audit(row.id).then(setAudit).catch(() => {}); }, [row.id]);
+
+  const fields: Array<[string, React.ReactNode]> = [
+    ['Reference Number', row.referenceNumber], ['Transaction Code', row.transactionCode],
+    ['Type', row.type], ['Status', <StatusPill status={row.status} />],
+    ['Agent', `${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`],
+    ['Agent Country', row.agentCountry], ['Agent State', row.agentState],
+    ['Agent Location', row.agentLocation], ['Agent Category', row.agentCategory],
+    ['Membership ID', row.membershipId], ['Membership Name', row.membershipName],
+    ['Membership Type', row.membershipType], ['Amount', fmt(row.amount)],
+    ['Country', row.country], ['State', row.state], ['Location', row.location], ['Mobile', row.mobile],
+    ['Token Details', row.tokenDetails], ['Note Number', row.noteNumber],
+    ['Instructions', row.instructions ? instrLabel(row.instructions) : null], ['Notes', row.notes],
+    ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'], ['Approver', row.approverName],
+    ['Approved By', row.approvedBy], ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
+    ['Created By', row.createdBy], ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`],
+  ];
+
+  return (
+    <Modal title={`${row.type === 'DEPOSIT' ? 'Agent Deposit' : 'Agent Withdrawal'} — ${row.referenceNumber}`} onClose={onClose} wide>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        {fields.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
+      </div>
+
+      <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Audit History</h3>
+      <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10, marginBottom: 16 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ background: T.canvas }}>{['Date & Time (IST)', 'Action', 'Old', 'New', 'By', 'Note'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+          <tbody>
+            {audit.length === 0 && <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 18 }}>No history yet.</td></tr>}
+            {audit.map(a => (
+              <tr key={a.id} style={{ background: T.surface }}>
+                <td style={{ ...tdS, whiteSpace: 'nowrap', color: T.textMuted }}>{a.createdDate} {a.createdTime}</td>
+                <td style={{ ...tdS, fontWeight: 700 }}>{a.action.replace(/_/g, ' ')}</td>
+                <td style={tdS}>{a.oldAmount == null ? '—' : fmt(a.oldAmount)}</td>
+                <td style={tdS}>{a.newAmount == null ? '—' : fmt(a.newAmount)}</td>
+                <td style={tdS}>{a.actor || '—'}{a.role ? ` (${a.role})` : ''}</td>
+                <td style={{ ...tdS, color: T.textMuted }}>{a.note || (a.approverName ? `→ ${a.approverName}` : '—')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}><Btn variant="secondary" onClick={onClose}>Close</Btn></div>
+    </Modal>
+  );
+};
+
+// ─── Agent Deposit / Withdrawal Management (operator list + create) ─────────────
+// Mirrors the Merchant Deposit/Withdrawal Management pages, but reads and writes ONLY the isolated
+// Agent Transaction ledger (filtered to this txn_type) — never any merchant module. The "+ Create"
+// button opens the existing Agent Request form (reused, embedded), not a new form.
+const PAGE_SIZE = 10;
+
+const AgentTxnManagementPage: React.FC<{
+  user: User;
+  txnType: 'DEPOSIT' | 'WITHDRAWAL';
+  title: string;
+  noun: string;
+  requestLabel: string;
+  FormComp: React.FC<{ user: User; onNavigate?: (p: string) => void; embedded?: boolean; onSubmitted?: () => void }>;
+}> = ({ user, txnType, title, noun, requestLabel, FormComp }) => {
+  const { showToast } = useToast();
+  const role = String(user.merchantRole || '').toUpperCase();
+  const canManage = ['SUPERVISOR', 'MANAGER', 'DEO'].includes(role);   // amount correction (backend MANAGE_ROLES)
+  const canApprove = ['SUPERVISOR', 'MANAGER'].includes(role);
+  const [fd, setFd] = useState<AgentFormData | null>(null);
+  const [rows, setRows] = useState<AgentTxnRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [detailRow, setDetailRow] = useState<AgentTxnRow | null>(null);
+  const [manageRow, setManageRow] = useState<AgentTxnRow | null>(null);
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('');
+  const [dateF, setDateF] = useState('');
+  const [fromF, setFromF] = useState('');
+  const [toF, setToF] = useState('');
+  const [page, setPage] = useState(1);
+
+  useEffect(() => { agentTxnsAPI.formData().then(setFd).catch(() => {}); }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const q: AgentTxnQuery = { txn_type: txnType };
+      if (status) q.status = status;
+      if (search.trim()) q.search = search.trim();
+      if (dateF) q.date = dateF; else { if (fromF) q.date_from = fromF; if (toF) q.date_to = toF; }
+      setRows(await agentTxnsAPI.list(q));
+    } catch { showToast(`Failed to load Agent ${noun} requests.`, 'error'); }
+    finally { setLoading(false); }
+  }, [txnType, status, search, dateF, fromF, toF, noun, showToast]);
+
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  usePoll(() => { if (!showForm && !detailRow && !manageRow) load(); });
+
+  const runSearch = () => { setPage(1); load(); };
+  const clearFilters = () => { setSearch(''); setStatus(''); setDateF(''); setFromF(''); setToF(''); setPage(1); };
+
+  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = rows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        <div>
+          <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>{title}</h1>
+          <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>All Agent {noun} requests from the isolated Agent ledger.</p>
+        </div>
+        <Btn onClick={() => setShowForm(true)}>+ Create {requestLabel}</Btn>
+      </div>
+      <IsolationNote />
+
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
+          <Input label="Search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Reference / Membership / Agent" style={{ marginBottom: 0 }} />
+          <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} style={{ marginBottom: 0 }}
+            options={[{ value: '', label: 'All Statuses' }, { value: 'PENDING', label: 'Pending' }, { value: 'APPROVED', label: 'Approved' }, { value: 'REJECTED', label: 'Rejected' }]} />
+          <Input label="Date" type="date" value={dateF} onChange={e => setDateF(e.target.value)} style={{ marginBottom: 0 }} />
+          <Input label="From Date" type="date" value={fromF} onChange={e => setFromF(e.target.value)} style={{ marginBottom: 0 }} />
+          <Input label="To Date" type="date" value={toF} onChange={e => setToF(e.target.value)} style={{ marginBottom: 0 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
+          <Btn size="sm" onClick={runSearch} disabled={loading}>{loading ? 'Searching…' : 'Search'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={clearFilters}>Clear</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted, marginLeft: 'auto' }}>{rows.length} {noun.toLowerCase()}{rows.length === 1 ? '' : 's'}</span>
+        </div>
+      </Card>
+
+      <Card style={{ overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: T.canvas }}>{['Reference', 'Agent', 'Membership', 'Amount', 'Status', 'Created (IST)', 'Action'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <tbody>
+              {loading && rows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
+              {!loading && pageRows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No Agent {noun} requests match the search.</td></tr>}
+              {pageRows.map((x, i) => (
+                <tr key={x.id} style={{ background: i % 2 ? T.canvas : T.surface }}>
+                  <td style={{ ...tdS, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
+                  <td style={tdS}>{x.agentCode || '—'}{x.agentName ? ` · ${x.agentName}` : ''}</td>
+                  <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
+                  <td style={tdS}><StatusPill status={x.status} /></td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                  <td style={{ ...tdS, whiteSpace: 'nowrap' }}>
+                    <Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn>
+                    {canManage && x.status === 'PENDING' && <Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {totalPages > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, padding: '12px 16px', borderTop: `1px solid ${T.border}` }}>
+            <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</Btn>
+            <span style={{ fontSize: 12, color: T.textMuted }}>Page {safePage} of {totalPages}</span>
+            <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</Btn>
+          </div>
+        )}
+      </Card>
+
+      {showForm && (
+        <Modal title={`Create ${requestLabel}`} onClose={() => setShowForm(false)} xl>
+          <FormComp user={user} embedded onSubmitted={() => { setShowForm(false); setPage(1); load(); }} />
+        </Modal>
+      )}
+      {detailRow && <AgentTxnDetailsModal row={detailRow} onClose={() => setDetailRow(null)} />}
+      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} onClose={() => setManageRow(null)} onRefresh={load} />}
+    </div>
+  );
+};
+
+export const AgentDepositManagementPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => (
+  <AgentTxnManagementPage user={user} txnType="DEPOSIT" title="Agent Deposit Management" noun="Deposit" requestLabel="Agent Deposit Request" FormComp={AgentDepositRequestPage} />
+);
+
+export const AgentWithdrawalManagementPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => (
+  <AgentTxnManagementPage user={user} txnType="WITHDRAWAL" title="Agent Withdrawal Management" noun="Withdrawal" requestLabel="Agent Withdrawal Request" FormComp={AgentWithdrawalRequestPage} />
+);
+
+// ─── Agent Settlement Management (Supervisor-only placeholder) ──────────────────
+// Phase-1 scaffold: page, routing, permissions and navigation only. Settlement business logic is
+// deferred to a future phase. Remains fully isolated from Merchant Settlement.
+export const AgentSettlementManagementPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => (
+  <div>
+    <div style={{ marginBottom: 16 }}>
+      <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Settlement Management</h1>
+      <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Settle agent balances in the isolated Agent ledger.</p>
+    </div>
+    <IsolationNote />
+    <Card style={{ padding: '48px 24px', textAlign: 'center' }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>🏦</div>
+      <h2 style={{ margin: '0 0 6px', fontSize: 16, fontWeight: 800, color: T.textMain }}>Coming soon</h2>
+      <p style={{ margin: '0 auto', maxWidth: 460, fontSize: 13, color: T.textMuted, lineHeight: 1.5 }}>
+        Agent Settlement operations will be enabled in an upcoming phase. This module is reserved for
+        Supervisors and stays fully isolated from Merchant Settlement.
+      </p>
+    </Card>
+  </div>
+);

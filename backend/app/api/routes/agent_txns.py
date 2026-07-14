@@ -37,7 +37,10 @@ WITHDRAWAL_ROLES = ("SUPERVISOR", "MANAGER", "DEO", "WITHDRAWAL_OPERATOR")
 MANAGE_ROLES = ("SUPERVISOR", "MANAGER", "DEO")
 APPROVE_ROLES = ("SUPERVISOR", "MANAGER")
 
-INSTRUCTIONS = {"WHATSAPP_ONLY", "CALL_ONLY", "WHATSAPP_CALL", "NO_CALL", "HIGH_PRIORITY", "OTHER"}
+# Instruction options offered on the Agent Deposit/Withdrawal Request forms. "High Priority" and
+# "No Call" were retired in favour of "Telegram"; legacy rows may still carry the old values, which
+# stay valid for display but are no longer offered as new choices.
+INSTRUCTIONS = {"WHATSAPP_ONLY", "CALL_ONLY", "WHATSAPP_CALL", "TELEGRAM", "OTHER"}
 MEMBERSHIP_TYPES = {"ONLINE", "OFFLINE"}
 
 

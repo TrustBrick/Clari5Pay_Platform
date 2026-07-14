@@ -89,6 +89,9 @@ export const PAGE_TITLES: Record<string, string> = {
   'agent-unassigned': 'Unassigned Transactions',
   'agent-deposit-req': 'Agent Deposit Request',
   'agent-withdrawal-req': 'Agent Withdrawal Request',
+  'agent-deposit-mgmt': 'Agent Deposit Management',
+  'agent-withdrawal-mgmt': 'Agent Withdrawal Management',
+  'agent-settlement-mgmt': 'Agent Settlement Management',
   'agent-manage': 'Manage Transaction',
   'agent-audit': 'Agent Audit Trail',
   'agent-reports': 'Agent Reports',
@@ -144,19 +147,25 @@ const AGENT_CHILDREN: NavItem[] = [
   { key: 'agents', icon: 'agent', label: 'Agents' },
   { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
   { key: 'agent-transactions', icon: 'transactions', label: 'Transactions' },
-  { key: 'agent-deposit-req', icon: 'deposit', label: 'Agent Deposit Request' },
-  { key: 'agent-withdrawal-req', icon: 'withdrawal', label: 'Agent Withdrawal Request' },
+  // Operator management pages (list + reuse of the existing request form via a "+ Create" button).
+  { key: 'agent-deposit-mgmt', icon: 'deposit', label: 'Agent Deposit Management' },
+  { key: 'agent-withdrawal-mgmt', icon: 'withdrawal', label: 'Agent Withdrawal Management' },
+  { key: 'agent-settlement-mgmt', icon: 'settlement', label: 'Agent Settlement Management' },
   { key: 'agent-manage', icon: 'templates', label: 'Manage Transaction' },
   { key: 'agent-audit', icon: 'audit', label: 'Audit Trail' },
   { key: 'agent-reports', icon: 'reports', label: 'Reports' },
 ];
 const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
+// Per-role Agent Management sub-tabs. Supervisors/Managers are approval-only for agent payments —
+// they keep the dashboard/agents/accounts/transactions/approval (Manage Transaction)/audit/reports
+// tabs but NOT the operator Deposit/Withdrawal Management pages. Agent Settlement Management is
+// Supervisor-only. Operators (Data/Deposit/Withdrawal) get the management pages their role permits.
 const AGENT_SUBTABS: Record<string, string[]> = {
-  SUPERVISOR: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-manage', 'agent-audit', 'agent-reports'],
-  MANAGER: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-manage', 'agent-audit', 'agent-reports'],
-  DEO: ['agent-overview', 'agent-deposit-req', 'agent-withdrawal-req', 'agent-manage'],
-  DEPOSIT_OPERATOR: ['agent-overview', 'agent-deposit-req'],
-  WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-withdrawal-req'],
+  SUPERVISOR: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-settlement-mgmt', 'agent-manage', 'agent-audit', 'agent-reports'],
+  MANAGER: ['agent-overview', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-manage', 'agent-audit', 'agent-reports'],
+  DEO: ['agent-overview', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage'],
+  DEPOSIT_OPERATOR: ['agent-overview', 'agent-deposit-mgmt'],
+  WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-withdrawal-mgmt'],
 };
 
 /**
