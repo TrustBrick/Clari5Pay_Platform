@@ -6,7 +6,7 @@ import { Card, Btn, Input, Sel, Modal, LoadingScreen } from '../components/UI';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import {
-  agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES,
+  agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES, AGENT_SETTLEMENT_METHODS,
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
   type AgentWithdrawalBody, type AgentMemberLookup, type AgentTxnRow,
   type AgentTxnAuditRow, type AgentTxnQuery, type AgentAccountOption, type AgentMemberAccount,
@@ -383,7 +383,13 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
 // ─── Agent Withdrawal Request form ─────────────────────────────────────────────
 // `embedded` / `onSubmitted` mirror AgentDepositRequestPage — used inside the Agent Withdrawal
 // Management modal.
-export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p: string) => void; embedded?: boolean; onSubmitted?: () => void }> = ({ embedded, onSubmitted }) => {
+export const AgentWithdrawalRequestPage: React.FC<{
+  user: User; onNavigate?: (p: string) => void; embedded?: boolean; onSubmitted?: () => void;
+  /** 'settlement' reuses this exact form: same payout capture, minus the approval gate. */
+  mode?: 'withdrawal' | 'settlement';
+}> = ({ embedded, onSubmitted, mode = 'withdrawal' }) => {
+  const isSettlement = mode === 'settlement';
+  const NOUN = isSettlement ? 'Settlement' : 'Withdrawal';
   const { showToast } = useToast();
   const [fd, setFd] = useState<AgentFormData | null>(null);
   const [membershipId, setMembershipId] = useState('');
@@ -391,6 +397,7 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
   const [membershipType, setMembershipType] = useState('');
   const [agentId, setAgentId] = useState('');
   const [autoAgent, setAutoAgent] = useState<AgentMemberLookup['latestDeposit']>(null);
+  const [txnMethod, setTxnMethod] = useState('');
   // Payout account — saved accounts auto-fetch with the membership; a single one auto-selects.
   const [savedAccounts, setSavedAccounts] = useState<AgentMemberAccount[]>([]);
   const [payoutAccountId, setPayoutAccountId] = useState('');
@@ -455,7 +462,7 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile('');
     setNotes(''); setInstructions(''); setSendApproval(false); setApproverId('');
-    setSavedAccounts([]); setPayoutAccountId(''); setAddingAccount(false);
+    setSavedAccounts([]); setPayoutAccountId(''); setAddingAccount(false); setTxnMethod('');
     setPayHolder(''); setPayNumber(''); setPayIfsc(''); setPayBank(''); setPayBranch(''); setPayUpi('');
   };
 
@@ -467,6 +474,7 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
     if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
     if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
+    if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
     // The payout account: an existing saved one, or new details to be saved for re-use.
     if (!addingAccount && !payoutAccountId) { showToast('Select the payout account.', 'error'); return; }
     if (addingAccount && !payNumber.trim() && !payUpi.trim()) {
@@ -483,6 +491,7 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
       location: location || undefined, mobile: mobile || undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: sendApproval,
       approverUserId: sendApproval ? Number(approverId) : undefined,
+      txnMethod,
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
       ...(addingAccount ? {
         payoutAccountHolder: payHolder.trim() || undefined,
@@ -495,13 +504,13 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
       } : { payoutAccountId: Number(payoutAccountId) }),
     };
     try {
-      const row = await agentTxnsAPI.createWithdrawal(body);
+      const row = await (isSettlement ? agentTxnsAPI.createSettlement(body) : agentTxnsAPI.createWithdrawal(body));
       setResult(row);
-      showToast(`Agent withdrawal ${row.referenceNumber} created.`, 'success');
+      showToast(`Agent ${NOUN.toLowerCase()} ${row.referenceNumber} created.`, 'success');
       reset();
       onSubmitted?.();
     } catch (e) {
-      showToast(agentTxnError(e, 'Failed to create Agent Withdrawal Request.'), 'error');
+      showToast(agentTxnError(e, `Failed to create Agent ${NOUN} Request.`), 'error');
     } finally { setBusy(false); }
   };
 
@@ -511,15 +520,15 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
     <div style={embedded ? undefined : { maxWidth: 860 }}>
       {!embedded && (<>
       <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Withdrawal Request</h1>
-        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Record a third-party agent withdrawal in the isolated Agent ledger.</p>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent {NOUN} Request</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Record a third-party agent {NOUN.toLowerCase()} in the isolated Agent ledger.</p>
       </div>
       <IsolationNote />
       </>)}
 
       {result && !embedded && (
         <Card style={{ padding: 16, marginBottom: 18, borderLeft: `4px solid ${T.success}` }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent Withdrawal Request created</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent {NOUN} Request created</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '10px 18px' }}>
             {[['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Note Number', result.noteNumber], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', `${result.createdDate} ${result.createdTime}`]].map(([k, v]) => (
               <div key={k}><div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div><div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v}</div></div>
@@ -535,6 +544,10 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
           <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
+          <Sel label="Transaction Type" value={txnMethod} onChange={e => setTxnMethod(e.target.value)} required
+            options={[{ value: '', label: '— Select —' },
+              ...(isSettlement ? AGENT_SETTLEMENT_METHODS : (fd.txnMethods || [])).map(v => ({ value: v, label: methodLabel(v) }))]} />
+          <div />
         </div>
 
         {/* Agent — auto-fetched from the latest deposit for this membership, else manual selection */}
@@ -639,7 +652,7 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
         </div>
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
-          <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : 'Submit Agent Withdrawal'}</Btn>
+          <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : `Submit Agent ${NOUN}`}</Btn>
           <Btn variant="secondary" onClick={reset} disabled={busy}>Clear</Btn>
         </div>
       </Card>
@@ -918,7 +931,7 @@ const PAGE_SIZE = 10;
 
 const AgentTxnManagementPage: React.FC<{
   user: User;
-  txnType: 'DEPOSIT' | 'WITHDRAWAL';
+  txnType: 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT';
   title: string;
   noun: string;
   requestLabel: string;
@@ -930,7 +943,10 @@ const AgentTxnManagementPage: React.FC<{
   const canApprove = ['SUPERVISOR', 'MANAGER'].includes(role);
   // Deposit-chain operator steps — the Data Operator does what the Admin does in the merchant flow.
   const canOperate = ['DEO', 'DEPOSIT_OPERATOR'].includes(role);
-  const canPayout = ['DEO', 'WITHDRAWAL_OPERATOR'].includes(role);
+  // Withdrawals are paid by the operator; settlements by the Supervisor (no approval in between).
+  const canPayout = txnType === 'SETTLEMENT'
+    ? role === 'SUPERVISOR'
+    : ['DEO', 'WITHDRAWAL_OPERATOR'].includes(role);
   const isDeposit = txnType === 'DEPOSIT';
   const [fd, setFd] = useState<AgentFormData | null>(null);
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
@@ -1075,25 +1091,17 @@ export const AgentWithdrawalManagementPage: React.FC<{ user: User; onNavigate?: 
   <AgentTxnManagementPage user={user} txnType="WITHDRAWAL" title="Agent Withdrawal Management" noun="Withdrawal" requestLabel="Agent Withdrawal Request" FormComp={AgentWithdrawalRequestPage} />
 );
 
-// ─── Agent Settlement Management (Supervisor-only placeholder) ──────────────────
-// Phase-1 scaffold: page, routing, permissions and navigation only. Settlement business logic is
-// deferred to a future phase. Remains fully isolated from Merchant Settlement.
-export const AgentSettlementManagementPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => (
-  <div>
-    <div style={{ marginBottom: 16 }}>
-      <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Settlement Management</h1>
-      <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Settle agent balances in the isolated Agent ledger.</p>
-    </div>
-    <IsolationNote />
-    <Card style={{ padding: '48px 24px', textAlign: 'center' }}>
-      <div style={{ fontSize: 40, marginBottom: 12 }}>🏦</div>
-      <h2 style={{ margin: '0 0 6px', fontSize: 16, fontWeight: 800, color: T.textMain }}>Coming soon</h2>
-      <p style={{ margin: '0 auto', maxWidth: 460, fontSize: 13, color: T.textMuted, lineHeight: 1.5 }}>
-        Agent Settlement operations will be enabled in an upcoming phase. This module is reserved for
-        Supervisors and stays fully isolated from Merchant Settlement.
-      </p>
-    </Card>
-  </div>
+// ─── Agent Settlement Management (Supervisor-only) ─────────────────────────────
+// Mirrors Agent Withdrawal Management with the approval gate removed: the Supervisor raises the
+// settlement and pays it themselves. Methods are Cash / Bank Transfer / Crypto. Fully isolated
+// from Merchant Settlement — reads and writes only the agent ledger.
+const AgentSettlementRequestForm: React.FC<{ user: User; onNavigate?: (p: string) => void; embedded?: boolean; onSubmitted?: () => void }> = (props) => (
+  <AgentWithdrawalRequestPage {...props} mode="settlement" />
+);
+
+export const AgentSettlementManagementPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => (
+  <AgentTxnManagementPage user={user} txnType="SETTLEMENT" title="Agent Settlement Management"
+    noun="Settlement" requestLabel="Agent Settlement Request" FormComp={AgentSettlementRequestForm} />
 );
 
 // ─── Agent Reports (isolated) ──────────────────────────────────────────────────

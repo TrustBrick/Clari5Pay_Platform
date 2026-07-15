@@ -81,6 +81,9 @@ FINAL_STATUSES = COMPLETED_STATUSES | REJECTED_STATUSES
 # How the money moves. CASH is the only method Manage Transaction may edit.
 TXN_METHODS = {"CASH", "UPI", "BANK", "IMPS", "NEFT", "RTGS", "CRYPTO"}
 BANK_LIKE_METHODS = {"BANK", "IMPS", "NEFT", "RTGS"}   # collect a sending bank account
+# Settlement is Supervisor-only and needs NO approval: it mirrors the withdrawal chain minus the
+# review gate, so it is created ready to pay. Methods are limited to Cash / Bank Transfer / Crypto.
+SETTLEMENT_METHODS = {"CASH", "BANK", "CRYPTO"}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -375,6 +378,11 @@ class AgentWithdrawalCreate(_Base):
     savePayoutAccount: bool = True
 
 
+class AgentSettlementCreate(AgentWithdrawalCreate):
+    """Same shape as a withdrawal (incl. the payout account) — settlement simply skips approval."""
+    pass
+
+
 class AgentManage(BaseModel):
     amount: float
     notes: str | None = None
@@ -396,6 +404,8 @@ def _validate_common(body: _Base, txn_type: str) -> None:
     if body.txnMethod and body.txnMethod.upper() not in TXN_METHODS:
         raise HTTPException(status_code=400, detail="Invalid Transaction Type.")
     method = (body.txnMethod or "").upper()
+    if txn_type == "SETTLEMENT" and method and method not in SETTLEMENT_METHODS:
+        raise HTTPException(status_code=400, detail="Settlement method must be Cash, Bank Transfer or Crypto.")
     # A deposit names the Sending Account it comes FROM (same rule the merchant form applies). A
     # withdrawal names a payout account instead, validated in create_withdrawal.
     if txn_type == "DEPOSIT":
@@ -454,7 +464,9 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         # Chain entry points, mirroring the merchant workflow: a DEPOSIT starts at Account
         # Request; a WITHDRAWAL goes straight to the Manager review gate.
         status=(ST_ACCOUNT_REQUESTED if txn_type == "DEPOSIT"
-                else ST_MANAGER_REVIEW if txn_type == "WITHDRAWAL" else ST_PENDING),
+                else ST_MANAGER_REVIEW if txn_type == "WITHDRAWAL"
+                # Settlement needs no approval — created ready for the Supervisor to pay.
+                else ST_SLIP_SUBMITTED if txn_type == "SETTLEMENT" else ST_PENDING),
         # Payout account (withdrawals) — where the money is sent.
         payout_account_id=(payout.id if payout is not None else None),
         payout_account_holder=(payout.account_holder if payout else None),
@@ -579,6 +591,17 @@ async def create_withdrawal(body: AgentWithdrawalCreate, db: AsyncSession = Depe
     membership_id = body.membershipId.strip()
     payout = await _resolve_payout_account(db, user, body, membership_id, (body.membershipName or None))
     return await _create(db, user, body, "WITHDRAWAL", "AGW", "W", linked, payout=payout)
+
+
+@router.post("/settlement")
+async def create_settlement(body: AgentSettlementCreate, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_agent_operator)):
+    """Create an Agent Settlement. Supervisor-only and approval-free: the Supervisor performs
+    every step, so it is created at SLIP_SUBMITTED, ready for them to pay and complete."""
+    _require(user, ("SUPERVISOR",), "create Agent Settlement Requests")
+    membership_id = body.membershipId.strip()
+    payout = await _resolve_payout_account(db, user, body, membership_id, (body.membershipName or None))
+    return await _create(db, user, body, "SETTLEMENT", "AGS", "S", None, payout=payout)
 
 
 # ── Deposit chain: Submit Account → Upload Slip → Supervisor Approval → Mark Deposit ──────
@@ -798,9 +821,14 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
 
     The merchant workflow's Admin payout step, performed here by the Data Operator.
     """
-    _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
     t = await _load_own(db, _business(user), txn_id)
-    _require_withdrawal(t)
+    # Withdrawals are paid by the operator; settlements by the Supervisor who raised them.
+    if t.txn_type == "SETTLEMENT":
+        _require(user, ("SUPERVISOR",), "complete Agent Settlements")
+    elif t.txn_type == "WITHDRAWAL":
+        _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
+    else:
+        raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals and Settlements only.")
     _require_status(t, ST_SLIP_SUBMITTED, "payment")
     if not (body.slipImage or (body.slipRef or "").strip()):
         raise HTTPException(status_code=400, detail="Upload the payment slip or enter a reference number.")
@@ -810,7 +838,8 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     t.slip_submitted_at = datetime.utcnow()
     t.status = ST_COMPLETED
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "COMPLETED", user, new_amount=t.amount, note=f"Withdrawal paid by {user.username}")
+    await _log(db, t, "COMPLETED", user, new_amount=t.amount,
+               note=f"{t.txn_type.title()} paid by {user.username}")
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -991,17 +1020,27 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
     total_commission = deposit_commission + withdrawal_commission
     net_amount = gross_amount - deposit_commission - total_withdrawal_amount - withdrawal_commission
 
-    by_agent: dict = defaultdict(lambda: {"deposits": 0.0, "withdrawals": 0.0, "count": 0})
+    by_agent: dict = defaultdict(lambda: {"deposits": 0.0, "withdrawals": 0.0, "settlements": 0.0, "count": 0})
     for t in txns:
         k = (t.agent_code, t.agent_name)
         by_agent[k]["count"] += 1
-        by_agent[k]["deposits" if t.txn_type == "DEPOSIT" else "withdrawals"] += t.amount
+        # Explicit buckets: a SETTLEMENT is neither a deposit nor a withdrawal and must not be
+        # folded into either.
+        if t.txn_type == "DEPOSIT":
+            by_agent[k]["deposits"] += t.amount
+        elif t.txn_type == "WITHDRAWAL":
+            by_agent[k]["withdrawals"] += t.amount
+        else:
+            by_agent[k]["settlements"] += t.amount
 
     trend: dict = defaultdict(lambda: {"deposits": 0.0, "withdrawals": 0.0})
     for t in txns:
         _, d, _t = _ist_parts(t.created_at)
         if d:
-            trend[d]["deposits" if t.txn_type == "DEPOSIT" else "withdrawals"] += t.amount
+            if t.txn_type == "DEPOSIT":
+                trend[d]["deposits"] += t.amount
+            elif t.txn_type == "WITHDRAWAL":
+                trend[d]["withdrawals"] += t.amount
 
     return {
         "cards": {
@@ -1022,8 +1061,10 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
             "totalCommission": round(total_commission, 2),
         },
         "byAgent": [{"agentCode": k[0], "agentName": k[1], "deposits": round(v["deposits"], 2),
-                     "withdrawals": round(v["withdrawals"], 2), "count": v["count"]}
-                    for k, v in sorted(by_agent.items(), key=lambda kv: -(kv[1]["deposits"] + kv[1]["withdrawals"]))][:10],
+                     "withdrawals": round(v["withdrawals"], 2), "settlements": round(v["settlements"], 2),
+                     "count": v["count"]}
+                    for k, v in sorted(by_agent.items(),
+                                       key=lambda kv: -(kv[1]["deposits"] + kv[1]["withdrawals"] + kv[1]["settlements"]))][:10],
         "trend": [{"date": d, "deposits": round(v["deposits"], 2), "withdrawals": round(v["withdrawals"], 2)}
                   for d, v in sorted(trend.items())][-14:],
         "recent": [_row(t) for t in txns[:10]],

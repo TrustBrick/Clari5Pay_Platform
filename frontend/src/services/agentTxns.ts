@@ -48,7 +48,7 @@ export interface AgentTxnRow {
   id: number;
   referenceNumber: string;
   transactionCode: string;
-  type: 'DEPOSIT' | 'WITHDRAWAL';
+  type: 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT';
   agentMasterId: number;
   agentCode?: string | null;
   agentName?: string | null;
@@ -186,6 +186,9 @@ export interface AgentDepositBody {
   senderBankName?: string;
   senderBranch?: string;
 }
+/** Settlement methods — Supervisor-only, approval-free; a subset of the transaction types. */
+export const AGENT_SETTLEMENT_METHODS = ['CASH', 'BANK', 'CRYPTO'];
+
 export interface AgentWithdrawalBody extends AgentDepositBody {
   linkedDepositId?: number | null;
   // Payout account — an existing saved account, or new details saved for re-use.
@@ -221,6 +224,8 @@ export const agentTxnsAPI = {
   member: async (id: string) => (await api.get<AgentMemberLookup>(`/api/agent-txns/member/${encodeURIComponent(id)}`)).data,
   createDeposit: async (body: AgentDepositBody) => (await api.post<AgentTxnRow>('/api/agent-txns/deposit', body)).data,
   createWithdrawal: async (body: AgentWithdrawalBody) => (await api.post<AgentTxnRow>('/api/agent-txns/withdrawal', body)).data,
+  /** Settlement — Supervisor-only and approval-free; created ready for them to pay. */
+  createSettlement: async (body: AgentWithdrawalBody) => (await api.post<AgentTxnRow>('/api/agent-txns/settlement', body)).data,
   list: async (params?: AgentTxnQuery) => (await api.get<AgentTxnRow[]>('/api/agent-txns', { params })).data,
   manage: async (id: number, body: AgentManageBody) => (await api.patch<AgentTxnRow>(`/api/agent-txns/${id}/manage`, body)).data,
 
