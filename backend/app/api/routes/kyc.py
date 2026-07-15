@@ -436,18 +436,6 @@ async def list_non_members(
     return [_serialize_non_member(r) for r in rows]
 
 
-@router.get("/non-members/{nm_id}")
-async def get_non_member(
-    nm_id: str,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
-):
-    row = await _non_member_row(db, user, normalize_member_id(nm_id) or "")
-    if row is None:
-        raise HTTPException(status_code=404, detail="Non-Member not found.")
-    return _serialize_non_member(row)
-
-
 @router.patch("/non-members/{nm_id}")
 async def update_non_member(
     nm_id: str,

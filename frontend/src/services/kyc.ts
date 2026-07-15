@@ -171,9 +171,6 @@ export const kycAPI = {
   listNonMembers: async (q?: string): Promise<NonMember[]> =>
     (await api.get<NonMember[]>('/api/kyc/non-members', { params: q ? { q } : undefined })).data,
 
-  getNonMember: async (nmId: string): Promise<NonMember> =>
-    (await api.get<NonMember>(`/api/kyc/non-members/${encodeURIComponent(nmId)}`)).data,
-
   updateNonMember: async (nmId: string, body: Partial<NonMemberInput>): Promise<NonMember> =>
     (await api.patch<NonMember>(`/api/kyc/non-members/${encodeURIComponent(nmId)}`, body)).data,
 

@@ -203,30 +203,162 @@ const NonMemberCreatePanel: React.FC<{ m: ReturnType<typeof useMemberLookup> }> 
   );
 };
 
-const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({ m }) => (
-  <>
-    <Input
-      label="Membership ID"
-      value={m.memberId}
-      onChange={(e) => m.setMemberId(e.target.value)}
-      onBlur={() => m.lookup(m.memberId)}
-      placeholder="Enter Membership ID or Non-Member ID"
-      hint={m.looking ? 'Looking up…' : 'Members auto-fetch as before. A Non-Member ID (NM…) fetches the stored walk-in.'}
-    />
-    {m.error && <div style={{ marginTop: -8, marginBottom: 14, fontSize: 12, fontWeight: 700, color: T.danger }}>{m.error}</div>}
-    {m.notFound
-      ? <NonMemberCreatePanel m={m} />
-      : (
-        <Input
-          label={m.subjectType === 'NON_MEMBER' ? 'Non-Member Name' : 'Member Name'}
-          value={m.memberName}
-          onChange={() => {}}
-          placeholder="Auto-filled from the ID above"
-          readOnly
+// Correct a Non-Member's details in place. The NM id is immutable and verified document numbers
+// are set by the verification flows, so neither is editable here.
+const NonMemberEditForm: React.FC<{ row: NonMember; onSaved: (nm: NonMember) => void; onCancel: () => void }> = ({ row, onSaved, onCancel }) => {
+  const { showToast } = useToast();
+  const [form, setForm] = useState({
+    fullName: row.fullName, mobile: row.mobile || '', email: row.email || '',
+    country: row.country || '', state: row.state || '', location: row.location || '',
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const save = async () => {
+    if (!form.fullName.trim()) { showToast('Full Name is required.', 'error'); return; }
+    setSaving(true);
+    try {
+      onSaved(await kycAPI.updateNonMember(row.nonMemberId, form));
+      showToast(`${row.nonMemberId} updated.`, 'success');
+    } catch (e) {
+      showToast(kycErrorMessage(e, 'Could not update the Non-Member.'), 'error');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ padding: 14, borderRadius: 10, border: `1.5px solid ${T.blue}`, background: T.canvas, marginBottom: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: T.textMain, marginBottom: 12 }}>Editing {row.nonMemberId}</div>
+      <Input label="Full Name" value={form.fullName} onChange={set('fullName')} required />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Input label="Mobile Number" value={form.mobile} onChange={set('mobile')} placeholder="10 digits" inputMode="numeric" />
+        <Input label="Email" value={form.email} onChange={set('email')} />
+        <Input label="Country" value={form.country} onChange={set('country')} />
+        <Input label="State" value={form.state} onChange={set('state')} />
+      </div>
+      <Input label="Location" value={form.location} onChange={set('location')} />
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Btn variant="primary" size="sm" onClick={save} disabled={saving}>{saving ? <><Spinner /> Saving…</> : 'Save Changes'}</Btn>
+        <Btn variant="secondary" size="sm" onClick={onCancel} disabled={saving}>Cancel</Btn>
+      </div>
+    </div>
+  );
+};
+
+// Search the Non-Member register — the safety net for a returning walk-in who no longer has their
+// NM id to hand. Without it the operator's only option is to create a second record for the same
+// person, which is exactly the duplication the module is meant to prevent.
+const FindNonMemberModal: React.FC<{ onClose: () => void; onPick: (nm: NonMember) => void }> = ({ onClose, onPick }) => {
+  const { showToast } = useToast();
+  const [q, setQ] = useState('');
+  const [rows, setRows] = useState<NonMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<NonMember | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const data = await kycAPI.listNonMembers(q.trim() || undefined);
+        if (!cancelled) setRows(data);
+      } catch (e) {
+        if (!cancelled) showToast(kycErrorMessage(e, 'Could not load Non-Members.'), 'error');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q, showToast]);
+
+  return (
+    <Modal title="Find Non-Member" onClose={onClose} wide>
+      <style>{`@keyframes kycspin{to{transform:rotate(360deg)}}`}</style>
+      <Input
+        label="Search"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Non-Member ID, name, mobile or email"
+        icon="search"
+        hint={loading ? 'Searching…' : `${rows.length} record${rows.length === 1 ? '' : 's'}`}
+      />
+      {editing && (
+        <NonMemberEditForm
+          row={editing}
+          onCancel={() => setEditing(null)}
+          onSaved={(nm) => { setRows((rs) => rs.map((r) => (r.id === nm.id ? nm : r))); setEditing(null); }}
         />
       )}
-  </>
-);
+      {!loading && rows.length === 0 && (
+        <Banner kind="info">No Non-Members match this search.</Banner>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '46vh', overflowY: 'auto' }}>
+        {rows.map((r) => (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', border: `1px solid ${T.border}`, borderRadius: 10, background: T.surface }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: T.textMain }}>
+                {r.fullName} <span style={{ color: T.blue }}>({r.nonMemberId})</span>
+              </div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>
+                {[r.mobile, r.email, [r.location, r.state, r.country].filter(Boolean).join(', ')].filter(Boolean).join(' · ') || '—'}
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
+                {([['Aadhaar', r.aadhaarNumber], ['PAN', r.panNumber], ['Passport', r.passportNumber]] as const)
+                  .filter(([, v]) => Boolean(v))
+                  .map(([label]) => (
+                    <span key={label} style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20, color: T.success, background: T.successBg }}>{label} verified</span>
+                  ))}
+              </div>
+            </div>
+            <Btn variant="ghost" size="sm" onClick={() => setEditing(r)}>Edit</Btn>
+            <Btn variant="primary" size="sm" onClick={() => onPick(r)}>Select</Btn>
+          </div>
+        ))}
+      </div>
+    </Modal>
+  );
+};
+
+const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({ m }) => {
+  const [finding, setFinding] = useState(false);
+  return (
+    <>
+      <Input
+        label="Membership ID"
+        value={m.memberId}
+        onChange={(e) => m.setMemberId(e.target.value)}
+        onBlur={() => m.lookup(m.memberId)}
+        placeholder="Enter Membership ID or Non-Member ID"
+        hint={m.looking ? 'Looking up…' : 'Members auto-fetch as before. A Non-Member ID (NM…) fetches the stored walk-in.'}
+      />
+      {m.error && <div style={{ marginTop: -8, marginBottom: 14, fontSize: 12, fontWeight: 700, color: T.danger }}>{m.error}</div>}
+      {m.notFound
+        ? <NonMemberCreatePanel m={m} />
+        : (
+          <Input
+            label={m.subjectType === 'NON_MEMBER' ? 'Non-Member Name' : 'Member Name'}
+            value={m.memberName}
+            onChange={() => {}}
+            placeholder="Auto-filled from the ID above"
+            readOnly
+          />
+        )}
+      <button
+        type="button"
+        onClick={() => setFinding(true)}
+        style={{ background: 'none', border: 'none', color: T.blue, fontWeight: 700, fontSize: 12, cursor: 'pointer', padding: 0, marginTop: -8, marginBottom: 16, fontFamily: 'inherit' }}
+      >
+        Don’t have the ID? Search Non-Members
+      </button>
+      {finding && (
+        <FindNonMemberModal
+          onClose={() => setFinding(false)}
+          onPick={(nm) => { m.adoptNonMember(nm); setFinding(false); }}
+        />
+      )}
+    </>
+  );
+};
 
 // ─── Verify-By toggle + reusable image picker (shared by PAN / Passport / Aadhaar) ──
 const IMG_ACCEPT = '.png,.jpg,.jpeg';
