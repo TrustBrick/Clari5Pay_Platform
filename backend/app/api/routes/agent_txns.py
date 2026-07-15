@@ -1046,6 +1046,7 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
 
     dep = [t for t in txns if t.txn_type == "DEPOSIT"]
     wd = [t for t in txns if t.txn_type == "WITHDRAWAL"]
+    st = [t for t in txns if t.txn_type == "SETTLEMENT"]
     # Completed-only basis: DEPOSITED (deposit chain) / COMPLETED (withdrawal+settlement chains) /
     # APPROVED (legacy rows predating the chain). Keeps every financial figure correct as
     # transactions move onto the merchant-mirroring workflow.
@@ -1053,25 +1054,32 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
 
     # ── Financial summary — mirrors the Merchant canonical formula (transactions.py) applied to
     # the ISOLATED agent ledger only. Each agent's commission = its fees_pct on the approved
-    # leg's amount (same percentage for deposits and withdrawals). Computed on read (not stored),
-    # exactly like the merchant modules, so figures always reflect the latest approvals.
+    # leg's amount (the same percentage for every leg). Computed on read (not stored), exactly
+    # like the merchant modules, so figures always reflect the latest approvals.
     #   Gross Amount (Approved)  = Σ approved deposit amounts (before commission)
-    #   Deposit Commission       = Σ (approved deposit amount × fees_pct)
-    #   Withdrawal Commission    = Σ (approved withdrawal amount × fees_pct)
-    #   Total Commission         = Deposit Commission + Withdrawal Commission
+    #   <leg> Commission         = Σ (approved <leg> amount × fees_pct)
+    #   Total Commission         = Deposit + Withdrawal + Settlement Commission
     #   Net (Approved)           = Gross − Deposit Commission − Withdrawals − Withdrawal Commission
+    #                                    − Settlements − Settlement Commission
+    # Settlements move money OUT of the agent ledger, so they are deducted exactly as the merchant
+    # formula deducts them (available = deposits − withdrawals − settlements − depComm − payoutFee).
     approved_dep = [t for t in approved if t.txn_type == "DEPOSIT"]
     approved_wd = [t for t in approved if t.txn_type == "WITHDRAWAL"]
+    approved_st = [t for t in approved if t.txn_type == "SETTLEMENT"]
 
     def _commission(rows):
         return sum(t.amount * fees.get(t.agent_master_id, 0.0) / 100 for t in rows)
 
     gross_amount = sum(t.amount for t in approved_dep)
     total_withdrawal_amount = sum(t.amount for t in approved_wd)
+    total_settlement_amount = sum(t.amount for t in approved_st)
     deposit_commission = _commission(approved_dep)
     withdrawal_commission = _commission(approved_wd)
-    total_commission = deposit_commission + withdrawal_commission
-    net_amount = gross_amount - deposit_commission - total_withdrawal_amount - withdrawal_commission
+    settlement_commission = _commission(approved_st)
+    total_commission = deposit_commission + withdrawal_commission + settlement_commission
+    net_amount = (gross_amount - deposit_commission
+                  - total_withdrawal_amount - withdrawal_commission
+                  - total_settlement_amount - settlement_commission)
 
     by_agent: dict = defaultdict(lambda: {"deposits": 0.0, "withdrawals": 0.0, "settlements": 0.0, "count": 0})
     for t in txns:
@@ -1100,6 +1108,7 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
             "totalTransactions": len(txns),
             "depositCount": len(dep), "depositAmount": _sum(lambda t: t.txn_type == "DEPOSIT"),
             "withdrawalCount": len(wd), "withdrawalAmount": _sum(lambda t: t.txn_type == "WITHDRAWAL"),
+            "settlementCount": len(st), "settlementAmount": _sum(lambda t: t.txn_type == "SETTLEMENT"),
             # Pending = still in flight anywhere in the chain (PENDING, ACCOUNT_REQUESTED,
             # ACCOUNT_SUBMITTED, SUPERVISOR_REVIEW, SLIP_SUBMITTED …) — i.e. not yet final.
             "pending": sum(1 for t in txns if t.status not in FINAL_STATUSES),
@@ -1107,9 +1116,11 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
             "rejected": sum(1 for t in txns if t.status in REJECTED_STATUSES),
             "approvedDeposits": round(gross_amount, 2),
             "approvedWithdrawals": round(total_withdrawal_amount, 2),
+            "approvedSettlements": round(total_settlement_amount, 2),
             "grossAmount": round(gross_amount, 2),
             "depositCommission": round(deposit_commission, 2),
             "withdrawalCommission": round(withdrawal_commission, 2),
+            "settlementCommission": round(settlement_commission, 2),
             "netAmount": round(net_amount, 2),
             "totalCommission": round(total_commission, 2),
         },

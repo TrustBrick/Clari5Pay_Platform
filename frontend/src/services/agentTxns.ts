@@ -128,9 +128,11 @@ export interface AgentOverview {
     totalTransactions: number;
     depositCount: number; depositAmount: number;
     withdrawalCount: number; withdrawalAmount: number;
+    settlementCount: number; settlementAmount: number;
     pending: number; approved: number; rejected: number;
-    approvedDeposits: number; approvedWithdrawals: number;
+    approvedDeposits: number; approvedWithdrawals: number; approvedSettlements: number;
     grossAmount: number; depositCommission: number; withdrawalCommission: number;
+    settlementCommission: number;
     netAmount: number; totalCommission: number;
   };
   byAgent: Array<{ agentCode: string | null; agentName: string | null; deposits: number; withdrawals: number; count: number }>;

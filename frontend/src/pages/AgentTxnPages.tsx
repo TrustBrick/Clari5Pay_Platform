@@ -82,6 +82,7 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
     ['Total Transactions', c.totalTransactions, T.blue],
     ['Deposits', <>{c.depositCount} · {fmt(c.depositAmount)}</>, T.success],
     ['Withdrawals', <>{c.withdrawalCount} · {fmt(c.withdrawalAmount)}</>, T.danger],
+    ['Settlements', <>{c.settlementCount} · {fmt(c.settlementAmount)}</>, '#7c3aed'],
     ['Pending', c.pending, T.warning],
     ['Approved', c.approved, T.success],
     ['Rejected', c.rejected, T.danger],
@@ -1179,6 +1180,8 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
     ['Deposit Commission', fmt(c.depositCommission), T.green],
     ['Total Withdrawals (Approved)', fmt(c.approvedWithdrawals), T.danger],
     ['Withdrawal Commission', fmt(c.withdrawalCommission), T.green],
+    ['Total Settlements (Approved)', fmt(c.approvedSettlements), '#7c3aed'],
+    ['Settlement Commission', fmt(c.settlementCommission), T.green],
     ['Total Commission', fmt(c.totalCommission), T.green],
     ['Net (Approved)', fmt(c.netAmount), '#1d4ed8'],
   ] : [];
@@ -1217,7 +1220,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
               ))}
             </div>
             <p style={{ margin: '12px 0 0', fontSize: 11.5, color: T.textMuted }}>
-              Net (Approved) = Gross Amount − Deposit Commission − Total Withdrawals − Withdrawal Commission. Total Commission = Deposit Commission + Withdrawal Commission. Commission uses each agent's Fees %.
+              Net (Approved) = Gross Amount − Deposit Commission − Total Withdrawals − Withdrawal Commission − Total Settlements − Settlement Commission. Total Commission = Deposit + Withdrawal + Settlement Commission. Commission uses each agent's Fees %. Mirrors the Merchant available-balance formula.
             </p>
           </>
         )}
