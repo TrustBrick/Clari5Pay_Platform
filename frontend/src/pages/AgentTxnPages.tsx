@@ -1606,3 +1606,146 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
     </div>
   );
 };
+
+// ─── Agent All Transactions ────────────────────────────────────────────────────
+// The agent counterpart of Merchant → All Transactions: same shape (search + date filters, type
+// and status selects, export, ledger table, "Showing X of Y"), plus the Agent ID / Agent Name /
+// Transaction Type columns. Lists EVERY agent transaction of every type from the isolated ledger —
+// merchant transactions are never mixed in, because this only ever calls /api/agent-txns.
+const AGENT_TYPE_OPTIONS = [
+  { value: '', label: 'All Types' },
+  { value: 'DEPOSIT', label: 'Deposit' },
+  { value: 'WITHDRAWAL', label: 'Withdrawal' },
+  { value: 'SETTLEMENT', label: 'Settlement' },
+];
+
+export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+  const { showToast } = useToast();
+  const [rows, setRows] = useState<AgentTxnRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [detailRow, setDetailRow] = useState<AgentTxnRow | null>(null);
+  const [search, setSearch] = useState('');
+  const [type, setType] = useState('');
+  const [status, setStatus] = useState('');
+  const [method, setMethod] = useState('');
+  const [fromF, setFromF] = useState('');
+  const [toF, setToF] = useState('');
+  const [page, setPage] = useState(1);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      // Search / type / status / dates go server-side; the transaction-type (method) refinement is
+      // applied client-side, mirroring how the merchant page refines its server-filtered set.
+      const q: AgentTxnQuery = {};
+      if (type) q.txn_type = type;
+      if (status) q.status = status;
+      if (search.trim()) q.search = search.trim();
+      if (fromF) q.date_from = fromF;
+      if (toF) q.date_to = toF;
+      setRows(await agentTxnsAPI.list(q));
+    } catch { showToast('Failed to load agent transactions.', 'error'); }
+    finally { setLoading(false); }
+  }, [type, status, search, fromF, toF, showToast]);
+
+  useEffect(() => { load(); }, [load]);
+  usePoll(() => { if (!detailRow) load(); });
+
+  const filtered = method ? rows.filter(r => r.txnMethod === method) : rows;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  const clearFilters = () => {
+    setSearch(''); setType(''); setStatus(''); setMethod(''); setFromF(''); setToF(''); setPage(1);
+  };
+
+  const exportCsv = () => {
+    if (filtered.length === 0) { showToast('Nothing to export for the current filters.', 'error'); return; }
+    downloadAgentCsv(`agent-all-transactions-${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}`,
+      ['Reference', 'Agent ID', 'Agent Name', 'Type', 'Transaction Type', 'Membership ID', 'Member Name',
+       'Membership Type', 'Amount', 'Status', 'Sending Account', 'Payout Account', 'Instructions',
+       'Created By', 'Created Date (IST)', 'Created Time (IST)'],
+      filtered.map(r => [
+        r.referenceNumber, r.agentCode || '', r.agentName || '', r.type, methodLabel(r.txnMethod),
+        r.membershipId, r.membershipName || '', r.membershipType, r.amount,
+        STATUS_STYLE[r.status]?.label || r.status,
+        [r.senderAccountHolder, r.senderAccountNumber || r.senderUpiId, r.senderBankName].filter(Boolean).join(' · '),
+        [r.payoutAccountHolder, r.payoutAccountNumber || r.payoutUpiId, r.payoutBankName].filter(Boolean).join(' · '),
+        r.instructions ? instrLabel(r.instructions) : '',
+        r.createdBy || '', r.createdDate || '', r.createdTime || '',
+      ]));
+    showToast(`Exported ${filtered.length} agent transaction${filtered.length === 1 ? '' : 's'}.`, 'success');
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent All Transactions</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Every Agent Deposit, Withdrawal and Settlement in the isolated Agent ledger.</p>
+      </div>
+      <IsolationNote />
+
+      <Card style={{ padding: 16, marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 12 }}>
+          <Input label="Search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Reference / Membership / Agent" style={{ marginBottom: 0 }} />
+          <Sel label="Type" value={type} onChange={e => setType(e.target.value)} style={{ marginBottom: 0 }} options={AGENT_TYPE_OPTIONS} />
+          <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} style={{ marginBottom: 0 }}
+            options={[{ value: '', label: 'All Statuses' }, ...STATUS_FILTER_OPTIONS]} />
+          <Sel label="Transaction Type" value={method} onChange={e => { setMethod(e.target.value); setPage(1); }} style={{ marginBottom: 0 }}
+            options={[{ value: '', label: 'All' }, ...Object.keys(METHOD_LABEL).map(v => ({ value: v, label: METHOD_LABEL[v] }))]} />
+          <Input label="From Date" type="date" value={fromF} onChange={e => setFromF(e.target.value)} style={{ marginBottom: 0 }} />
+          <Input label="To Date" type="date" value={toF} onChange={e => setToF(e.target.value)} style={{ marginBottom: 0 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Btn size="sm" onClick={() => { setPage(1); load(); }} disabled={loading}>{loading ? 'Searching…' : 'Apply Filters'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={clearFilters}>Clear</Btn>
+          <Btn size="sm" variant="secondary" onClick={exportCsv}>Export CSV</Btn>
+        </div>
+      </Card>
+
+      <Card style={{ overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: T.canvas }}>
+                {['Reference', 'Agent ID', 'Agent Name', 'Membership', 'Type', 'Transaction Type',
+                  'Amount', 'Status', 'Created (IST)', 'Action'].map(h => <th key={h} style={thS}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {loading && rows.length === 0 && <tr><td colSpan={10} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
+              {!loading && pageRows.length === 0 && <tr><td colSpan={10} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No agent transactions match the filters.</td></tr>}
+              {pageRows.map((x, i) => (
+                <tr key={x.id} style={{ background: i % 2 ? T.canvas : T.surface }}>
+                  <td style={{ ...tdS, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{x.agentCode || '—'}</td>
+                  <td style={tdS}>{x.agentName || '—'}</td>
+                  <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
+                  <td style={tdS}>{x.type.charAt(0) + x.type.slice(1).toLowerCase()}</td>
+                  <td style={tdS}>{methodLabel(x.txnMethod)}</td>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
+                  <td style={tdS}><StatusPill status={x.status} /></td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                  <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 16px', borderTop: `1px solid ${T.border}` }}>
+          <p style={{ fontSize: 11, color: T.textMuted, margin: 0 }}>Showing {pageRows.length} of {filtered.length}{method ? ` (filtered from ${rows.length})` : ''}</p>
+          {totalPages > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</Btn>
+              <span style={{ fontSize: 12, color: T.textMuted }}>Page {safePage} of {totalPages}</span>
+              <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</Btn>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {detailRow && <AgentTxnDetailsModal row={detailRow} onClose={() => setDetailRow(null)} />}
+    </div>
+  );
+};
