@@ -120,59 +120,11 @@ export const OCR_DOC_TYPES: Array<{ value: string; label: string }> = [
   { value: 'voter_card', label: 'Voter ID' },
 ];
 
-// ── Non-Member KYC (walk-ins with no Membership ID) ────────────────────────────
-// Stored in their own table under an NM… series, then verified through the exact same
-// Aadhaar / PAN / Passport / OCR calls below — those take the NM id where a Membership ID goes.
-export interface NonMember {
-  id: number;
-  nonMemberId: string;
-  fullName: string;
-  mobile?: string | null;
-  email?: string | null;
-  aadhaarNumber?: string | null;
-  panNumber?: string | null;
-  passportNumber?: string | null;
-  country?: string | null;
-  state?: string | null;
-  location?: string | null;
-  createdBy?: string | null;
-  createdAt?: string | null;
-  updatedBy?: string | null;
-  updatedAt?: string | null;
-}
-
-export interface NonMemberInput {
-  fullName: string;
-  mobile?: string;
-  email?: string;
-  country?: string;
-  state?: string;
-  location?: string;
-}
-
-export interface SubjectLookupResult {
-  membershipId: string;
-  memberName: string;
-  subjectType: 'MEMBER' | 'NON_MEMBER';
-  nonMember?: NonMember | null;
-}
-
 // ── Service methods ─────────────────────────────────────────────────────────────
 export const kycAPI = {
-  // Resolves a Membership ID *or* an NM… Non-Member ID → the person's name. Members always win,
-  // so an existing Membership ID keeps behaving exactly as it did. Throws 404 when the ID matches
-  // neither, which is the operator's cue to register a new Non-Member.
-  lookupMember: async (membershipId: string): Promise<SubjectLookupResult> =>
+  // Membership lookup → Member Name. Throws 404 ("Membership not found.") for unknown IDs.
+  lookupMember: async (membershipId: string): Promise<{ membershipId: string; memberName: string }> =>
     (await api.get(`/api/kyc/member/${encodeURIComponent(membershipId)}`)).data,
-
-  createNonMember: async (body: NonMemberInput): Promise<NonMember> =>
-    (await api.post<NonMember>('/api/kyc/non-members', body)).data,
-
-  listNonMembers: async (q?: string): Promise<NonMember[]> =>
-    (await api.get<NonMember[]>('/api/kyc/non-members', { params: q ? { q } : undefined })).data,
-
-  updateNonMember: async (nmId: string, body: Partial<NonMemberInput>): Promise<NonMember> =>
-    (await api.patch<NonMember>(`/api/kyc/non-members/${encodeURIComponent(nmId)}`, body)).data,
 
   generateAadhaarLink: async (membershipId: string): Promise<AadhaarLinkResult> =>
     (await api.post<AadhaarLinkResult>('/api/kyc/aadhaar/generate-link', { membershipId })).data,

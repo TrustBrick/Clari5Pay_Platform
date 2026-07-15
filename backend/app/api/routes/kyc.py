@@ -13,15 +13,14 @@ import random
 import re
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.system_logs import record_audit
 from app.core.deps import get_current_kyc_user
 from app.db.session import get_db
-from app.models.models import KycVerificationHistory, NonMemberKyc, User
+from app.models.models import KycVerificationHistory, User
 from app.services import kyc as kyc_service
 from app.services.membership import lookup_member_name, normalize_member_id
 
@@ -141,141 +140,15 @@ def _image_b64(data_url: str, field: str = "image") -> str:
     return b64
 
 
-# ── Non-Member KYC (walk-ins with no Membership ID) ───────────────────────────
-# A person who is not a registered member can still be verified: they are stored in the
-# independent ``non_member_kyc`` table under their own NM… series and then flow through the
-# very same verification routes. Nothing here reads or writes the Merchant membership records.
-NON_MEMBER_RE = re.compile(r"^NM\d{6,}$")
-SUBJECT_NOT_FOUND = "No Member or Non-Member found for this ID."
-SUBJECT_MEMBER = "MEMBER"
-SUBJECT_NON_MEMBER = "NON_MEMBER"
-# Contact validation mirrors the Agent module's rules so the portal behaves consistently.
-_MOBILE_RE = re.compile(r"^\d{10}$")
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-async def _find_duplicate_non_member(
-    db: AsyncSession, user: User, *, mobile: str | None, email: str | None, exclude_id: int | None = None
-) -> NonMemberKyc | None:
-    """An existing Non-Member in this business pool reachable by the same mobile or email.
-
-    This is the "do not create duplicate Non-Member records" guard: a returning walk-in should be
-    found and re-used, not issued a second NM id. Name alone is deliberately not matched — it is
-    far too weak an identifier to block on.
-    """
-    terms = [func.lower(field) == value.lower()
-             for field, value in ((NonMemberKyc.mobile, mobile), (NonMemberKyc.email, email))
-             if value]
-    if not terms:
-        return None
-    stmt = select(NonMemberKyc).where(
-        NonMemberKyc.merchant_business == user.name,
-        or_(*terms),
-    )
-    if exclude_id is not None:
-        stmt = stmt.where(NonMemberKyc.id != exclude_id)
-    return (await db.execute(stmt.limit(1))).scalars().first()
-
-
-async def _next_non_member_id(db: AsyncSession) -> str:
-    """Next global serial Non-Member ID (NM000001…). Its own series — deliberately independent
-    of the Merchant Membership numbering; never reused."""
-    codes = (await db.execute(
-        select(NonMemberKyc.non_member_id).where(NonMemberKyc.non_member_id.like("NM%"))
-    )).scalars().all()
-    maxn = 0
-    for c in codes:
-        try:
-            maxn = max(maxn, int(c[2:]))
-        except (TypeError, ValueError):
-            continue
-    return f"NM{maxn + 1:06d}"
-
-
-async def _non_member_row(db: AsyncSession, user: User, nm_id: str) -> NonMemberKyc | None:
-    """The Non-Member with this id inside the caller's business pool, or None."""
-    if not nm_id or not NON_MEMBER_RE.match(nm_id):
-        return None
-    return (await db.execute(
-        select(NonMemberKyc).where(
-            NonMemberKyc.non_member_id == nm_id,
-            NonMemberKyc.merchant_business == user.name,
-        )
-    )).scalar_one_or_none()
-
-
-def _serialize_non_member(r: NonMemberKyc) -> dict:
-    return {
-        "id": r.id,
-        "nonMemberId": r.non_member_id,
-        "fullName": r.full_name,
-        "mobile": r.mobile,
-        "email": r.email,
-        "aadhaarNumber": r.aadhaar_number,
-        "panNumber": r.pan_number,
-        "passportNumber": r.passport_number,
-        "country": r.country,
-        "state": r.state,
-        "location": r.location,
-        "createdBy": r.created_by,
-        "createdAt": (r.created_at.isoformat() + "Z") if r.created_at else None,
-        "updatedBy": r.updated_by,
-        "updatedAt": (r.updated_at.isoformat() + "Z") if r.updated_at else None,
-    }
-
-
-def _result_aadhaar(data: dict) -> str | None:
-    """The Aadhaar number out of a provider response, if it exposed one. DigiLocker and the OCR
-    reader disagree on the key, and either may mask or omit it — hence the tolerant lookup."""
-    result = data.get("result") if isinstance(data.get("result"), dict) else {}
-    for key in ("aadhaar_number", "aadhaar_no", "uid"):
-        value = (result or {}).get(key)
-        if value:
-            return str(value).strip() or None
-    return None
-
-
-async def _capture_verified_doc(db: AsyncSession, user: User, subject_id: str, field: str, value: str | None) -> None:
-    """Stamp a successfully verified document number onto the Non-Member's record.
-
-    A no-op for Members (they have no row here) and when the number is unknown — e.g. an Image
-    Upload / DigiLocker flow where the provider, not the operator, supplies the number. Every
-    attempt is audited in ``kyc_verification_history`` regardless; this only maintains the
-    at-a-glance summary on the person's own record.
-    """
-    if not value:
-        return
-    row = await _non_member_row(db, user, subject_id)
-    if row is None or getattr(row, field) == value:
-        return
-    setattr(row, field, value)
-    row.updated_by = _actor_name(user)
-    row.updated_by_id = user.id
-    row.updated_at = datetime.utcnow()
-    db.add(row)
-
-
 async def _require_member_name(db: AsyncSession, user: User, membership_id: str) -> tuple[str, str]:
-    """Resolve (normalized id, name) for the KYC subject — a Member *or* a Non-Member — or 404.
-
-    Every verification route funnels through this one function, which is why recognising a
-    Non-Member id here is all it takes for Aadhaar / PAN / Passport / OCR to verify a walk-in:
-    their own logic is untouched and simply sees an id and a name.
-
-    Members win ties: an id is only looked up in ``non_member_kyc`` once it is confirmed absent
-    from the membership records, so an existing Membership ID always resolves to Member data even
-    in the unlikely event one is shaped like ``NM…``.
-    """
+    """Resolve (normalized membership id, member name) or raise 404 'Membership not found.'."""
     mid = normalize_member_id(membership_id)
     if not mid:
-        raise HTTPException(status_code=404, detail=SUBJECT_NOT_FOUND)
+        raise HTTPException(status_code=404, detail="Membership not found.")
     name = await lookup_member_name(db, user, mid)
-    if name:
-        return mid, name
-    row = await _non_member_row(db, user, mid)
-    if row is not None:
-        return row.non_member_id, row.full_name
-    raise HTTPException(status_code=404, detail=SUBJECT_NOT_FOUND)
+    if not name:
+        raise HTTPException(status_code=404, detail="Membership not found.")
+    return mid, name
 
 
 class MembershipRequest(BaseModel):
@@ -317,179 +190,16 @@ class OcrVerifyRequest(BaseModel):
 OCR_DOC_TYPES = {"passport", "pan_card", "aadhaar_card", "driving_licence", "voter_card"}
 
 
-class NonMemberCreate(BaseModel):
-    fullName: str
-    mobile: str | None = None
-    email: str | None = None
-    country: str | None = None
-    state: str | None = None
-    location: str | None = None
-
-
-class NonMemberUpdate(BaseModel):
-    fullName: str | None = None
-    mobile: str | None = None
-    email: str | None = None
-    country: str | None = None
-    state: str | None = None
-    location: str | None = None
-
-
 @router.get("/member/{membership_id}")
 async def kyc_member_lookup(
     membership_id: str,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_kyc_user),
 ):
-    """Auto-fill the name for a Membership ID *or* a Non-Member ID within the caller's business
-    pool. A Membership ID resolves to Member data exactly as it always has; an NM… id resolves to
-    the stored Non-Member. 404 when the ID matches neither — the operator is then offered the
-    'create a Non-Member' path.
-
-    ``subjectType`` is additive: existing callers keep reading ``membershipId``/``memberName``.
-    """
+    """Auto-fill the Member Name for a Membership ID within the caller's business pool.
+    404 'Membership not found.' when the ID has never been used."""
     mid, name = await _require_member_name(db, user, membership_id)
-    subject_type = SUBJECT_NON_MEMBER if NON_MEMBER_RE.match(mid) else SUBJECT_MEMBER
-    row = await _non_member_row(db, user, mid) if subject_type == SUBJECT_NON_MEMBER else None
-    return {
-        "membershipId": mid,
-        "memberName": name,
-        "subjectType": subject_type,
-        "nonMember": _serialize_non_member(row) if row is not None else None,
-    }
-
-
-@router.post("/non-members")
-async def create_non_member(
-    body: NonMemberCreate,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
-):
-    """Register a walk-in who has no Membership ID and hand back a generated NM… id.
-
-    The id is what the person presents on a return visit, so we refuse to mint a second one for
-    a mobile/email already on file and point the operator at the existing record instead.
-    """
-    full_name = (body.fullName or "").strip()
-    if not full_name:
-        raise HTTPException(status_code=400, detail="Full Name is required.")
-    mobile = (body.mobile or "").strip() or None
-    email = (body.email or "").strip() or None
-    if mobile and not _MOBILE_RE.match(mobile):
-        raise HTTPException(status_code=400, detail="Invalid Mobile Number — expected 10 digits.")
-    if email and not _EMAIL_RE.match(email):
-        raise HTTPException(status_code=400, detail="Invalid Email Address.")
-
-    existing = await _find_duplicate_non_member(db, user, mobile=mobile, email=email)
-    if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=(f"A Non-Member with these contact details already exists "
-                    f"({existing.non_member_id} — {existing.full_name}). Search that ID instead."),
-        )
-
-    row = NonMemberKyc(
-        non_member_id=await _next_non_member_id(db),
-        full_name=full_name,
-        mobile=mobile,
-        email=email,
-        country=(body.country or "").strip() or None,
-        state=(body.state or "").strip() or None,
-        location=(body.location or "").strip() or None,
-        merchant_business=user.name,
-        created_by=_actor_name(user),
-        created_by_id=user.id,
-    )
-    db.add(row)
-    await db.flush()
-    await db.refresh(row)
-    await record_audit(
-        db, "NON_MEMBER_CREATE", actor=user, entity_type="non_member_kyc", entity_id=row.non_member_id,
-        new=f"{row.non_member_id} — {row.full_name}",
-        ip=request.client.host if request.client else None,
-        actor_username=user.username,
-        actor_role=str(user.merchant_role).upper() if user.merchant_role else None,
-        business=user.name,
-    )
-    return _serialize_non_member(row)
-
-
-@router.get("/non-members")
-async def list_non_members(
-    q: str | None = None,               # search: NM id / name / mobile / email
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
-):
-    """Non-Members registered by the caller's merchant business, newest first — lets an operator
-    find a returning walk-in who no longer has their NM id to hand."""
-    stmt = select(NonMemberKyc).where(NonMemberKyc.merchant_business == user.name)
-    if q and q.strip():
-        term = f"%{q.strip().lower()}%"
-        stmt = stmt.where(or_(
-            func.lower(NonMemberKyc.non_member_id).like(term),
-            func.lower(NonMemberKyc.full_name).like(term),
-            func.lower(func.coalesce(NonMemberKyc.mobile, "")).like(term),
-            func.lower(func.coalesce(NonMemberKyc.email, "")).like(term),
-        ))
-    rows = (await db.execute(stmt.order_by(NonMemberKyc.id.desc()).limit(200))).scalars().all()
-    return [_serialize_non_member(r) for r in rows]
-
-
-@router.patch("/non-members/{nm_id}")
-async def update_non_member(
-    nm_id: str,
-    body: NonMemberUpdate,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
-):
-    """Correct a Non-Member's details. The NM id itself is immutable, and verified document
-    numbers are set by the verification flows only — never edited by hand."""
-    row = await _non_member_row(db, user, normalize_member_id(nm_id) or "")
-    if row is None:
-        raise HTTPException(status_code=404, detail="Non-Member not found.")
-
-    before = f"{row.full_name} / {row.mobile or '—'} / {row.email or '—'}"
-    if body.fullName is not None:
-        full_name = body.fullName.strip()
-        if not full_name:
-            raise HTTPException(status_code=400, detail="Full Name is required.")
-        row.full_name = full_name
-    if body.mobile is not None:
-        mobile = body.mobile.strip() or None
-        if mobile and not _MOBILE_RE.match(mobile):
-            raise HTTPException(status_code=400, detail="Invalid Mobile Number — expected 10 digits.")
-        row.mobile = mobile
-    if body.email is not None:
-        email = body.email.strip() or None
-        if email and not _EMAIL_RE.match(email):
-            raise HTTPException(status_code=400, detail="Invalid Email Address.")
-        row.email = email
-    for field, value in (("country", body.country), ("state", body.state), ("location", body.location)):
-        if value is not None:
-            setattr(row, field, value.strip() or None)
-
-    dup = await _find_duplicate_non_member(db, user, mobile=row.mobile, email=row.email, exclude_id=row.id)
-    if dup is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f"These contact details belong to another Non-Member ({dup.non_member_id}).",
-        )
-
-    row.updated_by = _actor_name(user)
-    row.updated_by_id = user.id
-    row.updated_at = datetime.utcnow()
-    db.add(row)
-    await record_audit(
-        db, "NON_MEMBER_UPDATE", actor=user, entity_type="non_member_kyc", entity_id=row.non_member_id,
-        old=before, new=f"{row.full_name} / {row.mobile or '—'} / {row.email or '—'}",
-        ip=request.client.host if request.client else None,
-        actor_username=user.username,
-        actor_role=str(user.merchant_role).upper() if user.merchant_role else None,
-        business=user.name,
-    )
-    return _serialize_non_member(row)
+    return {"membershipId": mid, "memberName": name}
 
 
 @router.post("/aadhaar/generate-link")
@@ -575,7 +285,6 @@ async def aadhaar_status(
         row.error_message = None
         row.response_json = json.dumps(data)
         db.add(row)
-        await _capture_verified_doc(db, user, row.membership_id or "", "aadhaar_number", _result_aadhaar(data))
         return {"pending": False, "status": "SUCCESS", "details": data}
 
     # The provider signals "not yet done" as status=failed + error="Validation Pending" (or
@@ -638,7 +347,6 @@ async def aadhaar_verify_image(
         await db.commit()
         raise HTTPException(status_code=502, detail=error_message)
 
-    await _capture_verified_doc(db, user, mid, "aadhaar_number", _result_aadhaar(data))
     return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")), "raw": data}
 
 
@@ -695,12 +403,6 @@ async def pan_verify_membership(
         await db.commit()
         raise HTTPException(status_code=502, detail=error_message)
 
-    # Keep a Non-Member's own record current (no-op for Members). The Image Upload method has no
-    # operator-entered number, so fall back to whatever the provider echoed back.
-    await _capture_verified_doc(
-        db, user, mid, "pan_number",
-        source if source_type == "id" else (result or {}).get("pan") or (result or {}).get("pan_number"),
-    )
     return {"id": row.id, "status": row.verification_status, "validPan": valid_pan, "result": result, "raw": data}
 
 
@@ -765,12 +467,6 @@ async def passport_verify_membership(
         await db.commit()
         raise HTTPException(status_code=502, detail=error_message)
 
-    # Keep a Non-Member's own record current (no-op for Members). ``source`` is the File Number
-    # for the ID method and a list of images for the upload method, hence the source_type guard.
-    await _capture_verified_doc(
-        db, user, mid, "passport_number",
-        source if source_type == "id" else (result or {}).get("passport_number"),
-    )
     return {"id": row.id, "status": row.verification_status, "validPassport": valid_passport, "result": result, "raw": data}
 
 
