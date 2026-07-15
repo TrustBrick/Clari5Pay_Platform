@@ -163,6 +163,9 @@ _NEW_COLUMNS = [
     ("agent_transaction", "payout_bank_name", "VARCHAR(128)"),
     ("agent_transaction", "payout_branch", "VARCHAR(128)"),
     ("agent_transaction", "payout_upi_id", "VARCHAR(64)"),
+    # Aadhaar cardholder photo, captured at verification time (the provider's xml_file URL is
+    # presigned and expires after 48h, so it cannot be re-fetched later).
+    ("kyc_verification_history", "aadhaar_photo", "TEXT"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type

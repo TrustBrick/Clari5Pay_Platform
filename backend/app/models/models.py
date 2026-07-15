@@ -530,6 +530,11 @@ class KycVerificationHistory(Base):
     response_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)    # full provider response, as received
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     generated_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # Aadhaar DigiLocker verification URL
+    # Aadhaar cardholder photo (JPEG data URL) extracted from the response's XML.
+    # MUST be captured at verification time: the provider returns `xml_file` as a PRESIGNED S3 URL
+    # that expires after 48h (X-Amz-Expires=172800), so it cannot be fetched later. Only ever set
+    # from an XML that parsed successfully — an invalid/absent one leaves this NULL.
+    aadhaar_photo: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     api_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True) # provider "status" field / HTTP status
     created_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)  # actor name
     # Merchant business name (scopes the history list to the caller's shared member pool).

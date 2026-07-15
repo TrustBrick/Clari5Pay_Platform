@@ -8,11 +8,13 @@ gracefully. No existing schema, route, or data is touched by this module.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
 import random
 import re
+import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
@@ -200,8 +202,42 @@ def _maybe_b64_xml(text: str) -> str | None:
     return decoded if _XML_HINT.search(decoded) else None
 
 
-def _aadhaar_photo(response) -> str | None:
-    """The cardholder photograph embedded in an Aadhaar response's XML section, if any."""
+def _xml_url(response) -> str | None:
+    """The Aadhaar XML download link, if the response carries one instead of inline XML.
+
+    Melento returns ``result.validated_data.result.xml_file`` as a PRESIGNED S3 URL to a .xml
+    document — the XML is NOT inline. Restricted to https to keep this from being pointed at
+    anything but the provider's file store.
+    """
+    for text in _iter_strings(response):
+        s = text.strip()
+        if s.startswith("https://") and ".xml" in s.split("?", 1)[0].lower():
+            return s
+    return None
+
+
+async def _fetch_xml(url: str) -> str | None:
+    """Download the Aadhaar XML. Returns None on any failure — an expired link (the presigned URL
+    lives only 48h), a network error, or an over-sized body — so the caller simply gets no photo."""
+    def _get() -> str | None:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "clari5pay"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                if int(r.headers.get("Content-Length") or 0) > _MAX_XML_BYTES:
+                    return None
+                return r.read(_MAX_XML_BYTES).decode("utf-8", "ignore")
+        except Exception:
+            return None
+    return await asyncio.to_thread(_get)
+
+
+async def _aadhaar_photo(response) -> str | None:
+    """The cardholder photograph for an Aadhaar response, as a JPEG data URL.
+
+    Handles all three shapes the provider may use: inline XML, base64-wrapped XML, and — what
+    Melento actually returns — an ``xml_file`` link that must be downloaded. Any failure yields
+    None rather than raising, so a photo-less or expired verification degrades quietly.
+    """
     if not isinstance(response, (dict, list)):
         return None
     texts = list(_iter_strings(response))
@@ -216,6 +252,11 @@ def _aadhaar_photo(response) -> str | None:
             photo = _photo_from_xml(decoded)
             if photo:
                 return photo
+    url = _xml_url(response)                        # 3. XML behind a (short-lived) link
+    if url:
+        xml = await _fetch_xml(url)
+        if xml:
+            return _photo_from_xml(xml)
     return None
 
 
@@ -424,8 +465,11 @@ async def aadhaar_status(
         row.api_status = "success"
         row.error_message = None
         row.response_json = json.dumps(data)
+        # Capture the cardholder photo NOW: the response's xml_file link is presigned and expires
+        # after 48h, so this is the only moment it can be downloaded.
+        row.aadhaar_photo = await _aadhaar_photo(data)
         db.add(row)
-        return {"pending": False, "status": "SUCCESS", "details": data}
+        return {"pending": False, "status": "SUCCESS", "details": data, "photo": row.aadhaar_photo}
 
     # The provider signals "not yet done" as status=failed + error="Validation Pending" (or
     # similar). Treat any pending/processing marker as still-in-progress, not a hard failure,
@@ -710,6 +754,17 @@ async def kyc_history_detail(
             return None
 
     response = _parse(row.response_json)
+    # The photo is normally captured at verification time. For a record verified before that was
+    # in place, try once more here and back-fill — this only succeeds while the provider's link is
+    # still alive (48h), after which the photo is simply unavailable for that record.
+    photo = row.aadhaar_photo
+    if not photo and row.verification_type == "AADHAAR" and row.verification_status == "SUCCESS":
+        photo = await _aadhaar_photo(response)
+        if photo:
+            row.aadhaar_photo = photo
+            db.add(row)
+            await db.commit()
+
     return {
         **_history_summary(row),
         "generatedLink": row.generated_link,
@@ -717,7 +772,7 @@ async def kyc_history_detail(
         "errorMessage": row.error_message,
         "request": _parse(row.request_json),
         "response": response,
-        # Aadhaar photo parsed out of the response's XML section (None when absent/unparseable).
-        "aadhaarPhoto": _aadhaar_photo(response),
+        # Aadhaar cardholder photo (data URL), or None when absent / the link had expired.
+        "aadhaarPhoto": photo,
         "updatedAt": (row.updated_at.isoformat() + "Z") if row.updated_at else None,
     }
