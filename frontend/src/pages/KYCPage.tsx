@@ -113,31 +113,58 @@ const VerifyShell: React.FC<{ icon: string; view?: ViewKey; title: string; child
   </div>
 );
 
-// ─── Membership lookup field (shared by Aadhaar & PAN) ─────────────────────────
-// Auto-fills Member Name for a Membership ID; sets `error` = "Membership not found." for
-// unknown IDs so the parent can block the action.
+// ─── Membership lookup field (shared by every verification flow) ───────────────
+// The Membership ID is the primary reference. An ID already on record auto-fills its
+// authoritative Member Name (read-only) plus any KYC already stored against it; an unknown ID is
+// still allowed — the operator names it by hand and the verification persists ID + name, so the
+// next lookup for that ID auto-fills. Never blocks on "not found".
 const useMemberLookup = () => {
   const [memberId, setMemberId] = useState('');
   const [memberName, setMemberName] = useState('');
+  const [known, setKnown] = useState(false);          // on record → name is authoritative
+  const [kyc, setKyc] = useState<KycHistoryItem[]>([]);
+  const [checked, setChecked] = useState(false);      // a lookup has completed for this ID
   const [error, setError] = useState('');
   const [looking, setLooking] = useState(false);
 
   const lookup = useCallback(async (raw: string) => {
     const id = raw.trim();
-    setMemberName(''); setError('');
-    if (!id) return;
+    setError('');
+    if (!id) { setMemberName(''); setKnown(false); setKyc([]); setChecked(false); return; }
     setLooking(true);
     try {
       const r = await kycAPI.lookupMember(id);
-      setMemberName(r.memberName || '');
+      setKnown(Boolean(r.exists));
+      setKyc(r.kyc || []);
+      setChecked(true);
+      if (r.exists) setMemberName(r.memberName || '');   // authoritative — never overwritten by hand
     } catch (e) {
-      setError(kycErrorMessage(e, 'Membership not found.'));
+      setError(kycErrorMessage(e, 'Could not look up this Membership ID.'));
+      setKnown(false); setKyc([]); setChecked(false);
     } finally { setLooking(false); }
   }, []);
 
-  const reset = () => { setMemberId(''); setMemberName(''); setError(''); };
-  return { memberId, setMemberId, memberName, error, looking, lookup, reset };
+  const reset = () => { setMemberId(''); setMemberName(''); setKnown(false); setKyc([]); setChecked(false); setError(''); };
+  return { memberId, setMemberId, memberName, setMemberName, known, kyc, checked, error, looking, lookup, reset };
 };
+
+// KYC already stored against this Membership ID — auto-fetched with the name.
+const KycOnRecord: React.FC<{ rows: KycHistoryItem[] }> = ({ rows }) => (
+  <div style={{ margin: '-4px 0 14px', padding: '10px 12px', borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+    <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+      KYC on record ({rows.length})
+    </p>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      {rows.slice(0, 6).map((r) => (
+        <span key={r.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: T.textMain, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 20, padding: '3px 10px' }}>
+          {r.verificationType}
+          <StatusPill status={r.status} />
+        </span>
+      ))}
+      {rows.length > 6 && <span style={{ fontSize: 11.5, color: T.textMuted, alignSelf: 'center' }}>+{rows.length - 6} more</span>}
+    </div>
+  </div>
+);
 
 const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({ m }) => (
   <>
@@ -147,10 +174,23 @@ const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({
       onChange={(e) => m.setMemberId(e.target.value)}
       onBlur={() => m.lookup(m.memberId)}
       placeholder="Enter Membership ID"
+      required
       hint={m.looking ? 'Looking up member…' : undefined}
     />
     {m.error && <div style={{ marginTop: -8, marginBottom: 14, fontSize: 12, fontWeight: 700, color: T.danger }}>{m.error}</div>}
-    <Input label="Member Name" value={m.memberName} onChange={() => {}} placeholder="Auto-filled from Membership ID" readOnly />
+    <Input
+      label="Member Name"
+      value={m.memberName}
+      onChange={(e) => m.setMemberName(e.target.value)}
+      placeholder={m.known ? 'Auto-filled from Membership ID' : 'Enter the Member Name'}
+      required
+      readOnly={m.known}
+      hint={m.looking ? undefined
+        : m.known ? 'Auto-filled from the Membership ID on record'
+        : m.checked ? 'New Membership ID — the name you enter is saved against it for future lookups'
+        : undefined}
+    />
+    {m.kyc.length > 0 && <KycOnRecord rows={m.kyc} />}
   </>
 );
 
@@ -217,7 +257,9 @@ const ImageField: React.FC<{ label: string; pick: ReturnType<typeof useImagePick
   </div>
 );
 
-interface FlowProps { onDone: () => void; onBack: () => void; }
+// onDone(ok): always refresh history; `ok` = a verification COMPLETED SUCCESSFULLY, which also
+// returns the operator to the KYC dashboard. A failure keeps the form open so the error is visible.
+interface FlowProps { onDone: (ok?: boolean) => void; onBack: () => void; }
 
 // ─── Aadhaar (membership → generate DigiLocker link → poll status) ─────────────
 const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
@@ -238,31 +280,31 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const canVerifyImg = Boolean(m.memberName) && !m.error && Boolean(img.dataUrl) && !verifyingImg;
 
   const verifyImage = async () => {
-    if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
+    if (!m.memberId.trim() || !m.memberName.trim()) { showToast('Enter the Membership ID and Member Name first.', 'error'); return; }
     if (!img.dataUrl) { showToast('Please upload the Aadhaar card image.', 'error'); return; }
     setVerifyingImg(true); setImgResult(null);
     try {
-      const r = await kycAPI.verifyAadhaarImage(m.memberId.trim(), img.dataUrl);
+      const r = await kycAPI.verifyAadhaarImage(m.memberId.trim(), img.dataUrl, m.memberName.trim());
       setImgResult({ verified: r.verified });
       showToast(r.verified ? 'Aadhaar verified successfully.' : 'Aadhaar verification completed.', 'success');
-      onDone();
+      onDone(r.verified);
     } catch (e) {
       showToast(kycErrorMessage(e, 'Aadhaar verification failed.'), 'error');
-      onDone();   // a FAILED attempt is still persisted — refresh so it appears in history
+      onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
     } finally { setVerifyingImg(false); }
   };
 
   const generate = async () => {
-    if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
+    if (!m.memberId.trim() || !m.memberName.trim()) { showToast('Enter the Membership ID and Member Name first.', 'error'); return; }
     setGenerating(true); setLink(''); setStatus('');
     try {
-      const r = await kycAPI.generateAadhaarLink(m.memberId.trim());
+      const r = await kycAPI.generateAadhaarLink(m.memberId.trim(), m.memberName.trim());
       setLink(r.link); setReferenceId(r.referenceId); setHistoryId(r.id); setStatus(r.status);
       showToast('Verification link generated.', 'success');
-      onDone();
+      onDone(false);   // link generated, not yet verified — keep the form open
     } catch (e) {
       showToast(kycErrorMessage(e, 'Could not generate the verification link.'), 'error');
-      onDone();   // a FAILED attempt is still persisted — refresh so it appears in history
+      onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
     } finally { setGenerating(false); }
   };
 
@@ -275,7 +317,7 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
       if (r.pending) showToast('Verification is still under process.', 'info');
       else if (r.status === 'SUCCESS') showToast('Aadhaar verified successfully.', 'success');
       else showToast(r.error || 'Aadhaar verification failed.', 'error');
-      onDone();
+      onDone(r.status === 'SUCCESS');
     } catch (e) {
       showToast(kycErrorMessage(e, 'Could not check the verification status.'), 'error');
     } finally { setChecking(false); }
@@ -352,19 +394,21 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const canVerify = Boolean(m.memberName) && !m.error && inputReady && !verifying;
 
   const verify = async () => {
-    if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
+    if (!m.memberId.trim() || !m.memberName.trim()) { showToast('Enter the Membership ID and Member Name first.', 'error'); return; }
     if (mode === 'id' && !validPanFmt) { showToast('Invalid PAN Number — expected format ABCDE1234F.', 'error'); return; }
     if (mode === 'image' && !img.dataUrl) { showToast('Please upload the PAN card image.', 'error'); return; }
     setVerifying(true); setResult(null);
     try {
       const r = await kycAPI.verifyPanMembership(m.memberId.trim(),
-        mode === 'id' ? { pan: pan.toUpperCase().trim() } : { image: img.dataUrl });
+        mode === 'id'
+          ? { pan: pan.toUpperCase().trim(), memberName: m.memberName.trim() }
+          : { image: img.dataUrl, memberName: m.memberName.trim() });
       setResult({ validPan: r.validPan });
       showToast(r.validPan ? 'PAN verified successfully.' : 'PAN verification completed.', 'success');
-      onDone();
+      onDone(r.validPan);
     } catch (e) {
       showToast(kycErrorMessage(e, 'PAN verification failed.'), 'error');
-      onDone();   // a FAILED attempt is still persisted — refresh so it appears in history
+      onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
     } finally { setVerifying(false); }
   };
 
@@ -406,21 +450,21 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const canVerify = Boolean(m.memberName) && !m.error && inputReady && !verifying;
 
   const verify = async () => {
-    if (!m.memberName) { showToast('Enter a valid Membership ID first.', 'error'); return; }
+    if (!m.memberId.trim() || !m.memberName.trim()) { showToast('Enter the Membership ID and Member Name first.', 'error'); return; }
     if (mode === 'id' && !validFmt) { showToast('Passport File Number is required and must be alphanumeric.', 'error'); return; }
     if (mode === 'image' && !bothImages) { showToast('Both the Front and Back passport images are required.', 'error'); return; }
     setVerifying(true); setResult(null);
     try {
       const r = await kycAPI.verifyPassportMembership(m.memberId.trim(),
         mode === 'id'
-          ? { passportNumber: num.toUpperCase().trim(), dateOfBirth: dob || undefined }
-          : { frontImage: front.dataUrl, backImage: back.dataUrl });
+          ? { passportNumber: num.toUpperCase().trim(), dateOfBirth: dob || undefined, memberName: m.memberName.trim() }
+          : { frontImage: front.dataUrl, backImage: back.dataUrl, memberName: m.memberName.trim() });
       setResult({ validPassport: r.validPassport });
       showToast(r.validPassport ? 'Passport verified successfully.' : 'Passport verification completed.', 'success');
-      onDone();
+      onDone(r.validPassport);
     } catch (e) {
       showToast(kycErrorMessage(e, 'Passport verification failed.'), 'error');
-      onDone();   // a FAILED attempt is still persisted — refresh so it appears in history
+      onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
     } finally { setVerifying(false); }
   };
 
@@ -501,10 +545,48 @@ const pickAadhaarData = (raw: AadhaarDetails | Record<string, unknown> | null | 
   return (raw || {}) as AadhaarDetails;
 };
 
-const AadhaarDetailsBody: React.FC<{ data: AadhaarDetails }> = ({ data: raw }) => {
+// Flatten every scalar in the response into "Path › Label" / value rows, so nothing the provider
+// returned is hidden. The two large blobs are excluded from the dump only because they are
+// rendered properly elsewhere: the photo as an image, the XML in its own raw viewer.
+const DUMP_SKIP = new Set(['xml_file', 'pht', 'photo', 'profile_image']);
+
+const flattenResponse = (node: unknown, prefix = '', out: Array<[string, string]> = [], depth = 0): Array<[string, string]> => {
+  if (depth > 5 || node === undefined || node === null) return out;
+  if (typeof node !== 'object') {
+    if (prefix && String(node) !== '') out.push([prefix, String(node)]);
+    return out;
+  }
+  if (Array.isArray(node)) {
+    node.forEach((v, i) => flattenResponse(v, prefix ? `${prefix} ${i + 1}` : `${i + 1}`, out, depth + 1));
+    return out;
+  }
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    if (DUMP_SKIP.has(k.toLowerCase())) continue;
+    flattenResponse(v, prefix ? `${prefix} › ${prettify(k)}` : prettify(k), out, depth + 1);
+  }
+  return out;
+};
+
+// Locate the raw Aadhaar XML wherever it sits, so it can be offered verbatim.
+const findXml = (node: unknown, depth = 0): string | null => {
+  if (depth > 5 || node == null) return null;
+  if (typeof node === 'string') return /<\?xml|<OfflinePaperlessKyc|<Certificate|<UidData/i.test(node) ? node : null;
+  if (typeof node !== 'object') return null;
+  for (const v of Object.values(node as Record<string, unknown>)) {
+    const hit = findXml(v, depth + 1);
+    if (hit) return hit;
+  }
+  return null;
+};
+
+const AadhaarDetailsBody: React.FC<{ data: AadhaarDetails; photo?: string | null; record?: KycHistoryDetail | null }> = ({ data: raw, photo: serverPhoto, record }) => {
   const data = pickAadhaarData(raw);
   const split = (data.split_address || {}) as Record<string, string>;
-  const photo = extractAadhaarPhoto(data.xml_file);
+  // Prefer the server-parsed photo (finds the XML wherever it hides, handles base64-wrapped
+  // payloads and namespaced <Photo> nodes); fall back to the client-side <Pht> reader.
+  const photo = serverPhoto || extractAadhaarPhoto(data.xml_file);
+  const allRows = flattenResponse(raw);
+  const rawXml = findXml(raw);
   const SPLIT_ORDER = ['country', 'state', 'district', 'subdistrict', 'sub_district', 'vtc', 'village', 'town', 'street', 'house', 'landmark', 'po', 'post_office', 'pincode', 'pin_code', 'pc'];
   const splitEntries = Object.entries(split).sort((a, b) => {
     const ia = SPLIT_ORDER.indexOf(a[0].toLowerCase()); const ib = SPLIT_ORDER.indexOf(b[0].toLowerCase());
@@ -526,6 +608,33 @@ const AadhaarDetailsBody: React.FC<{ data: AadhaarDetails }> = ({ data: raw }) =
       {photo && (
         <Section title="Aadhaar Photo">
           <img src={photo} alt="Aadhaar" style={{ width: 130, height: 160, objectFit: 'cover', borderRadius: 10, border: `1px solid ${T.border}` }} />
+        </Section>
+      )}
+      {record && (
+        <Section title="Verification Record">
+          <KVGrid rows={[
+            ['Status', <StatusPill status={record.status} />],
+            ['Verification Reference', record.referenceId],
+            ['Transaction ID', record.transactionId],
+            ['Method', record.verificationMethod],
+            ['API Status', record.apiStatus],
+            ['Created By', record.createdBy],
+            ['Timestamp (IST)', fmtIST(record.createdAt)],
+            ['Updated (IST)', record.updatedAt ? fmtIST(record.updatedAt) : undefined],
+          ]} />
+        </Section>
+      )}
+      {allRows.length > 0 && (
+        <Section title={`All Response Fields (${allRows.length})`}>
+          <KVGrid rows={allRows.map(([k, v]) => [k, v] as [string, React.ReactNode])} />
+        </Section>
+      )}
+      {rawXml && (
+        <Section title="Aadhaar XML">
+          <details>
+            <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, color: T.blue }}>Show raw XML</summary>
+            <pre style={{ marginTop: 10, maxHeight: 240, overflow: 'auto', background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, padding: 10, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all', color: T.textMain }}>{rawXml}</pre>
+          </details>
         </Section>
       )}
     </>
@@ -725,7 +834,9 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
 
       {!loading && err && <Banner kind="error">{err}</Banner>}
 
-      {!loading && !pendingMsg && isDigilocker && aadhaar && <AadhaarDetailsBody data={aadhaar} />}
+      {!loading && !pendingMsg && isDigilocker && aadhaar && (
+        <AadhaarDetailsBody data={aadhaar} photo={detail?.aadhaarPhoto} record={detail} />
+      )}
       {!loading && !pendingMsg && isAadhaarImage && detail?.response && <OcrDetailsBody response={detail.response} />}
       {!loading && !pendingMsg && item.verificationType === 'PAN' && detail?.response && <PanDetailsBody response={detail.response} />}
       {!loading && !pendingMsg && item.verificationType === 'PASSPORT' && detail?.response && <PassportDetailsBody response={detail.response} />}
@@ -797,7 +908,10 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
   const back = () => { setView('home'); loadHistory(); };
-  const flowProps: FlowProps = { onDone: loadHistory, onBack: back };
+  const flowProps: FlowProps = {
+    onDone: (ok) => { loadHistory(); if (ok) setView('home'); },   // success → back to the dashboard
+    onBack: back,
+  };
 
   return (
     <div>

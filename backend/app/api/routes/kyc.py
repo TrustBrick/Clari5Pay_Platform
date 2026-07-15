@@ -8,9 +8,12 @@ gracefully. No existing schema, route, or data is touched by this module.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import random
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -140,19 +143,133 @@ def _image_b64(data_url: str, field: str = "image") -> str:
     return b64
 
 
-async def _require_member_name(db: AsyncSession, user: User, membership_id: str) -> tuple[str, str]:
-    """Resolve (normalized membership id, member name) or raise 404 'Membership not found.'."""
+# ── Aadhaar XML photograph ────────────────────────────────────────────────────
+# An Aadhaar response carries an XML document that embeds the cardholder photo as base64 — `<Pht>`
+# in the UIDAI offline-KYC XML, `<Photo>` in a DigiLocker certificate — and the XML may itself be
+# base64-wrapped. The photo is derived at READ time and nothing derived is ever persisted, so an
+# unparseable or photo-less response simply yields None and the popup omits the image.
+_XML_HINT = re.compile(r"<\?xml|<OfflinePaperlessKyc|<Certificate|<PrintLetterBarcodeData|<UidData", re.IGNORECASE)
+_PHOTO_TAGS = {"pht", "photo", "image"}
+_MAX_XML_BYTES = 5 * 1024 * 1024
+
+
+def _iter_strings(node, depth: int = 0):
+    """Every string in a nested response, so the XML is found whatever key it hides under."""
+    if depth > 6:
+        return
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _iter_strings(value, depth + 1)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            yield from _iter_strings(value, depth + 1)
+
+
+def _photo_from_xml(xml_text: str) -> str | None:
+    """Base64 JPEG out of an Aadhaar XML document, as a data URL. None if absent or invalid."""
+    if len(xml_text) > _MAX_XML_BYTES:
+        return None
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None                       # invalid XML → derive nothing
+    for el in root.iter():
+        tag = str(el.tag).rsplit("}", 1)[-1].lower()      # drop any namespace
+        text = (el.text or "").strip()
+        if tag in _PHOTO_TAGS and text:
+            b64 = re.sub(r"\s+", "", text)
+            try:
+                base64.b64decode(b64, validate=True)      # only expose a decodable image
+            except (binascii.Error, ValueError):
+                continue
+            return f"data:image/jpeg;base64,{b64}"
+    return None
+
+
+def _maybe_b64_xml(text: str) -> str | None:
+    """Decode a base64-wrapped XML payload, if that's what this string is."""
+    stripped = re.sub(r"\s+", "", text)
+    if len(stripped) < 64 or len(stripped) > _MAX_XML_BYTES or not re.fullmatch(r"[A-Za-z0-9+/=]+", stripped):
+        return None
+    try:
+        decoded = base64.b64decode(stripped, validate=True).decode("utf-8", "ignore")
+    except (binascii.Error, ValueError):
+        return None
+    return decoded if _XML_HINT.search(decoded) else None
+
+
+def _aadhaar_photo(response) -> str | None:
+    """The cardholder photograph embedded in an Aadhaar response's XML section, if any."""
+    if not isinstance(response, (dict, list)):
+        return None
+    texts = list(_iter_strings(response))
+    for text in texts:                              # 1. XML present as-is
+        if _XML_HINT.search(text):
+            photo = _photo_from_xml(text)
+            if photo:
+                return photo
+    for text in texts:                              # 2. XML wrapped in base64
+        decoded = _maybe_b64_xml(text)
+        if decoded:
+            photo = _photo_from_xml(decoded)
+            if photo:
+                return photo
+    return None
+
+
+# ── Membership ID: the primary reference for every KYC lookup ─────────────────
+# An id the merchant transaction records already know resolves to its authoritative Member Name
+# (app.services.membership — the same capture rule the deposit/withdrawal/settlement flows use).
+# An id they do NOT know is still accepted: the operator types the name once, the verification
+# persists id + name onto its own kyc_verification_history row, and every later lookup for that id
+# auto-fills from there. No second "member" record is ever created, so there is nothing to
+# duplicate — the history IS the register, keyed by membership_id.
+NAME_REQUIRED_MSG = "Member Name is required for a Membership ID that is not yet on record."
+
+
+async def _kyc_registered_name(db: AsyncSession, user: User, mid: str) -> str | None:
+    """Latest Member Name a previous KYC verification captured for this Membership ID."""
+    return (await db.execute(
+        select(KycVerificationHistory.member_name).where(
+            KycVerificationHistory.merchant_business == user.name,
+            KycVerificationHistory.membership_id == mid,
+            KycVerificationHistory.member_name.is_not(None),
+            KycVerificationHistory.member_name != "",
+        ).order_by(KycVerificationHistory.id.desc()).limit(1)
+    )).scalars().first()
+
+
+async def _on_record_name(db: AsyncSession, user: User, mid: str) -> str | None:
+    """The name on record for a Membership ID — merchant membership pool first, then KYC's own
+    register. None means the id has never been seen and the operator may name it by hand."""
+    return await lookup_member_name(db, user, mid) or await _kyc_registered_name(db, user, mid)
+
+
+async def _resolve_subject(db: AsyncSession, user: User, membership_id: str,
+                           member_name: str | None = None) -> tuple[str, str]:
+    """(normalized Membership ID, Member Name) for a verification.
+
+    Existing id -> the on-record name wins (authoritative; an entered name is ignored rather than
+    allowed to fork the membership). New id -> the entered name, which this verification then
+    stores, making the id auto-fill from then on.
+    """
     mid = normalize_member_id(membership_id)
     if not mid:
-        raise HTTPException(status_code=404, detail="Membership not found.")
-    name = await lookup_member_name(db, user, mid)
-    if not name:
-        raise HTTPException(status_code=404, detail="Membership not found.")
-    return mid, name
+        raise HTTPException(status_code=400, detail="Membership ID is required.")
+    existing = await _on_record_name(db, user, mid)
+    if existing:
+        return mid, existing
+    entered = (member_name or "").strip()
+    if not entered:
+        raise HTTPException(status_code=400, detail=NAME_REQUIRED_MSG)
+    return mid, entered
 
 
 class MembershipRequest(BaseModel):
     membershipId: str
+    memberName: str | None = None       # used only when the Membership ID is not yet on record
 
 
 class AadhaarStatusRequest(BaseModel):
@@ -161,12 +278,14 @@ class AadhaarStatusRequest(BaseModel):
 
 class PanVerifyRequest(BaseModel):
     membershipId: str
+    memberName: str | None = None   # used only when the Membership ID is not yet on record
     pan: str | None = None          # ID Number method
     image: str | None = None        # Image Upload method (base64 data URL of the PAN card)
 
 
 class PassportVerifyRequest(BaseModel):
     membershipId: str
+    memberName: str | None = None       # used only when the Membership ID is not yet on record
     passportNumber: str | None = None   # ID Number (File Number) method
     dateOfBirth: str | None = None
     frontImage: str | None = None       # Image Upload method — front page (base64 data URL)
@@ -175,11 +294,13 @@ class PassportVerifyRequest(BaseModel):
 
 class AadhaarImageRequest(BaseModel):
     membershipId: str
+    memberName: str | None = None       # used only when the Membership ID is not yet on record
     image: str                          # base64 data URL of the Aadhaar card
 
 
 class OcrVerifyRequest(BaseModel):
     membershipId: str
+    memberName: str | None = None       # used only when the Membership ID is not yet on record
     documentType: str
     fileName: str
     fileData: str          # base64 data URL of the uploaded document
@@ -196,10 +317,29 @@ async def kyc_member_lookup(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_kyc_user),
 ):
-    """Auto-fill the Member Name for a Membership ID within the caller's business pool.
-    404 'Membership not found.' when the ID has never been used."""
-    mid, name = await _require_member_name(db, user, membership_id)
-    return {"membershipId": mid, "memberName": name}
+    """Look up a Membership ID within the caller's business pool.
+
+    Deliberately never 404s. A known id returns its authoritative Member Name plus the KYC already
+    on record for it, so the page can auto-fill both without a second call. An unknown id returns
+    ``exists: false`` and the operator names it by hand — the verification then persists id + name,
+    and the next lookup for that id auto-fills.
+    """
+    mid = normalize_member_id(membership_id)
+    if not mid:
+        raise HTTPException(status_code=400, detail="Membership ID is required.")
+    name = await _on_record_name(db, user, mid)
+    rows = (await db.execute(
+        select(KycVerificationHistory).where(
+            KycVerificationHistory.merchant_business == user.name,
+            KycVerificationHistory.membership_id == mid,
+        ).order_by(KycVerificationHistory.id.desc())
+    )).scalars().all()
+    return {
+        "membershipId": mid,
+        "memberName": name,
+        "exists": bool(name),
+        "kyc": [_history_summary(r) for r in rows],
+    }
 
 
 @router.post("/aadhaar/generate-link")
@@ -209,7 +349,7 @@ async def aadhaar_generate_link(
     user: User = Depends(get_current_kyc_user),
 ):
     """Generate a DigiLocker Aadhaar verification link for a member and record the attempt."""
-    mid, member_name = await _require_member_name(db, user, body.membershipId)
+    mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
     reference_id = _gen_reference("AADHAAR")
     request_payload = {"reference_id": reference_id, "source": "AADHAAR"}
     data, http_status = await kyc_service.melento_generate_aadhaar_url(reference_id)
@@ -311,7 +451,7 @@ async def aadhaar_verify_image(
     """Verify Aadhaar from an uploaded card image via the General-Document (OCR) API — an
     alternative to the DigiLocker flow. Always sends verification=true and doc_type=aadhaar_card
     (fixed, not user-editable). Recorded as an AADHAAR verification (Image Upload method)."""
-    mid, member_name = await _require_member_name(db, user, body.membershipId)
+    mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
     b64 = _image_b64(body.image, "Aadhaar card image")
 
     reference_id = _gen_reference("AADHAAR")
@@ -357,7 +497,7 @@ async def pan_verify_membership(
     user: User = Depends(get_current_kyc_user),
 ):
     """Verify a PAN for a member (by PAN number OR uploaded card image) and record it."""
-    mid, member_name = await _require_member_name(db, user, body.membershipId)
+    mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
 
     reference_id = _gen_reference("PAN")
     if body.image:
@@ -413,7 +553,7 @@ async def passport_verify_membership(
     user: User = Depends(get_current_kyc_user),
 ):
     """Verify a passport for a member (by File Number OR front+back card images) and record it."""
-    mid, member_name = await _require_member_name(db, user, body.membershipId)
+    mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
 
     reference_id = _gen_reference("PASSPORT")
     dob = (body.dateOfBirth or "").strip() or None
@@ -477,7 +617,7 @@ async def ocr_verify_membership(
     user: User = Depends(get_current_kyc_user),
 ):
     """Run General-Document (OCR) verification for a member and record the request/response."""
-    mid, member_name = await _require_member_name(db, user, body.membershipId)
+    mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
 
     doc_type = (body.documentType or "").strip().lower()
     if doc_type not in OCR_DOC_TYPES:
@@ -569,12 +709,15 @@ async def kyc_history_detail(
         except (ValueError, TypeError):
             return None
 
+    response = _parse(row.response_json)
     return {
         **_history_summary(row),
         "generatedLink": row.generated_link,
         "apiStatus": row.api_status,
         "errorMessage": row.error_message,
         "request": _parse(row.request_json),
-        "response": _parse(row.response_json),
+        "response": response,
+        # Aadhaar photo parsed out of the response's XML section (None when absent/unparseable).
+        "aadhaarPhoto": _aadhaar_photo(response),
         "updatedAt": (row.updated_at.isoformat() + "Z") if row.updated_at else None,
     }

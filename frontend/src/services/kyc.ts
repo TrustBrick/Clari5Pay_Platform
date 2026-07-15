@@ -53,7 +53,17 @@ export interface KycHistoryDetail extends KycHistoryItem {
   errorMessage?: string | null;
   request?: Record<string, unknown> | null;
   response?: Record<string, unknown> | null;
+  /** Aadhaar photo parsed server-side out of the response's XML section (data URL), if present. */
+  aadhaarPhoto?: string | null;
   updatedAt?: string | null;
+}
+
+/** Membership lookup. Never 404s: `exists: false` means the operator names the ID by hand. */
+export interface KycMemberLookup {
+  membershipId: string;
+  memberName: string | null;
+  exists: boolean;
+  kyc: KycHistoryItem[];      // KYC already on record for this Membership ID
 }
 
 export interface AadhaarLinkResult {
@@ -122,36 +132,40 @@ export const OCR_DOC_TYPES: Array<{ value: string; label: string }> = [
 
 // ── Service methods ─────────────────────────────────────────────────────────────
 export const kycAPI = {
-  // Membership lookup → Member Name. Throws 404 ("Membership not found.") for unknown IDs.
-  lookupMember: async (membershipId: string): Promise<{ membershipId: string; memberName: string }> =>
+  // Membership lookup. Never 404s — an unknown ID returns exists:false and the operator supplies
+  // the Member Name, which the verification then persists against that ID.
+  lookupMember: async (membershipId: string): Promise<KycMemberLookup> =>
     (await api.get(`/api/kyc/member/${encodeURIComponent(membershipId)}`)).data,
 
-  generateAadhaarLink: async (membershipId: string): Promise<AadhaarLinkResult> =>
-    (await api.post<AadhaarLinkResult>('/api/kyc/aadhaar/generate-link', { membershipId })).data,
+  // `memberName` is only used when the Membership ID is not yet on record; for a known ID the
+  // server keeps its authoritative name and ignores what was sent.
+  generateAadhaarLink: async (membershipId: string, memberName?: string): Promise<AadhaarLinkResult> =>
+    (await api.post<AadhaarLinkResult>('/api/kyc/aadhaar/generate-link', { membershipId, memberName })).data,
 
   getAadhaarStatus: async (historyId: number): Promise<AadhaarStatusResult> =>
     (await api.post<AadhaarStatusResult>('/api/kyc/aadhaar/status', { historyId })).data,
 
   // PAN — verify by ID Number (pan) OR by uploaded card image (base64 data URL). The backend
   // derives source_type ("id" / "base64") from which field is supplied.
-  verifyPanMembership: async (membershipId: string, opts: { pan?: string; image?: string }): Promise<PanVerifyResult> =>
+  verifyPanMembership: async (membershipId: string, opts: { pan?: string; image?: string; memberName?: string }): Promise<PanVerifyResult> =>
     (await api.post<PanVerifyResult>('/api/kyc/pan/verify-membership', { membershipId, ...opts })).data,
 
   // Passport — verify by File Number (+ optional dob) OR by front+back card images (base64).
   verifyPassportMembership: async (
     membershipId: string,
-    opts: { passportNumber?: string; dateOfBirth?: string; frontImage?: string; backImage?: string },
+    opts: { passportNumber?: string; dateOfBirth?: string; frontImage?: string; backImage?: string; memberName?: string },
   ): Promise<PassportVerifyResult> =>
     (await api.post<PassportVerifyResult>('/api/kyc/passport/verify-membership', { membershipId, ...opts })).data,
 
   // Aadhaar — verify from an uploaded card image (General-Document OCR, doc_type=aadhaar_card).
-  verifyAadhaarImage: async (membershipId: string, image: string): Promise<OcrVerifyResult> =>
-    (await api.post<OcrVerifyResult>('/api/kyc/aadhaar/verify-image', { membershipId, image })).data,
+  verifyAadhaarImage: async (membershipId: string, image: string, memberName?: string): Promise<OcrVerifyResult> =>
+    (await api.post<OcrVerifyResult>('/api/kyc/aadhaar/verify-image', { membershipId, image, memberName })).data,
 
   verifyOcrMembership: async (
     membershipId: string, documentType: string, fileName: string, fileData: string, verification: boolean,
+    memberName?: string,
   ): Promise<OcrVerifyResult> =>
-    (await api.post<OcrVerifyResult>('/api/kyc/ocr/verify-membership', { membershipId, documentType, fileName, fileData, verification })).data,
+    (await api.post<OcrVerifyResult>('/api/kyc/ocr/verify-membership', { membershipId, documentType, fileName, fileData, verification, memberName })).data,
 
   listHistory: async (): Promise<KycHistoryItem[]> =>
     (await api.get<KycHistoryItem[]>('/api/kyc/history')).data,

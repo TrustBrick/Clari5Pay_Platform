@@ -85,6 +85,10 @@ const App: React.FC = () => {
   const { user, logout } = useAuth();
   const [page, setPage] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Bumped on every sidebar click, including a click on the page already shown (which changes no
+  // state and so would otherwise leave that page's internal view untouched). KYC Management keys
+  // off this to drop any open verification form and land back on its dashboard.
+  const [navTick, setNavTick] = useState(0);
 
   // Reset to the role's dashboard whenever the logged-in user changes (login / account switch).
   const prevUserId = React.useRef<number | null>(null);
@@ -118,7 +122,9 @@ const App: React.FC = () => {
       approvals: <ApprovalsPage user={user} />,
       cancel: <CancelRequestPage {...props} />,
       transactions: <TransactionHistory {...props} />,
-      kyc: <KYCPage user={user} />,
+      // Keyed by navTick so clicking "KYC Management" always remounts to the KYC dashboard,
+      // closing whichever verification form happened to be open.
+      kyc: <KYCPage key={navTick} user={user} />,
       // Agent Management — demo-gated (see pageAllowed); keys are inert on Production builds.
       ...(IS_DEMO ? {
         'agent-dashboard': <AgentDashboardPage {...props} />,
@@ -201,7 +207,7 @@ const App: React.FC = () => {
       <Sidebar
         user={user}
         active={activePage}
-        onNav={(key) => { setPage(key); setSidebarOpen(false); }}
+        onNav={(key) => { setPage(key); setNavTick((t) => t + 1); setSidebarOpen(false); }}
         onLogout={logout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
