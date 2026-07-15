@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel } from '../utils/helpers';
+import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel, clientApproverLabel, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { Icon, type IconName } from '../components/Icon';
@@ -408,7 +408,7 @@ const SearchTab: React.FC<{ data: ReportData; onPick: (id: string) => void }> = 
     (!from || (r.date || '') >= from) && (!to || (r.date || '') <= to) &&
     (!type || r.type === type) &&
     (!status || r.status === status) &&
-    (!minA || r.amount >= Number(minA)) && (!maxA || r.amount <= Number(maxA))
+    (!minA || r.amount >= Number(parseIndianAmount(minA))) && (!maxA || r.amount <= Number(parseIndianAmount(maxA)))
   );
 
   const statuses = Array.from(new Set(data.transactions.map(r => r.status)));
@@ -424,8 +424,8 @@ const SearchTab: React.FC<{ data: ReportData; onPick: (id: string) => void }> = 
           <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} options={[{ value: '', label: 'All' }, ...statuses.map(s => ({ value: s, label: prettyStatusR(s) }))]} />
           <Input label="From Date" type="date" value={from} onChange={e => setFrom(e.target.value)} />
           <Input label="To Date" type="date" value={to} onChange={e => setTo(e.target.value)} />
-          <Input label="Min Amount" type="number" value={minA} onChange={e => setMinA(e.target.value)} />
-          <Input label="Max Amount" type="number" value={maxA} onChange={e => setMaxA(e.target.value)} />
+          <Input label="Min Amount" type="text" inputMode="decimal" value={minA} onChange={e => setMinA(formatIndianAmountInput(e.target.value))} />
+          <Input label="Max Amount" type="text" inputMode="decimal" value={maxA} onChange={e => setMaxA(formatIndianAmountInput(e.target.value))} />
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
           <Btn size="sm" variant="secondary" onClick={() => exportRowsXlsx(rows, `clari5pay-search-${today()}.xlsx`)}><Icon name="excel" size={14} /> Download Excel</Btn>
@@ -491,13 +491,13 @@ const PAYMENT_METHODS = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'CASH', 'CRYPTO'
 
 interface RFilters {
   ref: string; memberId: string; memberName: string; combined: string; agentCode: string;
-  approvedBy: string; processedBy: string; type: string; status: string; method: string;
+  approvedBy: string; type: string; status: string; method: string;
   riskLevel: string; minA: string; maxA: string; exactA: string; datePreset: string; from: string; to: string;
   fromTime: string; toTime: string;   // Custom Range time-of-day bounds (IST, "HH:MM")
   business: string;   // admin Reports only — client-side business-name filter (all-merchants view)
 }
 const EMPTY_FILTERS: RFilters = {
-  ref: '', memberId: '', memberName: '', combined: '', agentCode: '', approvedBy: '', processedBy: '',
+  ref: '', memberId: '', memberName: '', combined: '', agentCode: '', approvedBy: '',
   type: '', status: '', method: '', riskLevel: '', minA: '', maxA: '', exactA: '', datePreset: 'all', from: '', to: '',
   fromTime: '', toTime: '',
   business: '',
@@ -537,11 +537,14 @@ const matchesFilters = (r: ReportRow, f: RFilters): boolean => {
   return inc(r.ref, f.ref) && inc(r.memberId, f.memberId) && inc(r.member, f.memberName)
     && inc(r.business, f.business)
     && (!f.combined || entityLabel(r).toLowerCase().includes(f.combined.toLowerCase()))
-    && inc(r.agentCode, f.agentCode) && inc(r.approvedBy, f.approvedBy) && inc(r.processedBy, f.processedBy)
+    // Approver matches the role the client actually sees (Supervisor / Manager), not the internal
+    // admin name behind it — searching an internal name must never be able to identify rows.
+    && (!f.approvedBy || (r.approvedBy ? clientApproverLabel(r.type) : '').toLowerCase().includes(f.approvedBy.toLowerCase()))
+    && inc(r.agentCode, f.agentCode)
     && (!f.type || r.type === f.type) && (!f.status || r.status === f.status)
     && (!f.method || (r.paymentMethod || '').toUpperCase() === f.method) && (!f.riskLevel || (r.riskLevel || '') === f.riskLevel)
-    && (!f.minA || r.amount >= Number(f.minA)) && (!f.maxA || r.amount <= Number(f.maxA))
-    && (!f.exactA || r.amount === Number(f.exactA))
+    && (!f.minA || r.amount >= Number(parseIndianAmount(f.minA))) && (!f.maxA || r.amount <= Number(parseIndianAmount(f.maxA)))
+    && (!f.exactA || r.amount === Number(parseIndianAmount(f.exactA)))
     && inDateWindow(r, f.datePreset, f.from, f.to, f.fromTime, f.toTime);
 };
 const totalsOf = (rows: ReportRow[]) => {
@@ -556,7 +559,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
   const c = data.cards; const now = new Date().toLocaleString('en-IN'); const tot = totalsOf(rows);
   const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
   const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
-  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy)}</td><td>${esc(r.processedBy)}</td></tr>`).join('');
+  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type) : '—')}</td></tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay Report</title><style>
     @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
     .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0052cc;padding-bottom:10px}
@@ -573,9 +576,9 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
       ${kpi('Total Deposits', fmt(c.totalDepositAmount))}${kpi('Total Withdrawals', fmt(c.totalWithdrawalAmount))}${kpi('Total Settlements', fmt(c.totalSettlementAmount))}
       ${kpi('Available Balance', fmt(c.availableBalance))}</div>
     <h2>Transactions (filtered)</h2>
-    <table><thead><tr><th>Reference</th><th>Recipient</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th><th>Processed By</th></tr></thead>
-      <tbody>${body || '<tr><td colspan="10" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>'}</tbody>
-      <tfoot><tr><td colspan="3">Footer Totals (filtered)</td><td class="amt">Dep ${esc(fmt(tot.deposits))}</td><td colspan="2">Wd ${esc(fmt(tot.withdrawals))}</td><td colspan="2">Set ${esc(fmt(tot.settlements))}</td><td colspan="2">Available ${esc(fmt(c.availableBalance))}</td></tr></tfoot>
+    <table><thead><tr><th>Reference</th><th>Recipient</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th></tr></thead>
+      <tbody>${body || '<tr><td colspan="9" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>'}</tbody>
+      <tfoot><tr><td colspan="3">Footer Totals (filtered)</td><td class="amt">Dep ${esc(fmt(tot.deposits))}</td><td colspan="2">Wd ${esc(fmt(tot.withdrawals))}</td><td colspan="2">Set ${esc(fmt(tot.settlements))}</td><td>Available ${esc(fmt(c.availableBalance))}</td></tr></tfoot>
     </table>
     <footer>Clari5Pay — confidential. Generated from live platform data, honouring the selected filters.</footer>
   </body></html>`);
@@ -660,19 +663,24 @@ const TREASURY_HEADERS = ['Unique Transaction Reference', 'Member Name', 'Member
 const TREASURY_ALIGNS: Array<'l' | 'r'> = ['l', 'l', 'l', 'l', 'l', 'l', 'l', 'r', 'l'];
 // Operator = the actual logged-in operator who performed the transaction (its creator),
 // shown as "Name (Role)" — e.g. "Rahul Kumar (Deposit Operator)". Distinct from the Approver.
+// This is the client's OWN merchant-side staff (resolved only from their own business pool), not
+// an internal Clari5Pay user, so it stays visible to them.
 const operatorLabel = (r: ReportRow): string => {
   const nm = (r.operator || '').trim();
   const role = merchantRoleLabel(r.operatorRole);
   if (nm && role) return `${nm} (${role})`;
   return nm || '—';
 };
+// Approver shown to the client = their own approval hierarchy role, never the internal admin's
+// name. Gated on the row actually having been approved so pending rows still read '—'.
+const approverCell = (r: ReportRow): string => (r.approvedBy ? clientApproverLabel(r.type) : '—');
 const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
   ({ rows, businessName, generatedBy, rangeLabel }) => {
     const toast = useToast();
     const data = rows;   // all transactions honouring the advanced filters (incl. Status)
     const opCsv = (r: ReportRow) => ((r.operator || '').trim() ? operatorLabel(r) : '');
-    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy || '', opCsv(r), r.amount, methodLabel(r)]);
-    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy || '—', operatorLabel(r), fmt(r.amount), methodLabel(r)]);
+    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy ? clientApproverLabel(r.type) : '', opCsv(r), r.amount, methodLabel(r)]);
+    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), approverCell(r), operatorLabel(r), fmt(r.amount), methodLabel(r)]);
     const onExcel = () => {
       downloadXlsx(`clari5pay-treasury-${today()}.xlsx`, [{
         name: 'Treasury Report',
@@ -682,7 +690,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
           { header: 'Membership ID', get: r => r.memberId || '' },
           { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
           { header: 'Status', get: r => prettyStatusR(r.status) },
-          { header: 'Approver', get: r => r.approvedBy || '' },
+          { header: 'Approver', get: r => (r.approvedBy ? clientApproverLabel(r.type) : '') },
           { header: 'Operator', get: r => ((r.operator || '').trim() ? operatorLabel(r) : '') },
           { header: 'Transaction Amount', get: r => Number(r.amount), width: 16, z: INR_NUMFMT },
           { header: 'Transaction Method', get: r => methodLabel(r) },
@@ -713,7 +721,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
                     <td style={tdR}>{r.memberId || '—'}</td>
                     <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
                     <td style={tdR}>{prettyStatusR(r.status)}</td>
-                    <td style={tdR}>{r.approvedBy || '—'}</td>
+                    <td style={tdR}>{approverCell(r)}</td>
                     <td style={tdR}>{operatorLabel(r)}</td>
                     <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
                     <td style={tdR}>{methodLabel(r)}</td>
@@ -982,12 +990,11 @@ const ReportsView: React.FC<ReportsViewProps> = ({
           <Sel label="Transaction Type" value={draft.type} onChange={e => set('type', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'deposit', label: 'Deposit' }, { value: 'withdrawal', label: 'Withdrawal' }, { value: 'settlement', label: 'Settlement' }]} />
           <Sel label="Status" value={draft.status} onChange={e => set('status', e.target.value)} options={[{ value: '', label: 'All' }, ...statuses.map(s => ({ value: s, label: prettyStatusR(s) }))]} />
           <Sel label="Payment Method" value={draft.method} onChange={e => set('method', e.target.value)} options={[{ value: '', label: 'All' }, ...PAYMENT_METHODS.map(m => ({ value: m, label: depositTypeLabel(m) }))]} />
-          <Input label="Approved By" value={draft.approvedBy} onChange={e => set('approvedBy', e.target.value)} />
-          <Input label="Processed By" value={draft.processedBy} onChange={e => set('processedBy', e.target.value)} />
+          <Input label="Approved By" value={draft.approvedBy} onChange={e => set('approvedBy', e.target.value)} placeholder="Supervisor / Manager" />
           <Sel label="Risk Level" value={draft.riskLevel} onChange={e => set('riskLevel', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'LOW', label: 'Low' }, { value: 'HIGH', label: 'High' }]} />
-          <Input label="Minimum Amount" type="number" value={draft.minA} onChange={e => set('minA', e.target.value)} />
-          <Input label="Maximum Amount" type="number" value={draft.maxA} onChange={e => set('maxA', e.target.value)} />
-          <Input label="Exact Amount" type="number" value={draft.exactA} onChange={e => set('exactA', e.target.value)} />
+          <Input label="Minimum Amount" type="text" inputMode="decimal" value={draft.minA} onChange={e => set('minA', formatIndianAmountInput(e.target.value))} />
+          <Input label="Maximum Amount" type="text" inputMode="decimal" value={draft.maxA} onChange={e => set('maxA', formatIndianAmountInput(e.target.value))} />
+          <Input label="Exact Amount" type="text" inputMode="decimal" value={draft.exactA} onChange={e => set('exactA', formatIndianAmountInput(e.target.value))} />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12 }}>
           <Btn size="sm" onClick={applyFilters} disabled={applying}>{applying ? <><Icon name="pending" size={14} /> Applying…</> : <><Icon name="search" size={14} /> Apply Filters</>}</Btn>
@@ -1022,11 +1029,11 @@ const ReportsView: React.FC<ReportsViewProps> = ({
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: T.canvas }}>
-                {['Reference Number', 'Recipient', 'Transaction Type', 'Amount', 'Status', 'Date & Time', 'Payment Method', 'Available Balance', 'Approved By', 'Processed By'].map(h => <th key={h} style={thR}>{h}</th>)}
+                {['Reference Number', 'Recipient', 'Transaction Type', 'Amount', 'Status', 'Date & Time', 'Payment Method', 'Available Balance', 'Approved By'].map(h => <th key={h} style={thR}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={10} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No transactions match the selected filters.</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={9} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No transactions match the selected filters.</td></tr>}
               {filtered.slice(0, 500).map(r => (
                 <tr key={r.ref} className="c5-row-hover" style={{ cursor: r.memberId ? 'pointer' : 'default' }} onClick={() => r.memberId && setProfileId(r.memberId)}>
                   <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{r.ref}</td>
@@ -1037,8 +1044,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
                   <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
                   <td style={tdR}>{r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—'}</td>
                   <td style={{ ...tdR, textAlign: 'right', color: T.textMuted }}>{r.availableBalance != null ? fmt(r.availableBalance) : '—'}</td>
-                  <td style={{ ...tdR, color: T.textMuted }}>{r.approvedBy || '—'}</td>
-                  <td style={{ ...tdR, color: T.textMuted }}>{r.processedBy || '—'}</td>
+                  <td style={{ ...tdR, color: T.textMuted }}>{approverCell(r)}</td>
                 </tr>
               ))}
             </tbody>

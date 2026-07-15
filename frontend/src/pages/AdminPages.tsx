@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
@@ -1308,7 +1308,7 @@ export const AdminAccountsPage: React.FC = () => {
   const create = async () => {
     if(!form.account_name||!form.account_number||!form.ifsc_code||!form.bank_name||!form.branch){ showToast('Fill all fields','error'); return; }
     try {
-      await accountAPI.create({ ...form, highest_credit: parseFloat(form.highest_credit) || 0, highest_debit: parseFloat(form.highest_debit) || 0 });
+      await accountAPI.create({ ...form, highest_credit: parseFloat(parseIndianAmount(form.highest_credit)) || 0, highest_debit: parseFloat(parseIndianAmount(form.highest_debit)) || 0 });
       await reload();
       setShowCreate(false);
       setForm(empty);
@@ -1624,8 +1624,8 @@ export const AdminAccountsPage: React.FC = () => {
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
             <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>
-            <Input label="Highest Credit (₹)" type="number" value={form.highest_credit} onChange={e=>set('highest_credit',e.target.value)} hint="Default 0 — auto-updates on higher deposits"/>
-            <Input label="Highest Debit (₹)" type="number" value={form.highest_debit} onChange={e=>set('highest_debit',e.target.value)} hint="Starting value — auto-rises on a larger debit; alerts on any debit below it"/>
+            <Input label="Highest Credit (₹)" type="text" inputMode="decimal" value={form.highest_credit} onChange={e=>set('highest_credit',formatIndianAmountInput(e.target.value))} hint="Default 0 — auto-updates on higher deposits"/>
+            <Input label="Highest Debit (₹)" type="text" inputMode="decimal" value={form.highest_debit} onChange={e=>set('highest_debit',formatIndianAmountInput(e.target.value))} hint="Starting value — auto-rises on a larger debit; alerts on any debit below it"/>
           </div>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>

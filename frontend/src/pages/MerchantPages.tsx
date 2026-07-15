@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, SearchSelect, PhoneField } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
@@ -1462,12 +1462,18 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
   const created = d.createdAt ? formatDateTime(d.createdAt) : `${d.date} ${d.time}`;
   const paymentMethod = d.depositType ? depositTypeLabel(d.depositType) : (d.payoutMode || '—');
 
-  // Timeline of status changes: creation + each recorded approval action.
+  // Timeline of status changes: creation + each recorded approval action. This modal is
+  // client-facing (only role === 'MERCHANT' users reach it — see isOverseerRole), so actions taken
+  // by an internal Clari5Pay role show the role alone; the client's own staff keep their names.
+  // The internal audit log is unaffected and still records the real user.
   const timeline: { label: string; who: string; at: string }[] = [
     { label: 'Created', who: `${d.creatorUsername || d.merchant}`, at: created },
     ...((d.remarksHistory || []).map(r => ({
       label: r.action.charAt(0) + r.action.slice(1).toLowerCase(),
-      who: `${merchantRoleLabel(r.role) || r.role} · ${r.user}`, at: r.at,
+      who: isInternalRole(r.role)
+        ? (merchantRoleLabel(r.role) || r.role)
+        : `${merchantRoleLabel(r.role) || r.role} · ${r.user}`,
+      at: r.at,
     }))),
   ];
 
@@ -1513,12 +1519,15 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         </DetailSection>
       )}
 
-      {(d.approvedBy || d.supervisorName || d.managerName || d.processedBy) && (
+      {/* Client-facing: the Approver is the client's own approval role (Deposit → Supervisor,
+          Withdrawal/Settlement → Manager), never the internal admin who actioned it. Supervisor
+          and Manager below are the client's OWN staff, so they keep their names. The internal
+          "Processed By (Admin)" row is not shown to the client — the audit log still records it. */}
+      {(d.approvedBy || d.supervisorName || d.managerName) && (
         <DetailSection title="Approval Information">
-          {d.approvedBy && <SlipRow k="Approved By" v={d.approvedBy} />}
+          {d.approvedBy && <SlipRow k="Approved By" v={clientApproverLabel(d.type)} />}
           {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', d.supervisorUsername)}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
           {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', d.managerUsername)}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
-          {d.processedBy && <SlipRow k="Processed By (Admin)" v={`${nameWithRole(d.processedBy, 'ADMIN', '', d.adminUsername)}${d.adminActionAt ? ` · ${formatDateTime(d.adminActionAt)}` : ''}`} />}
         </DetailSection>
       )}
 
@@ -1564,7 +1573,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         <DetailSection title="Remarks">
           {d.remarksHistory.map((r, i) => (
             <div key={i} style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 10, marginBottom: 8 }}>
-              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {nameWithRole(r.user, r.role, '', r.username)} — {r.action}</p>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{clientRemarkActor(r.role, r.user, r.username)} — {r.action}</p>
               <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{r.remark}</p>
               <p style={{ margin: '2px 0 0', fontSize: 10, color: T.textMuted }}>{r.at}</p>
             </div>
@@ -1572,12 +1581,14 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         </DetailSection>
       )}
 
+      {/* Client-facing audit view: an internal Clari5Pay actor shows as the role alone, with no
+          username and no IP — the full entry stays intact in the internal audit log. */}
       <DetailSection title="Audit History">
         {audit.length === 0 ? <p style={{ fontSize: 12, color: T.textMuted, margin: 0 }}>No audit entries.</p> : audit.map(a => (
           <div key={a.id} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${T.borderLight}`, fontSize: 12 }}>
             <span style={{ fontWeight: 700, color: T.textMain, minWidth: 150 }}>{a.action}</span>
-            <span style={{ color: T.textMuted, flex: 1 }}>{a.username}{a.role ? ` (${a.role})` : ''}{a.reason ? ` — ${a.reason}` : ''}</span>
-            <span style={{ color: T.textMuted, whiteSpace: 'nowrap' }}>{formatDateTime(a.createdAt)}{a.ip ? ` · ${a.ip}` : ''}</span>
+            <span style={{ color: T.textMuted, flex: 1 }}>{clientAuditActor(a.role, a.username)}{a.reason ? ` — ${a.reason}` : ''}</span>
+            <span style={{ color: T.textMuted, whiteSpace: 'nowrap' }}>{formatDateTime(a.createdAt)}{a.ip && !isInternalRole(a.role) ? ` · ${a.ip}` : ''}</span>
           </div>
         ))}
       </DetailSection>
@@ -1692,7 +1703,7 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
           <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Remarks History</p>
           {d.remarksHistory.map((r, i) => (
             <div key={i} style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 10, marginBottom: 8 }}>
-              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{merchantRoleLabel(r.role) || r.role} · {nameWithRole(r.user, r.role, '', r.username)} — {r.action}</p>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: T.textMain }}>{clientRemarkActor(r.role, r.user, r.username)} — {r.action}</p>
               <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{r.remark}</p>
               <p style={{ margin: '2px 0 0', fontSize: 10, color: T.textMuted }}>{r.at}</p>
             </div>
