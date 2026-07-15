@@ -169,7 +169,7 @@ const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 // Supervisor-only. Operators (Data/Deposit/Withdrawal) get the management pages their role permits.
 const AGENT_SUBTABS: Record<string, string[]> = {
   SUPERVISOR: ['agent-overview', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-settlement-mgmt', 'agent-manage', 'agent-audit', 'agent-reports'],
-  MANAGER: ['agent-overview', 'agent-txn-reports', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-manage', 'agent-audit', 'agent-reports'],
+  MANAGER: ['agent-overview', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-manage', 'agent-audit', 'agent-reports'],
   DEO: ['agent-overview', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage'],
   DEPOSIT_OPERATOR: ['agent-overview', 'agent-txn-reports', 'agent-deposit-mgmt'],
   WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-txn-reports', 'agent-withdrawal-mgmt'],

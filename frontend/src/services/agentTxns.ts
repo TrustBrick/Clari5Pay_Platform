@@ -17,6 +17,21 @@ export type AgentTxnStatus =
 export const AGENT_COMPLETED_STATUSES: AgentTxnStatus[] = ['APPROVED', 'DEPOSITED', 'COMPLETED'];
 export const AGENT_FINAL_STATUSES: AgentTxnStatus[] = [...AGENT_COMPLETED_STATUSES, 'REJECTED'];
 
+/** A payout account saved against a Membership ID in the isolated agent register. */
+export interface AgentMemberAccount {
+  id: number;
+  membershipId: string;
+  memberName?: string | null;
+  accountHolder?: string | null;
+  accountNumber?: string | null;
+  ifsc?: string | null;
+  bankName?: string | null;
+  branch?: string | null;
+  upiId?: string | null;
+  isDefault?: boolean;
+  label?: string | null;
+}
+
 /** An AGENT account offered at the Account Submission step (never a merchant account). */
 export interface AgentAccountOption {
   id: number;
@@ -81,6 +96,14 @@ export interface AgentTxnRow {
   supervisorName?: string | null;
   managerName?: string | null;
   reviewRemark?: string | null;
+  // Withdrawal payout account (where the money is sent).
+  payoutAccountId?: number | null;
+  payoutAccountHolder?: string | null;
+  payoutAccountNumber?: string | null;
+  payoutIfsc?: string | null;
+  payoutBankName?: string | null;
+  payoutBranch?: string | null;
+  payoutUpiId?: string | null;
   // Mark Deposit.
   depositedBy?: string | null;
   depositedDate?: string | null;
@@ -136,6 +159,8 @@ export interface AgentMemberLookup {
     country?: string | null; state?: string | null; location?: string | null;
     category?: string | null; depositId: number; reference: string;
   };
+  /** Payout accounts already on file for this membership (auto-fetched on the form). */
+  savedAccounts?: AgentMemberAccount[];
 }
 
 export interface AgentDepositBody {
@@ -163,6 +188,15 @@ export interface AgentDepositBody {
 }
 export interface AgentWithdrawalBody extends AgentDepositBody {
   linkedDepositId?: number | null;
+  // Payout account — an existing saved account, or new details saved for re-use.
+  payoutAccountId?: number | null;
+  payoutAccountHolder?: string;
+  payoutAccountNumber?: string;
+  payoutIfsc?: string;
+  payoutBankName?: string;
+  payoutBranch?: string;
+  payoutUpiId?: string;
+  savePayoutAccount?: boolean;
 }
 export interface AgentManageBody {
   amount: number;
@@ -204,6 +238,16 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/reject`, { remark })).data,
   markDeposit: async (id: number, body: { utr?: string; proof?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/mark-deposit`, body)).data,
+
+  // ── Withdrawal chain (mirrors the merchant withdrawal workflow) ──
+  memberAccounts: async (membershipId: string) =>
+    (await api.get<AgentMemberAccount[]>(`/api/agent-txns/member-accounts/${encodeURIComponent(membershipId)}`)).data,
+  managerApprove: async (id: number, remark: string) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/approve`, { remark })).data,
+  managerReject: async (id: number, remark: string) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
+  payout: async (id: number, body: { slipImage?: string; slipRef?: string }) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
   approve: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/approve`)).data,
   reject: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/reject`)).data,
   audit: async (id: number) => (await api.get<AgentTxnAuditRow[]>(`/api/agent-txns/${id}/audit`)).data,

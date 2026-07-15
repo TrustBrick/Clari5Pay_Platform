@@ -654,6 +654,39 @@ class AgentAssignmentHistory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class AgentMemberBankAccount(Base):
+    """A payout account saved against a Membership ID in the ISOLATED agent ledger.
+
+    Mirrors ``merchant_bank_accounts`` in shape, but is a SEPARATE table: the agent subsystem
+    never reads or writes the merchant's member accounts. Scoped to the owning merchant business,
+    exactly like ``AgentMaster`` / ``AgentTransaction``.
+
+    A row is created the first time a membership is paid out to an account, and re-used on every
+    later withdrawal for that membership — the (business, membership, account_number/upi) pair is
+    matched before inserting, so returning members never accumulate duplicate accounts.
+    """
+    __tablename__ = "agent_member_bank_account"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    membership_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # ── Bank ──
+    account_holder: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # ── UPI ──
+    upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class AgentAccount(Base):
     """A settlement account owned by a Non-EPS Agent (Agent Management → Agent Accounts).
 
@@ -806,6 +839,16 @@ class AgentTransaction(Base):
     manager_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     manager_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     review_remark: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # ── Withdrawal payout — the member account the money is sent TO. Saved/re-used per membership
+    # in agent_member_bank_account (never the merchant's member accounts).
+    payout_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("agent_member_bank_account.id"), nullable=True)
+    payout_account_holder: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    payout_account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    payout_ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    payout_bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    payout_branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    payout_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # ── Mark Deposit — the Data Operator performs what the Admin does in the merchant workflow ──
     deposited_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

@@ -66,9 +66,12 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
     return IS_DEMO && ['DEO', 'DEPOSIT_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
   if (page === 'agent-withdrawal-mgmt' || page === 'agent-withdrawal-req')
     return IS_DEMO && ['DEO', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
-  // Agent Settlement Management and the agent deposit review queue — Supervisor only.
-  if (page === 'agent-settlement-mgmt' || page === 'agent-approvals')
+  // Agent Settlement Management — Supervisor only.
+  if (page === 'agent-settlement-mgmt')
     return IS_DEMO && String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR';
+  // Agent Approvals — the review gate: Supervisors review Deposits, Managers review Withdrawals.
+  if (page === 'agent-approvals')
+    return IS_DEMO && ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   if (page === 'agent-manage')
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO'].includes(String(user.merchantRole || '').toUpperCase());
   // A Manager is an approval-only role — block direct Deposit/Withdrawal/Settlement creation.

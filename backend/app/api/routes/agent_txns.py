@@ -23,7 +23,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.models.models import AgentAccount, AgentMaster, AgentTransaction, AgentTransactionAudit, User, UserRole
+from app.models.models import (
+    AgentAccount, AgentMaster, AgentMemberBankAccount, AgentTransaction, AgentTransactionAudit,
+    User, UserRole,
+)
 from app.core.deps import get_current_agent_operator, agent_role_in
 from app.api.routes.system_logs import record_agent_audit
 
@@ -115,6 +118,76 @@ def _token() -> str:
     return "TKN-" + secrets.token_hex(8).upper()
 
 
+def _member_account_row(a: AgentMemberBankAccount) -> dict:
+    return {
+        "id": a.id, "membershipId": a.membership_id, "memberName": a.member_name,
+        "accountHolder": a.account_holder, "accountNumber": a.account_number,
+        "ifsc": a.ifsc, "bankName": a.bank_name, "branch": a.branch, "upiId": a.upi_id,
+        "isDefault": a.is_default,
+        "label": " · ".join(str(b) for b in (a.account_holder, a.account_number or a.upi_id, a.bank_name) if b),
+    }
+
+
+async def _saved_member_accounts(db: AsyncSession, business: str, membership_id: str) -> list[AgentMemberBankAccount]:
+    """Payout accounts already on file for this membership, in the ISOLATED agent register."""
+    return list((await db.execute(
+        select(AgentMemberBankAccount).where(
+            AgentMemberBankAccount.merchant_business == business,
+            AgentMemberBankAccount.membership_id == membership_id,
+        ).order_by(AgentMemberBankAccount.is_default.desc(), AgentMemberBankAccount.id.desc())
+    )).scalars().all())
+
+
+async def _resolve_payout_account(db: AsyncSession, user: User, body: "AgentWithdrawalCreate",
+                                  membership_id: str, member_name: str | None) -> AgentMemberBankAccount | None:
+    """The account this withdrawal pays out to.
+
+    An existing saved account is used as-is. New details are matched against what is already on
+    file for this membership (same account number, or same UPI) and only inserted when genuinely
+    new — so re-using a member's account never creates a duplicate.
+    """
+    business = _business(user)
+    if body.payoutAccountId is not None:
+        row = (await db.execute(select(AgentMemberBankAccount).where(
+            AgentMemberBankAccount.id == body.payoutAccountId,
+            AgentMemberBankAccount.merchant_business == business,
+            AgentMemberBankAccount.membership_id == membership_id,
+        ))).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Saved payout account not found for this membership.")
+        return row
+
+    number = (body.payoutAccountNumber or "").strip() or None
+    upi = (body.payoutUpiId or "").strip() or None
+    if not number and not upi:
+        return None                      # e.g. a cash payout — nothing to save
+
+    existing = await _saved_member_accounts(db, business, membership_id)
+    for row in existing:                 # de-dupe on the identifying field
+        if (number and row.account_number == number) or (upi and row.upi_id and row.upi_id.lower() == upi.lower()):
+            return row
+
+    if not body.savePayoutAccount:
+        # Use the details for this transaction only, without adding them to the register.
+        return AgentMemberBankAccount(
+            merchant_business=business, membership_id=membership_id, member_name=member_name,
+            account_holder=(body.payoutAccountHolder or None), account_number=number,
+            ifsc=(body.payoutIfsc or None), bank_name=(body.payoutBankName or None),
+            branch=(body.payoutBranch or None), upi_id=upi,
+        )
+    row = AgentMemberBankAccount(
+        merchant_business=business, membership_id=membership_id, member_name=member_name,
+        account_holder=(body.payoutAccountHolder or None), account_number=number,
+        ifsc=(body.payoutIfsc or None), bank_name=(body.payoutBankName or None),
+        branch=(body.payoutBranch or None), upi_id=upi,
+        is_default=not existing,         # the first account on file becomes the default
+        created_by=user.username,
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
 def _account_detail(a: AgentAccount) -> str:
     """Human-readable payment details for a submitted AGENT account, by type. Stored on the
     transaction so the payer sees exactly what was sent, even if the account changes later."""
@@ -197,6 +270,14 @@ def _row(t: AgentTransaction) -> dict:
         "supervisorName": t.supervisor_name,
         "managerName": t.manager_name,
         "reviewRemark": t.review_remark,
+        # Withdrawal payout account (where the money is sent)
+        "payoutAccountId": t.payout_account_id,
+        "payoutAccountHolder": t.payout_account_holder,
+        "payoutAccountNumber": t.payout_account_number,
+        "payoutIfsc": t.payout_ifsc,
+        "payoutBankName": t.payout_bank_name,
+        "payoutBranch": t.payout_branch,
+        "payoutUpiId": t.payout_upi_id,
         # Mark Deposit
         "depositedBy": t.deposited_by,
         "depositedDate": _ist_parts(t.deposited_at)[1],
@@ -282,6 +363,16 @@ class AgentDepositCreate(_Base):
 
 class AgentWithdrawalCreate(_Base):
     linkedDepositId: int | None = None
+    # ── Payout account — where the money is SENT. Either an existing saved account for this
+    # membership, or new details that get saved for re-use.
+    payoutAccountId: int | None = None
+    payoutAccountHolder: str | None = None
+    payoutAccountNumber: str | None = None
+    payoutIfsc: str | None = None
+    payoutBankName: str | None = None
+    payoutBranch: str | None = None
+    payoutUpiId: str | None = None
+    savePayoutAccount: bool = True
 
 
 class AgentManage(BaseModel):
@@ -291,7 +382,7 @@ class AgentManage(BaseModel):
     approverUserId: int | None = None
 
 
-def _validate_common(body: _Base) -> None:
+def _validate_common(body: _Base, txn_type: str) -> None:
     if body.amount is None or body.amount <= 0:
         raise HTTPException(status_code=400, detail="Transaction Amount must be greater than zero.")
     if body.membershipType.upper() not in MEMBERSHIP_TYPES:
@@ -304,20 +395,23 @@ def _validate_common(body: _Base) -> None:
         raise HTTPException(status_code=400, detail="Invalid instruction option.")
     if body.txnMethod and body.txnMethod.upper() not in TXN_METHODS:
         raise HTTPException(status_code=400, detail="Invalid Transaction Type.")
-    # A bank-style send must name the account it comes from — same rule the merchant form applies.
     method = (body.txnMethod or "").upper()
-    if method in BANK_LIKE_METHODS and not (body.senderAccountHolder or "").strip():
-        raise HTTPException(status_code=400, detail="Sending Account Holder is required for a bank transfer.")
-    if method in BANK_LIKE_METHODS and not (body.senderAccountNumber or "").strip():
-        raise HTTPException(status_code=400, detail="Sending Account Number is required for a bank transfer.")
-    if method == "UPI" and "@" not in (body.senderUpiId or ""):
-        raise HTTPException(status_code=400, detail="Enter a valid Sender UPI ID (name@bank).")
+    # A deposit names the Sending Account it comes FROM (same rule the merchant form applies). A
+    # withdrawal names a payout account instead, validated in create_withdrawal.
+    if txn_type == "DEPOSIT":
+        if method in BANK_LIKE_METHODS and not (body.senderAccountHolder or "").strip():
+            raise HTTPException(status_code=400, detail="Sending Account Holder is required for a bank transfer.")
+        if method in BANK_LIKE_METHODS and not (body.senderAccountNumber or "").strip():
+            raise HTTPException(status_code=400, detail="Sending Account Number is required for a bank transfer.")
+        if method == "UPI" and "@" not in (body.senderUpiId or ""):
+            raise HTTPException(status_code=400, detail="Enter a valid Sender UPI ID (name@bank).")
 
 
 async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
-                  prefix: str, code_letter: str, linked_deposit_id: int | None) -> dict:
+                  prefix: str, code_letter: str, linked_deposit_id: int | None,
+                  payout: AgentMemberBankAccount | None = None) -> dict:
     business = _business(user)
-    _validate_common(body)
+    _validate_common(body, txn_type)
     agent = await _get_agent(db, business, body.agentMasterId)
     approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId)
 
@@ -357,9 +451,18 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         sender_ifsc=(body.senderIfsc or None),
         sender_bank_name=(body.senderBankName or None),
         sender_branch=(body.senderBranch or None),
-        # A DEPOSIT enters the merchant-mirroring chain at Account Request; a WITHDRAWAL keeps the
-        # existing PENDING behaviour until its own chain lands in the next phase.
-        status=ST_ACCOUNT_REQUESTED if txn_type == "DEPOSIT" else ST_PENDING,
+        # Chain entry points, mirroring the merchant workflow: a DEPOSIT starts at Account
+        # Request; a WITHDRAWAL goes straight to the Manager review gate.
+        status=(ST_ACCOUNT_REQUESTED if txn_type == "DEPOSIT"
+                else ST_MANAGER_REVIEW if txn_type == "WITHDRAWAL" else ST_PENDING),
+        # Payout account (withdrawals) — where the money is sent.
+        payout_account_id=(payout.id if payout is not None else None),
+        payout_account_holder=(payout.account_holder if payout else None),
+        payout_account_number=(payout.account_number if payout else None),
+        payout_ifsc=(payout.ifsc if payout else None),
+        payout_bank_name=(payout.bank_name if payout else None),
+        payout_branch=(payout.branch if payout else None),
+        payout_upi_id=(payout.upi_id if payout else None),
         sent_for_approval=bool(body.sentForApproval),
         approver_user_id=approver_id, approver_name=approver_name,
         linked_deposit_id=linked_deposit_id,
@@ -442,7 +545,13 @@ async def member_lookup(membership_id: str, db: AsyncSession = Depends(get_db),
         "country": dep.agent_country, "state": dep.agent_state, "location": dep.agent_location,
         "category": dep.agent_category, "depositId": dep.id, "reference": dep.reference_number,
     }
-    return {"membershipId": membership_id.strip(), "membershipName": membership_name, "latestDeposit": latest_deposit}
+    saved = await _saved_member_accounts(db, business, membership_id.strip())
+    return {
+        "membershipId": membership_id.strip(), "membershipName": membership_name,
+        "latestDeposit": latest_deposit,
+        # Payout accounts already on file for this membership (isolated agent register).
+        "savedAccounts": [_member_account_row(a) for a in saved],
+    }
 
 
 # ── Create ────────────────────────────────────────────────────────────────────
@@ -465,7 +574,11 @@ async def create_withdrawal(body: AgentWithdrawalCreate, db: AsyncSession = Depe
             AgentTransaction.txn_type == "DEPOSIT",
         ))).scalar_one_or_none()
         linked = d.id if d else None
-    return await _create(db, user, body, "WITHDRAWAL", "AGW", "W", linked)
+    # Resolve the payout account first: an existing saved account, or new details that are saved
+    # against this membership for re-use (matched so a repeat account is never duplicated).
+    membership_id = body.membershipId.strip()
+    payout = await _resolve_payout_account(db, user, body, membership_id, (body.membershipName or None))
+    return await _create(db, user, body, "WITHDRAWAL", "AGW", "W", linked, payout=payout)
 
 
 # ── Deposit chain: Submit Account → Upload Slip → Supervisor Approval → Mark Deposit ──────
@@ -613,6 +726,91 @@ async def mark_deposit(txn_id: int, body: AgentMarkDeposit, db: AsyncSession = D
     t.deposit_proof = body.proof or None
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
     await _log(db, t, "DEPOSITED", user, new_amount=t.amount, note=f"Marked deposited by {user.username}")
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+# ── Withdrawal chain: Manager Approval → Pay / Upload Slip → Completed ────────────
+# Mirrors the merchant withdrawal workflow (create → MANAGER_REVIEW → approved → SLIP_SUBMITTED →
+# paid → COMPLETED); the Data Operator performs the payout the Admin performs for a merchant.
+def _require_withdrawal(t: AgentTransaction) -> None:
+    if t.txn_type != "WITHDRAWAL":
+        raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals only.")
+
+
+@router.get("/member-accounts/{membership_id}")
+async def member_accounts(membership_id: str, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_agent_operator)):
+    """Payout accounts saved against a Membership ID in the isolated agent register."""
+    rows = await _saved_member_accounts(db, _business(user), membership_id.strip())
+    return [_member_account_row(a) for a in rows]
+
+
+@router.post("/{txn_id}/manager/approve")
+async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_agent_operator)):
+    """Manager approves a withdrawal → SLIP_SUBMITTED (awaiting the operator's payout)."""
+    _require(user, ("MANAGER",), "approve Agent Withdrawals")
+    remark = (body.remark or "").strip()
+    if not remark:
+        raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
+    t = await _load_own(db, _business(user), txn_id)
+    _require_withdrawal(t)
+    _require_status(t, ST_MANAGER_REVIEW, "Manager review")
+    t.status = ST_SLIP_SUBMITTED
+    t.manager_name = user.username
+    t.manager_action_at = datetime.utcnow()
+    t.review_remark = remark
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "MANAGER_APPROVED", user, note=remark)
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/manager/reject")
+async def manager_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_agent_operator)):
+    """Manager rejects a withdrawal → REJECTED."""
+    _require(user, ("MANAGER",), "reject Agent Withdrawals")
+    remark = (body.remark or "").strip()
+    if not remark:
+        raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
+    t = await _load_own(db, _business(user), txn_id)
+    _require_withdrawal(t)
+    _require_status(t, ST_MANAGER_REVIEW, "Manager review")
+    t.status = ST_REJECTED
+    t.manager_name = user.username
+    t.manager_action_at = datetime.utcnow()
+    t.review_remark = remark
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "MANAGER_REJECTED", user, note=remark)
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/payout")
+async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_agent_operator)):
+    """Data Operator pays the member and uploads the slip → COMPLETED.
+
+    The merchant workflow's Admin payout step, performed here by the Data Operator.
+    """
+    _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
+    t = await _load_own(db, _business(user), txn_id)
+    _require_withdrawal(t)
+    _require_status(t, ST_SLIP_SUBMITTED, "payment")
+    if not (body.slipImage or (body.slipRef or "").strip()):
+        raise HTTPException(status_code=400, detail="Upload the payment slip or enter a reference number.")
+    t.slip_image = body.slipImage or None
+    t.slip_ref = (body.slipRef or "").strip() or None
+    t.slip_submitted_by = user.username
+    t.slip_submitted_at = datetime.utcnow()
+    t.status = ST_COMPLETED
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "COMPLETED", user, new_amount=t.amount, note=f"Withdrawal paid by {user.username}")
     await db.commit()
     await db.refresh(t)
     return _row(t)
