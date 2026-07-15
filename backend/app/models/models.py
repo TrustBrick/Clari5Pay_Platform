@@ -768,7 +768,51 @@ class AgentTransaction(Base):
     instructions: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
 
     # ── Approval lifecycle (isolated — does not touch the merchant approval workflow) ──
-    status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)  # PENDING|APPROVED|REJECTED
+    # Workflow status — the SAME labels the merchant deposit workflow uses (see TxStatus), so the
+    # agent chain mirrors it exactly: ACCOUNT_REQUESTED → ACCOUNT_SUBMITTED → SUPERVISOR_REVIEW →
+    # SLIP_SUBMITTED → DEPOSITED. Legacy rows keep PENDING|APPROVED|REJECTED. Plain VARCHAR (not a
+    # PG enum) so new labels need no ALTER TYPE.
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
+    # How the money moves — CASH | UPI | BANK | IMPS | NEFT | RTGS | CRYPTO. Mirrors the merchant
+    # Deposit Request's depositType, and gates Manage Transaction (CASH only).
+    txn_method: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # ── Sending Account (mirrors the merchant Deposit Request's sending-account capture) ──
+    sender_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    sender_account_holder: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    sender_account_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    sender_ifsc: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    sender_bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    sender_branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # ── Account Submission — the AGENT ACCOUNT the Data Operator submits. Sourced ONLY from
+    # agent_account (never a merchant account), preserving the subsystem's isolation.
+    agent_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("agent_account.id"), nullable=True)
+    agent_account_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)     # AAC…
+    agent_account_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)    # BANK|UPI|QR|CRYPTO
+    agent_account_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    account_submitted_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # ── Slip upload (the payer's proof) ──
+    slip_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)      # data URL
+    slip_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    slip_submitted_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    slip_submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # ── Review gate (Supervisor for deposits, Manager for withdrawals — mirrors _REVIEW_CONFIG) ──
+    supervisor_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    supervisor_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    manager_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    manager_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    review_remark: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # ── Mark Deposit — the Data Operator performs what the Admin does in the merchant workflow ──
+    deposited_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    deposited_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    deposit_utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    deposit_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     sent_for_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     approver_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)     # chosen Authorized Approver
     approver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

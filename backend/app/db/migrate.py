@@ -125,6 +125,35 @@ _NEW_COLUMNS = [
     # Fixed "Highest Debit" value the admin sets at creation; when >0 a completed debit BELOW it
     # raises a low-debit alert. Default 0 (no alert). Existing accounts keep 0 → no backfill.
     ("account_master", "debit_alert_threshold", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    # ── Isolated Agent Transaction subsystem: the deposit chain that mirrors the merchant
+    # workflow (Account Request → Account Submitted → Slip → Supervisor Approval → Mark Deposit).
+    # All additive & nullable, so existing agent rows are untouched.
+    ("agent_transaction", "txn_method", "VARCHAR(16)"),
+    ("agent_transaction", "sender_upi_id", "VARCHAR(64)"),
+    ("agent_transaction", "sender_account_holder", "VARCHAR(128)"),
+    ("agent_transaction", "sender_account_number", "VARCHAR(64)"),
+    ("agent_transaction", "sender_ifsc", "VARCHAR(24)"),
+    ("agent_transaction", "sender_bank_name", "VARCHAR(128)"),
+    ("agent_transaction", "sender_branch", "VARCHAR(128)"),
+    ("agent_transaction", "agent_account_id", "INTEGER"),
+    ("agent_transaction", "agent_account_ref", "VARCHAR(16)"),
+    ("agent_transaction", "agent_account_type", "VARCHAR(16)"),
+    ("agent_transaction", "agent_account_detail", "TEXT"),
+    ("agent_transaction", "account_submitted_by", "VARCHAR(128)"),
+    ("agent_transaction", "account_submitted_at", "TIMESTAMP"),
+    ("agent_transaction", "slip_image", "TEXT"),
+    ("agent_transaction", "slip_ref", "VARCHAR(64)"),
+    ("agent_transaction", "slip_submitted_by", "VARCHAR(128)"),
+    ("agent_transaction", "slip_submitted_at", "TIMESTAMP"),
+    ("agent_transaction", "supervisor_name", "VARCHAR(128)"),
+    ("agent_transaction", "supervisor_action_at", "TIMESTAMP"),
+    ("agent_transaction", "manager_name", "VARCHAR(128)"),
+    ("agent_transaction", "manager_action_at", "TIMESTAMP"),
+    ("agent_transaction", "review_remark", "TEXT"),
+    ("agent_transaction", "deposited_by", "VARCHAR(128)"),
+    ("agent_transaction", "deposited_at", "TIMESTAMP"),
+    ("agent_transaction", "deposit_utr", "VARCHAR(64)"),
+    ("agent_transaction", "deposit_proof", "TEXT"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -159,6 +188,10 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         )
         # Widen merchant_role for the longer operator roles (e.g. WITHDRAWAL_OPERATOR).
         await conn.execute(text("ALTER TABLE users ALTER COLUMN merchant_role TYPE VARCHAR(32)"))
+        # The isolated agent ledger now carries the merchant workflow's status labels, and the
+        # longest (ACCOUNT_REQUESTED / ACCOUNT_SUBMITTED / SUPERVISOR_REVIEW = 17 chars) overflow
+        # the original VARCHAR(16). Widening is lossless and idempotent.
+        await conn.execute(text("ALTER TABLE agent_transaction ALTER COLUMN status TYPE VARCHAR(24)"))
         # Saved member records can now hold a UPI without a full bank account → relax NOT NULL.
         for col in ("account_holder", "account_number", "ifsc", "branch"):
             await conn.execute(text(f"ALTER TABLE merchant_bank_accounts ALTER COLUMN {col} DROP NOT NULL"))

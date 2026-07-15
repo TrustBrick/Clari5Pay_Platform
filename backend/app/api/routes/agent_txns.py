@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.models.models import AgentMaster, AgentTransaction, AgentTransactionAudit, User, UserRole
+from app.models.models import AgentAccount, AgentMaster, AgentTransaction, AgentTransactionAudit, User, UserRole
 from app.core.deps import get_current_agent_operator, agent_role_in
 from app.api.routes.system_logs import record_agent_audit
 
@@ -42,6 +42,42 @@ APPROVE_ROLES = ("SUPERVISOR", "MANAGER")
 # stay valid for display but are no longer offered as new choices.
 INSTRUCTIONS = {"WHATSAPP_ONLY", "CALL_ONLY", "WHATSAPP_CALL", "TELEGRAM", "OTHER"}
 MEMBERSHIP_TYPES = {"ONLINE", "OFFLINE"}
+
+# ── Deposit workflow — the SAME status labels and order as the merchant deposit workflow
+# (app/api/routes/transactions.py), with one deliberate difference: every step the ADMIN performs
+# for a merchant is performed by the DATA OPERATOR here.
+#
+#   Create Agent Deposit Request → ACCOUNT_REQUESTED
+#   Submit Account   (Data Operator, from Agent Accounts only) → ACCOUNT_SUBMITTED
+#   Upload Slip      (Data Operator)                            → SUPERVISOR_REVIEW
+#   Approve          (Supervisor)                               → SLIP_SUBMITTED
+#   Mark Deposit     (Data Operator — the merchant flow's Admin step) → DEPOSITED
+ST_ACCOUNT_REQUESTED = "ACCOUNT_REQUESTED"
+ST_ACCOUNT_SUBMITTED = "ACCOUNT_SUBMITTED"
+ST_SUPERVISOR_REVIEW = "SUPERVISOR_REVIEW"
+ST_MANAGER_REVIEW = "MANAGER_REVIEW"
+ST_SLIP_SUBMITTED = "SLIP_SUBMITTED"
+ST_DEPOSITED = "DEPOSITED"
+ST_COMPLETED = "COMPLETED"
+ST_REJECTED = "REJECTED"
+ST_PENDING = "PENDING"
+ST_APPROVED = "APPROVED"
+
+# Roles that operate the chain. The Data Operator (DEO) drives every operator step.
+OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR", "WITHDRAWAL_OPERATOR")
+DEPOSIT_OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR")
+
+# Which statuses count as money that actually moved — the completed-only basis for every financial
+# figure, mirroring the merchant rule ("a completed deposit is COMPLETED (legacy) or DEPOSITED").
+# APPROVED covers agent rows created before the chain existed; DEPOSITED ends the deposit chain;
+# COMPLETED ends the withdrawal/settlement chains.
+COMPLETED_STATUSES = {ST_APPROVED, ST_DEPOSITED, ST_COMPLETED}
+REJECTED_STATUSES = {ST_REJECTED}
+FINAL_STATUSES = COMPLETED_STATUSES | REJECTED_STATUSES
+
+# How the money moves. CASH is the only method Manage Transaction may edit.
+TXN_METHODS = {"CASH", "UPI", "BANK", "IMPS", "NEFT", "RTGS", "CRYPTO"}
+BANK_LIKE_METHODS = {"BANK", "IMPS", "NEFT", "RTGS"}   # collect a sending bank account
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,6 +113,23 @@ async def _next_serial(db: AsyncSession, model_col, prefix: str) -> str:
 
 def _token() -> str:
     return "TKN-" + secrets.token_hex(8).upper()
+
+
+def _account_detail(a: AgentAccount) -> str:
+    """Human-readable payment details for a submitted AGENT account, by type. Stored on the
+    transaction so the payer sees exactly what was sent, even if the account changes later."""
+    t = str(a.account_type or "").upper()
+    if t == "BANK":
+        bits = [a.account_holder, a.account_number, a.ifsc, a.bank_name, a.branch]
+    elif t == "UPI":
+        bits = [a.upi_holder, a.upi_id]
+    elif t == "QR":
+        bits = [a.label, a.qr_linked_ref]
+    elif t == "CRYPTO":
+        bits = [a.crypto_asset, a.crypto_network, a.wallet_address]
+    else:
+        bits = [a.label]
+    return " · ".join(str(b).strip() for b in bits if b and str(b).strip()) or (a.label or a.account_ref)
 
 
 async def _log(db: AsyncSession, t: AgentTransaction, action: str, actor: User, *,
@@ -118,6 +171,37 @@ def _row(t: AgentTransaction) -> dict:
         "tokenDetails": t.token_details, "noteNumber": t.note_number,
         "notes": t.notes, "instructions": t.instructions,
         "status": t.status,
+        # Transaction type + Sending Account (shown in Transaction Details / All Transactions /
+        # Reports / Audit).
+        "txnMethod": t.txn_method,
+        "senderUpiId": t.sender_upi_id,
+        "senderAccountHolder": t.sender_account_holder,
+        "senderAccountNumber": t.sender_account_number,
+        "senderIfsc": t.sender_ifsc,
+        "senderBankName": t.sender_bank_name,
+        "senderBranch": t.sender_branch,
+        # Account submission (agent account only)
+        "agentAccountId": t.agent_account_id,
+        "agentAccountRef": t.agent_account_ref,
+        "agentAccountType": t.agent_account_type,
+        "agentAccountDetail": t.agent_account_detail,
+        "accountSubmittedBy": t.account_submitted_by,
+        "accountSubmittedDate": _ist_parts(t.account_submitted_at)[1],
+        "accountSubmittedTime": _ist_parts(t.account_submitted_at)[2],
+        # Slip
+        "slipImage": t.slip_image, "slipRef": t.slip_ref,
+        "slipSubmittedBy": t.slip_submitted_by,
+        "slipSubmittedDate": _ist_parts(t.slip_submitted_at)[1],
+        "slipSubmittedTime": _ist_parts(t.slip_submitted_at)[2],
+        # Review gate
+        "supervisorName": t.supervisor_name,
+        "managerName": t.manager_name,
+        "reviewRemark": t.review_remark,
+        # Mark Deposit
+        "depositedBy": t.deposited_by,
+        "depositedDate": _ist_parts(t.deposited_at)[1],
+        "depositedTime": _ist_parts(t.deposited_at)[2],
+        "depositUtr": t.deposit_utr, "depositProof": t.deposit_proof,
         "sentForApproval": t.sent_for_approval,
         "approverName": t.approver_name,
         "approvedBy": t.approved_by, "approvedDate": a_date, "approvedTime": a_time, "approvedAt": a_iso,
@@ -163,6 +247,33 @@ class _Base(BaseModel):
     instructions: str | None = None
     sentForApproval: bool = False
     approverUserId: int | None = None
+    # ── Transaction type + Sending Account (mirrors the merchant Deposit Request) ──
+    txnMethod: str | None = None            # CASH | UPI | BANK | IMPS | NEFT | RTGS | CRYPTO
+    senderUpiId: str | None = None          # UPI the payment is sent from
+    senderAccountHolder: str | None = None
+    senderAccountNumber: str | None = None
+    senderIfsc: str | None = None
+    senderBankName: str | None = None
+    senderBranch: str | None = None
+
+
+class AgentAccountSubmit(BaseModel):
+    """The Data Operator submits an AGENT account for the payer to send to."""
+    agentAccountId: int
+
+
+class AgentSlipSubmit(BaseModel):
+    slipImage: str | None = None            # data URL
+    slipRef: str | None = None
+
+
+class AgentReviewAction(BaseModel):
+    remark: str
+
+
+class AgentMarkDeposit(BaseModel):
+    utr: str | None = None
+    proof: str | None = None                # data URL
 
 
 class AgentDepositCreate(_Base):
@@ -191,6 +302,16 @@ def _validate_common(body: _Base) -> None:
         raise HTTPException(status_code=400, detail="Notes must be 100 characters or fewer.")
     if body.instructions and body.instructions.upper() not in INSTRUCTIONS:
         raise HTTPException(status_code=400, detail="Invalid instruction option.")
+    if body.txnMethod and body.txnMethod.upper() not in TXN_METHODS:
+        raise HTTPException(status_code=400, detail="Invalid Transaction Type.")
+    # A bank-style send must name the account it comes from — same rule the merchant form applies.
+    method = (body.txnMethod or "").upper()
+    if method in BANK_LIKE_METHODS and not (body.senderAccountHolder or "").strip():
+        raise HTTPException(status_code=400, detail="Sending Account Holder is required for a bank transfer.")
+    if method in BANK_LIKE_METHODS and not (body.senderAccountNumber or "").strip():
+        raise HTTPException(status_code=400, detail="Sending Account Number is required for a bank transfer.")
+    if method == "UPI" and "@" not in (body.senderUpiId or ""):
+        raise HTTPException(status_code=400, detail="Enter a valid Sender UPI ID (name@bank).")
 
 
 async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
@@ -228,7 +349,18 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         txn_country=body.country, txn_state=body.state, txn_location=body.location, mobile=body.mobile,
         token_details=_token(), note_number=note_no,
         notes=(body.notes or None), instructions=(body.instructions.upper() if body.instructions else None),
-        status="PENDING", sent_for_approval=bool(body.sentForApproval),
+        # Transaction type + Sending Account, captured exactly like the merchant Deposit Request.
+        txn_method=(body.txnMethod.upper() if body.txnMethod else None),
+        sender_upi_id=(body.senderUpiId or None),
+        sender_account_holder=(body.senderAccountHolder or None),
+        sender_account_number=(body.senderAccountNumber or None),
+        sender_ifsc=(body.senderIfsc or None),
+        sender_bank_name=(body.senderBankName or None),
+        sender_branch=(body.senderBranch or None),
+        # A DEPOSIT enters the merchant-mirroring chain at Account Request; a WITHDRAWAL keeps the
+        # existing PENDING behaviour until its own chain lands in the next phase.
+        status=ST_ACCOUNT_REQUESTED if txn_type == "DEPOSIT" else ST_PENDING,
+        sent_for_approval=bool(body.sentForApproval),
         approver_user_id=approver_id, approver_name=approver_name,
         linked_deposit_id=linked_deposit_id,
         created_by=user.username, created_by_id=user.id,
@@ -266,7 +398,29 @@ async def form_data(db: AsyncSession = Depends(get_db), user: User = Depends(get
                       for u in approvers if str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER")],
         "instructions": sorted(INSTRUCTIONS),
         "membershipTypes": ["ONLINE", "OFFLINE"],
+        # Transaction types offered on the request form (drives the Sending Account fields and
+        # gates Manage Transaction, which is CASH-only).
+        "txnMethods": ["CASH", "UPI", "BANK", "IMPS", "NEFT", "RTGS", "CRYPTO"],
     }
+
+
+@router.get("/agent-accounts/{agent_master_id}")
+async def agent_accounts_for(agent_master_id: int, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_agent_operator)):
+    """Active AGENT accounts for one agent — the ONLY source the Account Submission step may pick
+    from. Never reads merchant accounts, preserving the subsystem's isolation."""
+    rows = (await db.execute(
+        select(AgentAccount).where(
+            AgentAccount.merchant_business == _business(user),
+            AgentAccount.agent_master_id == agent_master_id,
+            AgentAccount.status == "ACTIVE",
+        ).order_by(AgentAccount.is_default.desc(), AgentAccount.id.desc())
+    )).scalars().all()
+    return [{
+        "id": a.id, "accountRef": a.account_ref, "accountType": a.account_type,
+        "label": a.label, "currency": a.currency, "isDefault": a.is_default,
+        "detail": _account_detail(a), "qrImage": a.qr_image if str(a.account_type).upper() == "QR" else None,
+    } for a in rows]
 
 
 @router.get("/member/{membership_id}")
@@ -312,6 +466,156 @@ async def create_withdrawal(body: AgentWithdrawalCreate, db: AsyncSession = Depe
         ))).scalar_one_or_none()
         linked = d.id if d else None
     return await _create(db, user, body, "WITHDRAWAL", "AGW", "W", linked)
+
+
+# ── Deposit chain: Submit Account → Upload Slip → Supervisor Approval → Mark Deposit ──────
+# Mirrors the merchant deposit workflow step-for-step; the Data Operator performs the steps the
+# Admin performs for a merchant. Every step writes an isolated audit row via _log().
+async def _load_own(db: AsyncSession, business: str, txn_id: int) -> AgentTransaction:
+    t = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.id == txn_id, AgentTransaction.merchant_business == business))).scalar_one_or_none()
+    if t is None:
+        raise HTTPException(status_code=404, detail="Agent transaction not found.")
+    return t
+
+
+def _require_status(t: AgentTransaction, expected: str, what: str) -> None:
+    if t.status != expected:
+        raise HTTPException(status_code=400, detail=f"This transaction is not awaiting {what}.")
+
+
+def _require_deposit(t: AgentTransaction) -> None:
+    if t.txn_type != "DEPOSIT":
+        raise HTTPException(status_code=400, detail="This action applies to Agent Deposits only.")
+
+
+@router.post("/{txn_id}/account-submit")
+async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_agent_operator)):
+    """Data Operator submits the AGENT account the payer should send to → ACCOUNT_SUBMITTED.
+
+    The account is looked up in ``agent_account`` scoped to this business and to the transaction's
+    own agent — a merchant account can never be selected, keeping the subsystem isolated.
+    """
+    _require(user, DEPOSIT_OPERATOR_ROLES, "submit an account for Agent Deposits")
+    business = _business(user)
+    t = await _load_own(db, business, txn_id)
+    _require_deposit(t)
+    _require_status(t, ST_ACCOUNT_REQUESTED, "an account submission")
+
+    acct = (await db.execute(select(AgentAccount).where(
+        AgentAccount.id == body.agentAccountId,
+        AgentAccount.merchant_business == business,
+        AgentAccount.agent_master_id == t.agent_master_id,
+    ))).scalar_one_or_none()
+    if acct is None:
+        raise HTTPException(status_code=404, detail="Agent account not found for this agent.")
+    if str(acct.status).upper() != "ACTIVE":
+        raise HTTPException(status_code=400, detail="Selected agent account is inactive.")
+
+    t.agent_account_id = acct.id
+    t.agent_account_ref = acct.account_ref
+    t.agent_account_type = acct.account_type
+    t.agent_account_detail = _account_detail(acct)
+    t.account_submitted_by = user.username
+    t.account_submitted_at = datetime.utcnow()
+    t.status = ST_ACCOUNT_SUBMITTED
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "ACCOUNT_SUBMITTED", user, note=f"Agent account {acct.account_ref} submitted")
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/slip")
+async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Depends(get_db),
+                      user: User = Depends(get_current_agent_operator)):
+    """Data Operator pays and uploads the slip → enters the Supervisor review gate."""
+    _require(user, DEPOSIT_OPERATOR_ROLES, "submit a slip for Agent Deposits")
+    business = _business(user)
+    t = await _load_own(db, business, txn_id)
+    _require_deposit(t)
+    _require_status(t, ST_ACCOUNT_SUBMITTED, "a slip")
+    if not (body.slipImage or (body.slipRef or "").strip()):
+        raise HTTPException(status_code=400, detail="Upload the slip image or enter a reference number.")
+
+    t.slip_image = body.slipImage or None
+    t.slip_ref = (body.slipRef or "").strip() or None
+    t.slip_submitted_by = user.username
+    t.slip_submitted_at = datetime.utcnow()
+    t.status = ST_SUPERVISOR_REVIEW          # straight to the Supervisor queue (as the merchant flow does)
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "SLIP_SUBMITTED", user, note="Slip submitted — awaiting Supervisor approval")
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/supervisor/approve")
+async def supervisor_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_agent_operator)):
+    """Supervisor approves a deposit under review → SLIP_SUBMITTED (awaiting Mark Deposit)."""
+    _require(user, ("SUPERVISOR",), "approve Agent Deposits")
+    remark = (body.remark or "").strip()
+    if not remark:
+        raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
+    t = await _load_own(db, _business(user), txn_id)
+    _require_deposit(t)
+    _require_status(t, ST_SUPERVISOR_REVIEW, "Supervisor review")
+    t.status = ST_SLIP_SUBMITTED
+    t.supervisor_name = user.username
+    t.supervisor_action_at = datetime.utcnow()
+    t.review_remark = remark
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "SUPERVISOR_APPROVED", user, note=remark)
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/supervisor/reject")
+async def supervisor_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_agent_operator)):
+    """Supervisor rejects a deposit under review → REJECTED."""
+    _require(user, ("SUPERVISOR",), "reject Agent Deposits")
+    remark = (body.remark or "").strip()
+    if not remark:
+        raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
+    t = await _load_own(db, _business(user), txn_id)
+    _require_deposit(t)
+    _require_status(t, ST_SUPERVISOR_REVIEW, "Supervisor review")
+    t.status = ST_REJECTED
+    t.supervisor_name = user.username
+    t.supervisor_action_at = datetime.utcnow()
+    t.review_remark = remark
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "SUPERVISOR_REJECTED", user, note=remark)
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/mark-deposit")
+async def mark_deposit(txn_id: int, body: AgentMarkDeposit, db: AsyncSession = Depends(get_db),
+                       user: User = Depends(get_current_agent_operator)):
+    """Data Operator marks an approved deposit as Deposited → DEPOSITED.
+
+    This is the merchant workflow's Admin 'Mark Deposited' step, performed by the Data Operator.
+    """
+    _require(user, DEPOSIT_OPERATOR_ROLES, "mark Agent Deposits as deposited")
+    t = await _load_own(db, _business(user), txn_id)
+    _require_deposit(t)
+    _require_status(t, ST_SLIP_SUBMITTED, "Mark Deposit")
+    t.status = ST_DEPOSITED
+    t.deposited_by = user.username
+    t.deposited_at = datetime.utcnow()
+    t.deposit_utr = (body.utr or "").strip() or None
+    t.deposit_proof = body.proof or None
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "DEPOSITED", user, new_amount=t.amount, note=f"Marked deposited by {user.username}")
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
 
 
 # ── List / search (Manage Transaction worklist) ──────────────────────────────────
@@ -370,12 +674,14 @@ async def txn_audit(txn_id: int, db: AsyncSession = Depends(get_db),
 
 # ── Manage (amount correction) + approval ────────────────────────────────────────
 async def _load_pending(db: AsyncSession, business: str, txn_id: int) -> AgentTransaction:
+    """An in-flight transaction (not yet Deposited/Completed/Approved/Rejected) — the only kind
+    that may still be modified or decided. Accepts every mid-chain status, not just PENDING."""
     t = (await db.execute(select(AgentTransaction).where(
         AgentTransaction.id == txn_id, AgentTransaction.merchant_business == business))).scalar_one_or_none()
     if t is None:
         raise HTTPException(status_code=404, detail="Agent transaction not found.")
-    if t.status != "PENDING":
-        raise HTTPException(status_code=400, detail="Only pending transactions can be modified.")
+    if t.status in FINAL_STATUSES:
+        raise HTTPException(status_code=400, detail="This transaction is already finalised and can no longer be modified.")
     return t
 
 
@@ -460,7 +766,10 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
 
     dep = [t for t in txns if t.txn_type == "DEPOSIT"]
     wd = [t for t in txns if t.txn_type == "WITHDRAWAL"]
-    approved = [t for t in txns if t.status == "APPROVED"]
+    # Completed-only basis: DEPOSITED (deposit chain) / COMPLETED (withdrawal+settlement chains) /
+    # APPROVED (legacy rows predating the chain). Keeps every financial figure correct as
+    # transactions move onto the merchant-mirroring workflow.
+    approved = [t for t in txns if t.status in COMPLETED_STATUSES]
 
     # ── Financial summary — mirrors the Merchant canonical formula (transactions.py) applied to
     # the ISOLATED agent ledger only. Each agent's commission = its fees_pct on the approved
@@ -501,9 +810,11 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
             "totalTransactions": len(txns),
             "depositCount": len(dep), "depositAmount": _sum(lambda t: t.txn_type == "DEPOSIT"),
             "withdrawalCount": len(wd), "withdrawalAmount": _sum(lambda t: t.txn_type == "WITHDRAWAL"),
-            "pending": sum(1 for t in txns if t.status == "PENDING"),
+            # Pending = still in flight anywhere in the chain (PENDING, ACCOUNT_REQUESTED,
+            # ACCOUNT_SUBMITTED, SUPERVISOR_REVIEW, SLIP_SUBMITTED …) — i.e. not yet final.
+            "pending": sum(1 for t in txns if t.status not in FINAL_STATUSES),
             "approved": len(approved),
-            "rejected": sum(1 for t in txns if t.status == "REJECTED"),
+            "rejected": sum(1 for t in txns if t.status in REJECTED_STATUSES),
             "approvedDeposits": round(gross_amount, 2),
             "approvedWithdrawals": round(total_withdrawal_amount, 2),
             "grossAmount": round(gross_amount, 2),
