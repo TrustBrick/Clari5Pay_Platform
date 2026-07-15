@@ -725,6 +725,14 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
           ))}
         </div>
         <p style={{ fontSize: 11.5, color: T.textMuted, margin: '0 0 12px' }}>Only the Transaction Amount can be changed. Agent, membership, reference, code, token and note number are immutable.</p>
+        {!AGENT_FINAL_STATUSES.includes(current.status) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 8, background: T.warningBg, color: T.warning, fontSize: 11.5, fontWeight: 600, marginBottom: 12 }}>
+            <span>⚠</span>
+            Changing the amount restarts the approval workflow — this {current.type.toLowerCase()} returns to
+            {current.type === 'DEPOSIT' ? ' Supervisor approval' : current.type === 'WITHDRAWAL' ? ' Manager approval' : ' Supervisor completion'}
+            {' '}and any approval already given is voided.
+          </div>
+        )}
 
         <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} inputMode="decimal" />
         <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes <span style={{ color: T.textLight, fontWeight: 600 }}>({notes.length}/100)</span></label>
@@ -798,9 +806,11 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
   const search = useCallback(async () => {
     setLoading(true);
     try {
-      const q: AgentTxnQuery = { status: 'PENDING' };
+      const q: AgentTxnQuery = {};
       if (dateF) q.date = dateF; else { if (fromF) q.date_from = fromF; if (toF) q.date_to = toF; }
       let data = await agentTxnsAPI.list(q);
+      // Manage is CASH-only, and a finalised transaction can no longer be edited.
+      data = data.filter(x => x.txnMethod === 'CASH' && !AGENT_FINAL_STATUSES.includes(x.status));
       const r = ref.trim().toLowerCase(), ag = agentIdF.trim().toLowerCase(), mem = memberF.trim().toLowerCase();
       if (r) data = data.filter(x => (x.referenceNumber || '').toLowerCase().includes(r));
       if (ag) data = data.filter(x => (x.agentCode || '').toLowerCase().includes(ag));
@@ -818,7 +828,7 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
     <div>
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Manage Transaction</h1>
-        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Correct the amount of a pending agent transaction. Agent transactions only — merchant transactions are never affected.</p>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Correct the amount of an in-flight <strong>Cash</strong> agent transaction — other methods cannot be edited. Changing the amount restarts approval. Agent transactions only; merchant transactions are never affected.</p>
       </div>
       <IsolationNote />
 
@@ -834,7 +844,7 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
         <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
           <Btn size="sm" onClick={search} disabled={loading}>{loading ? 'Searching…' : 'Search'}</Btn>
           <Btn size="sm" variant="ghost" onClick={() => { clearFilters(); }}>Clear</Btn>
-          <span style={{ fontSize: 12, color: T.textMuted, alignSelf: 'center' }}>{rows.length} pending</span>
+          <span style={{ fontSize: 12, color: T.textMuted, alignSelf: 'center' }}>{rows.length} manageable (Cash)</span>
         </div>
       </Card>
 
@@ -843,7 +853,7 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr style={{ background: T.canvas }}>{['Reference', 'Type', 'Agent', 'Membership', 'Amount', 'Created (IST)', 'Action'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
             <tbody>
-              {rows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No pending agent transactions match the search.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No manageable Cash transactions match the search.</td></tr>}
               {rows.map(x => (
                 <tr key={x.id} style={{ background: T.surface }}>
                   <td style={{ ...tdS, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
@@ -1052,7 +1062,9 @@ const AgentTxnManagementPage: React.FC<{
                     {isDeposit && canOperate && x.status === 'ACCOUNT_SUBMITTED' && <Btn size="sm" onClick={() => setSlipRow(x)}>Pay / Upload Slip</Btn>}
                     {isDeposit && canOperate && x.status === 'SLIP_SUBMITTED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
                     {!isDeposit && canPayout && x.status === 'SLIP_SUBMITTED' && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>Pay / Upload Slip</Btn>}
-                    {canManage && !AGENT_FINAL_STATUSES.includes(x.status) && <Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn>}
+                    {/* Manage is CASH-only — hidden entirely for every other method. */}
+                    {canManage && x.txnMethod === 'CASH' && !AGENT_FINAL_STATUSES.includes(x.status)
+                      && <Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn>}
                   </td>
                 </tr>
               ))}

@@ -899,6 +899,49 @@ async def txn_audit(txn_id: int, db: AsyncSession = Depends(get_db),
     return out
 
 
+# ── Manage Transaction — CASH only; an amount change restarts the approval workflow ─────────
+# Only a CASH transaction may be edited. Every other method has moved money over a rail whose
+# amount cannot be restated after the fact, so Manage is refused here and hidden in the UI.
+MANAGEABLE_METHOD = "CASH"
+
+# The in-flight order of each chain, and where its approval gate sits. An amount change sends the
+# transaction BACK to its gate — never forward — so a deposit still awaiting account submission or
+# a slip is not jumped past those steps into an approval it has not earned.
+_CHAIN_ORDER = {
+    "DEPOSIT": [ST_ACCOUNT_REQUESTED, ST_ACCOUNT_SUBMITTED, ST_SUPERVISOR_REVIEW, ST_SLIP_SUBMITTED],
+    "WITHDRAWAL": [ST_MANAGER_REVIEW, ST_SLIP_SUBMITTED],
+    "SETTLEMENT": [ST_SLIP_SUBMITTED],
+}
+# Deposit → Supervisor Approval · Withdrawal → Manager Approval · Settlement → Supervisor Completion.
+_APPROVAL_GATE = {
+    "DEPOSIT": ST_SUPERVISOR_REVIEW,
+    "WITHDRAWAL": ST_MANAGER_REVIEW,
+    "SETTLEMENT": ST_SLIP_SUBMITTED,
+}
+
+
+def _restart_approval(t: AgentTransaction) -> str | None:
+    """Send a transaction back to its approval gate after its amount changed, as if newly created.
+
+    Returns the new status when the transaction had already reached (or passed) its gate, else
+    None — a deposit still awaiting account submission or a slip keeps its place, because no
+    approval has happened yet and there is nothing to redo. Any prior decision is voided so the
+    gate must be passed again from scratch; the audit trail of it is append-only and untouched.
+    """
+    order = _CHAIN_ORDER.get(t.txn_type or "", [])
+    gate = _APPROVAL_GATE.get(t.txn_type or "")
+    if not gate or gate not in order or t.status not in order:
+        return None
+    if order.index(t.status) < order.index(gate):
+        return None                       # not yet at the gate — nothing to restart
+    t.supervisor_name = None
+    t.supervisor_action_at = None
+    t.manager_name = None
+    t.manager_action_at = None
+    t.status = gate
+    return gate
+
+
 # ── Manage (amount correction) + approval ────────────────────────────────────────
 async def _load_pending(db: AsyncSession, business: str, txn_id: int) -> AgentTransaction:
     """An in-flight transaction (not yet Deposited/Completed/Approved/Rejected) — the only kind
@@ -918,6 +961,9 @@ async def manage_txn(txn_id: int, body: AgentManage, db: AsyncSession = Depends(
     _require(user, MANAGE_ROLES, "manage Agent Transactions")
     business = _business(user)
     t = await _load_pending(db, business, txn_id)
+    # CASH only — enforced here, not just hidden in the UI.
+    if str(t.txn_method or "").upper() != MANAGEABLE_METHOD:
+        raise HTTPException(status_code=400, detail="Only Cash transactions can be managed.")
     if body.amount is None or body.amount <= 0:
         raise HTTPException(status_code=400, detail="Transaction Amount must be greater than zero.")
     if body.notes and len(body.notes) > 100:
@@ -937,8 +983,15 @@ async def manage_txn(txn_id: int, body: AgentManage, db: AsyncSession = Depends(
         t.approver_name = approver_name
     if new_amount != old_amount:
         t.amount = new_amount
+        # Old → new amount, actor and timestamp; append-only, so no prior record is overwritten.
         await _log(db, t, "AMOUNT_UPDATED", user, old_amount=old_amount, new_amount=new_amount,
                    note=(body.notes or None))
+        # The amount changed, so any approval already given no longer applies: restart the workflow
+        # at this type's gate, exactly as if the transaction had just been created.
+        restarted = _restart_approval(t)
+        if restarted:
+            await _log(db, t, "APPROVAL_RESTARTED", user, old_amount=old_amount, new_amount=new_amount,
+                       note=f"Amount changed — approval restarted at {restarted.replace('_', ' ').title()}")
     if body.sentForApproval:
         await _log(db, t, "SENT_FOR_APPROVAL", user, approver_name=approver_name,
                    note=f"Sent to {approver_name or 'an approver'} for approval")
