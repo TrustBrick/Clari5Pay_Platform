@@ -57,7 +57,7 @@ def _serialize(a: AgentMaster) -> dict:
         "country": a.country,
         "state": a.state,
         "location": a.location,
-        "mobile": a.mobile,
+        "mobile": a.mobile, "mobileCode": a.mobile_code,
         "email": a.email,
         "currency": a.currency,
         "dateOfCreation": a.date_of_creation.isoformat() if a.date_of_creation else None,
@@ -203,6 +203,7 @@ async def create_agent(
         state=data.state.strip(),
         location=data.location.strip(),
         mobile=mobile,
+        mobile_code=(data.mobileCode or None),
         email=email,
         currency=data.currency.strip(),
         date_of_creation=doc,
@@ -257,6 +258,8 @@ async def update_agent(
         if await _duplicate(db, business, field=AgentMaster.mobile, value=mob, exclude_id=agent.id):
             raise HTTPException(status_code=409, detail="An agent with this mobile number already exists.")
         agent.mobile = mob
+    if data.mobileCode is not None:
+        agent.mobile_code = data.mobileCode.strip() or None
     if data.email is not None:
         em = data.email.strip()
         if not _EMAIL_RE.match(em):

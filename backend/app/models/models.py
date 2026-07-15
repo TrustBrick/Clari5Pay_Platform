@@ -587,6 +587,9 @@ class AgentMaster(Base):
 
     # ── Contact information (both optional) ──
     mobile: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    # Dial code for `mobile` (e.g. "+91"). The national number stays 10 digits in `mobile`,
+    # so existing rows are unaffected; the UI shows +91 when this is unset.
+    mobile_code: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     email: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     # ── Business information ──
@@ -798,6 +801,9 @@ class AgentTransaction(Base):
     txn_state: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     txn_location: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     mobile: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    # Dial code for `mobile` (e.g. "+91"). The national number stays 10 digits in `mobile`,
+    # so existing rows are unaffected; the UI shows +91 when this is unset.
+    mobile_code: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
 
     # System-generated, immutable.
     token_details: Mapped[str] = mapped_column(String(48), nullable=False)

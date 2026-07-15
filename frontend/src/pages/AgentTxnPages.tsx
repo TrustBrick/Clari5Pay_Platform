@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl } from '../utils/helpers';
-import { Card, Btn, Input, Sel, Modal, LoadingScreen } from '../components/UI';
+import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl } from '../utils/helpers';
+import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect } from '../components/UI';
+import { COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import {
@@ -62,6 +63,19 @@ const METHOD_LABEL: Record<string, string> = {
 };
 const methodLabel = (v?: string | null) => (v ? METHOD_LABEL[v] || v : '—');
 const BANK_LIKE = ['BANK', 'IMPS', 'NEFT', 'RTGS'];
+
+// Membership IDs are uppercase letters + digits only (auto-converted; lowercase/spaces/symbols
+// blocked) — the same rule the Merchant Deposit form applies.
+const normalizeMemberId = (raw: string) => (raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+// Country / dial-code options from the shared phone-code list (same source as onboarding).
+const DIAL_OPTIONS = COUNTRY_CODES.map(c => ({ value: c.code, label: c.label }));
+const COUNTRY_OPTIONS = COUNTRY_CODES
+  .map(c => c.label.split(' ').slice(2).join(' '))
+  .filter((n, i, a) => !!n && a.indexOf(n) === i)
+  .sort()
+  .map(n => ({ value: n, label: n }));
+const STATE_OPTIONS = INDIAN_STATES.map(n => ({ value: n, label: n }));
 
 const thS: React.CSSProperties = { padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}` };
 const tdS: React.CSSProperties = { padding: '11px 14px', fontSize: 12, color: T.textMain };
@@ -203,6 +217,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const [state, setState] = useState('');
   const [location, setLocation] = useState('');
   const [mobile, setMobile] = useState('');
+  const [mobileCode, setMobileCode] = useState('+91');
   const [notes, setNotes] = useState('');
   const [instructions, setInstructions] = useState('');
   const [sendApproval, setSendApproval] = useState(false);
@@ -237,7 +252,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     setTokenDetails(''); setNoteNumber('');
     setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
     setSenderIfsc(''); setSenderBankName(''); setSenderBranch('');
-    setCountry(''); setState(''); setLocation(''); setMobile(''); setNotes(''); setInstructions('');
+    setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91'); setNotes(''); setInstructions('');
     setSendApproval(false); setApproverId('');
   };
 
@@ -261,7 +276,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       agentMasterId: agent.id, membershipId: membershipId.trim(),
       membershipName: membershipName.trim() || undefined, membershipType,
       amount: amt, country: country || undefined, state: state || undefined,
-      location: location || undefined, mobile: mobile || undefined, notes: notes || undefined,
+      location: location || undefined, mobile: mobile || undefined,
+      mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: sendApproval,
       tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim(),
       txnMethod,
@@ -317,7 +333,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
           <ReadField label="Agent Location" value={agent?.location} />
           <ReadField label="Agent Category" value={agent?.category} />
 
-          <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(e.target.value)} required placeholder="Enter Membership ID" />
+          <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(normalizeMemberId(e.target.value))}
+            required placeholder="Enter Membership ID" hint="Uppercase letters and numbers only" />
           <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined} />
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
@@ -349,10 +366,11 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
         )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
-          <Input label="Country" value={country} onChange={e => setCountry(e.target.value)} />
-          <Input label="State" value={state} onChange={e => setState(e.target.value)} />
+          <SearchSelect label="Country" value={country} onChange={setCountry} options={COUNTRY_OPTIONS} placeholder="Type to search…" />
+          <SearchSelect label="State" value={state} onChange={setState} options={STATE_OPTIONS} placeholder="Type to search…" />
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
-          <Input label="Mobile Number" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d]/g, ''))} placeholder="Optional" inputMode="numeric" />
+          <PhoneField code={mobileCode} onCode={setMobileCode} value={mobile} onValue={setMobile}
+            codeOptions={DIAL_OPTIONS} style={{ marginBottom: 16 }} />
 
           {/* Provided by the customer/agent — the operator enters them; nothing is generated. */}
           <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
@@ -429,6 +447,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [state, setState] = useState('');
   const [location, setLocation] = useState('');
   const [mobile, setMobile] = useState('');
+  const [mobileCode, setMobileCode] = useState('+91');
   const [notes, setNotes] = useState('');
   const [instructions, setInstructions] = useState('');
   const [sendApproval, setSendApproval] = useState(false);
@@ -474,7 +493,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
 
   const reset = () => {
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
-    setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile('');
+    setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
     setNotes(''); setInstructions(''); setSendApproval(false); setApproverId('');
     setSavedAccounts([]); setPayoutAccountId(''); setAddingAccount(false); setTxnMethod('');
     setTokenDetails(''); setNoteNumber('');
@@ -505,7 +524,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
       agentMasterId: Number(agentId), membershipId: membershipId.trim(),
       membershipName: membershipName.trim() || undefined, membershipType,
       amount: amt, country: country || undefined, state: state || undefined,
-      location: location || undefined, mobile: mobile || undefined, notes: notes || undefined,
+      location: location || undefined, mobile: mobile || undefined,
+      mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: sendApproval,
       approverUserId: sendApproval ? Number(approverId) : undefined,
       txnMethod,
@@ -557,7 +577,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
 
       <Card style={{ padding: 22 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
-          <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(e.target.value)} onBlur={lookupMember} required placeholder="Enter Membership ID" hint={looking ? 'Looking up…' : undefined} />
+          <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(normalizeMemberId(e.target.value))}
+            onBlur={lookupMember} required placeholder="Enter Membership ID"
+            hint={looking ? 'Looking up…' : 'Uppercase letters and numbers only'} />
           <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" />
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
@@ -640,10 +662,11 @@ export const AgentWithdrawalRequestPage: React.FC<{
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
-          <Input label="Country" value={country} onChange={e => setCountry(e.target.value)} />
-          <Input label="State" value={state} onChange={e => setState(e.target.value)} />
+          <SearchSelect label="Country" value={country} onChange={setCountry} options={COUNTRY_OPTIONS} placeholder="Type to search…" />
+          <SearchSelect label="State" value={state} onChange={setState} options={STATE_OPTIONS} placeholder="Type to search…" />
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
-          <Input label="Mobile Number" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d]/g, ''))} placeholder="Optional" inputMode="numeric" />
+          <PhoneField code={mobileCode} onCode={setMobileCode} value={mobile} onValue={setMobile}
+            codeOptions={DIAL_OPTIONS} style={{ marginBottom: 16 }} />
           {/* Provided by the customer/agent — the operator enters them; nothing is generated. */}
           <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
             required placeholder="As provided by the customer" />
@@ -951,12 +974,7 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
           <div style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Payment Evidence</div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
             {images.map(([label, src]) => (
-              <div key={label}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{label}</div>
-                {src.startsWith('data:application/pdf')
-                  ? <a href={src} target="_blank" rel="noreferrer" style={{ fontSize: 12.5, fontWeight: 700, color: T.blue }}>Open {label} (PDF)</a>
-                  : <img src={src} alt={label} style={{ maxWidth: 220, maxHeight: 240, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}` }} />}
-              </div>
+              <SlipView key={label} label={label} src={src} filename={`${row.referenceNumber}-${label.toLowerCase().replace(/\s+/g, '-')}`} />
             ))}
           </div>
         </div>
@@ -1355,6 +1373,21 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   );
 };
 
+// A stored slip/proof: preview when it is an image, always downloadable. The file is read from
+// the transaction — never re-uploaded — so every viewer sees the same original.
+const SlipView: React.FC<{ label: string; src: string; filename: string }> = ({ label, src, filename }) => {
+  const isPdf = src.startsWith('data:application/pdf');
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{label}</div>
+      {isPdf
+        ? <div style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 6 }}>PDF document</div>
+        : <img src={src} alt={label} style={{ maxWidth: 220, maxHeight: 240, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}`, display: 'block', marginBottom: 6 }} />}
+      <Btn size="sm" variant="ghost" onClick={() => downloadDataUrl(src, filename)}>↓ Download</Btn>
+    </div>
+  );
+};
+
 // ─── Deposit chain — operator steps (mirror the merchant deposit workflow) ─────
 // The Data Operator performs every step the Admin performs in the merchant flow. Each modal maps
 // 1:1 onto a backend endpoint and only ever touches the isolated agent ledger.
@@ -1439,6 +1472,8 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
 
   const submit = async () => {
     if (!slip && !slipRef.trim()) { showToast('Upload the slip image or enter a reference number.', 'error'); return; }
+    // An uploaded slip must carry its UTR — the number is what makes the image reconcilable.
+    if (slip && !utr.trim()) { showToast('UTR Number is required when a payment slip is uploaded.', 'error'); return; }
     setBusy(true);
     try {
       const body = { slipImage: slip || undefined, slipRef: slipRef.trim() || undefined, utr: utr.trim() || undefined };
@@ -1470,9 +1505,9 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
         <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800, color: T.blue }}>{fmt(row.amount)}</div>
       </div>
       <Input label="Reference Number" value={slipRef} onChange={e => setSlipRef(e.target.value)} placeholder="Payment reference" />
-      {mode === 'payout' && (
-        <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)} placeholder="Bank UTR (if applicable)" />
-      )}
+      <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)}
+        required={Boolean(slip)} placeholder="Bank UTR"
+        hint={slip ? 'Required because a slip image is attached' : undefined} />
       <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Slip Image</label>
       <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
       {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
@@ -1485,42 +1520,46 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   );
 };
 
-/** Mark Deposit — the merchant workflow's Admin step, performed here by the Data Operator. */
+/** Mark Deposit — the merchant workflow's Admin step, performed here by the Data Operator.
+ *  A review step, not an upload: the slip and UTR were captured at Pay / Upload Slip and are shown
+ *  read-only here, so the original file is never duplicated or overwritten. */
 const MarkDepositModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
   const { showToast } = useToast();
-  const [utr, setUtr] = useState('');
-  const [proof, setProof] = useState('');
-  const [proofName, setProofName] = useState('');
   const [busy, setBusy] = useState(false);
-
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (!f) return;
-    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
-    try { setProof(await fileToDataUrl(f)); setProofName(f.name); }
-    catch { showToast('Could not read the file.', 'error'); }
-  };
 
   const submit = async () => {
     setBusy(true);
     try {
-      await agentTxnsAPI.markDeposit(row.id, { utr: utr.trim() || undefined, proof: proof || undefined });
+      await agentTxnsAPI.markDeposit(row.id, {});
       showToast(`${row.referenceNumber} marked Deposited.`, 'success');
       onDone(); onClose();
     } catch (e) { showToast(agentTxnError(e, 'Failed to mark the deposit.'), 'error'); }
     finally { setBusy(false); }
   };
 
+  const facts: Array<[string, React.ReactNode]> = [
+    ['Reference', row.referenceNumber],
+    ['Amount', fmt(row.amount)],
+    ['UTR Number', row.depositUtr],
+    ['Slip Reference', row.slipRef],
+    ['Paid By', row.slipSubmittedBy],
+    ['Paid At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
+    ['Approved By', row.supervisorName],
+  ];
+
   return (
-    <Modal title={`Mark Deposit — ${row.referenceNumber}`} onClose={onClose}>
+    <Modal title={`Mark Deposit — ${row.referenceNumber}`} onClose={onClose} wide>
       <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
-        Approved by {row.supervisorName || 'the Supervisor'}. Marking this deposit completes it — the
-        status becomes Deposited and the amount counts toward the agent's approved figures.
+        Review what was captured at Pay / Upload Slip and confirm. Marking this deposit completes it —
+        the status becomes Deposited and the amount counts toward the agent's approved figures.
       </p>
-      <Input label="UTR Number (optional)" value={utr} onChange={e => setUtr(e.target.value)} placeholder="Bank UTR / reference" />
-      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Proof (optional)</label>
-      <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
-      {proofName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {proofName}</div>}
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        {facts.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
+      </div>
+      {row.slipImage
+        ? <div style={{ marginBottom: 14 }}><SlipView label="Uploaded Slip" src={row.slipImage} filename={`${row.referenceNumber}-slip`} /></div>
+        : <div style={{ marginBottom: 14, fontSize: 12.5, color: T.textMuted }}>No slip image was uploaded for this deposit.</div>}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
         <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Marking…' : 'Mark Deposited'}</Btn>
       </div>
@@ -1591,9 +1630,7 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
       {row.slipImage && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Submitted Slip</div>
-          {row.slipImage.startsWith('data:application/pdf')
-            ? <a href={row.slipImage} target="_blank" rel="noreferrer" style={{ fontSize: 12.5, fontWeight: 700, color: T.blue }}>Open slip (PDF)</a>
-            : <img src={row.slipImage} alt="Slip" style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 10, border: `1px solid ${T.border}` }} />}
+          <SlipView label="Submitted Slip" src={row.slipImage} filename={`${row.referenceNumber}-slip`} />
         </div>
       )}
       <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>

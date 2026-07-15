@@ -340,6 +340,17 @@ export const DEPOSIT_TYPE_OPTIONS = [
 ];
 
 // Country dialing codes for the phone-number dropdown (India first, then alphabetical).
+// Indian states + union territories, for the State pickers. The searchable dropdown still accepts
+// free text, so a state outside this list (non-India agents) can simply be typed.
+export const INDIAN_STATES = [
+  'Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar',
+  'Chandigarh', 'Chhattisgarh', 'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa',
+  'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka',
+  'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya',
+  'Mizoram', 'Nagaland', 'Odisha', 'Puducherry', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
+  'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+];
+
 export const COUNTRY_CODES = [
   { code: '+91', label: '🇮🇳 +91 India' },
   { code: '+93', label: '🇦🇫 +93 Afghanistan' },

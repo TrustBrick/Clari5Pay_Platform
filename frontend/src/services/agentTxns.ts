@@ -64,6 +64,7 @@ export interface AgentTxnRow {
   state?: string | null;
   location?: string | null;
   mobile?: string | null;
+  mobileCode?: string | null;
   tokenDetails: string;
   noteNumber: string;
   notes?: string | null;
@@ -175,6 +176,7 @@ export interface AgentDepositBody {
   state?: string;
   location?: string;
   mobile?: string;
+  mobileCode?: string;      // dial code for `mobile`
   notes?: string;
   instructions?: string;
   sentForApproval: boolean;
@@ -246,7 +248,8 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/approve`, { remark })).data,
   supervisorReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/reject`, { remark })).data,
-  markDeposit: async (id: number, body: { utr?: string; proof?: string }) =>
+  /** Confirmation only — the slip and UTR were captured at the slip step and are reused as-is. */
+  markDeposit: async (id: number, body: Record<string, never> = {}) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/mark-deposit`, body)).data,
 
   // ── Withdrawal chain (mirrors the merchant withdrawal workflow) ──

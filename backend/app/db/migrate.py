@@ -166,6 +166,9 @@ _NEW_COLUMNS = [
     # Aadhaar cardholder photo, captured at verification time (the provider's xml_file URL is
     # presigned and expires after 48h, so it cannot be re-fetched later).
     ("kyc_verification_history", "aadhaar_photo", "TEXT"),
+    # Country/dial code for the agent-module phone fields (national number stays in `mobile`).
+    ("agent_master", "mobile_code", "VARCHAR(8)"),
+    ("agent_transaction", "mobile_code", "VARCHAR(8)"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type

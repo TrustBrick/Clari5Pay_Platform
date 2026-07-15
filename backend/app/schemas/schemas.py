@@ -363,6 +363,7 @@ class AgentCreate(BaseModel):
     state: str
     location: str
     mobile: Optional[str] = None
+    mobileCode: Optional[str] = None          # dial code, e.g. "+91"
     email: Optional[str] = None
     currency: str
     dateOfCreation: Optional[str] = None          # IST YYYY-MM-DD; defaults to today
@@ -376,6 +377,7 @@ class AgentCreate(BaseModel):
 
 
 class AgentUpdate(BaseModel):
+    mobileCode: Optional[str] = None          # dial code, e.g. "+91"
     # Agent ID and Transaction Code are immutable — intentionally absent here.
     fullName: Optional[str] = None
     country: Optional[str] = None

@@ -351,6 +351,7 @@ export interface Agent {
   state: string;
   location: string;
   mobile?: string | null;
+  mobileCode?: string | null;
   email?: string | null;
   currency: string;
   dateOfCreation?: string | null;   // IST YYYY-MM-DD

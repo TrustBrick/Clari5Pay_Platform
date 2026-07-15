@@ -215,6 +215,113 @@ export const StatusChart: React.FC<{ data: Array<{ label: string; value: number;
   );
 };
 
+// ─── PhoneField ──────────────────────────────────────────────────────────────
+// Country-code selector + national number, in one place. Same layout and rules the platform
+// already uses for phone entry (Sel of dial codes + digits-only field); previously inlined per
+// page, so this is the shared version rather than a fourth copy.
+//   • digits only — letters, spaces and punctuation are stripped as you type
+//   • max 10 digits (national part; the dial code is separate)
+export const PHONE_MAX = 10;
+export const digitsOnly = (v: string, max = PHONE_MAX) => (v || '').replace(/\D/g, '').slice(0, max);
+
+export const PhoneField: React.FC<{
+  label?: string;
+  code: string;
+  onCode: (v: string) => void;
+  value: string;
+  onValue: (v: string) => void;
+  codeOptions: Array<{ value: string; label: string }>;
+  required?: boolean;
+  hint?: string;
+  style?: CSSProperties;
+}> = ({ label = 'Mobile Number', code, onCode, value, onValue, codeOptions, required, hint, style = {} }) => (
+  <div style={{ display: 'grid', gridTemplateColumns: '118px 1fr', gap: 8, ...style }}>
+    <Sel label="Code" value={code} onChange={(e) => onCode(e.target.value)} options={codeOptions} style={{ marginBottom: 0 }} />
+    <Input
+      label={label}
+      value={value}
+      onChange={(e) => onValue(digitsOnly(e.target.value))}
+      required={required}
+      inputMode="numeric"
+      placeholder="10 digits"
+      hint={hint ?? (value && value.length !== PHONE_MAX ? `${value.length}/10 digits` : undefined)}
+      style={{ marginBottom: 0 }}
+    />
+  </div>
+);
+
+// ─── SearchSelect ────────────────────────────────────────────────────────────
+// Type-to-filter dropdown for long option lists (countries, states). The platform's only
+// existing typeahead is the native <datalist> (see BankNamesDatalist), which cannot cap how many
+// rows are visible — so this renders the same idea explicitly: type to filter, ~5 rows visible,
+// the rest reachable by scrolling. Falls back to accepting free text, like the datalist does.
+export const SEARCH_VISIBLE_ROWS = 5;
+
+export const SearchSelect: React.FC<{
+  label?: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label: string }>;
+  placeholder?: string;
+  required?: boolean;
+  hint?: string;
+  style?: CSSProperties;
+}> = ({ label, value, onChange, options, placeholder = 'Type to search…', required, hint, style = {} }) => {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const away = (e: MouseEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', away);
+    return () => document.removeEventListener('mousedown', away);
+  }, []);
+
+  // While open the field shows what you typed; closed, it shows the chosen value.
+  const shown = open ? q : value;
+  const needle = (open ? q : '').trim().toLowerCase();
+  const list = needle ? options.filter((o) => o.label.toLowerCase().includes(needle)) : options;
+  const ROW = 34;
+
+  return (
+    <div style={{ marginBottom: 16, ...style }} ref={box}>
+      {label && (
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {label}{required && <span style={{ color: T.danger }}> *</span>}
+        </label>
+      )}
+      <div style={{ position: 'relative' }}>
+        <input
+          value={shown}
+          placeholder={placeholder}
+          onFocus={() => { setOpen(true); setQ(''); }}
+          onChange={(e) => { setQ(e.target.value); setOpen(true); onChange(e.target.value); }}
+          style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${open ? T.blue : T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', transition: 'border-color 0.2s' }}
+        />
+        {open && (
+          <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 4, background: T.surface, border: `1.5px solid ${T.border}`, borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.14)', maxHeight: ROW * SEARCH_VISIBLE_ROWS, overflowY: 'auto' }}>
+            {list.length === 0 && (
+              <div style={{ padding: '9px 14px', fontSize: 12.5, color: T.textMuted }}>No matches</div>
+            )}
+            {list.map((o) => (
+              <div
+                key={o.value}
+                onMouseDown={(e) => { e.preventDefault(); onChange(o.value); setOpen(false); setQ(''); }}
+                style={{ padding: '8px 14px', fontSize: 13.5, cursor: 'pointer', height: ROW, boxSizing: 'border-box', color: o.value === value ? T.blue : T.textMain, fontWeight: o.value === value ? 700 : 500, background: o.value === value ? `${T.blue}0e` : 'transparent' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = T.canvas; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = o.value === value ? `${T.blue}0e` : 'transparent'; }}
+              >
+                {o.label}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {hint && <p style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>{hint}</p>}
+    </div>
+  );
+};
+
 // ─── Modal ───────────────────────────────────────────────────────────────────
 export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean; xxl?:boolean; icon?:string }> = ({ title, children, onClose, wide, xl, xxl, icon }) => (
   <div className="c5-overlay" style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:xxl?'24px 2.5vw':16,backdropFilter:'blur(4px)' }}>

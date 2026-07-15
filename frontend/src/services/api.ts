@@ -515,7 +515,7 @@ export interface AgentQuery {
 }
 export interface AgentCreatePayload {
   fullName: string; country: string; state: string; location: string;
-  mobile?: string; email?: string; currency: string; dateOfCreation?: string;
+  mobile?: string; mobileCode?: string; email?: string; currency: string; dateOfCreation?: string;
   reference?: string; feesPct: number; transactionCode: string; category: string;
   notes?: string; riskAnalysis?: boolean; sendForApproval?: boolean;
 }

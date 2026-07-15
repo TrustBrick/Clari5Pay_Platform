@@ -238,7 +238,7 @@ def _row(t: AgentTransaction) -> dict:
         "membershipType": t.membership_type,
         "amount": round(t.amount, 2),
         "country": t.txn_country, "state": t.txn_state, "location": t.txn_location,
-        "mobile": t.mobile,
+        "mobile": t.mobile, "mobileCode": t.mobile_code,
         "tokenDetails": t.token_details, "noteNumber": t.note_number,
         "notes": t.notes, "instructions": t.instructions,
         "status": t.status,
@@ -322,6 +322,7 @@ class _Base(BaseModel):
     state: str | None = None
     location: str | None = None
     mobile: str | None = None
+    mobileCode: str | None = None            # dial code for `mobile`
     notes: str | None = None
     instructions: str | None = None
     sentForApproval: bool = False
@@ -357,8 +358,10 @@ class AgentReviewAction(BaseModel):
 
 
 class AgentMarkDeposit(BaseModel):
-    utr: str | None = None
-    proof: str | None = None                # data URL
+    """Mark Deposit is a confirmation, not an upload: the slip and UTR were captured at the
+    Pay / Upload Slip step and are only displayed for review. Kept as an empty body so the
+    endpoint contract is unchanged for callers."""
+    pass
 
 
 class AgentDepositCreate(_Base):
@@ -464,7 +467,8 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         membership_id=body.membershipId.strip(), membership_name=membership_name,
         membership_type=body.membershipType.upper(),
         amount=round(body.amount, 2),
-        txn_country=body.country, txn_state=body.state, txn_location=body.location, mobile=body.mobile,
+        txn_country=body.country, txn_state=body.state, txn_location=body.location,
+        mobile=body.mobile, mobile_code=(body.mobileCode or None),
         token_details=entered_token, note_number=note_no,
         notes=(body.notes or None), instructions=(body.instructions.upper() if body.instructions else None),
         # Transaction type + Sending Account, captured exactly like the merchant Deposit Request.
@@ -691,9 +695,15 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     _require_status(t, ST_ACCOUNT_SUBMITTED, "a slip")
     if not (body.slipImage or (body.slipRef or "").strip()):
         raise HTTPException(status_code=400, detail="Upload the slip image or enter a reference number.")
+    # An uploaded slip must be accompanied by its UTR — the number is what makes the image
+    # reconcilable, and Mark Deposit later shows both read-only rather than re-collecting them.
+    if body.slipImage and not (body.utr or "").strip():
+        raise HTTPException(status_code=400, detail="UTR Number is required when a payment slip is uploaded.")
 
     t.slip_image = body.slipImage or None
     t.slip_ref = (body.slipRef or "").strip() or None
+    if (body.utr or "").strip():
+        t.deposit_utr = body.utr.strip()          # captured once here; Mark Deposit only displays it
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
     t.status = ST_SUPERVISOR_REVIEW          # straight to the Supervisor queue (as the merchant flow does)
@@ -753,7 +763,9 @@ async def mark_deposit(txn_id: int, body: AgentMarkDeposit, db: AsyncSession = D
                        user: User = Depends(get_current_agent_operator)):
     """Data Operator marks an approved deposit as Deposited → DEPOSITED.
 
-    This is the merchant workflow's Admin 'Mark Deposited' step, performed by the Data Operator.
+    The merchant workflow's Admin 'Mark Deposited' step, performed by the Data Operator. It is a
+    confirmation only: the slip and UTR captured at Pay / Upload Slip are reused as-is and are
+    never re-uploaded or overwritten here.
     """
     _require(user, DEPOSIT_OPERATOR_ROLES, "mark Agent Deposits as deposited")
     t = await _load_own(db, _business(user), txn_id)
@@ -762,8 +774,8 @@ async def mark_deposit(txn_id: int, body: AgentMarkDeposit, db: AsyncSession = D
     t.status = ST_DEPOSITED
     t.deposited_by = user.username
     t.deposited_at = datetime.utcnow()
-    t.deposit_utr = (body.utr or "").strip() or None
-    t.deposit_proof = body.proof or None
+    # deposit_utr / slip_image are left exactly as captured at the slip step — no duplicate
+    # upload, no overwrite of the original.
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
     await _log(db, t, "DEPOSITED", user, new_amount=t.amount, note=f"Marked deposited by {user.username}")
     await db.commit()
@@ -850,6 +862,8 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     _require_status(t, ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED, "payment")
     if not (body.slipImage or (body.slipRef or "").strip()):
         raise HTTPException(status_code=400, detail="Upload the payment slip or enter a reference number.")
+    if body.slipImage and not (body.utr or "").strip():
+        raise HTTPException(status_code=400, detail="UTR Number is required when a payment slip is uploaded.")
     t.slip_image = body.slipImage or None
     t.slip_ref = (body.slipRef or "").strip() or None
     t.slip_submitted_by = user.username

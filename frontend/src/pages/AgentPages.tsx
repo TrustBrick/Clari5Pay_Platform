@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { T } from '../utils/theme';
-import { Card, Btn, Input, Sel, Modal, TableSkeleton, LoadingScreen, StatCard, BankNamesDatalist } from '../components/UI';
+import { Card, Btn, Input, Sel, Modal, TableSkeleton, LoadingScreen, StatCard, BankNamesDatalist, PhoneField, SearchSelect } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { agentAPI, agentAccountAPI, agentAssignmentAPI, agentDashboardAPI, agentTransactionAPI } from '../services/api';
-import { formatDateTimeIST, COUNTRY_CODES, fileToDataUrl, fmt, downloadText } from '../utils/helpers';
+import { formatDateTimeIST, COUNTRY_CODES, INDIAN_STATES, fileToDataUrl, fmt, downloadText } from '../utils/helpers';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import { downloadXlsx } from '../utils/xlsx';
 import type { Col } from '../utils/xlsx';
@@ -27,6 +27,9 @@ const COUNTRY_OPTIONS = COUNTRY_CODES
   .filter((n, i, a) => !!n && a.indexOf(n) === i)
   .sort()
   .map((n) => ({ value: n, label: n }));
+
+const DIAL_OPTIONS = COUNTRY_CODES.map((c) => ({ value: c.code, label: c.label }));
+const STATE_OPTIONS = INDIAN_STATES.map((n) => ({ value: n, label: n }));
 
 const CURRENCY_OPTIONS = [
   'INR', 'USD', 'EUR', 'GBP', 'AED', 'SGD', 'AUD', 'CAD', 'JPY', 'CNY',
@@ -122,13 +125,13 @@ const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repe
 // ── Form (Create / Edit) ────────────────────────────────────────────────────────
 type FormState = {
   fullName: string; country: string; state: string; location: string;
-  mobile: string; email: string; currency: string; dateOfCreation: string;
+  mobile: string; mobileCode: string; email: string; currency: string; dateOfCreation: string;
   reference: string; feesPct: string; transactionCode: string; category: AgentCategory;
   notes: string; riskAnalysis: boolean; status: AgentStatus;
 };
 
 const blankForm = (): FormState => ({
-  fullName: '', country: '', state: '', location: '', mobile: '', email: '',
+  fullName: '', country: '', state: '', location: '', mobile: '', mobileCode: '+91', email: '',
   currency: 'INR', dateOfCreation: todayISO(), reference: '', feesPct: '',
   transactionCode: '', category: 'CASH', notes: '', riskAnalysis: false,
   status: 'ACTIVE',
@@ -144,7 +147,8 @@ const AgentForm: React.FC<{
     if (mode === 'edit' && initial) {
       return {
         fullName: initial.fullName, country: initial.country, state: initial.state,
-        location: initial.location, mobile: initial.mobile || '', email: initial.email || '',
+        location: initial.location, mobile: initial.mobile || '',
+        mobileCode: initial.mobileCode || '+91', email: initial.email || '',
         currency: initial.currency, dateOfCreation: initial.dateOfCreation || todayISO(),
         reference: initial.reference || '', feesPct: String(initial.feesPct ?? ''),
         transactionCode: initial.transactionCode, category: initial.category,
@@ -180,7 +184,7 @@ const AgentForm: React.FC<{
     try {
       const base = {
         fullName: form.fullName.trim(), country: form.country.trim(), state: form.state.trim(),
-        location: form.location.trim(), mobile: form.mobile.trim(),
+        location: form.location.trim(), mobile: form.mobile.trim(), mobileCode: form.mobileCode,
         email: form.email.trim(), currency: form.currency,
         reference: form.reference || undefined, feesPct: Number(form.feesPct),
         category: form.category, notes: form.notes.trim() || undefined,
@@ -219,16 +223,17 @@ const AgentForm: React.FC<{
           <Input label="Agent ID" value={mode === 'edit' ? initial!.agentId : 'Auto-generated on save'} onChange={() => {}} readOnly hint="System generated — cannot be edited." />
           <div style={grid2}>
             <Input label="Full Name" value={form.fullName} onChange={(e) => set('fullName', e.target.value)} required />
-            <Sel label="Country" value={form.country} required options={[{ value: '', label: 'Select country' }, ...COUNTRY_OPTIONS]}
-              onChange={(e) => { const c = e.target.value; setForm((f) => ({ ...f, country: c, currency: COUNTRY_CURRENCY[c] || f.currency })); }} />
-            <Input label="State" value={form.state} onChange={(e) => set('state', e.target.value)} required />
+            <SearchSelect label="Country" value={form.country} required options={COUNTRY_OPTIONS} placeholder="Type to search…"
+              onChange={(c) => setForm((f) => ({ ...f, country: c, currency: COUNTRY_CURRENCY[c] || f.currency }))} />
+            <SearchSelect label="State" value={form.state} onChange={(v) => set('state', v)} required options={STATE_OPTIONS} placeholder="Type to search…" />
             <Input label="Location" value={form.location} onChange={(e) => set('location', e.target.value)} required />
           </div>
         </Section>
 
         <Section title="Contact Information">
           <div style={grid2}>
-            <Input label="Mobile Number" value={form.mobile} onChange={(e) => set('mobile', e.target.value.replace(/\D/g, '').slice(0, 10))} inputMode="numeric" required hint="Exactly 10 digits (numbers only)" />
+            <PhoneField code={form.mobileCode} onCode={(v) => set('mobileCode', v)} value={form.mobile}
+              onValue={(v) => set('mobile', v)} codeOptions={DIAL_OPTIONS} required />
             <Input label="Email Address" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} required hint="e.g. name@example.com" />
           </div>
         </Section>
