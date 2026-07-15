@@ -1272,9 +1272,14 @@ def _build_report_payload(
 
     # ── Raw rows for client-side search, custom ranges, recent high-value & drill-down ──
     # Running Available Balance after each transaction (replays completed txns
-    # chronologically). Mirrors the canonical formula so the final row reconciles to
-    # Net Available Withdrawal Amount: deposit adds net of pay-in fee, settlement
-    # subtracts its principal, withdrawal subtracts only its pay-out fee. The running
+    # chronologically). This is the per-leg expansion of compute_balance's canonical
+    # Available Balance — NOT a second formula. compute_balance computes:
+    #     available = (ΣDep − ΣWd − ΣSet) − ΣDep·pay_in − ΣWd·pay_out − ΣSet·pay_out
+    # which per transaction is exactly:
+    #     deposit    → + amount · (1 − pay_in_rate)
+    #     withdrawal → − amount · (1 + pay_out_rate)     principal AND its pay-out fee
+    #     settlement → − amount · (1 + pay_out_rate)     principal AND its pay-out fee
+    # so the closing row reconciles to the dashboard / card Available Balance. The running
     # balance is kept per-business (using that business's own fee rates) so a consolidated
     # all-merchants view stays correct across merchants with different fee structures.
     running_by_biz: dict[str, float] = {}
@@ -1287,10 +1292,8 @@ def _build_report_payload(
             k = _kind(t)
             if k == "deposit":
                 running += t.amount * (1 - pay_in_rate)
-            elif k == "settlement":
-                running -= t.amount
-            elif k == "withdrawal":
-                running -= t.amount * pay_out_rate
+            elif k in ("withdrawal", "settlement"):
+                running -= t.amount * (1 + pay_out_rate)
         running_by_biz[biz] = running
         bal_by_id[t.id] = round(running, 2)
 

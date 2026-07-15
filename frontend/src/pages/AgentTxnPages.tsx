@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt } from '../utils/helpers';
+import { fmt, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen } from '../components/UI';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -147,8 +147,8 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
 };
 
 // ─── Reusable read-only field (auto-fetched agent details) ─────────────────────
-const ReadField: React.FC<{ label: string; value?: string | null }> = ({ label, value }) => (
-  <Input label={label} value={value || ''} onChange={() => {}} placeholder="—" readOnly />
+const ReadField: React.FC<{ label: string; value?: string | null; placeholder?: string }> = ({ label, value, placeholder = '—' }) => (
+  <Input label={label} value={value || ''} onChange={() => {}} placeholder={placeholder} readOnly />
 );
 
 // ─── Agent Deposit Request form ────────────────────────────────────────────────
@@ -206,7 +206,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     if (!agent) { showToast('Select an Agent ID.', 'error'); return; }
     if (!membershipId.trim()) { showToast('Membership ID is required.', 'error'); return; }
     if (!membershipType) { showToast('Select a Membership Type.', 'error'); return; }
-    const amt = Number(amount);
+    const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
     if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
@@ -267,15 +267,15 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
           <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined} />
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
-          <Input label="Transaction Amount" type="number" value={amount} onChange={e => setAmount(e.target.value)} required inputMode="decimal" />
+          <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
 
           <Input label="Country" value={country} onChange={e => setCountry(e.target.value)} />
           <Input label="State" value={state} onChange={e => setState(e.target.value)} />
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
           <Input label="Mobile Number" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d]/g, ''))} placeholder="Optional" inputMode="numeric" />
 
-          <ReadField label="Token Details" value="Auto-generated on submit" />
-          <ReadField label="Unique Note Number" value="System-generated on submit" />
+          <ReadField label="Token Details" placeholder="" />
+          <ReadField label="Unique Note Number" placeholder="" />
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
         </div>
@@ -371,7 +371,7 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
     if (!membershipId.trim()) { showToast('Membership ID is required.', 'error'); return; }
     if (!membershipType) { showToast('Select a Membership Type.', 'error'); return; }
     if (!agentId) { showToast('Select an Agent ID.', 'error'); return; }
-    const amt = Number(amount);
+    const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
     if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
@@ -425,7 +425,7 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
           <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" />
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
-          <Input label="Transaction Amount" type="number" value={amount} onChange={e => setAmount(e.target.value)} required inputMode="decimal" />
+          <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
         </div>
 
         {/* Agent — auto-fetched from the latest deposit for this membership, else manual selection */}
@@ -462,8 +462,8 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
           <Input label="State" value={state} onChange={e => setState(e.target.value)} />
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
           <Input label="Mobile Number" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d]/g, ''))} placeholder="Optional" inputMode="numeric" />
-          <ReadField label="Token Details" value="Auto-generated on submit" />
-          <ReadField label="Unique Note Number" value="System-generated on submit" />
+          <ReadField label="Token Details" placeholder="" />
+          <ReadField label="Unique Note Number" placeholder="" />
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
         </div>
@@ -497,10 +497,14 @@ export const AgentWithdrawalRequestPage: React.FC<{ user: User; onNavigate?: (p:
 };
 
 // ─── Manage Transaction — correct the amount of a PENDING agent transaction ─────
-const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApprove: boolean; onClose: () => void; onRefresh: () => void }> =
-  ({ row, fd, canApprove, onClose, onRefresh }) => {
+// A Manager already holds approval authority, so forwarding to another approver is meaningless for
+// them — they act on the transaction directly (Update Amount / Approve / Reject / Close). Every
+// other role keeps the existing forward-to-approver workflow.
+const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApprove: boolean; role: string; onClose: () => void; onRefresh: () => void }> =
+  ({ row, fd, canApprove, role, onClose, onRefresh }) => {
     const { showToast } = useToast();
-    const [amount, setAmount] = useState(String(row.amount));
+    const canSendToApproval = role !== 'MANAGER';
+    const [amount, setAmount] = useState(formatIndianAmountInput(String(row.amount)));
     const [notes, setNotes] = useState('');
     const [sendApproval, setSendApproval] = useState(false);
     const [approverId, setApproverId] = useState('');
@@ -521,15 +525,16 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
     ];
 
     const saveAmount = async () => {
-      const amt = Number(amount);
+      const amt = Number(parseIndianAmount(amount));
       if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
       if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
-      if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
+      const forwarding = canSendToApproval && sendApproval;
+      if (forwarding && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
       setBusy(true);
       try {
         const updated = await agentTxnsAPI.manage(row.id, {
-          amount: amt, notes: notes || undefined, sentForApproval: sendApproval,
-          approverUserId: sendApproval ? Number(approverId) : undefined,
+          amount: amt, notes: notes || undefined, sentForApproval: forwarding,
+          approverUserId: forwarding ? Number(approverId) : undefined,
         });
         setCurrent(updated); setNotes('');
         showToast(`Amount updated for ${updated.referenceNumber}.`, 'success');
@@ -557,23 +562,25 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
         </div>
         <p style={{ fontSize: 11.5, color: T.textMuted, margin: '0 0 12px' }}>Only the Transaction Amount can be changed. Agent, membership, reference, code, token and note number are immutable.</p>
 
-        <Input label="Transaction Amount" type="number" value={amount} onChange={e => setAmount(e.target.value)} inputMode="decimal" />
+        <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} inputMode="decimal" />
         <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes <span style={{ color: T.textLight, fontWeight: 600 }}>({notes.length}/100)</span></label>
         <textarea value={notes} maxLength={100} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Reason for the correction (optional)"
           style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical', marginBottom: 12 }} />
 
-        <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: T.textMain }}>
-            <input type="checkbox" checked={sendApproval} onChange={e => setSendApproval(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
-            Send To Approval (optional)
-          </label>
-          {sendApproval && (
-            <div style={{ marginTop: 10, maxWidth: 360 }}>
-              <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
-                options={[{ value: '', label: '— Select approver —' }, ...(fd?.approvers || []).map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
-            </div>
-          )}
-        </div>
+        {canSendToApproval && (
+          <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: T.textMain }}>
+              <input type="checkbox" checked={sendApproval} onChange={e => setSendApproval(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+              Send To Approval (optional)
+            </label>
+            {sendApproval && (
+              <div style={{ marginTop: 10, maxWidth: 360 }}>
+                <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
+                  options={[{ value: '', label: '— Select approver —' }, ...(fd?.approvers || []).map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
           <Btn onClick={saveAmount} disabled={busy}>{busy ? 'Saving…' : 'Update Amount'}</Btn>
@@ -609,7 +616,8 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
 
 export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => {
   const { showToast } = useToast();
-  const canApprove = ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
+  const role = String(user.merchantRole || '').toUpperCase();
+  const canApprove = ['SUPERVISOR', 'MANAGER'].includes(role);
   const [fd, setFd] = useState<AgentFormData | null>(null);
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -688,7 +696,7 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
         </div>
       </Card>
 
-      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} onClose={() => setManageRow(null)} onRefresh={search} />}
+      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} role={role} onClose={() => setManageRow(null)} onRefresh={search} />}
     </div>
   );
 };
@@ -784,23 +792,34 @@ const AgentTxnManagementPage: React.FC<{
 
   useEffect(() => { agentTxnsAPI.formData().then(setFd).catch(() => {}); }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // `background: true` refreshes the rows without touching `loading`. The Search button reads
+  // `loading`, so letting the 20s poll (and every window-focus / tab-visibility refetch) drive it
+  // made the button flip to "Searching…" and back on its own — the flicker. Only a real,
+  // user-initiated search now moves that state.
+  const load = useCallback(async (opts?: { background?: boolean }) => {
+    const background = opts?.background === true;
+    if (!background) setLoading(true);
     try {
       const q: AgentTxnQuery = { txn_type: txnType };
       if (status) q.status = status;
       if (search.trim()) q.search = search.trim();
       if (dateF) q.date = dateF; else { if (fromF) q.date_from = fromF; if (toF) q.date_to = toF; }
       setRows(await agentTxnsAPI.list(q));
-    } catch { showToast(`Failed to load Agent ${noun} requests.`, 'error'); }
-    finally { setLoading(false); }
+    } catch { if (!background) showToast(`Failed to load Agent ${noun} requests.`, 'error'); }
+    finally { if (!background) setLoading(false); }
   }, [txnType, status, search, dateF, fromF, toF, noun, showToast]);
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  usePoll(() => { if (!showForm && !detailRow && !manageRow) load(); });
+  usePoll(() => { if (!showForm && !detailRow && !manageRow) load({ background: true }); });
 
   const runSearch = () => { setPage(1); load(); };
   const clearFilters = () => { setSearch(''); setStatus(''); setDateF(''); setFromF(''); setToF(''); setPage(1); };
+
+  // Agent Category comes from Agent Master (the /form-data agent list), never from the transaction.
+  // The row's own agent_category is the Agent Master value snapshotted at creation — used only as a
+  // fallback for agents no longer present in the master list.
+  const categoryOf = (x: AgentTxnRow) =>
+    fd?.agents.find(a => a.id === x.agentMasterId)?.category || x.agentCategory || '—';
 
   const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -836,14 +855,15 @@ const AgentTxnManagementPage: React.FC<{
       <Card style={{ overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr style={{ background: T.canvas }}>{['Reference', 'Agent', 'Membership', 'Amount', 'Status', 'Created (IST)', 'Action'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <thead><tr style={{ background: T.canvas }}>{['Reference', 'Agent', 'Agent Category', 'Membership', 'Amount', 'Status', 'Created (IST)', 'Action'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
             <tbody>
-              {loading && rows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
-              {!loading && pageRows.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No Agent {noun} requests match the search.</td></tr>}
+              {loading && rows.length === 0 && <tr><td colSpan={8} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
+              {!loading && pageRows.length === 0 && <tr><td colSpan={8} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No Agent {noun} requests match the search.</td></tr>}
               {pageRows.map((x, i) => (
                 <tr key={x.id} style={{ background: i % 2 ? T.canvas : T.surface }}>
                   <td style={{ ...tdS, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
                   <td style={tdS}>{x.agentCode || '—'}{x.agentName ? ` · ${x.agentName}` : ''}</td>
+                  <td style={tdS}>{categoryOf(x)}</td>
                   <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
                   <td style={tdS}><StatusPill status={x.status} /></td>
@@ -872,7 +892,7 @@ const AgentTxnManagementPage: React.FC<{
         </Modal>
       )}
       {detailRow && <AgentTxnDetailsModal row={detailRow} onClose={() => setDetailRow(null)} />}
-      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} onClose={() => setManageRow(null)} onRefresh={load} />}
+      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} role={role} onClose={() => setManageRow(null)} onRefresh={load} />}
     </div>
   );
 };
@@ -940,8 +960,10 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
     agentTxnsAPI.overview().then(setOv).catch(() => showToast('Failed to load financial summary.', 'error'));
   }, [showToast]);
 
-  const loadRows = useCallback(async () => {
-    setLoading(true);
+  // See AgentTxnManagementPage.load — background refreshes must not drive the Search button.
+  const loadRows = useCallback(async (opts?: { background?: boolean }) => {
+    const background = opts?.background === true;
+    if (!background) setLoading(true);
     try {
       const q: AgentTxnQuery = {};
       if (status) q.status = status;
@@ -950,12 +972,12 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
       if (fromF) q.date_from = fromF;
       if (toF) q.date_to = toF;
       setRows(await agentTxnsAPI.list(q));
-    } catch { showToast('Failed to load agent transactions.', 'error'); }
-    finally { setLoading(false); }
+    } catch { if (!background) showToast('Failed to load agent transactions.', 'error'); }
+    finally { if (!background) setLoading(false); }
   }, [status, type, search, fromF, toF, showToast]);
 
   useEffect(() => { loadSummary(); loadRows(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  usePoll(() => { loadSummary(); loadRows(); });
+  usePoll(() => { loadSummary(); loadRows({ background: true }); });
 
   const runSearch = () => { setPage(1); loadRows(); };
   const clearFilters = () => { setSearch(''); setStatus(''); setType(''); setFromF(''); setToF(''); setPage(1); };
