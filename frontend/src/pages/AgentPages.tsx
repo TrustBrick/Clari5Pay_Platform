@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { T } from '../utils/theme';
-import { Card, Btn, Input, Sel, Modal, TableSkeleton, LoadingScreen, StatCard } from '../components/UI';
+import { Card, Btn, Input, Sel, Modal, TableSkeleton, LoadingScreen, StatCard, BankNamesDatalist } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { agentAPI, agentAccountAPI, agentAssignmentAPI, agentDashboardAPI, agentTransactionAPI } from '../services/api';
 import { formatDateTimeIST, COUNTRY_CODES, fileToDataUrl, fmt, downloadText } from '../utils/helpers';
+import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import { downloadXlsx } from '../utils/xlsx';
 import type { Col } from '../utils/xlsx';
 import type { Agent, AgentAccount, AgentAccountType, AgentAssignmentResult, AgentAuditRow, AgentCategory, AgentDashboard, AgentFinancialRow, AgentStatus, AgentTxRow, User } from '../types';
@@ -996,9 +997,20 @@ const AccountForm: React.FC<{
             <div style={grid2}>
               <Input label="Account Holder" value={form.accountHolder} onChange={(e) => set('accountHolder', e.target.value)} required />
               <Input label="Account Number" value={form.accountNumber} onChange={(e) => set('accountNumber', e.target.value)} required />
-              <Input label="IFSC / Routing" value={form.ifsc} onChange={(e) => set('ifsc', e.target.value.toUpperCase())} required />
-              <Input label="Bank Name" value={form.bankName} onChange={(e) => set('bankName', e.target.value)} required />
+              {/* IFSC auto-fill — the SAME utils/ifsc lookup + validation Admin → Account
+                  Management uses (Razorpay IFSC API); falls back to manual on failure. */}
+              <Input label="IFSC / Routing" value={form.ifsc} required hint="Auto-fills bank & branch"
+                onChange={async (e) => {
+                  const up = e.target.value.toUpperCase();
+                  set('ifsc', up);
+                  if (isValidIfsc(up)) {
+                    const info = await lookupIfsc(up);
+                    if (info) setForm((f) => ({ ...f, ifsc: up, bankName: info.bank, branch: info.branch }));
+                  }
+                }} />
+              <Input label="Bank Name" value={form.bankName} onChange={(e) => set('bankName', e.target.value)} required list="bank-names" />
               <Input label="Branch" value={form.branch} onChange={(e) => set('branch', e.target.value)} />
+              <BankNamesDatalist names={BANK_NAMES} />
             </div>
           </Section>
         )}

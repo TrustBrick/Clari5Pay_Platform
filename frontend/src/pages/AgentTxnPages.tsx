@@ -186,6 +186,9 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const [membershipId, setMembershipId] = useState('');
   const [membershipName, setMembershipName] = useState('');
   const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
+  // Supplied by the customer/agent and typed in by the operator — never generated.
+  const [tokenDetails, setTokenDetails] = useState('');
+  const [noteNumber, setNoteNumber] = useState('');
   const [membershipType, setMembershipType] = useState('');
   const [amount, setAmount] = useState('');
   // Transaction type + Sending Account — captured exactly like the merchant Deposit Request.
@@ -231,6 +234,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
 
   const reset = () => {
     setAgentId(''); setMembershipId(''); setMembershipName(''); setMemberLocked(false); setMembershipType(''); setAmount('');
+    setTokenDetails(''); setNoteNumber('');
     setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
     setSenderIfsc(''); setSenderBankName(''); setSenderBranch('');
     setCountry(''); setState(''); setLocation(''); setMobile(''); setNotes(''); setInstructions('');
@@ -243,6 +247,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     if (!membershipType) { showToast('Select a Membership Type.', 'error'); return; }
     const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
+    if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
+    if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
     if (txnMethod === 'UPI' && !senderUpiId.includes('@')) { showToast('Enter a valid Sender UPI ID (name@bank).', 'error'); return; }
     if (BANK_LIKE.includes(txnMethod) && (!senderAccountHolder.trim() || !senderAccountNumber.trim())) {
@@ -257,6 +263,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       amount: amt, country: country || undefined, state: state || undefined,
       location: location || undefined, mobile: mobile || undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: sendApproval,
+      tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim(),
       txnMethod,
       senderUpiId: senderUpiId.trim() || undefined,
       senderAccountHolder: senderAccountHolder.trim() || undefined,
@@ -347,8 +354,11 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
           <Input label="Mobile Number" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d]/g, ''))} placeholder="Optional" inputMode="numeric" />
 
-          <ReadField label="Token Details" placeholder="" />
-          <ReadField label="Unique Note Number" placeholder="" />
+          {/* Provided by the customer/agent — the operator enters them; nothing is generated. */}
+          <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
+            required placeholder="As provided by the customer" />
+          <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(e.target.value)}
+            required placeholder="As provided by the customer" hint="Must be unique" />
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
         </div>
@@ -764,7 +774,7 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
           <Btn variant="secondary" onClick={onClose} disabled={busy}>Close</Btn>
         </div>
 
-        <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Audit History</h3>
+      <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Audit History</h3>
         <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr style={{ background: T.canvas }}>{['Date & Time (IST)', 'Action', 'Old', 'New', 'By', 'Note'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
@@ -901,7 +911,23 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ['Instructions', row.instructions ? instrLabel(row.instructions) : null], ['Notes', row.notes],
     ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'], ['Approver', row.approverName],
     ['Approved By', row.approvedBy], ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
+    // Payment evidence — stored on the transaction and re-read here; never re-uploaded.
+    ['UTR Number', row.depositUtr],
+    ['Slip Reference', row.slipRef],
+    ['Slip By', row.slipSubmittedBy],
+    ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
+    ['Sent To (Agent A/C)', row.agentAccountRef ? `${row.agentAccountRef} · ${row.agentAccountDetail || ''}` : null],
+    ['Paid To', [row.payoutAccountHolder, row.payoutAccountNumber || row.payoutUpiId, row.payoutBankName].filter(Boolean).join(' · ') || null],
+    ['Supervisor', row.supervisorName], ['Manager', row.managerName], ['Review Remark', row.reviewRemark],
+    ['Deposited By', row.depositedBy],
+    ['Deposited (IST)', row.depositedDate ? `${row.depositedDate} ${row.depositedTime || ''}` : null],
     ['Created By', row.createdBy], ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`],
+  ];
+
+  // The uploaded slip and the Mark-Deposit proof, shown from storage every time.
+  const images: Array<[string, string]> = [
+    ...(row.slipImage ? [['Uploaded Slip', row.slipImage] as [string, string]] : []),
+    ...(row.depositProof ? [['Deposit Proof', row.depositProof] as [string, string]] : []),
   ];
 
   return (
@@ -909,6 +935,22 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
         {fields.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
       </div>
+
+        {images.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Payment Evidence</div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            {images.map(([label, src]) => (
+              <div key={label}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{label}</div>
+                {src.startsWith('data:application/pdf')
+                  ? <a href={src} target="_blank" rel="noreferrer" style={{ fontSize: 12.5, fontWeight: 700, color: T.blue }}>Open {label} (PDF)</a>
+                  : <img src={src} alt={label} style={{ maxWidth: 220, maxHeight: 240, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}` }} />}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Audit History</h3>
       <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10, marginBottom: 16 }}>
@@ -1062,7 +1104,10 @@ const AgentTxnManagementPage: React.FC<{
                     {isDeposit && canOperate && x.status === 'ACCOUNT_REQUESTED' && <Btn size="sm" onClick={() => setAcctRow(x)}>Submit Account</Btn>}
                     {isDeposit && canOperate && x.status === 'ACCOUNT_SUBMITTED' && <Btn size="sm" onClick={() => setSlipRow(x)}>Pay / Upload Slip</Btn>}
                     {isDeposit && canOperate && x.status === 'SLIP_SUBMITTED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
-                    {!isDeposit && canPayout && x.status === 'SLIP_SUBMITTED' && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>Pay / Upload Slip</Btn>}
+                    {/* Withdrawal: created ready to pay (ACCOUNT_SUBMITTED) → the Manager reviews the
+                        slip afterwards. Settlement: no gate at all, created at SLIP_SUBMITTED. */}
+                    {!isDeposit && canPayout && x.status === (txnType === 'SETTLEMENT' ? 'SLIP_SUBMITTED' : 'ACCOUNT_SUBMITTED')
+                      && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>Pay / Upload Slip</Btn>}
                     {/* Manage is CASH-only — hidden entirely for every other method. */}
                     {canManage && x.txnMethod === 'CASH' && !AGENT_FINAL_STATUSES.includes(x.status)
                       && <Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn>}
@@ -1369,6 +1414,7 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
 /** Pay / Upload Slip — evidences the payment and sends the deposit to Supervisor review. */
 const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout'; onClose: () => void; onDone: () => void }> = ({ row, mode = 'deposit', onClose, onDone }) => {
   const { showToast } = useToast();
+  const [utr, setUtr] = useState('');
   const [slipRef, setSlipRef] = useState('');
   const [slip, setSlip] = useState('');
   const [slipName, setSlipName] = useState('');
@@ -1385,11 +1431,13 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
     if (!slip && !slipRef.trim()) { showToast('Upload the slip image or enter a reference number.', 'error'); return; }
     setBusy(true);
     try {
-      const body = { slipImage: slip || undefined, slipRef: slipRef.trim() || undefined };
+      const body = { slipImage: slip || undefined, slipRef: slipRef.trim() || undefined, utr: utr.trim() || undefined };
       // Deposit: slip → Supervisor review. Withdrawal: payout after Manager approval → Completed.
       await (mode === 'payout' ? agentTxnsAPI.payout(row.id, body) : agentTxnsAPI.submitSlip(row.id, body));
       showToast(mode === 'payout'
-        ? `${row.referenceNumber} paid and completed.`
+        ? (row.type === 'WITHDRAWAL'
+            ? `${row.referenceNumber} paid — awaiting Manager approval.`
+            : `${row.referenceNumber} paid and completed.`)
         : `Slip submitted for ${row.referenceNumber} — awaiting Supervisor approval.`, 'success');
       onDone(); onClose();
     } catch (e) { showToast(agentTxnError(e, 'Failed to submit the slip.'), 'error'); }
@@ -1411,7 +1459,10 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
         </div>
         <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800, color: T.blue }}>{fmt(row.amount)}</div>
       </div>
-      <Input label="Reference Number" value={slipRef} onChange={e => setSlipRef(e.target.value)} placeholder="Payment reference / UTR" />
+      <Input label="Reference Number" value={slipRef} onChange={e => setSlipRef(e.target.value)} placeholder="Payment reference" />
+      {mode === 'payout' && (
+        <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)} placeholder="Bank UTR (if applicable)" />
+      )}
       <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Slip Image</label>
       <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
       {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
@@ -1514,6 +1565,10 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
           ['IFSC', row.payoutIfsc],
           ['Bank', row.payoutBankName],
           ['UPI ID', row.payoutUpiId],
+          ['UTR Number', row.depositUtr],
+          ['Slip Reference', row.slipRef],
+          ['Paid By', row.slipSubmittedBy],
+          ['Paid At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
           ['Requested By', row.createdBy],
         ] as Array<[string, React.ReactNode]>)),
   ];
@@ -1553,7 +1608,7 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
   // A Supervisor reviews Deposits, a Manager reviews Withdrawals — the merchant review split.
   const isManager = String(user.merchantRole || '').toUpperCase() === 'MANAGER';
   const queue = isManager
-    ? { status: 'MANAGER_REVIEW', txn_type: 'WITHDRAWAL', noun: 'Withdrawals' }
+    ? { status: 'MANAGER_REVIEW', txn_type: 'WITHDRAWAL', noun: 'Withdrawals' }   // paid, awaiting slip review
     : { status: 'SUPERVISOR_REVIEW', txn_type: 'DEPOSIT', noun: 'Deposits' };
 
   const load = useCallback(async () => {
@@ -1571,8 +1626,8 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Approvals</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>
-          Agent {queue.noun} awaiting your approval. Approving sends them back to the Data Operator to
-          {isManager ? ' pay and upload the slip.' : ' mark as Deposited.'}
+          Agent {queue.noun} awaiting your approval. {isManager ? 'The operator has paid and uploaded the slip; review it and' : 'Approving sends them back to the Data Operator to'}
+          {isManager ? ' complete — approving finishes the withdrawal.' : ' mark as Deposited.'}
         </p>
       </div>
       <IsolationNote />

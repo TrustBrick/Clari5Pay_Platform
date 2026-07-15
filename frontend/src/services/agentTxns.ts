@@ -179,6 +179,9 @@ export interface AgentDepositBody {
   instructions?: string;
   sentForApproval: boolean;
   approverUserId?: number | null;
+  // Supplied by the customer/agent and typed in by the operator — mandatory on a Deposit.
+  tokenDetails?: string;
+  noteNumber?: string;
   // Transaction type + Sending Account (mirrors the merchant Deposit Request).
   txnMethod?: string;
   senderUpiId?: string;
@@ -253,7 +256,7 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/approve`, { remark })).data,
   managerReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
-  payout: async (id: number, body: { slipImage?: string; slipRef?: string }) =>
+  payout: async (id: number, body: { slipImage?: string; slipRef?: string; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
   approve: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/approve`)).data,
   reject: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/reject`)).data,

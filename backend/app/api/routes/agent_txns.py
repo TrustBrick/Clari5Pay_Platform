@@ -332,6 +332,11 @@ class _Base(BaseModel):
     sentForApproval: bool = False
     approverUserId: int | None = None
     # ── Transaction type + Sending Account (mirrors the merchant Deposit Request) ──
+    # Supplied by the customer/agent and typed in by the Data Operator — NOT generated. Mandatory
+    # on a Deposit; a Withdrawal/Settlement has no customer-supplied token, so those keep their
+    # generated values.
+    tokenDetails: str | None = None
+    noteNumber: str | None = None
     txnMethod: str | None = None            # CASH | UPI | BANK | IMPS | NEFT | RTGS | CRYPTO
     senderUpiId: str | None = None          # UPI the payment is sent from
     senderAccountHolder: str | None = None
@@ -349,6 +354,7 @@ class AgentAccountSubmit(BaseModel):
 class AgentSlipSubmit(BaseModel):
     slipImage: str | None = None            # data URL
     slipRef: str | None = None
+    utr: str | None = None                  # UTR of the payment (withdrawal/settlement payout)
 
 
 class AgentReviewAction(BaseModel):
@@ -401,6 +407,13 @@ def _validate_common(body: _Base, txn_type: str) -> None:
         raise HTTPException(status_code=400, detail="Notes must be 100 characters or fewer.")
     if body.instructions and body.instructions.upper() not in INSTRUCTIONS:
         raise HTTPException(status_code=400, detail="Invalid instruction option.")
+    # The Deposit's Token Details / Unique Note Number come from the customer, so the operator
+    # must enter them; they are never generated.
+    if txn_type == "DEPOSIT":
+        if not (body.tokenDetails or "").strip():
+            raise HTTPException(status_code=400, detail="Token Details are required.")
+        if not (body.noteNumber or "").strip():
+            raise HTTPException(status_code=400, detail="Unique Note Number is required.")
     if body.txnMethod and body.txnMethod.upper() not in TXN_METHODS:
         raise HTTPException(status_code=400, detail="Invalid Transaction Type.")
     method = (body.txnMethod or "").upper()
@@ -426,7 +439,18 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId)
 
     ref = await _next_serial(db, AgentTransaction.reference_number, prefix)
-    note_no = await _next_serial(db, AgentTransaction.note_number, "AGN")
+    # A Deposit carries the operator-entered note number; it must stay unique, so a clash is
+    # reported plainly instead of surfacing as a database integrity error.
+    entered_note = (body.noteNumber or "").strip()
+    entered_token = (body.tokenDetails or "").strip()
+    if entered_note:
+        clash = (await db.execute(select(AgentTransaction.id).where(
+            AgentTransaction.note_number == entered_note))).scalars().first()
+        if clash:
+            raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
+        note_no = entered_note
+    else:
+        note_no = await _next_serial(db, AgentTransaction.note_number, "AGN")
     txn_code = f"{agent.transaction_code}-{code_letter}-{ref[len(prefix):]}"
 
     # Membership name: use the entered value, else auto-fill from a prior agent transaction.
@@ -451,7 +475,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         membership_type=body.membershipType.upper(),
         amount=round(body.amount, 2),
         txn_country=body.country, txn_state=body.state, txn_location=body.location, mobile=body.mobile,
-        token_details=_token(), note_number=note_no,
+        token_details=(entered_token or _token()), note_number=note_no,
         notes=(body.notes or None), instructions=(body.instructions.upper() if body.instructions else None),
         # Transaction type + Sending Account, captured exactly like the merchant Deposit Request.
         txn_method=(body.txnMethod.upper() if body.txnMethod else None),
@@ -463,9 +487,12 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         sender_branch=(body.senderBranch or None),
         # Chain entry points, mirroring the merchant workflow: a DEPOSIT starts at Account
         # Request; a WITHDRAWAL goes straight to the Manager review gate.
+        # Chain entry points. A WITHDRAWAL is created with its payout account already captured,
+        # so it lands ready for the operator to pay and upload the slip (ACCOUNT_SUBMITTED is
+        # the merchant status for exactly that "details known, now pay" step). A SETTLEMENT
+        # needs no approval at all and is created ready for the Supervisor to pay.
         status=(ST_ACCOUNT_REQUESTED if txn_type == "DEPOSIT"
-                else ST_MANAGER_REVIEW if txn_type == "WITHDRAWAL"
-                # Settlement needs no approval — created ready for the Supervisor to pay.
+                else ST_ACCOUNT_SUBMITTED if txn_type == "WITHDRAWAL"
                 else ST_SLIP_SUBMITTED if txn_type == "SETTLEMENT" else ST_PENDING),
         # Payout account (withdrawals) — where the money is sent.
         payout_account_id=(payout.id if payout is not None else None),
@@ -773,7 +800,7 @@ async def member_accounts(membership_id: str, db: AsyncSession = Depends(get_db)
 @router.post("/{txn_id}/manager/approve")
 async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                           user: User = Depends(get_current_agent_operator)):
-    """Manager approves a withdrawal → SLIP_SUBMITTED (awaiting the operator's payout)."""
+    """Manager approves a paid withdrawal after reviewing the slip → COMPLETED (final gate)."""
     _require(user, ("MANAGER",), "approve Agent Withdrawals")
     remark = (body.remark or "").strip()
     if not remark:
@@ -781,12 +808,12 @@ async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession
     t = await _load_own(db, _business(user), txn_id)
     _require_withdrawal(t)
     _require_status(t, ST_MANAGER_REVIEW, "Manager review")
-    t.status = ST_SLIP_SUBMITTED
+    t.status = ST_COMPLETED
     t.manager_name = user.username
     t.manager_action_at = datetime.utcnow()
     t.review_remark = remark
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "MANAGER_APPROVED", user, note=remark)
+    await _log(db, t, "MANAGER_APPROVED", user, new_amount=t.amount, note=remark)
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -829,17 +856,23 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
         _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
     else:
         raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals and Settlements only.")
-    _require_status(t, ST_SLIP_SUBMITTED, "payment")
+    # A withdrawal is paid before its single Manager gate; a settlement has no gate at all.
+    _require_status(t, ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED, "payment")
     if not (body.slipImage or (body.slipRef or "").strip()):
         raise HTTPException(status_code=400, detail="Upload the payment slip or enter a reference number.")
     t.slip_image = body.slipImage or None
     t.slip_ref = (body.slipRef or "").strip() or None
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
-    t.status = ST_COMPLETED
+    if body.utr is not None and (body.utr or '').strip():
+        t.deposit_utr = body.utr.strip()          # UTR of the payment, shown wherever the txn is viewed
+    # A paid withdrawal goes to the Manager to review the slip; a settlement is done.
+    t.status = ST_MANAGER_REVIEW if t.txn_type == 'WITHDRAWAL' else ST_COMPLETED
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "COMPLETED", user, new_amount=t.amount,
-               note=f"{t.txn_type.title()} paid by {user.username}")
+    await _log(db, t, "SLIP_SUBMITTED" if t.txn_type == "WITHDRAWAL" else "COMPLETED", user,
+               new_amount=t.amount,
+               note=(f"Paid by {user.username} — awaiting Manager approval" if t.txn_type == "WITHDRAWAL"
+                     else f"Settlement paid by {user.username}"))
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -909,7 +942,7 @@ MANAGEABLE_METHOD = "CASH"
 # a slip is not jumped past those steps into an approval it has not earned.
 _CHAIN_ORDER = {
     "DEPOSIT": [ST_ACCOUNT_REQUESTED, ST_ACCOUNT_SUBMITTED, ST_SUPERVISOR_REVIEW, ST_SLIP_SUBMITTED],
-    "WITHDRAWAL": [ST_MANAGER_REVIEW, ST_SLIP_SUBMITTED],
+    "WITHDRAWAL": [ST_ACCOUNT_SUBMITTED, ST_MANAGER_REVIEW],
     "SETTLEMENT": [ST_SLIP_SUBMITTED],
 }
 # Deposit → Supervisor Approval · Withdrawal → Manager Approval · Settlement → Supervisor Completion.
