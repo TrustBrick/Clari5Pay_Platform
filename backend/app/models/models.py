@@ -538,6 +538,57 @@ class KycVerificationHistory(Base):
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
 
 
+class NonMemberKyc(Base):
+    """A walk-in individual who is NOT a registered member but needs Aadhaar / PAN / Passport KYC.
+
+    Completely independent of the Merchant membership records (which are derived from
+    ``transactions.member_id`` / ``member_name`` — see ``app.services.membership``). Nothing here
+    reads or writes those tables, and the ``NM000001…`` series is its own serial, never drawn from
+    the Membership numbering.
+
+    A row is created once, the first time an operator verifies someone with no Membership ID; the
+    generated ``non_member_id`` is what they present on a return visit, so the record is re-used
+    rather than duplicated. Verified document numbers are stamped back onto the row as each
+    verification succeeds. Scoped to the owning user's merchant business, exactly like
+    ``KycVerificationHistory`` and ``AgentMaster``.
+    """
+    __tablename__ = "non_member_kyc"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    # System-generated, globally-unique, immutable serial ID (e.g. NM000001).
+    non_member_id: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)
+
+    # ── Identity ──
+    full_name: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    # ── Contact information (both optional) ──
+    mobile: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    email: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # ── Verified document numbers — stamped only after that document verifies SUCCESSfully.
+    # NULL means "never verified for this person" (not "verification failed"); the full
+    # request/response audit for every attempt lives in kyc_verification_history.
+    aadhaar_number: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    pan_number: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    passport_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+    # ── Location ──
+    country: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    state: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # Scope: shared across the owning user's merchant business.
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+
+    # ── Standard audit columns ──
+    created_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)   # actor name
+    created_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    updated_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class UserSession(Base):
     """Login-session presence tracking for the Active Users feature. One row is created per
     login; the newest active row is a user's current session. Online = an active session with a

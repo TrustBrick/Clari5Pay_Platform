@@ -7,7 +7,7 @@ import { useToast } from '../context/ToastContext';
 import { fileToDataUrl } from '../utils/helpers';
 import {
   kycAPI, KYC_VALIDATION, OCR_MAX_BYTES, kycErrorMessage,
-  type KycHistoryItem, type KycHistoryDetail, type AadhaarDetails,
+  type KycHistoryItem, type KycHistoryDetail, type AadhaarDetails, type NonMember,
 } from '../services/kyc';
 
 // ─── Merchant Portal → KYC Update ──────────────────────────────────────────────
@@ -113,30 +113,94 @@ const VerifyShell: React.FC<{ icon: string; view?: ViewKey; title: string; child
   </div>
 );
 
-// ─── Membership lookup field (shared by Aadhaar & PAN) ─────────────────────────
-// Auto-fills Member Name for a Membership ID; sets `error` = "Membership not found." for
-// unknown IDs so the parent can block the action.
+// ─── Subject lookup field (shared by Aadhaar, PAN, Passport & OCR) ─────────────
+// Auto-fills the name behind an ID. The ID may be a Membership ID (auto-fetches the member
+// exactly as it always has) or an NM… Non-Member ID (auto-fetches the stored walk-in). When it
+// is neither, `notFound` turns on and the operator is offered the register-a-Non-Member panel
+// rather than being dead-ended — every downstream verification then runs unchanged.
 const useMemberLookup = () => {
   const [memberId, setMemberId] = useState('');
   const [memberName, setMemberName] = useState('');
+  const [subjectType, setSubjectType] = useState<'MEMBER' | 'NON_MEMBER' | ''>('');
+  const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState('');
   const [looking, setLooking] = useState(false);
 
   const lookup = useCallback(async (raw: string) => {
     const id = raw.trim();
-    setMemberName(''); setError('');
+    setMemberName(''); setError(''); setNotFound(false); setSubjectType('');
     if (!id) return;
     setLooking(true);
     try {
       const r = await kycAPI.lookupMember(id);
       setMemberName(r.memberName || '');
+      setSubjectType(r.subjectType || 'MEMBER');
     } catch (e) {
-      setError(kycErrorMessage(e, 'Membership not found.'));
+      // 404 means the ID is neither a Member nor an existing Non-Member — the one case where we
+      // offer to create a record. Anything else is a real error and must stay visible.
+      if ((e as { response?: { status?: number } })?.response?.status === 404) setNotFound(true);
+      else setError(kycErrorMessage(e, 'Lookup failed.'));
     } finally { setLooking(false); }
   }, []);
 
-  const reset = () => { setMemberId(''); setMemberName(''); setError(''); };
-  return { memberId, setMemberId, memberName, error, looking, lookup, reset };
+  // Adopt a just-created Non-Member as the current subject so verification can proceed at once.
+  const adoptNonMember = useCallback((nm: NonMember) => {
+    setMemberId(nm.nonMemberId); setMemberName(nm.fullName);
+    setSubjectType('NON_MEMBER'); setNotFound(false); setError('');
+  }, []);
+
+  const reset = () => {
+    setMemberId(''); setMemberName(''); setError(''); setNotFound(false); setSubjectType('');
+  };
+  return { memberId, setMemberId, memberName, subjectType, notFound, error, looking, lookup, adoptNonMember, reset };
+};
+
+// Shown only when a looked-up ID belongs to nobody: capture the walk-in's details, mint an NM id
+// and continue straight into verification with it.
+const NonMemberCreatePanel: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({ m }) => {
+  const { showToast } = useToast();
+  const [form, setForm] = useState({ fullName: '', mobile: '', email: '', country: '', state: '', location: '' });
+  const [saving, setSaving] = useState(false);
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const save = async () => {
+    if (!form.fullName.trim()) { showToast('Full Name is required.', 'error'); return; }
+    setSaving(true);
+    try {
+      const nm = await kycAPI.createNonMember({
+        fullName: form.fullName.trim(),
+        mobile: form.mobile.trim() || undefined,
+        email: form.email.trim() || undefined,
+        country: form.country.trim() || undefined,
+        state: form.state.trim() || undefined,
+        location: form.location.trim() || undefined,
+      });
+      m.adoptNonMember(nm);
+      showToast(`Non-Member ${nm.nonMemberId} created — continue with verification.`, 'success');
+    } catch (e) {
+      showToast(kycErrorMessage(e, 'Could not create the Non-Member record.'), 'error');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ padding: 16, borderRadius: 12, border: `1.5px dashed ${T.border}`, background: T.canvas, marginBottom: 18 }}>
+      <Banner kind="info">
+        No Member or Non-Member found for “{m.memberId.trim()}”. Register this person as a Non-Member to continue.
+      </Banner>
+      <Input label="Full Name" value={form.fullName} onChange={set('fullName')} placeholder="Enter full name" required />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Input label="Mobile Number" value={form.mobile} onChange={set('mobile')} placeholder="10 digits (optional)" inputMode="numeric" />
+        <Input label="Email" value={form.email} onChange={set('email')} placeholder="Optional" />
+        <Input label="Country" value={form.country} onChange={set('country')} placeholder="Optional" />
+        <Input label="State" value={form.state} onChange={set('state')} placeholder="Optional" />
+      </div>
+      <Input label="Location" value={form.location} onChange={set('location')} placeholder="City / location (optional)" />
+      <Btn variant="primary" onClick={save} disabled={saving || !form.fullName.trim()}>
+        {saving ? <><Spinner /> Creating…</> : 'Create Non-Member & Continue'}
+      </Btn>
+    </div>
+  );
 };
 
 const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({ m }) => (
@@ -146,11 +210,21 @@ const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({
       value={m.memberId}
       onChange={(e) => m.setMemberId(e.target.value)}
       onBlur={() => m.lookup(m.memberId)}
-      placeholder="Enter Membership ID"
-      hint={m.looking ? 'Looking up member…' : undefined}
+      placeholder="Enter Membership ID or Non-Member ID"
+      hint={m.looking ? 'Looking up…' : 'Members auto-fetch as before. A Non-Member ID (NM…) fetches the stored walk-in.'}
     />
     {m.error && <div style={{ marginTop: -8, marginBottom: 14, fontSize: 12, fontWeight: 700, color: T.danger }}>{m.error}</div>}
-    <Input label="Member Name" value={m.memberName} onChange={() => {}} placeholder="Auto-filled from Membership ID" readOnly />
+    {m.notFound
+      ? <NonMemberCreatePanel m={m} />
+      : (
+        <Input
+          label={m.subjectType === 'NON_MEMBER' ? 'Non-Member Name' : 'Member Name'}
+          value={m.memberName}
+          onChange={() => {}}
+          placeholder="Auto-filled from the ID above"
+          readOnly
+        />
+      )}
   </>
 );
 
