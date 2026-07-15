@@ -946,7 +946,6 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ['Approved By', row.approvedBy], ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
     // Payment evidence — stored on the transaction and re-read here; never re-uploaded.
     ['UTR Number', row.depositUtr],
-    ['Slip Reference', row.slipRef],
     ['Slip By', row.slipSubmittedBy],
     ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
     ['Sent To (Agent A/C)', row.agentAccountRef ? `${row.agentAccountRef} · ${row.agentAccountDetail || ''}` : null],
@@ -1458,7 +1457,6 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
 const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout'; onClose: () => void; onDone: () => void }> = ({ row, mode = 'deposit', onClose, onDone }) => {
   const { showToast } = useToast();
   const [utr, setUtr] = useState('');
-  const [slipRef, setSlipRef] = useState('');
   const [slip, setSlip] = useState('');
   const [slipName, setSlipName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1471,12 +1469,12 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   };
 
   const submit = async () => {
-    if (!slip && !slipRef.trim()) { showToast('Upload the slip image or enter a reference number.', 'error'); return; }
-    // An uploaded slip must carry its UTR — the number is what makes the image reconcilable.
-    if (slip && !utr.trim()) { showToast('UTR Number is required when a payment slip is uploaded.', 'error'); return; }
+    // Both are mandatory: the slip is the proof, the UTR is its only reference.
+    if (!slip) { showToast('Upload the payment slip image.', 'error'); return; }
+    if (!utr.trim()) { showToast('Enter the UTR Number.', 'error'); return; }
     setBusy(true);
     try {
-      const body = { slipImage: slip || undefined, slipRef: slipRef.trim() || undefined, utr: utr.trim() || undefined };
+      const body = { slipImage: slip, utr: utr.trim() };
       // Deposit: slip → Supervisor review. Withdrawal: payout after Manager approval → Completed.
       await (mode === 'payout' ? agentTxnsAPI.payout(row.id, body) : agentTxnsAPI.submitSlip(row.id, body));
       showToast(mode === 'payout'
@@ -1504,17 +1502,17 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
         </div>
         <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800, color: T.blue }}>{fmt(row.amount)}</div>
       </div>
-      <Input label="Reference Number" value={slipRef} onChange={e => setSlipRef(e.target.value)} placeholder="Payment reference" />
+      {/* The UTR is the transaction's only payment reference — there is no separate
+          Reference Number. Both it and the slip image are required to submit. */}
       <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)}
-        required={Boolean(slip)} placeholder="Bank UTR"
-        hint={slip ? 'Required because a slip image is attached' : undefined} />
+        required placeholder="Bank UTR — the payment reference" />
       <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Slip Image</label>
       <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
       {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
-      <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>Provide the slip image, a reference number, or both.</p>
+      <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>Both the UTR Number and the slip image are required.</p>
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-        <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : 'Submit Slip'}</Btn>
+        <Btn onClick={submit} disabled={busy || !slip || !utr.trim()}>{busy ? 'Submitting…' : 'Submit Slip'}</Btn>
       </div>
     </Modal>
   );
@@ -1541,7 +1539,6 @@ const MarkDepositModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone
     ['Reference', row.referenceNumber],
     ['Amount', fmt(row.amount)],
     ['UTR Number', row.depositUtr],
-    ['Slip Reference', row.slipRef],
     ['Paid By', row.slipSubmittedBy],
     ['Paid At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
     ['Approved By', row.supervisorName],
@@ -1604,8 +1601,7 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
     ...(isDep
       ? ([
           ['Sent To', `${row.agentAccountRef || '—'} · ${row.agentAccountDetail || '—'}`],
-          ['Slip Reference', row.slipRef],
-          ['Slip By', row.slipSubmittedBy],
+                ['Slip By', row.slipSubmittedBy],
           ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
         ] as Array<[string, React.ReactNode]>)
       : ([
@@ -1615,8 +1611,7 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
           ['Bank', row.payoutBankName],
           ['UPI ID', row.payoutUpiId],
           ['UTR Number', row.depositUtr],
-          ['Slip Reference', row.slipRef],
-          ['Paid By', row.slipSubmittedBy],
+                ['Paid By', row.slipSubmittedBy],
           ['Paid At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
           ['Requested By', row.createdBy],
         ] as Array<[string, React.ReactNode]>)),

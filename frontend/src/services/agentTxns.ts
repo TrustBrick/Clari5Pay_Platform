@@ -89,7 +89,6 @@ export interface AgentTxnRow {
   accountSubmittedTime?: string | null;
   // Slip.
   slipImage?: string | null;
-  slipRef?: string | null;
   slipSubmittedBy?: string | null;
   slipSubmittedDate?: string | null;
   slipSubmittedTime?: string | null;
@@ -242,7 +241,8 @@ export const agentTxnsAPI = {
     (await api.get<AgentAccountOption[]>(`/api/agent-txns/agent-accounts/${agentMasterId}`)).data,
   accountSubmit: async (id: number, agentAccountId: number) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/account-submit`, { agentAccountId })).data,
-  submitSlip: async (id: number, body: { slipImage?: string; slipRef?: string }) =>
+  /** Both are mandatory — the UTR is the only payment reference (no Reference Number). */
+  submitSlip: async (id: number, body: { slipImage: string; utr: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/slip`, body)).data,
   supervisorApprove: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/approve`, { remark })).data,
@@ -259,7 +259,7 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/approve`, { remark })).data,
   managerReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
-  payout: async (id: number, body: { slipImage?: string; slipRef?: string; utr?: string }) =>
+  payout: async (id: number, body: { slipImage: string; utr: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
   approve: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/approve`)).data,
   reject: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/reject`)).data,

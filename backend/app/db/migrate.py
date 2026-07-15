@@ -142,7 +142,6 @@ _NEW_COLUMNS = [
     ("agent_transaction", "account_submitted_by", "VARCHAR(128)"),
     ("agent_transaction", "account_submitted_at", "TIMESTAMP"),
     ("agent_transaction", "slip_image", "TEXT"),
-    ("agent_transaction", "slip_ref", "VARCHAR(64)"),
     ("agent_transaction", "slip_submitted_by", "VARCHAR(128)"),
     ("agent_transaction", "slip_submitted_at", "TIMESTAMP"),
     ("agent_transaction", "supervisor_name", "VARCHAR(128)"),

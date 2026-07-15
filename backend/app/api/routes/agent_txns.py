@@ -260,7 +260,7 @@ def _row(t: AgentTransaction) -> dict:
         "accountSubmittedDate": _ist_parts(t.account_submitted_at)[1],
         "accountSubmittedTime": _ist_parts(t.account_submitted_at)[2],
         # Slip
-        "slipImage": t.slip_image, "slipRef": t.slip_ref,
+        "slipImage": t.slip_image,
         "slipSubmittedBy": t.slip_submitted_by,
         "slipSubmittedDate": _ist_parts(t.slip_submitted_at)[1],
         "slipSubmittedTime": _ist_parts(t.slip_submitted_at)[2],
@@ -348,9 +348,10 @@ class AgentAccountSubmit(BaseModel):
 
 
 class AgentSlipSubmit(BaseModel):
-    slipImage: str | None = None            # data URL
-    slipRef: str | None = None
-    utr: str | None = None                  # UTR of the payment (withdrawal/settlement payout)
+    """Payment evidence. Both are mandatory: the UTR is the payment reference (there is no
+    separate Reference Number) and the slip image is the proof."""
+    slipImage: str | None = None            # data URL — required
+    utr: str | None = None                  # required; the transaction's only payment reference
 
 
 class AgentReviewAction(BaseModel):
@@ -693,17 +694,15 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     t = await _load_own(db, business, txn_id)
     _require_deposit(t)
     _require_status(t, ST_ACCOUNT_SUBMITTED, "a slip")
-    if not (body.slipImage or (body.slipRef or "").strip()):
-        raise HTTPException(status_code=400, detail="Upload the slip image or enter a reference number.")
-    # An uploaded slip must be accompanied by its UTR — the number is what makes the image
-    # reconcilable, and Mark Deposit later shows both read-only rather than re-collecting them.
-    if body.slipImage and not (body.utr or "").strip():
-        raise HTTPException(status_code=400, detail="UTR Number is required when a payment slip is uploaded.")
+    # Both the proof and its reference are mandatory — captured once here and reused unchanged
+    # for the rest of the workflow (Approvals, Mark Deposit, Details, Reports).
+    if not body.slipImage:
+        raise HTTPException(status_code=400, detail="Payment slip image is required.")
+    if not (body.utr or "").strip():
+        raise HTTPException(status_code=400, detail="UTR Number is required.")
 
-    t.slip_image = body.slipImage or None
-    t.slip_ref = (body.slipRef or "").strip() or None
-    if (body.utr or "").strip():
-        t.deposit_utr = body.utr.strip()          # captured once here; Mark Deposit only displays it
+    t.slip_image = body.slipImage
+    t.deposit_utr = body.utr.strip()          # the only payment reference; Mark Deposit displays it
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
     t.status = ST_SUPERVISOR_REVIEW          # straight to the Supervisor queue (as the merchant flow does)
@@ -860,12 +859,11 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
         raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals and Settlements only.")
     # A withdrawal is paid before its single Manager gate; a settlement has no gate at all.
     _require_status(t, ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED, "payment")
-    if not (body.slipImage or (body.slipRef or "").strip()):
-        raise HTTPException(status_code=400, detail="Upload the payment slip or enter a reference number.")
-    if body.slipImage and not (body.utr or "").strip():
-        raise HTTPException(status_code=400, detail="UTR Number is required when a payment slip is uploaded.")
-    t.slip_image = body.slipImage or None
-    t.slip_ref = (body.slipRef or "").strip() or None
+    if not body.slipImage:
+        raise HTTPException(status_code=400, detail="Payment slip image is required.")
+    if not (body.utr or "").strip():
+        raise HTTPException(status_code=400, detail="UTR Number is required.")
+    t.slip_image = body.slipImage
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
     if body.utr is not None and (body.utr or '').strip():

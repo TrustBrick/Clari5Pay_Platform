@@ -840,7 +840,9 @@ class AgentTransaction(Base):
 
     # ── Slip upload (the payer's proof) ──
     slip_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)      # data URL
-    slip_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # NOTE: the former `slip_ref` (Reference Number) was removed — the UTR (`deposit_utr`) is
+    # the only payment reference. Any physical slip_ref column on an existing database is
+    # left orphaned rather than dropped, so no historical value is destroyed.
     slip_submitted_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     slip_submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
