@@ -409,6 +409,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [agentId, setAgentId] = useState('');
   const [autoAgent, setAutoAgent] = useState<AgentMemberLookup['latestDeposit']>(null);
   const [txnMethod, setTxnMethod] = useState('');
+  // Supplied by the customer/agent and typed in by the operator — never generated.
+  const [tokenDetails, setTokenDetails] = useState('');
+  const [noteNumber, setNoteNumber] = useState('');
   // Payout account — saved accounts auto-fetch with the membership; a single one auto-selects.
   const [savedAccounts, setSavedAccounts] = useState<AgentMemberAccount[]>([]);
   const [payoutAccountId, setPayoutAccountId] = useState('');
@@ -474,6 +477,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile('');
     setNotes(''); setInstructions(''); setSendApproval(false); setApproverId('');
     setSavedAccounts([]); setPayoutAccountId(''); setAddingAccount(false); setTxnMethod('');
+    setTokenDetails(''); setNoteNumber('');
     setPayHolder(''); setPayNumber(''); setPayIfsc(''); setPayBank(''); setPayBranch(''); setPayUpi('');
   };
 
@@ -486,6 +490,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
     if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
+    if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
+    if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
     // The payout account: an existing saved one, or new details to be saved for re-use.
     if (!addingAccount && !payoutAccountId) { showToast('Select the payout account.', 'error'); return; }
     if (addingAccount && !payNumber.trim() && !payUpi.trim()) {
@@ -503,6 +509,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
       instructions: instructions || undefined, sentForApproval: sendApproval,
       approverUserId: sendApproval ? Number(approverId) : undefined,
       txnMethod,
+      tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim(),
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
       ...(addingAccount ? {
         payoutAccountHolder: payHolder.trim() || undefined,
@@ -637,8 +644,11 @@ export const AgentWithdrawalRequestPage: React.FC<{
           <Input label="State" value={state} onChange={e => setState(e.target.value)} />
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
           <Input label="Mobile Number" value={mobile} onChange={e => setMobile(e.target.value.replace(/[^\d]/g, ''))} placeholder="Optional" inputMode="numeric" />
-          <ReadField label="Token Details" placeholder="" />
-          <ReadField label="Unique Note Number" placeholder="" />
+          {/* Provided by the customer/agent — the operator enters them; nothing is generated. */}
+          <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
+            required placeholder="As provided by the customer" />
+          <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(e.target.value)}
+            required placeholder="As provided by the customer" hint="Must be unique" />
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
         </div>

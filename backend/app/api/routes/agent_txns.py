@@ -13,7 +13,6 @@ Roles (Data Operator = DEO): Deposit → SUPERVISOR/MANAGER/DEO/DEPOSIT_OPERATOR
 SUPERVISOR/MANAGER/DEO/WITHDRAWAL_OPERATOR; Manage → SUPERVISOR/MANAGER/DEO; Approve/Reject →
 SUPERVISOR/MANAGER. Overview/list/audit → any of the five (base access).
 """
-import secrets
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -115,10 +114,6 @@ async def _next_serial(db: AsyncSession, model_col, prefix: str) -> str:
         except (TypeError, ValueError):
             continue
     return f"{prefix}{maxn + 1:06d}"
-
-
-def _token() -> str:
-    return "TKN-" + secrets.token_hex(8).upper()
 
 
 def _member_account_row(a: AgentMemberBankAccount) -> dict:
@@ -407,13 +402,12 @@ def _validate_common(body: _Base, txn_type: str) -> None:
         raise HTTPException(status_code=400, detail="Notes must be 100 characters or fewer.")
     if body.instructions and body.instructions.upper() not in INSTRUCTIONS:
         raise HTTPException(status_code=400, detail="Invalid instruction option.")
-    # The Deposit's Token Details / Unique Note Number come from the customer, so the operator
-    # must enter them; they are never generated.
-    if txn_type == "DEPOSIT":
-        if not (body.tokenDetails or "").strip():
-            raise HTTPException(status_code=400, detail="Token Details are required.")
-        if not (body.noteNumber or "").strip():
-            raise HTTPException(status_code=400, detail="Unique Note Number is required.")
+    # Token Details / Unique Note Number come from the customer/agent, so the operator enters
+    # them on every agent transaction; they are never generated.
+    if not (body.tokenDetails or "").strip():
+        raise HTTPException(status_code=400, detail="Token Details are required.")
+    if not (body.noteNumber or "").strip():
+        raise HTTPException(status_code=400, detail="Unique Note Number is required.")
     if body.txnMethod and body.txnMethod.upper() not in TXN_METHODS:
         raise HTTPException(status_code=400, detail="Invalid Transaction Type.")
     method = (body.txnMethod or "").upper()
@@ -439,18 +433,14 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId)
 
     ref = await _next_serial(db, AgentTransaction.reference_number, prefix)
-    # A Deposit carries the operator-entered note number; it must stay unique, so a clash is
-    # reported plainly instead of surfacing as a database integrity error.
-    entered_note = (body.noteNumber or "").strip()
+    # The operator-entered note number must stay unique, so a clash is reported plainly instead
+    # of surfacing as a database integrity error.
+    note_no = (body.noteNumber or "").strip()
     entered_token = (body.tokenDetails or "").strip()
-    if entered_note:
-        clash = (await db.execute(select(AgentTransaction.id).where(
-            AgentTransaction.note_number == entered_note))).scalars().first()
-        if clash:
-            raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
-        note_no = entered_note
-    else:
-        note_no = await _next_serial(db, AgentTransaction.note_number, "AGN")
+    clash = (await db.execute(select(AgentTransaction.id).where(
+        AgentTransaction.note_number == note_no))).scalars().first()
+    if clash:
+        raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
     txn_code = f"{agent.transaction_code}-{code_letter}-{ref[len(prefix):]}"
 
     # Membership name: use the entered value, else auto-fill from a prior agent transaction.
@@ -475,7 +465,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         membership_type=body.membershipType.upper(),
         amount=round(body.amount, 2),
         txn_country=body.country, txn_state=body.state, txn_location=body.location, mobile=body.mobile,
-        token_details=(entered_token or _token()), note_number=note_no,
+        token_details=entered_token, note_number=note_no,
         notes=(body.notes or None), instructions=(body.instructions.upper() if body.instructions else None),
         # Transaction type + Sending Account, captured exactly like the merchant Deposit Request.
         txn_method=(body.txnMethod.upper() if body.txnMethod else None),
