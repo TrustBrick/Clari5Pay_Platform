@@ -231,15 +231,45 @@ async def _fetch_xml(url: str) -> str | None:
     return await asyncio.to_thread(_get)
 
 
+def _graphic_portrait(response) -> str | None:
+    """The portrait crop an OCR (image-upload) Aadhaar response returns in ``graphic_fields``.
+
+    The DigiLocker flow carries the photo in its XML; the image-upload flow instead returns it
+    here. Supporting both means a photo is captured whichever route verified the member.
+    """
+    if not isinstance(response, dict):
+        return None
+    for holder in (response, response.get("result") if isinstance(response.get("result"), dict) else {}):
+        graphic = (holder or {}).get("graphic_fields")
+        if not isinstance(graphic, dict):
+            continue
+        for key in ("portrait", "photo", "face", "image"):
+            raw = graphic.get(key)
+            if isinstance(raw, str) and len(raw) > 100:
+                b64 = re.sub(r"\s+", "", raw)
+                if b64.startswith("data:image"):
+                    return b64
+                try:
+                    base64.b64decode(b64, validate=True)
+                except (binascii.Error, ValueError):
+                    continue
+                return f"data:image/jpeg;base64,{b64}"
+    return None
+
+
 async def _aadhaar_photo(response) -> str | None:
     """The cardholder photograph for an Aadhaar response, as a JPEG data URL.
 
-    Handles all three shapes the provider may use: inline XML, base64-wrapped XML, and — what
-    Melento actually returns — an ``xml_file`` link that must be downloaded. Any failure yields
-    None rather than raising, so a photo-less or expired verification degrades quietly.
+    Covers every shape the provider may use: the OCR route's ``graphic_fields.portrait``, inline
+    XML, base64-wrapped XML, and — what DigiLocker actually returns — an ``xml_file`` link that
+    must be downloaded. Any failure yields None rather than raising, so a photo-less or expired
+    verification degrades quietly.
     """
     if not isinstance(response, (dict, list)):
         return None
+    portrait = _graphic_portrait(response)          # 0. OCR / image-upload route
+    if portrait:
+        return portrait
     texts = list(_iter_strings(response))
     for text in texts:                              # 1. XML present as-is
         if _XML_HINT.search(text):
@@ -268,6 +298,22 @@ async def _aadhaar_photo(response) -> str | None:
 # auto-fills from there. No second "member" record is ever created, so there is nothing to
 # duplicate — the history IS the register, keyed by membership_id.
 NAME_REQUIRED_MSG = "Member Name is required for a Membership ID that is not yet on record."
+
+
+async def _member_aadhaar_photo(db: AsyncSession, user: User, mid: str) -> str | None:
+    """The Aadhaar photograph stored for a Membership ID by any successful verification.
+
+    The photo belongs to the member, not to a single attempt, so once ANY Aadhaar verification for
+    this id has captured one, every KYC record for that id can show it. Scoped to the caller's
+    business pool, like every other lookup here.
+    """
+    return (await db.execute(
+        select(KycVerificationHistory.aadhaar_photo).where(
+            KycVerificationHistory.merchant_business == user.name,
+            KycVerificationHistory.membership_id == mid,
+            KycVerificationHistory.aadhaar_photo.is_not(None),
+        ).order_by(KycVerificationHistory.id.desc()).limit(1)
+    )).scalars().first()
 
 
 async def _kyc_registered_name(db: AsyncSession, user: User, mid: str) -> str | None:
@@ -522,6 +568,11 @@ async def aadhaar_verify_image(
         created_by=_actor_name(user),
         merchant_business=user.name,
     )
+    # Capture the photograph on a successful verification so it is permanently linked to this
+    # Membership ID. This route returns it in graphic_fields.portrait (the DigiLocker route
+    # carries it inside the XML instead) — _aadhaar_photo handles both shapes.
+    if ok:
+        row.aadhaar_photo = await _aadhaar_photo(data)
     db.add(row)
     await db.flush()
     await db.refresh(row)
@@ -754,9 +805,13 @@ async def kyc_history_detail(
             return None
 
     response = _parse(row.response_json)
-    # The photo is normally captured at verification time. For a record verified before that was
-    # in place, try once more here and back-fill — this only succeeds while the provider's link is
-    # still alive (48h), after which the photo is simply unavailable for that record.
+    # The photograph is captured at verification time and read back from the STORED record — the
+    # verification API is never called again just to show it. Resolution order:
+    #   1. this record's own stored photo;
+    #   2. a back-fill parse of its stored response (only works while the provider's xml_file link
+    #      is alive — 48h — so this rescues a record verified just before capture existed);
+    #   3. the photo stored for the SAME Membership ID by any other successful Aadhaar
+    #      verification, since the photo belongs to the member, not to one attempt.
     photo = row.aadhaar_photo
     if not photo and row.verification_type == "AADHAAR" and row.verification_status == "SUCCESS":
         photo = await _aadhaar_photo(response)
@@ -764,6 +819,8 @@ async def kyc_history_detail(
             row.aadhaar_photo = photo
             db.add(row)
             await db.commit()
+    if not photo and row.verification_type == "AADHAAR" and row.membership_id:
+        photo = await _member_aadhaar_photo(db, user, row.membership_id)
 
     return {
         **_history_summary(row),

@@ -605,11 +605,14 @@ const AadhaarDetailsBody: React.FC<{ data: AadhaarDetails; photo?: string | null
           <KVGrid rows={splitEntries.map(([k, v]) => [prettify(k), v] as [string, React.ReactNode])} />
         </Section>
       )}
-      {photo && (
-        <Section title="Aadhaar Photo">
-          <img src={photo} alt="Aadhaar" style={{ width: 130, height: 160, objectFit: 'cover', borderRadius: 10, border: `1px solid ${T.border}` }} />
-        </Section>
-      )}
+      {/* The photograph is read from the stored KYC record — the verification API is never called
+          again to display it. A record that never captured one says so rather than rendering
+          nothing, so the page always explains itself. */}
+      <Section title="Aadhaar Photo">
+        {photo
+          ? <img src={photo} alt="Aadhaar" style={{ width: 130, height: 160, objectFit: 'cover', borderRadius: 10, border: `1px solid ${T.border}` }} />
+          : <p style={{ margin: 0, fontSize: 12.5, color: T.textMuted }}>Aadhaar photograph not available.</p>}
+      </Section>
       {record && (
         <Section title="Verification Record">
           <KVGrid rows={[
