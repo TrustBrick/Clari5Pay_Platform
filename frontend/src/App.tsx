@@ -22,7 +22,7 @@ import {
 } from './pages/AdminPages';
 import { KYCPage } from './pages/KYCPage';
 import { AgentDashboardPage, AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
-import { AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage, AgentTxnReportsPage } from './pages/AgentTxnPages';
+import { AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage, AgentTxnReportsPage, AgentApprovalsPage } from './pages/AgentTxnPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
@@ -66,8 +66,8 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
     return IS_DEMO && ['DEO', 'DEPOSIT_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
   if (page === 'agent-withdrawal-mgmt' || page === 'agent-withdrawal-req')
     return IS_DEMO && ['DEO', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
-  // Agent Settlement Management — Supervisor only.
-  if (page === 'agent-settlement-mgmt')
+  // Agent Settlement Management and the agent deposit review queue — Supervisor only.
+  if (page === 'agent-settlement-mgmt' || page === 'agent-approvals')
     return IS_DEMO && String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR';
   if (page === 'agent-manage')
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO'].includes(String(user.merchantRole || '').toUpperCase());
@@ -142,6 +142,7 @@ const App: React.FC = () => {
         'agent-deposit-mgmt': <AgentDepositManagementPage {...props} />,
         'agent-withdrawal-mgmt': <AgentWithdrawalManagementPage {...props} />,
         'agent-settlement-mgmt': <AgentSettlementManagementPage {...props} />,
+        'agent-approvals': <AgentApprovalsPage {...props} />,
         'agent-manage': <AgentManageTransactionPage {...props} />,
       } : {}),
       reports: <ReportsPage {...props} />,

@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
+import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen } from '../components/UI';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import {
-  agentTxnsAPI, agentTxnError,
+  agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES,
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
   type AgentWithdrawalBody, type AgentMemberLookup, type AgentTxnRow,
-  type AgentTxnAuditRow, type AgentTxnQuery,
+  type AgentTxnAuditRow, type AgentTxnQuery, type AgentAccountOption,
 } from '../services/agentTxns';
 
 // ─── Isolated Agent Transaction subsystem — Merchant operator workflow ─────────
@@ -31,13 +31,37 @@ const IsolationNote: React.FC = () => (
   </div>
 );
 
-const StatusPill: React.FC<{ status: string }> = ({ status }) => {
-  const m: Record<string, { c: string; bg: string }> = {
-    APPROVED: { c: T.success, bg: T.successBg }, PENDING: { c: T.warning, bg: T.warningBg }, REJECTED: { c: T.danger, bg: T.dangerBg },
-  };
-  const s = m[status] || { c: T.textMuted, bg: T.borderLight };
-  return <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 20, color: s.c, background: s.bg }}>{status}</span>;
+// Workflow statuses — same labels as the merchant deposit workflow. PENDING/APPROVED are legacy
+// rows created before the chain existed.
+const STATUS_STYLE: Record<string, { c: string; bg: string; label: string }> = {
+  ACCOUNT_REQUESTED: { c: T.warning, bg: T.warningBg, label: 'Account Requested' },
+  ACCOUNT_SUBMITTED: { c: T.info, bg: T.infoBg, label: 'Account Submitted' },
+  SUPERVISOR_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Supervisor Review' },
+  MANAGER_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Manager Review' },
+  SLIP_SUBMITTED: { c: T.blue, bg: `${T.blue}18`, label: 'Slip Submitted' },
+  DEPOSITED: { c: T.success, bg: T.successBg, label: 'Deposited' },
+  COMPLETED: { c: T.success, bg: T.successBg, label: 'Completed' },
+  APPROVED: { c: T.success, bg: T.successBg, label: 'Approved' },
+  PENDING: { c: T.warning, bg: T.warningBg, label: 'Pending' },
+  REJECTED: { c: T.danger, bg: T.dangerBg, label: 'Rejected' },
 };
+
+const StatusPill: React.FC<{ status: string }> = ({ status }) => {
+  const s = STATUS_STYLE[status] || { c: T.textMuted, bg: T.borderLight, label: status };
+  return <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 20, color: s.c, background: s.bg, whiteSpace: 'nowrap' }}>{s.label}</span>;
+};
+
+// Status filter — the chain in workflow order, then the legacy values.
+const STATUS_FILTER_OPTIONS = [
+  'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SUPERVISOR_REVIEW', 'SLIP_SUBMITTED',
+  'DEPOSITED', 'COMPLETED', 'REJECTED', 'PENDING', 'APPROVED',
+].map(v => ({ value: v, label: STATUS_STYLE[v]?.label || v }));
+
+const METHOD_LABEL: Record<string, string> = {
+  CASH: 'Cash', UPI: 'UPI', BANK: 'Bank Transfer', IMPS: 'IMPS', NEFT: 'NEFT', RTGS: 'RTGS', CRYPTO: 'Crypto (USDT)',
+};
+const methodLabel = (v?: string | null) => (v ? METHOD_LABEL[v] || v : '—');
+const BANK_LIKE = ['BANK', 'IMPS', 'NEFT', 'RTGS'];
 
 const thS: React.CSSProperties = { padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}` };
 const tdS: React.CSSProperties = { padding: '11px 14px', fontSize: 12, color: T.textMain };
@@ -163,6 +187,14 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
   const [membershipType, setMembershipType] = useState('');
   const [amount, setAmount] = useState('');
+  // Transaction type + Sending Account — captured exactly like the merchant Deposit Request.
+  const [txnMethod, setTxnMethod] = useState('');
+  const [senderUpiId, setSenderUpiId] = useState('');
+  const [senderAccountHolder, setSenderAccountHolder] = useState('');
+  const [senderAccountNumber, setSenderAccountNumber] = useState('');
+  const [senderIfsc, setSenderIfsc] = useState('');
+  const [senderBankName, setSenderBankName] = useState('');
+  const [senderBranch, setSenderBranch] = useState('');
   const [country, setCountry] = useState('');
   const [state, setState] = useState('');
   const [location, setLocation] = useState('');
@@ -198,6 +230,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
 
   const reset = () => {
     setAgentId(''); setMembershipId(''); setMembershipName(''); setMemberLocked(false); setMembershipType(''); setAmount('');
+    setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
+    setSenderIfsc(''); setSenderBankName(''); setSenderBranch('');
     setCountry(''); setState(''); setLocation(''); setMobile(''); setNotes(''); setInstructions('');
     setSendApproval(false); setApproverId('');
   };
@@ -208,6 +242,11 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     if (!membershipType) { showToast('Select a Membership Type.', 'error'); return; }
     const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
+    if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
+    if (txnMethod === 'UPI' && !senderUpiId.includes('@')) { showToast('Enter a valid Sender UPI ID (name@bank).', 'error'); return; }
+    if (BANK_LIKE.includes(txnMethod) && (!senderAccountHolder.trim() || !senderAccountNumber.trim())) {
+      showToast('Enter the Sending Account holder and number.', 'error'); return;
+    }
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
     if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setBusy(true); setResult(null);
@@ -217,6 +256,13 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       amount: amt, country: country || undefined, state: state || undefined,
       location: location || undefined, mobile: mobile || undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: sendApproval,
+      txnMethod,
+      senderUpiId: senderUpiId.trim() || undefined,
+      senderAccountHolder: senderAccountHolder.trim() || undefined,
+      senderAccountNumber: senderAccountNumber.trim() || undefined,
+      senderIfsc: senderIfsc.trim() || undefined,
+      senderBankName: senderBankName.trim() || undefined,
+      senderBranch: senderBranch.trim() || undefined,
       approverUserId: sendApproval ? Number(approverId) : undefined,
     };
     try {
@@ -269,6 +315,32 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
           <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
 
+          <Sel label="Transaction Type" value={txnMethod} onChange={e => setTxnMethod(e.target.value)} required
+            options={[{ value: '', label: '— Select —' }, ...(fd.txnMethods || []).map(v => ({ value: v, label: methodLabel(v) }))]} />
+          <div />
+        </div>
+
+        {/* Sending Account — the account the payment is sent FROM (mirrors the merchant Deposit
+            Request). Only bank-style and UPI sends name an account; Cash/Crypto do not. */}
+        {(txnMethod === 'UPI' || BANK_LIKE.includes(txnMethod)) && (
+          <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+            <p style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sending Account Details</p>
+            {txnMethod === 'UPI' ? (
+              <Input label="Sender UPI ID" value={senderUpiId} onChange={e => setSenderUpiId(e.target.value)} required
+                placeholder="e.g. satish@ybl" hint="The UPI the payment is sent from" style={{ marginBottom: 0 }} />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
+                <Input label="Account Holder" value={senderAccountHolder} onChange={e => setSenderAccountHolder(e.target.value)} required />
+                <Input label="Account Number" value={senderAccountNumber} onChange={e => setSenderAccountNumber(e.target.value)} required />
+                <Input label="IFSC Code" value={senderIfsc} onChange={e => setSenderIfsc(e.target.value.toUpperCase())} />
+                <Input label="Bank Name" value={senderBankName} onChange={e => setSenderBankName(e.target.value)} />
+                <Input label="Branch" value={senderBranch} onChange={e => setSenderBranch(e.target.value)} />
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
           <Input label="Country" value={country} onChange={e => setCountry(e.target.value)} />
           <Input label="State" value={state} onChange={e => setState(e.target.value)} />
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
@@ -777,12 +849,19 @@ const AgentTxnManagementPage: React.FC<{
   const role = String(user.merchantRole || '').toUpperCase();
   const canManage = ['SUPERVISOR', 'MANAGER', 'DEO'].includes(role);   // amount correction (backend MANAGE_ROLES)
   const canApprove = ['SUPERVISOR', 'MANAGER'].includes(role);
+  // Deposit-chain operator steps — the Data Operator does what the Admin does in the merchant flow.
+  const canOperate = ['DEO', 'DEPOSIT_OPERATOR'].includes(role);
+  const isDeposit = txnType === 'DEPOSIT';
   const [fd, setFd] = useState<AgentFormData | null>(null);
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [detailRow, setDetailRow] = useState<AgentTxnRow | null>(null);
   const [manageRow, setManageRow] = useState<AgentTxnRow | null>(null);
+  // Deposit-chain steps, each driven by the row's current status.
+  const [acctRow, setAcctRow] = useState<AgentTxnRow | null>(null);
+  const [slipRow, setSlipRow] = useState<AgentTxnRow | null>(null);
+  const [depositRow, setDepositRow] = useState<AgentTxnRow | null>(null);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [dateF, setDateF] = useState('');
@@ -840,7 +919,7 @@ const AgentTxnManagementPage: React.FC<{
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
           <Input label="Search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Reference / Membership / Agent" style={{ marginBottom: 0 }} />
           <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} style={{ marginBottom: 0 }}
-            options={[{ value: '', label: 'All Statuses' }, { value: 'PENDING', label: 'Pending' }, { value: 'APPROVED', label: 'Approved' }, { value: 'REJECTED', label: 'Rejected' }]} />
+            options={[{ value: '', label: 'All Statuses' }, ...STATUS_FILTER_OPTIONS]} />
           <Input label="Date" type="date" value={dateF} onChange={e => setDateF(e.target.value)} style={{ marginBottom: 0 }} />
           <Input label="From Date" type="date" value={fromF} onChange={e => setFromF(e.target.value)} style={{ marginBottom: 0 }} />
           <Input label="To Date" type="date" value={toF} onChange={e => setToF(e.target.value)} style={{ marginBottom: 0 }} />
@@ -868,9 +947,14 @@ const AgentTxnManagementPage: React.FC<{
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
                   <td style={tdS}><StatusPill status={x.status} /></td>
                   <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
-                  <td style={{ ...tdS, whiteSpace: 'nowrap' }}>
+                  <td style={{ ...tdS, whiteSpace: 'nowrap', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn>
-                    {canManage && x.status === 'PENDING' && <Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn>}
+                    {/* The deposit chain's next step, offered only to the operator roles that may
+                        perform it and only at the status that expects it. */}
+                    {isDeposit && canOperate && x.status === 'ACCOUNT_REQUESTED' && <Btn size="sm" onClick={() => setAcctRow(x)}>Submit Account</Btn>}
+                    {isDeposit && canOperate && x.status === 'ACCOUNT_SUBMITTED' && <Btn size="sm" onClick={() => setSlipRow(x)}>Pay / Upload Slip</Btn>}
+                    {isDeposit && canOperate && x.status === 'SLIP_SUBMITTED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
+                    {canManage && !AGENT_FINAL_STATUSES.includes(x.status) && <Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn>}
                   </td>
                 </tr>
               ))}
@@ -893,6 +977,9 @@ const AgentTxnManagementPage: React.FC<{
       )}
       {detailRow && <AgentTxnDetailsModal row={detailRow} onClose={() => setDetailRow(null)} />}
       {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} role={role} onClose={() => setManageRow(null)} onRefresh={load} />}
+      {acctRow && <SubmitAccountModal row={acctRow} onClose={() => setAcctRow(null)} onDone={load} />}
+      {slipRow && <UploadSlipModal row={slipRow} onClose={() => setSlipRow(null)} onDone={load} />}
+      {depositRow && <MarkDepositModal row={depositRow} onClose={() => setDepositRow(null)} onDone={load} />}
     </div>
   );
 };
@@ -1103,6 +1190,279 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
           </div>
         )}
       </Card>
+    </div>
+  );
+};
+
+// ─── Deposit chain — operator steps (mirror the merchant deposit workflow) ─────
+// The Data Operator performs every step the Admin performs in the merchant flow. Each modal maps
+// 1:1 onto a backend endpoint and only ever touches the isolated agent ledger.
+
+/** Submit Account — tell the payer which AGENT account to send to. Agent accounts only. */
+const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [accounts, setAccounts] = useState<AgentAccountOption[] | null>(null);
+  const [sel, setSel] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    agentTxnsAPI.agentAccounts(row.agentMasterId)
+      .then((rows) => {
+        setAccounts(rows);
+        const preferred = rows.find(a => a.isDefault) || rows[0];
+        setSel(preferred ? String(preferred.id) : '');
+      })
+      .catch(() => { setAccounts([]); showToast('Failed to load agent accounts.', 'error'); });
+  }, [row.agentMasterId, showToast]);
+
+  const chosen = accounts?.find(a => String(a.id) === sel);
+
+  const submit = async () => {
+    if (!sel) { showToast('Select an agent account to send.', 'error'); return; }
+    setBusy(true);
+    try {
+      await agentTxnsAPI.accountSubmit(row.id, Number(sel));
+      showToast(`Account submitted for ${row.referenceNumber}.`, 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Failed to submit the account.'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={`Submit Account — ${row.referenceNumber}`} onClose={onClose}>
+      <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
+        Choose the agent account the payer should send to. Only this agent's own accounts are listed —
+        merchant accounts are never used.
+      </p>
+      {accounts === null ? <div style={{ padding: 16, color: T.textMuted, fontSize: 13 }}>Loading agent accounts…</div>
+        : accounts.length === 0 ? (
+          <div style={{ padding: 14, borderRadius: 10, background: T.warningBg, color: T.warning, fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>
+            This agent has no active accounts. Add one under Agent Accounts first.
+          </div>
+        ) : (
+          <>
+            <Sel label="Agent Account" value={sel} onChange={e => setSel(e.target.value)} required
+              options={accounts.map(a => ({ value: String(a.id), label: `${a.accountRef} · ${a.accountType}${a.label ? ` · ${a.label}` : ''}${a.isDefault ? ' (default)' : ''}` }))} />
+            {chosen && (
+              <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Details sent to the payer</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{chosen.detail || '—'}</div>
+                {chosen.qrImage && <img src={chosen.qrImage} alt="QR" style={{ marginTop: 10, width: 140, height: 140, objectFit: 'contain', borderRadius: 8, border: `1px solid ${T.border}` }} />}
+              </div>
+            )}
+          </>
+        )}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+        <Btn onClick={submit} disabled={busy || !sel}>{busy ? 'Submitting…' : 'Submit Account'}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+/** Pay / Upload Slip — evidences the payment and sends the deposit to Supervisor review. */
+const UploadSlipModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [slipRef, setSlipRef] = useState('');
+  const [slip, setSlip] = useState('');
+  const [slipName, setSlipName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
+    try { setSlip(await fileToDataUrl(f)); setSlipName(f.name); }
+    catch { showToast('Could not read the file.', 'error'); }
+  };
+
+  const submit = async () => {
+    if (!slip && !slipRef.trim()) { showToast('Upload the slip image or enter a reference number.', 'error'); return; }
+    setBusy(true);
+    try {
+      await agentTxnsAPI.submitSlip(row.id, { slipImage: slip || undefined, slipRef: slipRef.trim() || undefined });
+      showToast(`Slip submitted for ${row.referenceNumber} — awaiting Supervisor approval.`, 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Failed to submit the slip.'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={`Pay / Upload Slip — ${row.referenceNumber}`} onClose={onClose}>
+      <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+          Send to · {row.agentAccountRef || '—'} ({row.agentAccountType || '—'})
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{row.agentAccountDetail || '—'}</div>
+        <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800, color: T.blue }}>{fmt(row.amount)}</div>
+      </div>
+      <Input label="Reference Number" value={slipRef} onChange={e => setSlipRef(e.target.value)} placeholder="Payment reference / UTR" />
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Slip Image</label>
+      <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
+      {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
+      <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>Provide the slip image, a reference number, or both.</p>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+        <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : 'Submit Slip'}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+/** Mark Deposit — the merchant workflow's Admin step, performed here by the Data Operator. */
+const MarkDepositModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [utr, setUtr] = useState('');
+  const [proof, setProof] = useState('');
+  const [proofName, setProofName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
+    try { setProof(await fileToDataUrl(f)); setProofName(f.name); }
+    catch { showToast('Could not read the file.', 'error'); }
+  };
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await agentTxnsAPI.markDeposit(row.id, { utr: utr.trim() || undefined, proof: proof || undefined });
+      showToast(`${row.referenceNumber} marked Deposited.`, 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Failed to mark the deposit.'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={`Mark Deposit — ${row.referenceNumber}`} onClose={onClose}>
+      <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
+        Approved by {row.supervisorName || 'the Supervisor'}. Marking this deposit completes it — the
+        status becomes Deposited and the amount counts toward the agent's approved figures.
+      </p>
+      <Input label="UTR Number (optional)" value={utr} onChange={e => setUtr(e.target.value)} placeholder="Bank UTR / reference" />
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Proof (optional)</label>
+      <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
+      {proofName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {proofName}</div>}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 14 }}>
+        <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+        <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Marking…' : 'Mark Deposited'}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+// ─── Agent Approvals (Supervisor) ─────────────────────────────────────────────
+// Every Agent Deposit awaiting Supervisor review. Approving moves it to Slip Submitted, where the
+// Data Operator marks it Deposited — exactly the merchant deposit workflow's shape.
+const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [remark, setRemark] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const decide = async (approve: boolean) => {
+    if (!remark.trim()) { showToast('Remarks are required for every review action.', 'error'); return; }
+    setBusy(true);
+    try {
+      await (approve ? agentTxnsAPI.supervisorApprove(row.id, remark.trim())
+                     : agentTxnsAPI.supervisorReject(row.id, remark.trim()));
+      showToast(approve ? `${row.referenceNumber} approved.` : `${row.referenceNumber} rejected.`, 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Action failed.'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  const facts: Array<[string, React.ReactNode]> = [
+    ['Reference', row.referenceNumber],
+    ['Agent', `${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`],
+    ['Membership', `${row.membershipId}${row.membershipName ? ` · ${row.membershipName}` : ''}`],
+    ['Amount', fmt(row.amount)],
+    ['Transaction Type', methodLabel(row.txnMethod)],
+    ['Sent To', `${row.agentAccountRef || '—'} · ${row.agentAccountDetail || '—'}`],
+    ['Slip Reference', row.slipRef],
+    ['Slip By', row.slipSubmittedBy],
+    ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
+  ];
+
+  return (
+    <Modal title={`Review ${row.referenceNumber}`} onClose={onClose} wide>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        {facts.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
+      </div>
+      {row.slipImage && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Submitted Slip</div>
+          {row.slipImage.startsWith('data:application/pdf')
+            ? <a href={row.slipImage} target="_blank" rel="noreferrer" style={{ fontSize: 12.5, fontWeight: 700, color: T.blue }}>Open slip (PDF)</a>
+            : <img src={row.slipImage} alt="Slip" style={{ maxWidth: '100%', maxHeight: 320, borderRadius: 10, border: `1px solid ${T.border}` }} />}
+        </div>
+      )}
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        Remarks <span style={{ color: T.danger }}>*</span>
+      </label>
+      <textarea value={remark} onChange={e => setRemark(e.target.value)} rows={2} placeholder="Required for both approve and reject"
+        style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical', marginBottom: 14 }} />
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <Btn variant="secondary" onClick={onClose} disabled={busy}>Close</Btn>
+        <Btn variant="danger" onClick={() => decide(false)} disabled={busy}>Reject</Btn>
+        <Btn variant="success" onClick={() => decide(true)} disabled={busy}>Approve</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+  const { showToast } = useToast();
+  const [rows, setRows] = useState<AgentTxnRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [reviewRow, setReviewRow] = useState<AgentTxnRow | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setRows(await agentTxnsAPI.list({ status: 'SUPERVISOR_REVIEW', txn_type: 'DEPOSIT' })); }
+    catch { showToast('Failed to load approvals.', 'error'); }
+    finally { setLoading(false); }
+  }, [showToast]);
+
+  useEffect(() => { load(); }, [load]);
+  usePoll(() => { if (!reviewRow) load(); });
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Approvals</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Agent Deposits awaiting your approval. Approving sends them to the Data Operator to mark as Deposited.</p>
+      </div>
+      <IsolationNote />
+
+      <Card style={{ overflow: 'hidden' }}>
+        <div style={{ padding: '12px 16px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Pending Approvals</h2>
+          <span style={{ fontSize: 12, color: T.textMuted, marginLeft: 'auto' }}>{rows.length} awaiting review</span>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: T.canvas }}>{['Reference', 'Agent', 'Membership', 'Amount', 'Type', 'Slip By', 'Submitted (IST)', 'Action'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <tbody>
+              {loading && rows.length === 0 && <tr><td colSpan={8} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
+              {!loading && rows.length === 0 && <tr><td colSpan={8} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>Nothing awaiting your approval.</td></tr>}
+              {rows.map((x, i) => (
+                <tr key={x.id} style={{ background: i % 2 ? T.canvas : T.surface }}>
+                  <td style={{ ...tdS, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
+                  <td style={tdS}>{x.agentCode || '—'}{x.agentName ? ` · ${x.agentName}` : ''}</td>
+                  <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
+                  <td style={tdS}>{methodLabel(x.txnMethod)}</td>
+                  <td style={tdS}>{x.slipSubmittedBy || '—'}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.slipSubmittedDate} {x.slipSubmittedTime}</td>
+                  <td style={tdS}><Btn size="sm" onClick={() => setReviewRow(x)}>Review</Btn></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {reviewRow && <ApproveModal row={reviewRow} onClose={() => setReviewRow(null)} onDone={load} />}
     </div>
   );
 };

@@ -3,6 +3,32 @@
 // Transaction-History endpoint. Every figure it returns comes only from the agent ledger.
 import api from './api';
 
+/**
+ * Agent deposit workflow — the same labels/order as the merchant deposit workflow, except the
+ * Data Operator performs the steps the Admin performs for a merchant:
+ *   ACCOUNT_REQUESTED → ACCOUNT_SUBMITTED → SUPERVISOR_REVIEW → SLIP_SUBMITTED → DEPOSITED
+ * PENDING / APPROVED are legacy rows created before the chain existed.
+ */
+export type AgentTxnStatus =
+  | 'ACCOUNT_REQUESTED' | 'ACCOUNT_SUBMITTED' | 'SUPERVISOR_REVIEW' | 'MANAGER_REVIEW'
+  | 'SLIP_SUBMITTED' | 'DEPOSITED' | 'COMPLETED' | 'REJECTED' | 'PENDING' | 'APPROVED';
+
+/** Statuses that mean the money actually moved — the completed-only basis (mirrors the server). */
+export const AGENT_COMPLETED_STATUSES: AgentTxnStatus[] = ['APPROVED', 'DEPOSITED', 'COMPLETED'];
+export const AGENT_FINAL_STATUSES: AgentTxnStatus[] = [...AGENT_COMPLETED_STATUSES, 'REJECTED'];
+
+/** An AGENT account offered at the Account Submission step (never a merchant account). */
+export interface AgentAccountOption {
+  id: number;
+  accountRef: string;
+  accountType: string;      // BANK | UPI | QR | CRYPTO
+  label?: string | null;
+  currency?: string | null;
+  isDefault?: boolean;
+  detail?: string | null;
+  qrImage?: string | null;
+}
+
 export interface AgentTxnRow {
   id: number;
   referenceNumber: string;
@@ -27,7 +53,40 @@ export interface AgentTxnRow {
   noteNumber: string;
   notes?: string | null;
   instructions?: string | null;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  /** Same labels as the merchant deposit workflow. Legacy rows keep PENDING/APPROVED/REJECTED. */
+  status: AgentTxnStatus;
+  // Transaction type + Sending Account (mirrors the merchant Deposit Request).
+  txnMethod?: string | null;
+  senderUpiId?: string | null;
+  senderAccountHolder?: string | null;
+  senderAccountNumber?: string | null;
+  senderIfsc?: string | null;
+  senderBankName?: string | null;
+  senderBranch?: string | null;
+  // Account submission (always an AGENT account).
+  agentAccountId?: number | null;
+  agentAccountRef?: string | null;
+  agentAccountType?: string | null;
+  agentAccountDetail?: string | null;
+  accountSubmittedBy?: string | null;
+  accountSubmittedDate?: string | null;
+  accountSubmittedTime?: string | null;
+  // Slip.
+  slipImage?: string | null;
+  slipRef?: string | null;
+  slipSubmittedBy?: string | null;
+  slipSubmittedDate?: string | null;
+  slipSubmittedTime?: string | null;
+  // Review gate.
+  supervisorName?: string | null;
+  managerName?: string | null;
+  reviewRemark?: string | null;
+  // Mark Deposit.
+  depositedBy?: string | null;
+  depositedDate?: string | null;
+  depositedTime?: string | null;
+  depositUtr?: string | null;
+  depositProof?: string | null;
   sentForApproval: boolean;
   approverName?: string | null;
   approvedBy?: string | null;
@@ -66,6 +125,7 @@ export interface AgentFormData {
   approvers: AgentApprover[];
   instructions: string[];
   membershipTypes: string[];
+  txnMethods: string[];      // CASH | UPI | BANK | IMPS | NEFT | RTGS | CRYPTO
 }
 
 export interface AgentMemberLookup {
@@ -92,6 +152,14 @@ export interface AgentDepositBody {
   instructions?: string;
   sentForApproval: boolean;
   approverUserId?: number | null;
+  // Transaction type + Sending Account (mirrors the merchant Deposit Request).
+  txnMethod?: string;
+  senderUpiId?: string;
+  senderAccountHolder?: string;
+  senderAccountNumber?: string;
+  senderIfsc?: string;
+  senderBankName?: string;
+  senderBranch?: string;
 }
 export interface AgentWithdrawalBody extends AgentDepositBody {
   linkedDepositId?: number | null;
@@ -121,6 +189,21 @@ export const agentTxnsAPI = {
   createWithdrawal: async (body: AgentWithdrawalBody) => (await api.post<AgentTxnRow>('/api/agent-txns/withdrawal', body)).data,
   list: async (params?: AgentTxnQuery) => (await api.get<AgentTxnRow[]>('/api/agent-txns', { params })).data,
   manage: async (id: number, body: AgentManageBody) => (await api.patch<AgentTxnRow>(`/api/agent-txns/${id}/manage`, body)).data,
+
+  // ── Deposit chain (mirrors the merchant deposit workflow) ──
+  /** Active AGENT accounts for one agent — the only source the Account Submission step may use. */
+  agentAccounts: async (agentMasterId: number) =>
+    (await api.get<AgentAccountOption[]>(`/api/agent-txns/agent-accounts/${agentMasterId}`)).data,
+  accountSubmit: async (id: number, agentAccountId: number) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/account-submit`, { agentAccountId })).data,
+  submitSlip: async (id: number, body: { slipImage?: string; slipRef?: string }) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/slip`, body)).data,
+  supervisorApprove: async (id: number, remark: string) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/approve`, { remark })).data,
+  supervisorReject: async (id: number, remark: string) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/reject`, { remark })).data,
+  markDeposit: async (id: number, body: { utr?: string; proof?: string }) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/mark-deposit`, body)).data,
   approve: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/approve`)).data,
   reject: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/reject`)).data,
   audit: async (id: number) => (await api.get<AgentTxnAuditRow[]>(`/api/agent-txns/${id}/audit`)).data,

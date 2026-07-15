@@ -92,6 +92,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'agent-deposit-mgmt': 'Agent Deposit Management',
   'agent-withdrawal-mgmt': 'Agent Withdrawal Management',
   'agent-settlement-mgmt': 'Agent Settlement Management',
+  'agent-approvals': 'Agent Approvals',
   'agent-txn-reports': 'Agent Reports',
   'agent-manage': 'Manage Transaction',
   'agent-audit': 'Agent Audit Trail',
@@ -155,6 +156,8 @@ const AGENT_CHILDREN: NavItem[] = [
   { key: 'agent-deposit-mgmt', icon: 'deposit', label: 'Agent Deposit Management' },
   { key: 'agent-withdrawal-mgmt', icon: 'withdrawal', label: 'Agent Withdrawal Management' },
   { key: 'agent-settlement-mgmt', icon: 'settlement', label: 'Agent Settlement Management' },
+  // Supervisor's review queue for the agent deposit chain (mirrors the merchant Approvals page).
+  { key: 'agent-approvals', icon: 'approvals', label: 'Agent Approvals' },
   { key: 'agent-manage', icon: 'templates', label: 'Manage Transaction' },
   { key: 'agent-audit', icon: 'audit', label: 'Audit Trail' },
   { key: 'agent-reports', icon: 'reports', label: 'Reports' },
@@ -165,7 +168,7 @@ const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 // tabs but NOT the operator Deposit/Withdrawal Management pages. Agent Settlement Management is
 // Supervisor-only. Operators (Data/Deposit/Withdrawal) get the management pages their role permits.
 const AGENT_SUBTABS: Record<string, string[]> = {
-  SUPERVISOR: ['agent-overview', 'agent-txn-reports', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-settlement-mgmt', 'agent-manage', 'agent-audit', 'agent-reports'],
+  SUPERVISOR: ['agent-overview', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-settlement-mgmt', 'agent-manage', 'agent-audit', 'agent-reports'],
   MANAGER: ['agent-overview', 'agent-txn-reports', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-manage', 'agent-audit', 'agent-reports'],
   DEO: ['agent-overview', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage'],
   DEPOSIT_OPERATOR: ['agent-overview', 'agent-txn-reports', 'agent-deposit-mgmt'],
