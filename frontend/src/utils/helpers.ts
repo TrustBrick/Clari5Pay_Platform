@@ -94,8 +94,9 @@ export const statusStyle = (s: TxStatus) => {
 // status, the workflow, permissions and the Admin/Super Admin portals are all untouched: this
 // resolves the status to DISPLAY, nothing more.
 const MERCHANT_WITHDRAWAL_VIEW: Record<string, string> = {
-  RESUBMITTED: 'MANAGER_REVIEW',   // returned to the operator — the Manager has not decided yet
-  SLIP_SUBMITTED: 'PENDING',       // Manager approved; the Admin payout is in progress
+  RESUBMITTED: 'MANAGER_REVIEW',     // returned to the operator — the Manager has not decided yet
+  ACCOUNT_REQUESTED: 'PENDING',      // Manager approved; the Admin payout is in progress
+  SLIP_SUBMITTED: 'PENDING',         // same, for rows approved before the status change (and legacy)
 };
 
 // The status to render for a viewer. Only a withdrawal seen from the Merchant Portal is remapped
