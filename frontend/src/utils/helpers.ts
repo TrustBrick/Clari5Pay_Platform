@@ -54,6 +54,25 @@ export const statusStyle = (s: TxStatus) => {
   return map[s] || { color: T.textMuted, bg: T.borderLight };
 };
 
+// The Merchant Portal shows only the business-level withdrawal lifecycle:
+//   Manager Review → Pending → Completed / Rejected
+// The internal steps a withdrawal passes through in between — the Admin payout that follows the
+// Manager's approval, and a return to the Data Operator for correction — are collapsed onto the
+// nearest business status, so the merchant is never shown an internal workflow state. The stored
+// status, the workflow, permissions and the Admin/Super Admin portals are all untouched: this
+// resolves the status to DISPLAY, nothing more.
+const MERCHANT_WITHDRAWAL_VIEW: Record<string, string> = {
+  RESUBMITTED: 'MANAGER_REVIEW',   // returned to the operator — the Manager has not decided yet
+  SLIP_SUBMITTED: 'PENDING',       // Manager approved; the Admin payout is in progress
+};
+
+// The status to render for a viewer. Only a withdrawal seen from the Merchant Portal is remapped
+// (see MERCHANT_WITHDRAWAL_VIEW); everything else renders its real status.
+export const displayStatus = (status: string, type?: string, viewerRole?: string): string => {
+  if (viewerRole !== 'MERCHANT' || !type || !type.startsWith('WITHDRAWAL')) return status;
+  return MERCHANT_WITHDRAWAL_VIEW[status] || status;
+};
+
 // Role- and type-aware status label.
 // Deposit: Account Requested → Account Submitted → Slip Submitted → Deposited.
 // Withdrawal/Settlement: Submitted (merchant) / Pending (admin) → Completed.
