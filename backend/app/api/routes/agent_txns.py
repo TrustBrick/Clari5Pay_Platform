@@ -83,6 +83,11 @@ BANK_LIKE_METHODS = {"BANK", "IMPS", "NEFT", "RTGS"}   # collect a sending bank 
 # Settlement is Supervisor-only and needs NO approval: it mirrors the withdrawal chain minus the
 # review gate, so it is created ready to pay. Methods are limited to Cash / Bank Transfer / Crypto.
 SETTLEMENT_METHODS = {"CASH", "BANK", "CRYPTO"}
+# Cash and Crypto follow their own Submit Account step (token / wallet instead of an Agent
+# Account) and their own withdrawal gate order. BANK/UPI/IMPS/NEFT/RTGS are untouched.
+TOKEN_METHODS = {"CASH"}          # Submit Account captures Token Details + Note + token image
+WALLET_METHODS = {"CRYPTO"}       # Submit Account captures a Wallet Address + payment slip
+SPECIAL_METHODS = TOKEN_METHODS | WALLET_METHODS
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -256,6 +261,7 @@ def _row(t: AgentTransaction) -> dict:
         "agentAccountRef": t.agent_account_ref,
         "agentAccountType": t.agent_account_type,
         "agentAccountDetail": t.agent_account_detail,
+        "walletAddress": t.wallet_address, "accountProof": t.account_proof,
         "accountSubmittedBy": t.account_submitted_by,
         "accountSubmittedDate": _ist_parts(t.account_submitted_at)[1],
         "accountSubmittedTime": _ist_parts(t.account_submitted_at)[2],
@@ -333,6 +339,7 @@ class _Base(BaseModel):
     # generated values.
     tokenDetails: str | None = None
     noteNumber: str | None = None
+    walletAddress: str | None = None         # CRYPTO: replaces token/note on a withdrawal
     txnMethod: str | None = None            # CASH | UPI | BANK | IMPS | NEFT | RTGS | CRYPTO
     senderUpiId: str | None = None          # UPI the payment is sent from
     senderAccountHolder: str | None = None
@@ -343,8 +350,16 @@ class _Base(BaseModel):
 
 
 class AgentAccountSubmit(BaseModel):
-    """The Data Operator submits an AGENT account for the payer to send to."""
-    agentAccountId: int
+    """What the Data Operator submits, by method:
+      • BANK/UPI/IMPS/NEFT/RTGS → agentAccountId (one of that agent's own Agent Accounts)
+      • CASH                    → tokenDetails + noteNumber + accountProof (token image)
+      • CRYPTO                  → walletAddress + accountProof (crypto payment slip)
+    """
+    agentAccountId: int | None = None
+    tokenDetails: str | None = None
+    noteNumber: str | None = None
+    walletAddress: str | None = None
+    accountProof: str | None = None          # data URL
 
 
 class AgentSlipSubmit(BaseModel):
@@ -406,15 +421,24 @@ def _validate_common(body: _Base, txn_type: str) -> None:
         raise HTTPException(status_code=400, detail="Notes must be 100 characters or fewer.")
     if body.instructions and body.instructions.upper() not in INSTRUCTIONS:
         raise HTTPException(status_code=400, detail="Invalid instruction option.")
-    # Token Details / Unique Note Number come from the customer/agent, so the operator enters
-    # them on every agent transaction; they are never generated.
-    if not (body.tokenDetails or "").strip():
-        raise HTTPException(status_code=400, detail="Token Details are required.")
-    if not (body.noteNumber or "").strip():
-        raise HTTPException(status_code=400, detail="Unique Note Number is required.")
     if body.txnMethod and body.txnMethod.upper() not in TXN_METHODS:
         raise HTTPException(status_code=400, detail="Invalid Transaction Type.")
     method = (body.txnMethod or "").upper()
+    # Token Details / Unique Note Number are entered by the operator (never generated) — but WHEN
+    # depends on the method:
+    #   • CASH/CRYPTO deposit  → captured later, at Submit Account (token image / wallet).
+    #   • CRYPTO withdrawal    → a Wallet Address replaces them entirely.
+    #   • everything else      → at creation, as today (BANK/UPI are untouched).
+    deposit_defers = txn_type == "DEPOSIT" and method in SPECIAL_METHODS
+    crypto_withdrawal = txn_type == "WITHDRAWAL" and method in WALLET_METHODS
+    if crypto_withdrawal:
+        if not (body.walletAddress or "").strip():
+            raise HTTPException(status_code=400, detail="Crypto Wallet Address is required.")
+    elif not deposit_defers:
+        if not (body.tokenDetails or "").strip():
+            raise HTTPException(status_code=400, detail="Token Details are required.")
+        if not (body.noteNumber or "").strip():
+            raise HTTPException(status_code=400, detail="Unique Note Number is required.")
     if txn_type == "SETTLEMENT" and method and method not in SETTLEMENT_METHODS:
         raise HTTPException(status_code=400, detail="Settlement method must be Cash, Bank Transfer or Crypto.")
     # A deposit names the Sending Account it comes FROM (same rule the merchant form applies). A
@@ -433,18 +457,20 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
                   payout: AgentMemberBankAccount | None = None) -> dict:
     business = _business(user)
     _validate_common(body, txn_type)
+    method = (body.txnMethod or "").upper()
     agent = await _get_agent(db, business, body.agentMasterId)
     approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId)
 
     ref = await _next_serial(db, AgentTransaction.reference_number, prefix)
     # The operator-entered note number must stay unique, so a clash is reported plainly instead
-    # of surfacing as a database integrity error.
-    note_no = (body.noteNumber or "").strip()
-    entered_token = (body.tokenDetails or "").strip()
-    clash = (await db.execute(select(AgentTransaction.id).where(
-        AgentTransaction.note_number == note_no))).scalars().first()
-    if clash:
-        raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
+    # of surfacing as a database integrity error. A CASH/CRYPTO deposit has none yet.
+    note_no = (body.noteNumber or "").strip() or None
+    entered_token = (body.tokenDetails or "").strip() or None
+    if note_no:
+        clash = (await db.execute(select(AgentTransaction.id).where(
+            AgentTransaction.note_number == note_no))).scalars().first()
+        if clash:
+            raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
     txn_code = f"{agent.transaction_code}-{code_letter}-{ref[len(prefix):]}"
 
     # Membership name: use the entered value, else auto-fill from a prior agent transaction.
@@ -471,6 +497,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         txn_country=body.country, txn_state=body.state, txn_location=body.location,
         mobile=body.mobile, mobile_code=(body.mobileCode or None),
         token_details=entered_token, note_number=note_no,
+        wallet_address=((body.walletAddress or '').strip() or None),
         notes=(body.notes or None), instructions=(body.instructions.upper() if body.instructions else None),
         # Transaction type + Sending Account, captured exactly like the merchant Deposit Request.
         txn_method=(body.txnMethod.upper() if body.txnMethod else None),
@@ -486,8 +513,11 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         # so it lands ready for the operator to pay and upload the slip (ACCOUNT_SUBMITTED is
         # the merchant status for exactly that "details known, now pay" step). A SETTLEMENT
         # needs no approval at all and is created ready for the Supervisor to pay.
+        # CASH/CRYPTO withdrawals are authorised BEFORE the operator confirms them, so they open
+        # at the Manager gate; BANK/UPI withdrawals are unchanged (operator pays, Manager last).
         status=(ST_ACCOUNT_REQUESTED if txn_type == "DEPOSIT"
-                else ST_ACCOUNT_SUBMITTED if txn_type == "WITHDRAWAL"
+                else (ST_MANAGER_REVIEW if method in SPECIAL_METHODS else ST_ACCOUNT_SUBMITTED)
+                if txn_type == "WITHDRAWAL"
                 else ST_SLIP_SUBMITTED if txn_type == "SETTLEMENT" else ST_PENDING),
         # Payout account (withdrawals) — where the money is sent.
         payout_account_id=(payout.id if payout is not None else None),
@@ -660,26 +690,62 @@ async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession
     t = await _load_own(db, business, txn_id)
     _require_deposit(t)
     _require_status(t, ST_ACCOUNT_REQUESTED, "an account submission")
+    method = str(t.txn_method or "").upper()
 
-    acct = (await db.execute(select(AgentAccount).where(
-        AgentAccount.id == body.agentAccountId,
-        AgentAccount.merchant_business == business,
-        AgentAccount.agent_master_id == t.agent_master_id,
-    ))).scalar_one_or_none()
-    if acct is None:
-        raise HTTPException(status_code=404, detail="Agent account not found for this agent.")
-    if str(acct.status).upper() != "ACTIVE":
-        raise HTTPException(status_code=400, detail="Selected agent account is inactive.")
+    if method in TOKEN_METHODS:
+        # CASH — the customer's token is the reference, and its image is the proof.
+        token = (body.tokenDetails or "").strip()
+        note = (body.noteNumber or "").strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="Token Details are required.")
+        if not note:
+            raise HTTPException(status_code=400, detail="Unique Note Number is required.")
+        if not body.accountProof:
+            raise HTTPException(status_code=400, detail="Token Details image is required.")
+        clash = (await db.execute(select(AgentTransaction.id).where(
+            AgentTransaction.note_number == note, AgentTransaction.id != t.id))).scalars().first()
+        if clash:
+            raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
+        t.token_details = token
+        t.note_number = note
+        t.account_proof = body.accountProof
+        note_txt = f"Token {token} / note {note} submitted"
 
-    t.agent_account_id = acct.id
-    t.agent_account_ref = acct.account_ref
-    t.agent_account_type = acct.account_type
-    t.agent_account_detail = _account_detail(acct)
+    elif method in WALLET_METHODS:
+        # CRYPTO — the operator types the wallet the funds were sent to, plus the payment slip.
+        wallet = (body.walletAddress or "").strip()
+        if not wallet:
+            raise HTTPException(status_code=400, detail="Crypto Wallet Address is required.")
+        if not body.accountProof:
+            raise HTTPException(status_code=400, detail="Crypto payment slip is required.")
+        t.wallet_address = wallet
+        t.account_proof = body.accountProof
+        note_txt = f"Wallet {wallet} submitted"
+
+    else:
+        # BANK / UPI / IMPS / NEFT / RTGS — unchanged: pick one of this agent's Agent Accounts.
+        if body.agentAccountId is None:
+            raise HTTPException(status_code=400, detail="Select an agent account to send.")
+        acct = (await db.execute(select(AgentAccount).where(
+            AgentAccount.id == body.agentAccountId,
+            AgentAccount.merchant_business == business,
+            AgentAccount.agent_master_id == t.agent_master_id,
+        ))).scalar_one_or_none()
+        if acct is None:
+            raise HTTPException(status_code=404, detail="Agent account not found for this agent.")
+        if str(acct.status).upper() != "ACTIVE":
+            raise HTTPException(status_code=400, detail="Selected agent account is inactive.")
+        t.agent_account_id = acct.id
+        t.agent_account_ref = acct.account_ref
+        t.agent_account_type = acct.account_type
+        t.agent_account_detail = _account_detail(acct)
+        note_txt = f"Agent account {acct.account_ref} submitted"
+
     t.account_submitted_by = user.username
     t.account_submitted_at = datetime.utcnow()
     t.status = ST_ACCOUNT_SUBMITTED
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "ACCOUNT_SUBMITTED", user, note=f"Agent account {acct.account_ref} submitted")
+    await _log(db, t, "ACCOUNT_SUBMITTED", user, note=note_txt)
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -801,7 +867,12 @@ async def member_accounts(membership_id: str, db: AsyncSession = Depends(get_db)
 @router.post("/{txn_id}/manager/approve")
 async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                           user: User = Depends(get_current_agent_operator)):
-    """Manager approves a paid withdrawal after reviewing the slip → COMPLETED (final gate)."""
+    """Manager approves a withdrawal.
+
+    BANK/UPI: the operator has already paid and uploaded the slip, so approval COMPLETES it
+    (unchanged). CASH/CRYPTO: approval authorises the payout, and the transaction returns to the
+    operator to confirm the token / wallet — there is no slip on those methods.
+    """
     _require(user, ("MANAGER",), "approve Agent Withdrawals")
     remark = (body.remark or "").strip()
     if not remark:
@@ -809,12 +880,14 @@ async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession
     t = await _load_own(db, _business(user), txn_id)
     _require_withdrawal(t)
     _require_status(t, ST_MANAGER_REVIEW, "Manager review")
-    t.status = ST_COMPLETED
+    special = str(t.txn_method or "").upper() in SPECIAL_METHODS
+    t.status = ST_ACCOUNT_SUBMITTED if special else ST_COMPLETED
     t.manager_name = user.username
     t.manager_action_at = datetime.utcnow()
     t.review_remark = remark
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "MANAGER_APPROVED", user, new_amount=t.amount, note=remark)
+    await _log(db, t, "MANAGER_APPROVED", user, new_amount=t.amount,
+               note=(f"{remark} — awaiting operator confirmation" if special else remark))
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -857,23 +930,32 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
         _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
     else:
         raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals and Settlements only.")
-    # A withdrawal is paid before its single Manager gate; a settlement has no gate at all.
-    _require_status(t, ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED, "payment")
-    if not body.slipImage:
-        raise HTTPException(status_code=400, detail="Payment slip image is required.")
-    if not (body.utr or "").strip():
-        raise HTTPException(status_code=400, detail="UTR Number is required.")
-    t.slip_image = body.slipImage
+    method = str(t.txn_method or "").upper()
+    # CASH/CRYPTO withdrawals reach this step AFTER Manager approval and carry no slip — the
+    # operator simply confirms the token / wallet. Every other method pays here, before the gate.
+    confirm_only = t.txn_type == "WITHDRAWAL" and method in SPECIAL_METHODS
+    _require_status(t, ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED,
+                    "confirmation" if confirm_only else "payment")
+    if not confirm_only:
+        if not body.slipImage:
+            raise HTTPException(status_code=400, detail="Payment slip image is required.")
+        if not (body.utr or "").strip():
+            raise HTTPException(status_code=400, detail="UTR Number is required.")
+        t.slip_image = body.slipImage
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
     if body.utr is not None and (body.utr or '').strip():
         t.deposit_utr = body.utr.strip()          # UTR of the payment, shown wherever the txn is viewed
-    # A paid withdrawal goes to the Manager to review the slip; a settlement is done.
-    t.status = ST_MANAGER_REVIEW if t.txn_type == 'WITHDRAWAL' else ST_COMPLETED
+    # CASH/CRYPTO withdrawal: already approved, so confirming completes it. BANK/UPI withdrawal:
+    # paid now, so it goes to the Manager. Settlement: no gate, done.
+    t.status = (ST_COMPLETED if confirm_only
+                else ST_MANAGER_REVIEW if t.txn_type == 'WITHDRAWAL' else ST_COMPLETED)
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "SLIP_SUBMITTED" if t.txn_type == "WITHDRAWAL" else "COMPLETED", user,
-               new_amount=t.amount,
-               note=(f"Paid by {user.username} — awaiting Manager approval" if t.txn_type == "WITHDRAWAL"
+    await _log(db, t,
+               "COMPLETED" if (confirm_only or t.txn_type != "WITHDRAWAL") else "SLIP_SUBMITTED",
+               user, new_amount=t.amount,
+               note=(f"Confirmed and completed by {user.username}" if confirm_only
+                     else f"Paid by {user.username} — awaiting Manager approval" if t.txn_type == "WITHDRAWAL"
                      else f"Settlement paid by {user.username}"))
     await db.commit()
     await db.refresh(t)
@@ -944,7 +1026,8 @@ MANAGEABLE_METHOD = "CASH"
 # a slip is not jumped past those steps into an approval it has not earned.
 _CHAIN_ORDER = {
     "DEPOSIT": [ST_ACCOUNT_REQUESTED, ST_ACCOUNT_SUBMITTED, ST_SUPERVISOR_REVIEW, ST_SLIP_SUBMITTED],
-    "WITHDRAWAL": [ST_ACCOUNT_SUBMITTED, ST_MANAGER_REVIEW],
+    "WITHDRAWAL": [ST_ACCOUNT_SUBMITTED, ST_MANAGER_REVIEW],          # BANK/UPI: pay → gate
+    "WITHDRAWAL_SPECIAL": [ST_MANAGER_REVIEW, ST_ACCOUNT_SUBMITTED],  # CASH/CRYPTO: gate → confirm
     "SETTLEMENT": [ST_SLIP_SUBMITTED],
 }
 # Deposit → Supervisor Approval · Withdrawal → Manager Approval · Settlement → Supervisor Completion.
@@ -963,7 +1046,13 @@ def _restart_approval(t: AgentTransaction) -> str | None:
     approval has happened yet and there is nothing to redo. Any prior decision is voided so the
     gate must be passed again from scratch; the audit trail of it is append-only and untouched.
     """
-    order = _CHAIN_ORDER.get(t.txn_type or "", [])
+    # A CASH/CRYPTO withdrawal is gated BEFORE the operator confirms it, so its order is the
+    # reverse of BANK/UPI. Using the wrong one would let an amount change on an already-approved
+    # cash withdrawal skip the Manager gate entirely.
+    key = t.txn_type or ""
+    if key == "WITHDRAWAL" and str(t.txn_method or "").upper() in SPECIAL_METHODS:
+        key = "WITHDRAWAL_SPECIAL"
+    order = _CHAIN_ORDER.get(key, [])
     gate = _APPROVAL_GATE.get(t.txn_type or "")
     if not gate or gate not in order or t.status not in order:
         return None

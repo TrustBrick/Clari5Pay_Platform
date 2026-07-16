@@ -65,8 +65,8 @@ export interface AgentTxnRow {
   location?: string | null;
   mobile?: string | null;
   mobileCode?: string | null;
-  tokenDetails: string;
-  noteNumber: string;
+  tokenDetails?: string | null;
+  noteNumber?: string | null;
   notes?: string | null;
   instructions?: string | null;
   /** Same labels as the merchant deposit workflow. Legacy rows keep PENDING/APPROVED/REJECTED. */
@@ -84,6 +84,8 @@ export interface AgentTxnRow {
   agentAccountRef?: string | null;
   agentAccountType?: string | null;
   agentAccountDetail?: string | null;
+  walletAddress?: string | null;
+  accountProof?: string | null;
   accountSubmittedBy?: string | null;
   accountSubmittedDate?: string | null;
   accountSubmittedTime?: string | null;
@@ -183,6 +185,7 @@ export interface AgentDepositBody {
   // Supplied by the customer/agent and typed in by the operator — mandatory on a Deposit.
   tokenDetails?: string;
   noteNumber?: string;
+  walletAddress?: string;   // CRYPTO withdrawal
   // Transaction type + Sending Account (mirrors the merchant Deposit Request).
   txnMethod?: string;
   senderUpiId?: string;
@@ -239,10 +242,10 @@ export const agentTxnsAPI = {
   /** Active AGENT accounts for one agent — the only source the Account Submission step may use. */
   agentAccounts: async (agentMasterId: number) =>
     (await api.get<AgentAccountOption[]>(`/api/agent-txns/agent-accounts/${agentMasterId}`)).data,
-  accountSubmit: async (id: number, agentAccountId: number) =>
-    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/account-submit`, { agentAccountId })).data,
+  accountSubmit: async (id: number, body: { agentAccountId?: number; tokenDetails?: string; noteNumber?: string; walletAddress?: string; accountProof?: string }) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/account-submit`, body)).data,
   /** Both are mandatory — the UTR is the only payment reference (no Reference Number). */
-  submitSlip: async (id: number, body: { slipImage: string; utr: string }) =>
+  submitSlip: async (id: number, body: { slipImage?: string; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/slip`, body)).data,
   supervisorApprove: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/approve`, { remark })).data,
@@ -259,7 +262,7 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/approve`, { remark })).data,
   managerReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
-  payout: async (id: number, body: { slipImage: string; utr: string }) =>
+  payout: async (id: number, body: { slipImage?: string; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
   approve: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/approve`)).data,
   reject: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/reject`)).data,

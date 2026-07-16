@@ -63,6 +63,10 @@ const METHOD_LABEL: Record<string, string> = {
 };
 const methodLabel = (v?: string | null) => (v ? METHOD_LABEL[v] || v : '—');
 const BANK_LIKE = ['BANK', 'IMPS', 'NEFT', 'RTGS'];
+// Cash/Crypto capture their reference at Submit Account (token image / wallet), not at create.
+const isTokenMethod = (m?: string | null) => m === 'CASH';
+const isWalletMethod = (m?: string | null) => m === 'CRYPTO';
+const isSpecialMethod = (m?: string | null) => isTokenMethod(m) || isWalletMethod(m);
 
 // Membership IDs are uppercase letters + digits only (auto-converted; lowercase/spaces/symbols
 // blocked) — the same rule the Merchant Deposit form applies.
@@ -262,9 +266,11 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     if (!membershipType) { showToast('Select a Membership Type.', 'error'); return; }
     const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
-    if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
-    if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
+    if (!isSpecialMethod(txnMethod)) {
+      if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
+      if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+    }
     if (txnMethod === 'UPI' && !senderUpiId.includes('@')) { showToast('Enter a valid Sender UPI ID (name@bank).', 'error'); return; }
     if (BANK_LIKE.includes(txnMethod) && (!senderAccountHolder.trim() || !senderAccountNumber.trim())) {
       showToast('Enter the Sending Account holder and number.', 'error'); return;
@@ -279,7 +285,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       location: location || undefined, mobile: mobile || undefined,
       mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: sendApproval,
-      tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim(),
+      ...(isSpecialMethod(txnMethod) ? {} : { tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim() }),
       txnMethod,
       senderUpiId: senderUpiId.trim() || undefined,
       senderAccountHolder: senderAccountHolder.trim() || undefined,
@@ -372,11 +378,14 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
           <PhoneField code={mobileCode} onCode={setMobileCode} value={mobile} onValue={setMobile}
             codeOptions={DIAL_OPTIONS} style={{ marginBottom: 16 }} />
 
-          {/* Provided by the customer/agent — the operator enters them; nothing is generated. */}
-          <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
-            required placeholder="As provided by the customer" />
-          <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(e.target.value)}
-            required placeholder="As provided by the customer" hint="Must be unique" />
+          {/* Token Details / Unique Note Number are entered here for Bank/UPI. For Cash & Crypto they
+              are captured later, at Submit Account, so they are hidden on the create form. */}
+          {!isSpecialMethod(txnMethod) && <>
+            <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
+              required placeholder="As provided by the customer" />
+            <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(e.target.value)}
+              required placeholder="As provided by the customer" hint="Must be unique" />
+          </>}
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
         </div>
@@ -430,6 +439,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
   // Supplied by the customer/agent and typed in by the operator — never generated.
   const [tokenDetails, setTokenDetails] = useState('');
   const [noteNumber, setNoteNumber] = useState('');
+  const [walletAddress, setWalletAddress] = useState('');
   // Payout account — saved accounts auto-fetch with the membership; a single one auto-selects.
   const [savedAccounts, setSavedAccounts] = useState<AgentMemberAccount[]>([]);
   const [payoutAccountId, setPayoutAccountId] = useState('');
@@ -509,8 +519,12 @@ export const AgentWithdrawalRequestPage: React.FC<{
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
     if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
-    if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
-    if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+    if (isWalletMethod(txnMethod)) {
+      if (!walletAddress.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
+    } else {
+      if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
+      if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+    }
     // The payout account: an existing saved one, or new details to be saved for re-use.
     if (!addingAccount && !payoutAccountId) { showToast('Select the payout account.', 'error'); return; }
     if (addingAccount && !payNumber.trim() && !payUpi.trim()) {
@@ -529,7 +543,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
       instructions: instructions || undefined, sentForApproval: sendApproval,
       approverUserId: sendApproval ? Number(approverId) : undefined,
       txnMethod,
-      tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim(),
+      ...(isWalletMethod(txnMethod)
+        ? { walletAddress: walletAddress.trim() }
+        : { tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim() }),
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
       ...(addingAccount ? {
         payoutAccountHolder: payHolder.trim() || undefined,
@@ -667,11 +683,17 @@ export const AgentWithdrawalRequestPage: React.FC<{
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
           <PhoneField code={mobileCode} onCode={setMobileCode} value={mobile} onValue={setMobile}
             codeOptions={DIAL_OPTIONS} style={{ marginBottom: 16 }} />
-          {/* Provided by the customer/agent — the operator enters them; nothing is generated. */}
-          <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
-            required placeholder="As provided by the customer" />
-          <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(e.target.value)}
-            required placeholder="As provided by the customer" hint="Must be unique" />
+          {/* Withdrawal: Cash keeps Token Details + Note; Crypto replaces them with a Wallet Address.
+              Bank/UPI keep token/note as today. */}
+          {isWalletMethod(txnMethod) ? (
+            <Input label="Crypto Wallet Address" value={walletAddress} onChange={e => setWalletAddress(e.target.value)}
+              required placeholder="The wallet to pay out to" hint="Confirmed by the Manager — enter carefully" />
+          ) : (<>
+            <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
+              required placeholder="As provided by the customer" />
+            <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(e.target.value)}
+              required placeholder="As provided by the customer" hint="Must be unique" />
+          </>)}
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
         </div>
@@ -941,6 +963,7 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ['Membership Type', row.membershipType], ['Amount', fmt(row.amount)],
     ['Country', row.country], ['State', row.state], ['Location', row.location], ['Mobile', row.mobile],
     ['Token Details', row.tokenDetails], ['Note Number', row.noteNumber],
+    ['Crypto Wallet Address', row.walletAddress],
     ['Instructions', row.instructions ? instrLabel(row.instructions) : null], ['Notes', row.notes],
     ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'], ['Approver', row.approverName],
     ['Approved By', row.approvedBy], ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
@@ -957,7 +980,10 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
   ];
 
   // The uploaded slip and the Mark-Deposit proof, shown from storage every time.
+  const proofLabel = isWalletMethod(row.txnMethod) ? 'Crypto Payment Slip'
+    : isTokenMethod(row.txnMethod) ? 'Token Details Image' : 'Account Proof';
   const images: Array<[string, string]> = [
+    ...(row.accountProof ? [[proofLabel, row.accountProof] as [string, string]] : []),
     ...(row.slipImage ? [['Uploaded Slip', row.slipImage] as [string, string]] : []),
     ...(row.depositProof ? [['Deposit Proof', row.depositProof] as [string, string]] : []),
   ];
@@ -1134,7 +1160,8 @@ const AgentTxnManagementPage: React.FC<{
                     {/* Withdrawal: created ready to pay (ACCOUNT_SUBMITTED) → the Manager reviews the
                         slip afterwards. Settlement: no gate at all, created at SLIP_SUBMITTED. */}
                     {!isDeposit && canPayout && x.status === (txnType === 'SETTLEMENT' ? 'SLIP_SUBMITTED' : 'ACCOUNT_SUBMITTED')
-                      && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>Pay / Upload Slip</Btn>}
+                      && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>
+                        {isSpecialMethod(x.txnMethod) ? 'Confirm & Complete' : 'Pay / Upload Slip'}</Btn>}
                     {/* Manage is CASH-only — hidden entirely for every other method. */}
                     {canManage && x.txnMethod === 'CASH' && !AGENT_FINAL_STATUSES.includes(x.status)
                       && <Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn>}
@@ -1394,11 +1421,21 @@ const SlipView: React.FC<{ label: string; src: string; filename: string }> = ({ 
 /** Submit Account — tell the payer which AGENT account to send to. Agent accounts only. */
 const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
   const { showToast } = useToast();
-  const [accounts, setAccounts] = useState<AgentAccountOption[] | null>(null);
+  const method = row.txnMethod || '';
+  const isCash = isTokenMethod(method);
+  const isCrypto = isWalletMethod(method);
+  // Bank/UPI pick an Agent Account; Cash enters token+note+image; Crypto enters wallet+slip.
+  const [accounts, setAccounts] = useState<AgentAccountOption[] | null>(isCash || isCrypto ? [] : null);
   const [sel, setSel] = useState('');
+  const [token, setToken] = useState('');
+  const [note, setNote] = useState('');
+  const [wallet, setWallet] = useState('');
+  const [proof, setProof] = useState('');
+  const [proofName, setProofName] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (isCash || isCrypto) return;
     agentTxnsAPI.agentAccounts(row.agentMasterId)
       .then((rows) => {
         setAccounts(rows);
@@ -1406,48 +1443,99 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
         setSel(preferred ? String(preferred.id) : '');
       })
       .catch(() => { setAccounts([]); showToast('Failed to load agent accounts.', 'error'); });
-  }, [row.agentMasterId, showToast]);
+  }, [row.agentMasterId, isCash, isCrypto, showToast]);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
+    try { setProof(await fileToDataUrl(f)); setProofName(f.name); }
+    catch { showToast('Could not read the file.', 'error'); }
+  };
 
   const chosen = accounts?.find(a => String(a.id) === sel);
 
   const submit = async () => {
-    if (!sel) { showToast('Select an agent account to send.', 'error'); return; }
+    let body: { agentAccountId?: number; tokenDetails?: string; noteNumber?: string; walletAddress?: string; accountProof?: string };
+    if (isCash) {
+      if (!token.trim()) { showToast('Enter the Token Details.', 'error'); return; }
+      if (!note.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+      if (!proof) { showToast('Upload the Token Details image.', 'error'); return; }
+      body = { tokenDetails: token.trim(), noteNumber: note.trim(), accountProof: proof };
+    } else if (isCrypto) {
+      if (!wallet.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
+      if (!proof) { showToast('Upload the Crypto payment slip.', 'error'); return; }
+      body = { walletAddress: wallet.trim(), accountProof: proof };
+    } else {
+      if (!sel) { showToast('Select an agent account to send.', 'error'); return; }
+      body = { agentAccountId: Number(sel) };
+    }
     setBusy(true);
     try {
-      await agentTxnsAPI.accountSubmit(row.id, Number(sel));
-      showToast(`Account submitted for ${row.referenceNumber}.`, 'success');
+      await agentTxnsAPI.accountSubmit(row.id, body);
+      showToast(`Submitted for ${row.referenceNumber}.`, 'success');
       onDone(); onClose();
-    } catch (e) { showToast(agentTxnError(e, 'Failed to submit the account.'), 'error'); }
+    } catch (e) { showToast(agentTxnError(e, 'Submission failed.'), 'error'); }
     finally { setBusy(false); }
   };
 
+  const title = isCash ? 'Submit Token Details' : isCrypto ? 'Submit Wallet Details' : 'Submit Account';
+  const canSubmit = isCash ? (token.trim() && note.trim() && proof)
+    : isCrypto ? (wallet.trim() && proof)
+    : Boolean(sel);
+
   return (
-    <Modal title={`Submit Account — ${row.referenceNumber}`} onClose={onClose}>
-      <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
-        Choose the agent account the payer should send to. Only this agent's own accounts are listed —
-        merchant accounts are never used.
-      </p>
-      {accounts === null ? <div style={{ padding: 16, color: T.textMuted, fontSize: 13 }}>Loading agent accounts…</div>
-        : accounts.length === 0 ? (
-          <div style={{ padding: 14, borderRadius: 10, background: T.warningBg, color: T.warning, fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>
-            This agent has no active accounts. Add one under Agent Accounts first.
-          </div>
-        ) : (
-          <>
-            <Sel label="Agent Account" value={sel} onChange={e => setSel(e.target.value)} required
-              options={accounts.map(a => ({ value: String(a.id), label: `${a.accountRef} · ${a.accountType}${a.label ? ` · ${a.label}` : ''}${a.isDefault ? ' (default)' : ''}` }))} />
-            {chosen && (
-              <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Details sent to the payer</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{chosen.detail || '—'}</div>
-                {chosen.qrImage && <img src={chosen.qrImage} alt="QR" style={{ marginTop: 10, width: 140, height: 140, objectFit: 'contain', borderRadius: 8, border: `1px solid ${T.border}` }} />}
+    <Modal title={`${title} — ${row.referenceNumber}`} onClose={onClose}>
+      {isCash ? (
+        <>
+          <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
+            Enter the Token Details and Unique Note Number the customer provided, and upload the token image.
+            The Supervisor verifies these before approval.
+          </p>
+          <Input label="Token Details" value={token} onChange={e => setToken(e.target.value)} required placeholder="As provided by the customer" />
+          <Input label="Unique Note Number" value={note} onChange={e => setNote(e.target.value)} required placeholder="As provided by the customer" hint="Must be unique" />
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Token Details Image</label>
+          <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
+          {proofName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 12 }}>Attached: {proofName}</div>}
+        </>
+      ) : isCrypto ? (
+        <>
+          <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
+            Enter the wallet the funds were sent to and upload the crypto payment slip. The Supervisor verifies both.
+          </p>
+          <Input label="Crypto Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="Destination wallet address" hint="Enter carefully — crypto transfers are irreversible" />
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Crypto Payment Slip</label>
+          <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
+          {proofName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 12 }}>Attached: {proofName}</div>}
+        </>
+      ) : (
+        <>
+          <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
+            Choose the agent account the payer should send to. Only this agent's own accounts are listed —
+            merchant accounts are never used.
+          </p>
+          {accounts === null ? <div style={{ padding: 16, color: T.textMuted, fontSize: 13 }}>Loading agent accounts…</div>
+            : accounts.length === 0 ? (
+              <div style={{ padding: 14, borderRadius: 10, background: T.warningBg, color: T.warning, fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>
+                This agent has no active accounts. Add one under Agent Accounts first.
               </div>
+            ) : (
+              <>
+                <Sel label="Agent Account" value={sel} onChange={e => setSel(e.target.value)} required
+                  options={accounts.map(a => ({ value: String(a.id), label: `${a.accountRef} · ${a.accountType}${a.label ? ` · ${a.label}` : ''}${a.isDefault ? ' (default)' : ''}` }))} />
+                {chosen && (
+                  <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Details sent to the payer</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{chosen.detail || '—'}</div>
+                    {chosen.qrImage && <img src={chosen.qrImage} alt="QR" style={{ marginTop: 10, width: 140, height: 140, objectFit: 'contain', borderRadius: 8, border: `1px solid ${T.border}` }} />}
+                  </div>
+                )}
+              </>
             )}
-          </>
-        )}
+        </>
+      )}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-        <Btn onClick={submit} disabled={busy || !sel}>{busy ? 'Submitting…' : 'Submit Account'}</Btn>
+        <Btn onClick={submit} disabled={busy || !canSubmit}>{busy ? 'Submitting…' : 'Submit'}</Btn>
       </div>
     </Modal>
   );
@@ -1456,6 +1544,8 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
 /** Pay / Upload Slip — evidences the payment and sends the deposit to Supervisor review. */
 const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout'; onClose: () => void; onDone: () => void }> = ({ row, mode = 'deposit', onClose, onDone }) => {
   const { showToast } = useToast();
+  // A CASH/CRYPTO withdrawal is confirm-only after Manager approval — no slip, no UTR.
+  const confirmOnly = mode === 'payout' && row.type === 'WITHDRAWAL' && isSpecialMethod(row.txnMethod);
   const [utr, setUtr] = useState('');
   const [slip, setSlip] = useState('');
   const [slipName, setSlipName] = useState('');
@@ -1469,23 +1559,49 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   };
 
   const submit = async () => {
-    // Both are mandatory: the slip is the proof, the UTR is its only reference.
-    if (!slip) { showToast('Upload the payment slip image.', 'error'); return; }
-    if (!utr.trim()) { showToast('Enter the UTR Number.', 'error'); return; }
+    // A confirm-only cash/crypto withdrawal needs neither slip nor UTR.
+    if (!confirmOnly) {
+      if (!slip) { showToast('Upload the payment slip image.', 'error'); return; }
+      if (!utr.trim()) { showToast('Enter the UTR Number.', 'error'); return; }
+    }
     setBusy(true);
     try {
-      const body = { slipImage: slip, utr: utr.trim() };
+      const body = confirmOnly ? {} : { slipImage: slip, utr: utr.trim() };
       // Deposit: slip → Supervisor review. Withdrawal: payout after Manager approval → Completed.
       await (mode === 'payout' ? agentTxnsAPI.payout(row.id, body) : agentTxnsAPI.submitSlip(row.id, body));
-      showToast(mode === 'payout'
-        ? (row.type === 'WITHDRAWAL'
-            ? `${row.referenceNumber} paid — awaiting Manager approval.`
-            : `${row.referenceNumber} paid and completed.`)
-        : `Slip submitted for ${row.referenceNumber} — awaiting Supervisor approval.`, 'success');
+      showToast(confirmOnly
+        ? `${row.referenceNumber} confirmed and completed.`
+        : mode === 'payout'
+          ? (row.type === 'WITHDRAWAL'
+              ? `${row.referenceNumber} paid — awaiting Manager approval.`
+              : `${row.referenceNumber} paid and completed.`)
+          : `Slip submitted for ${row.referenceNumber} — awaiting Supervisor approval.`, 'success');
       onDone(); onClose();
     } catch (e) { showToast(agentTxnError(e, 'Failed to submit the slip.'), 'error'); }
     finally { setBusy(false); }
   };
+
+  if (confirmOnly) {
+    const detail: Array<[string, React.ReactNode]> = isWalletMethod(row.txnMethod)
+      ? [['Crypto Wallet Address', row.walletAddress]]
+      : [['Token Details', row.tokenDetails], ['Unique Note Number', row.noteNumber]];
+    return (
+      <Modal title={`Confirm & Complete — ${row.referenceNumber}`} onClose={onClose}>
+        <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
+          Approved by {row.managerName || 'the Manager'}. Confirm the details below to complete the
+          withdrawal — no payment slip is required for {methodLabel(row.txnMethod)}.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+          <DField k="Amount" v={fmt(row.amount)} />
+          {detail.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : 'Confirm & Complete'}</Btn>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal title={`Pay / Upload Slip — ${row.referenceNumber}`} onClose={onClose}>
@@ -1598,6 +1714,10 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
     ['Membership', `${row.membershipId}${row.membershipName ? ` · ${row.membershipName}` : ''}`],
     ['Amount', fmt(row.amount)],
     ['Transaction Type', methodLabel(row.txnMethod)],
+    // What this method asks the reviewer to verify.
+    ['Token Details', row.tokenDetails],
+    ['Unique Note Number', row.noteNumber],
+    ['Crypto Wallet Address', row.walletAddress],
     ...(isDep
       ? ([
           ['Sent To', `${row.agentAccountRef || '—'} · ${row.agentAccountDetail || '—'}`],
@@ -1622,6 +1742,11 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
         {facts.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
       </div>
+      {row.accountProof && (
+        <div style={{ marginBottom: 14 }}>
+          <SlipView label={isWalletMethod(row.txnMethod) ? 'Crypto Payment Slip' : 'Token Details Image'} src={row.accountProof} filename={`${row.referenceNumber}-proof`} />
+        </div>
+      )}
       {row.slipImage && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Submitted Slip</div>

@@ -168,6 +168,9 @@ _NEW_COLUMNS = [
     # Country/dial code for the agent-module phone fields (national number stays in `mobile`).
     ("agent_master", "mobile_code", "VARCHAR(8)"),
     ("agent_transaction", "mobile_code", "VARCHAR(8)"),
+    # Cash/Crypto deposit: what Submit Account captures instead of an Agent Account.
+    ("agent_transaction", "wallet_address", "VARCHAR(128)"),
+    ("agent_transaction", "account_proof", "TEXT"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -206,6 +209,11 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         # longest (ACCOUNT_REQUESTED / ACCOUNT_SUBMITTED / SUPERVISOR_REVIEW = 17 chars) overflow
         # the original VARCHAR(16). Widening is lossless and idempotent.
         await conn.execute(text("ALTER TABLE agent_transaction ALTER COLUMN status TYPE VARCHAR(24)"))
+        # A CASH/CRYPTO deposit has no Token Details / Note Number at creation — they are captured
+        # at Submit Account — so these two can no longer be NOT NULL. Existing rows keep their
+        # values; only the constraint is relaxed.
+        for col in ("token_details", "note_number"):
+            await conn.execute(text(f"ALTER TABLE agent_transaction ALTER COLUMN {col} DROP NOT NULL"))
         # Saved member records can now hold a UPI without a full bank account → relax NOT NULL.
         for col in ("account_holder", "account_number", "ifsc", "branch"):
             await conn.execute(text(f"ALTER TABLE merchant_bank_accounts ALTER COLUMN {col} DROP NOT NULL"))

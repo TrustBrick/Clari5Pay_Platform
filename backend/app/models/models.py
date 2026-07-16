@@ -806,8 +806,9 @@ class AgentTransaction(Base):
     mobile_code: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
 
     # System-generated, immutable.
-    token_details: Mapped[str] = mapped_column(String(48), nullable=False)
-    note_number: Mapped[str] = mapped_column(String(24), unique=True, index=True, nullable=False)
+    # Nullable: a CASH/CRYPTO deposit has no token at creation — it is captured at Submit Account.
+    token_details: Mapped[Optional[str]] = mapped_column(String(48), nullable=True)
+    note_number: Mapped[Optional[str]] = mapped_column(String(24), unique=True, index=True, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)   # max 100 chars
     instructions: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
 
@@ -835,6 +836,10 @@ class AgentTransaction(Base):
     agent_account_ref: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)     # AAC…
     agent_account_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)    # BANK|UPI|QR|CRYPTO
     agent_account_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # What Submit Account captured, by method: BANK/UPI pick an Agent Account (above); CASH enters
+    # token details + note + a token image; CRYPTO enters a wallet address + a payment slip.
+    wallet_address: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # token image / crypto slip
     account_submitted_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     account_submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
