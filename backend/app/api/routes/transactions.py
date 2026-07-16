@@ -1956,7 +1956,14 @@ async def _reviewer_action(
             # Telegram (demo, next-step only): final approval → notify ONLY the requesting user.
             await tgn.notify(db, tx, "USER", "deposit_done" if is_dep else "withdrawal_done")
         else:
-            tx.status = TxStatus.SLIP_SUBMITTED        # forwarded to Admin for final approval
+            # Forwarded to Admin for final approval. A deposit carries a real slip, so it lands as
+            # SLIP_SUBMITTED (the Admin's "Mark Deposited" step keys off exactly that). A withdrawal
+            # has no slip — the Manager's approval just hands it to the Admin to pay out — so it
+            # lands as ACCOUNT_REQUESTED, which is what the pre-review-gate withdrawal flow used and
+            # what the Admin's "Pay & Complete" step still accepts. Settlements never reach here
+            # (they skip the review gate), so this only ever splits deposit vs withdrawal.
+            tx.status = (TxStatus.ACCOUNT_REQUESTED if tx.type.value.startswith("WITHDRAWAL")
+                         else TxStatus.SLIP_SUBMITTED)
             _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
             await db.flush()
             await _notify_admin(db, tx, f"{tx.ref}: approved by {cfg['label']} {reviewer.name} — awaiting your final approval", "✅")
