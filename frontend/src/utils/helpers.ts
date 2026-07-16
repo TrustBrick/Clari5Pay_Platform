@@ -351,6 +351,21 @@ export const INDIAN_STATES = [
   'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
 ];
 
+// Crypto wallet address — structural format check across the common networks (mirrors the agent
+// backend's _valid_wallet). No network selector, so an address is valid if it is a valid shape on
+// ANY network; a format check, not an on-chain proof.
+const WALLET_FORMATS = [
+  /^0x[0-9a-fA-F]{40}$/,                       // EVM: Ethereum / ERC20 / BSC / Polygon
+  /^T[1-9A-HJ-NP-Za-km-z]{33}$/,               // TRON / TRC20
+  /^(bc1)[0-9ac-hj-np-z]{11,87}$/,             // Bitcoin bech32
+  /^[13][1-9A-HJ-NP-Za-km-z]{25,34}$/,         // Bitcoin legacy
+  /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,             // Solana
+];
+export const isValidWallet = (addr: string): boolean => {
+  const a = (addr || '').trim();
+  return !!a && WALLET_FORMATS.some((re) => re.test(a));
+};
+
 export const COUNTRY_CODES = [
   { code: '+91', label: '🇮🇳 +91 India' },
   { code: '+93', label: '🇦🇫 +93 Afghanistan' },

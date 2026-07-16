@@ -3,7 +3,7 @@ import type { User } from '../types';
 import { T } from '../utils/theme';
 import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect } from '../components/UI';
-import { COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
+import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import {
@@ -521,6 +521,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
     if (isWalletMethod(txnMethod)) {
       if (!walletAddress.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
+      if (!isValidWallet(walletAddress)) { showToast('Enter a valid crypto wallet address.', 'error'); return; }
     } else {
       if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
       if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
@@ -687,7 +688,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
               Bank/UPI keep token/note as today. */}
           {isWalletMethod(txnMethod) ? (
             <Input label="Crypto Wallet Address" value={walletAddress} onChange={e => setWalletAddress(e.target.value)}
-              required placeholder="The wallet to pay out to" hint="Confirmed by the Manager — enter carefully" />
+              required placeholder="The wallet to pay out to"
+              hint={walletAddress.trim() && !isValidWallet(walletAddress) ? 'Not a valid wallet address format' : 'Confirmed by the Manager — enter carefully'} />
           ) : (<>
             <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
               required placeholder="As provided by the customer" />
@@ -1463,6 +1465,7 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
       body = { tokenDetails: token.trim(), noteNumber: note.trim(), accountProof: proof };
     } else if (isCrypto) {
       if (!wallet.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
+      if (!isValidWallet(wallet)) { showToast('Enter a valid crypto wallet address.', 'error'); return; }
       if (!proof) { showToast('Upload the Crypto payment slip.', 'error'); return; }
       body = { walletAddress: wallet.trim(), accountProof: proof };
     } else {
@@ -1480,7 +1483,7 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
 
   const title = isCash ? 'Submit Token Details' : isCrypto ? 'Submit Wallet Details' : 'Submit Account';
   const canSubmit = isCash ? (token.trim() && note.trim() && proof)
-    : isCrypto ? (wallet.trim() && proof)
+    : isCrypto ? (isValidWallet(wallet) && proof)
     : Boolean(sel);
 
   return (
@@ -1502,7 +1505,8 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
           <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
             Enter the wallet the funds were sent to and upload the crypto payment slip. The Supervisor verifies both.
           </p>
-          <Input label="Crypto Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="Destination wallet address" hint="Enter carefully — crypto transfers are irreversible" />
+          <Input label="Crypto Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="Destination wallet address"
+            hint={wallet.trim() && !isValidWallet(wallet) ? 'Not a valid wallet address format' : 'Enter carefully — crypto transfers are irreversible'} />
           <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Crypto Payment Slip</label>
           <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
           {proofName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 12 }}>Attached: {proofName}</div>}

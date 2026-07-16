@@ -13,6 +13,7 @@ Roles (Data Operator = DEO): Deposit → SUPERVISOR/MANAGER/DEO/DEPOSIT_OPERATOR
 SUPERVISOR/MANAGER/DEO/WITHDRAWAL_OPERATOR; Manage → SUPERVISOR/MANAGER/DEO; Approve/Reject →
 SUPERVISOR/MANAGER. Overview/list/audit → any of the five (base access).
 """
+import re
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -88,6 +89,23 @@ SETTLEMENT_METHODS = {"CASH", "BANK", "CRYPTO"}
 TOKEN_METHODS = {"CASH"}          # Submit Account captures Token Details + Note + token image
 WALLET_METHODS = {"CRYPTO"}       # Submit Account captures a Wallet Address + payment slip
 SPECIAL_METHODS = TOKEN_METHODS | WALLET_METHODS
+
+# Crypto wallet address — structural format check across the common networks. There is no network
+# selector on an agent crypto transaction, so an address is accepted if it is a valid shape on ANY
+# of these; this catches typos and garbage without over-constraining a legitimate address. It is a
+# format check, not an on-chain existence/checksum proof.
+_WALLET_FORMATS = (
+    re.compile(r"^0x[0-9a-fA-F]{40}$"),                       # EVM: Ethereum / ERC20 / BSC / Polygon
+    re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$"),               # TRON / TRC20 (base58, 34 chars)
+    re.compile(r"^(bc1)[0-9ac-hj-np-z]{11,87}$"),             # Bitcoin bech32 (segwit)
+    re.compile(r"^[13][1-9A-HJ-NP-Za-km-z]{25,34}$"),         # Bitcoin legacy P2PKH / P2SH (base58)
+    re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$"),             # Solana (base58, 32–44 chars)
+)
+
+
+def _valid_wallet(addr: str) -> bool:
+    a = (addr or "").strip()
+    return bool(a) and any(p.match(a) for p in _WALLET_FORMATS)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -434,6 +452,8 @@ def _validate_common(body: _Base, txn_type: str) -> None:
     if crypto_withdrawal:
         if not (body.walletAddress or "").strip():
             raise HTTPException(status_code=400, detail="Crypto Wallet Address is required.")
+        if not _valid_wallet(body.walletAddress):
+            raise HTTPException(status_code=400, detail="Enter a valid crypto wallet address.")
     elif not deposit_defers:
         if not (body.tokenDetails or "").strip():
             raise HTTPException(status_code=400, detail="Token Details are required.")
@@ -716,6 +736,8 @@ async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession
         wallet = (body.walletAddress or "").strip()
         if not wallet:
             raise HTTPException(status_code=400, detail="Crypto Wallet Address is required.")
+        if not _valid_wallet(wallet):
+            raise HTTPException(status_code=400, detail="Enter a valid crypto wallet address.")
         if not body.accountProof:
             raise HTTPException(status_code=400, detail="Crypto payment slip is required.")
         t.wallet_address = wallet
