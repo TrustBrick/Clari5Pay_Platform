@@ -1,6 +1,6 @@
 import React, { CSSProperties, useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { statusStyle, statusLabel } from '../utils/helpers';
+import { statusStyle, statusLabel, displayStatus } from '../utils/helpers';
 import { Icon, isIconName } from './Icon';
 import type { TxStatus, ChartDataPoint } from '../types';
 
@@ -68,12 +68,15 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
 // Statuses that are still "in flight" → their dot gently pulses to signal processing.
 const INFLIGHT_STATUSES = new Set(['PENDING','ADMIN_APPROVED','ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED','PENDING_APPROVAL','SUPERVISOR_REVIEW','MANAGER_REVIEW','RESUBMITTED']);
 export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: string }> = ({ status, type, viewerRole }) => {
-  const s = statusStyle(status);
+  // The colour, the pulse and the label all follow the status this viewer is shown, so a
+  // withdrawal the Merchant Portal renders as "Pending" also carries the Pending styling.
+  const shown = displayStatus(status, type, viewerRole) as TxStatus;
+  const s = statusStyle(shown);
   return (
     <span style={{ display:'inline-flex',alignItems:'center',gap:4,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:'nowrap' }}>
-      <span className={INFLIGHT_STATUSES.has(status) ? 'c5-dot-pulse' : undefined}
+      <span className={INFLIGHT_STATUSES.has(shown) ? 'c5-dot-pulse' : undefined}
         style={{ width:6,height:6,borderRadius:'50%',background:s.color,display:'inline-block' }}/>
-      {statusLabel(status, type, viewerRole)}
+      {statusLabel(shown, type, viewerRole)}
     </span>
   );
 };
