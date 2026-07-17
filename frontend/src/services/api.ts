@@ -516,7 +516,7 @@ export interface AgentQuery {
 export interface AgentCreatePayload {
   fullName: string; country: string; state: string; location: string;
   mobile?: string; mobileCode?: string; email?: string; currency: string; dateOfCreation?: string;
-  reference?: string; feesPct: number; transactionCode: string; category: string;
+  reference?: string; payInFee: number; payOutFee: number; settlementFee: number; transactionCode: string; category: string;
   notes?: string; riskAnalysis?: boolean; sendForApproval?: boolean;
 }
 export type AgentUpdatePayload = Partial<Omit<AgentCreatePayload, 'transactionCode' | 'dateOfCreation' | 'sendForApproval'>> & { status?: string };

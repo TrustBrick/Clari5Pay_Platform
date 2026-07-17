@@ -598,7 +598,16 @@ class AgentMaster(Base):
     # created_at timestamp below.
     date_of_creation: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     reference: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # RETIRED — the agent module no longer reads or writes this. Kept as a column only because
+    # dropping it is irreversible and old rows still carry the pre-split value that seeded the
+    # three per-leg fees below. Use pay_in_fee / pay_out_fee / settlement_fee instead.
     fees_pct: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # Per-leg fees, set manually on the agent. A deposit charges pay_in_fee, a withdrawal
+    # pay_out_fee, a settlement settlement_fee. Nullable so the migration can seed them from the
+    # retired fees_pct; treat NULL as 0.
+    pay_in_fee: Mapped[Optional[float]] = mapped_column(Float, default=0.0, nullable=True)
+    pay_out_fee: Mapped[Optional[float]] = mapped_column(Float, default=0.0, nullable=True)
+    settlement_fee: Mapped[Optional[float]] = mapped_column(Float, default=0.0, nullable=True)
     # Exactly 3 alphanumeric chars, stored uppercased; unique within the business pool. Immutable
     # after creation (embedded in transaction references from Phase 4).
     transaction_code: Mapped[str] = mapped_column(String(3), nullable=False)

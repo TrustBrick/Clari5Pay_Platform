@@ -171,6 +171,13 @@ _NEW_COLUMNS = [
     # Cash/Crypto deposit: what Submit Account captures instead of an Agent Account.
     ("agent_transaction", "wallet_address", "VARCHAR(128)"),
     ("agent_transaction", "account_proof", "TEXT"),
+    # Per-leg agent fees, replacing the single fees_pct: a deposit charges pay_in_fee, a withdrawal
+    # pay_out_fee, a settlement settlement_fee. Deliberately NO column default — they land NULL so
+    # the backfill below can seed them from fees_pct and existing agents keep the commission they
+    # had before the split. A DEFAULT 0 here would silently zero every existing agent's fee.
+    ("agent_master", "pay_in_fee", "DOUBLE PRECISION"),
+    ("agent_master", "pay_out_fee", "DOUBLE PRECISION"),
+    ("agent_master", "settlement_fee", "DOUBLE PRECISION"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -203,6 +210,23 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         await conn.execute(
             text("UPDATE users SET created_at = created::timestamp WHERE created_at IS NULL")
         )
+        # Agents created before the fee split carry a single fees_pct. Seed all three per-leg fees
+        # from it so their commission is unchanged by the split; only rows never touched by the new
+        # form are affected (NULL), so re-running this can never overwrite a real edit.
+        await conn.execute(text(
+            "UPDATE agent_master SET pay_in_fee = COALESCE(pay_in_fee, fees_pct), "
+            "pay_out_fee = COALESCE(pay_out_fee, fees_pct), "
+            "settlement_fee = COALESCE(settlement_fee, fees_pct) "
+            "WHERE pay_in_fee IS NULL OR pay_out_fee IS NULL OR settlement_fee IS NULL"
+        ))
+        # created_by used to record the actor's NAME, but every merchant user shares the business
+        # name (e.g. "BELLAGIO"), so it identified nobody. It records the username now; repoint the
+        # existing rows via created_by_id, which is the exact author — no guessing from the name.
+        for _tbl in ("agent_master", "agent_account"):
+            await conn.execute(text(
+                f"UPDATE {_tbl} t SET created_by = u.username FROM users u "
+                f"WHERE t.created_by_id = u.id AND t.created_by IS DISTINCT FROM u.username"
+            ))
         # Widen merchant_role for the longer operator roles (e.g. WITHDRAWAL_OPERATOR).
         await conn.execute(text("ALTER TABLE users ALTER COLUMN merchant_role TYPE VARCHAR(32)"))
         # The isolated agent ledger now carries the merchant workflow's status labels, and the

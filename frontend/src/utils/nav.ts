@@ -156,6 +156,9 @@ const AGENT_CHILDREN: NavItem[] = [
   { key: 'agent-settlement-mgmt', icon: 'settlement', label: 'Agent Settlement Management' },
   // Supervisor's review queue for the agent deposit chain (mirrors the merchant Approvals page).
   { key: 'agent-approvals', icon: 'approvals', label: 'Agent Approvals' },
+  // Data Operator only — the single place agent transactions are modified. The per-row "Manage"
+  // button on Deposit/Withdrawal Management was removed so this is the one entry point.
+  { key: 'agent-manage', icon: 'templates', label: 'Manage Transaction' },
 ];
 const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 // Per-role Agent Management sub-tabs. Supervisors/Managers are approval-only for agent payments —
@@ -163,9 +166,9 @@ const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 // tabs but NOT the operator Deposit/Withdrawal Management pages. Agent Settlement Management is
 // Supervisor-only. Operators (Data/Deposit/Withdrawal) get the management pages their role permits.
 const AGENT_SUBTABS: Record<string, string[]> = {
-  SUPERVISOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-settlement-mgmt'],
-  MANAGER: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts'],
-  DEO: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt'],
+  SUPERVISOR: ['agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-settlement-mgmt'],
+  MANAGER: ['agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts'],
+  DEO: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage'],
   DEPOSIT_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt'],
   WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-withdrawal-mgmt'],
 };

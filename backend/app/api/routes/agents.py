@@ -15,10 +15,13 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.models.models import AgentMaster, User
+from app.models.models import AgentAccount, AgentMaster, User
 from app.core.deps import get_current_agent_manager
 from app.schemas.schemas import AgentCreate, AgentUpdate, AgentStatusUpdate
 from app.api.routes.system_logs import record_agent_audit
+# The category → allowed account types rule lives with the accounts router that enforces it on
+# create; re-used here so a category CHANGE cannot strand accounts the new category disallows.
+from app.api.routes.agent_accounts import ALLOWED_ACCOUNT_TYPES, _CATEGORY_LABEL
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -62,7 +65,9 @@ def _serialize(a: AgentMaster) -> dict:
         "currency": a.currency,
         "dateOfCreation": a.date_of_creation.isoformat() if a.date_of_creation else None,
         "reference": a.reference,
-        "feesPct": a.fees_pct,
+        "payInFee": a.pay_in_fee or 0.0,
+        "payOutFee": a.pay_out_fee or 0.0,
+        "settlementFee": a.settlement_fee or 0.0,
         "transactionCode": a.transaction_code,
         "category": a.category,
         "notes": a.notes,
@@ -171,8 +176,10 @@ async def create_agent(
         raise HTTPException(status_code=400, detail="Category must be Cash, Bank Transfer or Crypto.")
     if not _CODE_RE.match(code):
         raise HTTPException(status_code=400, detail="Transaction Code must be exactly 3 alphabetic characters.")
-    if data.feesPct is None or data.feesPct < 0:
-        raise HTTPException(status_code=400, detail="Fees % cannot be negative.")
+    for _label, _val in (("Pay-In Fee", data.payInFee), ("Pay-Out Fee", data.payOutFee),
+                         ("Settlement Fee", data.settlementFee)):
+        if _val is None or _val < 0:
+            raise HTTPException(status_code=400, detail=f"{_label} cannot be negative.")
     if await _duplicate(db, business, field=AgentMaster.full_name, value=full_name):
         raise HTTPException(status_code=409, detail="An agent with this name already exists.")
     if await _duplicate(db, business, field=AgentMaster.mobile, value=mobile):
@@ -208,7 +215,9 @@ async def create_agent(
         currency=data.currency.strip(),
         date_of_creation=doc,
         reference=(data.reference or "").strip() or None,
-        fees_pct=float(data.feesPct),
+        pay_in_fee=float(data.payInFee),
+        pay_out_fee=float(data.payOutFee),
+        settlement_fee=float(data.settlementFee),
         transaction_code=code,
         category=category,
         notes=(data.notes or "").strip() or None,
@@ -217,7 +226,7 @@ async def create_agent(
         approval_status=approval,
         status=status,
         merchant_business=business,
-        created_by=user.name,
+        created_by=user.username,
         created_by_id=user.id,
     )
     db.add(agent)
@@ -277,14 +286,36 @@ async def update_agent(
         agent.currency = data.currency.strip() or agent.currency
     if data.reference is not None:
         agent.reference = data.reference.strip() or None
-    if data.feesPct is not None:
-        if data.feesPct < 0:
-            raise HTTPException(status_code=400, detail="Fees % cannot be negative.")
-        agent.fees_pct = float(data.feesPct)
+    for _label, _val, _attr in (("Pay-In Fee", data.payInFee, "pay_in_fee"),
+                                ("Pay-Out Fee", data.payOutFee, "pay_out_fee"),
+                                ("Settlement Fee", data.settlementFee, "settlement_fee")):
+        if _val is not None:
+            if _val < 0:
+                raise HTTPException(status_code=400, detail=f"{_label} cannot be negative.")
+            setattr(agent, _attr, float(_val))
     if data.category is not None:
         cat = data.category.strip().upper()
         if cat not in CATEGORIES:
             raise HTTPException(status_code=400, detail="Category must be Cash, Bank Transfer or Crypto.")
+        # The category decides which account types this agent may hold, so it cannot be moved to one
+        # that its existing accounts contradict (e.g. a Bank Transfer agent with a bank account
+        # cannot become Cash, which permits no accounts at all). The operator must remove the
+        # offending accounts first — silently stranding them would leave payouts pointing nowhere.
+        if cat != (agent.category or "").upper():
+            allowed = ALLOWED_ACCOUNT_TYPES.get(cat)
+            if allowed is not None:
+                existing = set((await db.execute(
+                    select(AgentAccount.account_type).where(AgentAccount.agent_master_id == agent.id)
+                )).scalars().all())
+                clashes = existing - allowed
+                if clashes:
+                    nice = ", ".join(sorted(clashes))
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"This agent still has {nice} account(s), which a "
+                               f"{_CATEGORY_LABEL.get(cat, cat)} agent cannot have. "
+                               "Remove them before changing the category.",
+                    )
         agent.category = cat
     if data.notes is not None:
         agent.notes = data.notes.strip() or None

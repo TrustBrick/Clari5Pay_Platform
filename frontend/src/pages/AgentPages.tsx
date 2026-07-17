@@ -73,6 +73,20 @@ const ACCOUNT_TYPE_OPTIONS: Array<{ value: AgentAccountType; label: string }> = 
   { value: 'CRYPTO', label: 'Crypto Wallet' },
 ];
 const ACCOUNT_TYPE_LABEL: Record<string, string> = { BANK: 'Bank Account', UPI: 'UPI ID', QR: 'QR Code', CRYPTO: 'Crypto Wallet' };
+
+// An agent's category decides how it can be paid, so it decides which account types it may hold.
+// A Cash agent is paid in person and has no account of any kind. Mirrors ALLOWED_ACCOUNT_TYPES in
+// backend/app/api/routes/agent_accounts.py — the backend is the authority and refuses anything the
+// category disallows, so keep the two in step.
+const ALLOWED_ACCOUNT_TYPES: Record<string, AgentAccountType[]> = {
+  CASH: [],
+  BANK_TRANSFER: ['BANK'],
+  CRYPTO: ['CRYPTO'],
+};
+const allowedAccountTypes = (category?: string | null): AgentAccountType[] =>
+  ALLOWED_ACCOUNT_TYPES[String(category || '').toUpperCase()] ?? (['BANK', 'UPI', 'QR', 'CRYPTO'] as AgentAccountType[]);
+const accountTypeOptionsFor = (category?: string | null) =>
+  ACCOUNT_TYPE_OPTIONS.filter((o) => allowedAccountTypes(category).includes(o.value));
 const ACCOUNT_TYPE_ICON: Record<string, string> = { BANK: 'bank', UPI: 'upi', QR: 'qr', CRYPTO: 'crypto' };
 // Renders the per-account-type glyph as a consistent Phosphor icon (falls back to raw text).
 const AccTypeIcon: React.FC<{ type: string; size?: number }> = ({ type, size = 16 }) => {
@@ -126,13 +140,13 @@ const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repe
 type FormState = {
   fullName: string; country: string; state: string; location: string;
   mobile: string; mobileCode: string; email: string; currency: string; dateOfCreation: string;
-  reference: string; feesPct: string; transactionCode: string; category: AgentCategory;
+  reference: string; payInFee: string; payOutFee: string; settlementFee: string; transactionCode: string; category: AgentCategory;
   notes: string; riskAnalysis: boolean; status: AgentStatus;
 };
 
 const blankForm = (): FormState => ({
   fullName: '', country: '', state: '', location: '', mobile: '', mobileCode: '+91', email: '',
-  currency: 'INR', dateOfCreation: todayISO(), reference: '', feesPct: '',
+  currency: 'INR', dateOfCreation: todayISO(), reference: '', payInFee: '', payOutFee: '', settlementFee: '',
   transactionCode: '', category: 'CASH', notes: '', riskAnalysis: false,
   status: 'ACTIVE',
 });
@@ -150,7 +164,9 @@ const AgentForm: React.FC<{
         location: initial.location, mobile: initial.mobile || '',
         mobileCode: initial.mobileCode || '+91', email: initial.email || '',
         currency: initial.currency, dateOfCreation: initial.dateOfCreation || todayISO(),
-        reference: initial.reference || '', feesPct: String(initial.feesPct ?? ''),
+        reference: initial.reference || '',
+        payInFee: String(initial.payInFee ?? ''), payOutFee: String(initial.payOutFee ?? ''),
+        settlementFee: String(initial.settlementFee ?? ''),
         transactionCode: initial.transactionCode, category: initial.category,
         notes: initial.notes || '', riskAnalysis: initial.riskAnalysis,
         status: initial.status,
@@ -171,8 +187,12 @@ const AgentForm: React.FC<{
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.email.trim())) return 'Enter a valid email address.';
     if (!form.currency.trim()) return 'Currency is required.';
     if (!['CASH', 'BANK_TRANSFER', 'CRYPTO'].includes(form.category)) return 'Category is required.';
-    if (form.feesPct === '' || isNaN(Number(form.feesPct))) return 'Fees % is required.';
-    if (Number(form.feesPct) < 0) return 'Fees % cannot be negative.';
+    // Each leg charges its own fee: deposit → Pay-In, withdrawal → Pay-Out, settlement → Settlement.
+    for (const [label, v] of [['Pay-In Fee', form.payInFee], ['Pay-Out Fee', form.payOutFee],
+                              ['Settlement Fee', form.settlementFee]] as const) {
+      if (v === '' || isNaN(Number(v))) return `${label} is required.`;
+      if (Number(v) < 0) return `${label} cannot be negative.`;
+    }
     if (mode === 'create' && !/^[A-Za-z]{3}$/.test(form.transactionCode)) return 'Transaction Code must be exactly 3 alphabetic characters (A–Z).';
     return null;
   };
@@ -186,7 +206,9 @@ const AgentForm: React.FC<{
         fullName: form.fullName.trim(), country: form.country.trim(), state: form.state.trim(),
         location: form.location.trim(), mobile: form.mobile.trim(), mobileCode: form.mobileCode,
         email: form.email.trim(), currency: form.currency,
-        reference: form.reference || undefined, feesPct: Number(form.feesPct),
+        reference: form.reference || undefined,
+        payInFee: Number(form.payInFee), payOutFee: Number(form.payOutFee),
+        settlementFee: Number(form.settlementFee),
         category: form.category, notes: form.notes.trim() || undefined,
         riskAnalysis: form.riskAnalysis,
       };
@@ -244,7 +266,9 @@ const AgentForm: React.FC<{
             {/* Auto-populated from Country; still editable for unmapped countries. */}
             <Input label="Date of Creation" type="date" value={form.dateOfCreation} onChange={(e) => set('dateOfCreation', e.target.value)} readOnly={mode === 'edit'} />
             <Sel label="Reference" value={form.reference} onChange={(e) => set('reference', e.target.value)} options={REFERENCE_OPTIONS} />
-            <Input label="Fees %" type="number" inputMode="decimal" value={form.feesPct} onChange={(e) => set('feesPct', e.target.value)} required />
+            <Input label="Pay-In Fee %" type="number" inputMode="decimal" value={form.payInFee} onChange={(e) => set('payInFee', e.target.value)} required hint="Charged on deposits" />
+            <Input label="Pay-Out Fee %" type="number" inputMode="decimal" value={form.payOutFee} onChange={(e) => set('payOutFee', e.target.value)} required hint="Charged on withdrawals" />
+            <Input label="Settlement Fee %" type="number" inputMode="decimal" value={form.settlementFee} onChange={(e) => set('settlementFee', e.target.value)} required hint="Charged on settlements" />
             <Input
               label="Unique Transaction Code"
               value={form.transactionCode}
@@ -317,7 +341,9 @@ const AgentView: React.FC<{ agent: Agent; onBack: () => void; onEdit: () => void
       <Section title="Business Information">
         <div style={{ ...grid2, rowGap: 16 }}>
           <Field label="Currency" value={agent.currency} />
-          <Field label="Fees %" value={`${agent.feesPct}%`} />
+          <Field label="Pay-In Fee" value={`${agent.payInFee ?? 0}%`} />
+          <Field label="Pay-Out Fee" value={`${agent.payOutFee ?? 0}%`} />
+          <Field label="Settlement Fee" value={`${agent.settlementFee ?? 0}%`} />
           <Field label="Transaction Code" value={agent.transactionCode} />
           <Field label="Reference" value={agent.reference} />
           <Field label="Date of Creation" value={agent.dateOfCreation} />
@@ -483,7 +509,7 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ user, onNavigate }) => {
                       </td>
                       <td style={{ ...td, whiteSpace: 'nowrap' }}>{CATEGORY_LABEL[a.category]}</td>
                       <td style={td}>{a.currency}</td>
-                      <td style={td}>{a.feesPct}%</td>
+                      <td style={td}>{a.payInFee ?? 0}% / {a.payOutFee ?? 0}% / {a.settlementFee ?? 0}%</td>
                       <td style={{ ...td, fontWeight: 700 }}>{a.transactionCode}</td>
                       <td style={td}>
                         {pending
@@ -925,9 +951,16 @@ const AccountForm: React.FC<{
         {error && <div style={{ background: T.dangerBg, color: T.danger, borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 600, marginBottom: 18 }}>{error}</div>}
 
         <Section title="Account Type">
+          {/* Only the types this agent's category permits — the backend enforces the same rule. */}
           <Sel label="Type" value={form.accountType} onChange={(e) => set('accountType', e.target.value as AgentAccountType)}
-            options={ACCOUNT_TYPE_OPTIONS} required style={{ maxWidth: 300, ...(mode === 'edit' ? { pointerEvents: 'none', opacity: 0.7 } : {}) }} />
+            options={accountTypeOptionsFor(agent.category)} required style={{ maxWidth: 300, ...(mode === 'edit' ? { pointerEvents: 'none', opacity: 0.7 } : {}) }} />
           {mode === 'edit' && <p style={{ margin: '-8px 0 0', fontSize: 11.5, color: T.textMuted }}>Account type cannot be changed after creation.</p>}
+          {mode === 'create' && (
+            <p style={{ margin: '-8px 0 0', fontSize: 11.5, color: T.textMuted }}>
+              {CATEGORY_LABEL_FULL[agent.category] || agent.category} agent — only a{' '}
+              {allowedAccountTypes(agent.category).map((v) => ACCOUNT_TYPE_LABEL[v]).join(' or ')} account is allowed.
+            </p>
+          )}
         </Section>
 
         {t === 'BANK' && (
@@ -1189,7 +1222,9 @@ export const AgentAccountsPage: React.FC<AgentPageProps> = () => {
         <div style={{ padding: '16px 20px', display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <Sel label="Select Agent" value={selAgentId == null ? '' : String(selAgentId)} onChange={(e) => { setSelAgentId(e.target.value ? Number(e.target.value) : null); setMode({ screen: 'list' }); }}
             style={{ marginBottom: 0, minWidth: 320, flex: '1 1 320px' }}
-            options={[{ value: '', label: agents.length ? 'Choose an agent…' : 'No agents — create one first' }, ...agents.map((a) => ({ value: String(a.id), label: `${a.agentId} · ${a.fullName} (${a.country})` }))]} />
+            options={[{ value: '', label: agents.length ? 'Choose an agent…' : 'No agents — create one first' },
+              // Category is shown because it decides which account types this agent may hold.
+              ...agents.map((a) => ({ value: String(a.id), label: `${a.agentId} · ${a.fullName} (${a.country}) · ${CATEGORY_LABEL_FULL[a.category] || a.category}` }))]} />
           {selAgent && (
             <div style={{ display: 'flex', gap: 18, alignItems: 'center', fontSize: 12.5, color: T.textMuted }}>
               <span>Category: <b style={{ color: T.textMain }}>{{ CASH: 'Cash', BANK_TRANSFER: 'Bank Transfer', CRYPTO: 'Crypto' }[selAgent.category]}</b></span>
@@ -1213,7 +1248,9 @@ export const AgentAccountsPage: React.FC<AgentPageProps> = () => {
             <Input label="Search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Ref, label, account no, UPI or wallet" icon="search" style={{ marginBottom: 0, flex: '1 1 240px' }} />
             <Sel label="Type" value={fType} onChange={(e) => setFType(e.target.value)} style={{ marginBottom: 0, minWidth: 160 }} options={[{ value: '', label: 'All' }, ...ACCOUNT_TYPE_OPTIONS]} />
             <Sel label="Status" value={fStatus} onChange={(e) => setFStatus(e.target.value)} style={{ marginBottom: 0, minWidth: 130 }} options={[{ value: '', label: 'All' }, { value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} />
-            <Btn variant="primary" onClick={() => setMode({ screen: 'create' })} style={{ marginLeft: 'auto' }}>＋ Add Account</Btn>
+            {allowedAccountTypes(selAgent.category).length > 0 && (
+              <Btn variant="primary" onClick={() => setMode({ screen: 'create' })} style={{ marginLeft: 'auto' }}>＋ Add Account</Btn>
+            )}
           </div>
 
           <Card>
@@ -1223,8 +1260,14 @@ export const AgentAccountsPage: React.FC<AgentPageProps> = () => {
               <div style={{ padding: '48px 24px', textAlign: 'center' }}>
                 <div style={{ fontSize: 34, marginBottom: 10 }}><Icon name="folder" size={34} /></div>
                 <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: T.textMain }}>{accounts.length === 0 ? 'No accounts yet' : 'No accounts match your filters'}</p>
-                <p style={{ margin: '6px 0 16px', fontSize: 13, color: T.textMuted }}>{accounts.length === 0 ? 'Add this agent’s first settlement account.' : 'Try clearing the search or filters.'}</p>
-                {accounts.length === 0 && <Btn variant="primary" onClick={() => setMode({ screen: 'create' })}>＋ Add Account</Btn>}
+                <p style={{ margin: '6px 0 16px', fontSize: 13, color: T.textMuted }}>
+                  {accounts.length > 0 ? 'Try clearing the search or filters.'
+                    : allowedAccountTypes(selAgent.category).length === 0
+                      ? `A ${CATEGORY_LABEL_FULL[selAgent.category] || selAgent.category} agent has no accounts — cash is handled through the Cash workflow only.`
+                      : 'Add this agent’s first settlement account.'}
+                </p>
+                {accounts.length === 0 && allowedAccountTypes(selAgent.category).length > 0
+                  && <Btn variant="primary" onClick={() => setMode({ screen: 'create' })}>＋ Add Account</Btn>}
               </div>
             ) : (
               <div style={{ overflowX: 'auto' }}>
@@ -1597,7 +1640,9 @@ export const AgentReportsPage: React.FC<AgentPageProps> = () => {
           { header: 'Agent ID', get: (a) => a.agentId }, { header: 'Full Name', get: (a) => a.fullName },
           { header: 'Country', get: (a) => a.country }, { header: 'State', get: (a) => a.state }, { header: 'Location', get: (a) => a.location },
           { header: 'Category', get: (a) => CATEGORY_LABEL[a.category] || a.category }, { header: 'Currency', get: (a) => a.currency },
-          { header: 'Fees %', get: (a) => a.feesPct }, { header: 'Txn Code', get: (a) => a.transactionCode }, { header: 'Status', get: (a) => a.status },
+          { header: 'Pay-In Fee %', get: (a) => a.payInFee },
+          { header: 'Pay-Out Fee %', get: (a) => a.payOutFee },
+          { header: 'Settlement Fee %', get: (a) => a.settlementFee }, { header: 'Txn Code', get: (a) => a.transactionCode }, { header: 'Status', get: (a) => a.status },
           { header: 'Created By', get: (a) => a.createdBy || '' }, { header: 'Created At (IST)', get: (a) => a.createdAt ? formatDateTimeIST(a.createdAt) : '' },
         ], data, format, stamp);
       } else if (kind === 'accounts') {

@@ -126,6 +126,28 @@ def _submitted_status(method: str | None) -> str:
     return ST_ACCOUNT_SUBMITTED
 
 
+# A transaction can only be routed through an agent of the matching category — cash through a Cash
+# agent, a bank transfer through a Bank Transfer agent, crypto through a Crypto agent. The UI narrows
+# the agent list to the chosen method; this is the authority, so a request that bypasses the form is
+# still refused. (The same category also decides the agent's allowed account types — see
+# ALLOWED_ACCOUNT_TYPES in agent_accounts.py.)
+_METHOD_CATEGORY = {"CASH": "CASH", "CRYPTO": "CRYPTO", "BANK": "BANK_TRANSFER"}
+_CATEGORY_NAME = {"CASH": "Cash", "BANK_TRANSFER": "Bank Transfer", "CRYPTO": "Crypto"}
+
+
+def _require_agent_serves_method(agent: AgentMaster, method: str | None) -> None:
+    want = _METHOD_CATEGORY.get(str(method or "").upper())
+    if want is None:
+        return                      # unknown/legacy method — leave as-is rather than block
+    have = (agent.category or "").upper()
+    if have and have != want:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{_CATEGORY_NAME[want]} transactions must use a {_CATEGORY_NAME[want]} agent — "
+                   f"{agent.agent_id} is a {_CATEGORY_NAME.get(have, have)} agent.",
+        )
+
+
 def _withdrawal_gate(method: str | None) -> str:
     """Where the Manager decides a withdrawal. CASH/CRYPTO are authorised before the operator
     confirms them, so they wait at TOKEN_SUBMITTED / WALLET_SUBMITTED — the state they are created
@@ -490,7 +512,11 @@ def _validate_common(body: _Base, txn_type: str) -> None:
     #   • CASH/CRYPTO deposit  → captured later, at Submit Account (token image / wallet).
     #   • CRYPTO withdrawal    → a Wallet Address replaces them entirely.
     #   • everything else      → at creation, as today (BANK/UPI are untouched).
-    deposit_defers = txn_type == "DEPOSIT" and method in SPECIAL_METHODS
+    # A DEPOSIT never asks for Token Details / Note Number at creation:
+    #   • CASH/CRYPTO  → captured later, at Submit Account (token image / wallet).
+    #   • BANK         → never; the agent's bank account is supplied at Submit Account and the
+    #                    player pays into it, exactly as the merchant bank deposit works.
+    deposit_defers = txn_type == "DEPOSIT"
     crypto_withdrawal = txn_type == "WITHDRAWAL" and method in WALLET_METHODS
     if crypto_withdrawal:
         if not (body.walletAddress or "").strip():
@@ -522,6 +548,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     _validate_common(body, txn_type)
     method = (body.txnMethod or "").upper()
     agent = await _get_agent(db, business, body.agentMasterId)
+    _require_agent_serves_method(agent, method)
     approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId)
 
     ref = await _next_serial(db, AgentTransaction.reference_number, prefix)
@@ -630,7 +657,9 @@ async def form_data(db: AsyncSession = Depends(get_db), user: User = Depends(get
         "membershipTypes": ["ONLINE", "OFFLINE"],
         # Transaction types offered on the request form (drives the Sending Account fields and
         # gates Manage Transaction, which is CASH-only).
-        "txnMethods": ["CASH", "UPI", "BANK", "IMPS", "NEFT", "RTGS", "CRYPTO"],
+        # Agent transactions move by Cash, Bank Transfer or Crypto only — these mirror the three
+        # agent categories, so an agent of a category can always serve its own method.
+        "txnMethods": ["CASH", "BANK", "CRYPTO"],
     }
 
 
@@ -1242,12 +1271,17 @@ async def reject_txn(txn_id: int, db: AsyncSession = Depends(get_db),
 @router.get("/overview")
 async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_agent_operator)):
     """KPIs / summaries / trend for the Agent Overview — computed exclusively from the isolated
-    agent_transaction table (never merchant transactions). Commission uses each agent's fees_pct."""
+    agent_transaction table (never merchant transactions). Commission uses the agent fee for that
+    leg: deposit -> Pay-In, withdrawal -> Pay-Out, settlement -> Settlement."""
     business = _business(user)
     txns = (await db.execute(select(AgentTransaction).where(
         AgentTransaction.merchant_business == business).order_by(AgentTransaction.id.desc()))).scalars().all()
-    fees = {a.id: (a.fees_pct or 0.0) for a in (await db.execute(
-        select(AgentMaster).where(AgentMaster.merchant_business == business))).scalars().all()}
+    _agents = (await db.execute(
+        select(AgentMaster).where(AgentMaster.merchant_business == business))).scalars().all()
+    # One fee table per leg — an agent can charge a different rate on each.
+    fees_in = {a.id: (a.pay_in_fee or 0.0) for a in _agents}
+    fees_out = {a.id: (a.pay_out_fee or 0.0) for a in _agents}
+    fees_set = {a.id: (a.settlement_fee or 0.0) for a in _agents}
 
     def _sum(pred):
         return round(sum(t.amount for t in txns if pred(t)), 2)
@@ -1261,11 +1295,11 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
     approved = [t for t in txns if t.status in COMPLETED_STATUSES]
 
     # ── Financial summary — mirrors the Merchant canonical formula (transactions.py) applied to
-    # the ISOLATED agent ledger only. Each agent's commission = its fees_pct on the approved
+    # the ISOLATED agent ledger only. Each agent's commission = its per-leg fee on the approved
     # leg's amount (the same percentage for every leg). Computed on read (not stored), exactly
     # like the merchant modules, so figures always reflect the latest approvals.
     #   Gross Amount (Approved)  = Σ approved deposit amounts (before commission)
-    #   <leg> Commission         = Σ (approved <leg> amount × fees_pct)
+    #   <leg> Commission         = Σ (approved <leg> amount × that leg's agent fee)
     #   Total Commission         = Deposit + Withdrawal + Settlement Commission
     #   Net (Approved)           = Gross − Deposit Commission − Withdrawals − Withdrawal Commission
     #                                    − Settlements − Settlement Commission
@@ -1275,15 +1309,15 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
     approved_wd = [t for t in approved if t.txn_type == "WITHDRAWAL"]
     approved_st = [t for t in approved if t.txn_type == "SETTLEMENT"]
 
-    def _commission(rows):
-        return sum(t.amount * fees.get(t.agent_master_id, 0.0) / 100 for t in rows)
+    def _commission(rows, table):
+        return sum(t.amount * table.get(t.agent_master_id, 0.0) / 100 for t in rows)
 
     gross_amount = sum(t.amount for t in approved_dep)
     total_withdrawal_amount = sum(t.amount for t in approved_wd)
     total_settlement_amount = sum(t.amount for t in approved_st)
-    deposit_commission = _commission(approved_dep)
-    withdrawal_commission = _commission(approved_wd)
-    settlement_commission = _commission(approved_st)
+    deposit_commission = _commission(approved_dep, fees_in)
+    withdrawal_commission = _commission(approved_wd, fees_out)
+    settlement_commission = _commission(approved_st, fees_set)
     total_commission = deposit_commission + withdrawal_commission + settlement_commission
     net_amount = (gross_amount - deposit_commission
                   - total_withdrawal_amount - withdrawal_commission

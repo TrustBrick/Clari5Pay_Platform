@@ -74,6 +74,22 @@ const isTokenMethod = (m?: string | null) => m === 'CASH';
 const isWalletMethod = (m?: string | null) => m === 'CRYPTO';
 const isSpecialMethod = (m?: string | null) => isTokenMethod(m) || isWalletMethod(m);
 
+// A transaction can only be routed through an agent of the matching category: cash moves through a
+// Cash agent, a bank transfer through a Bank Transfer agent, crypto through a Crypto agent. The
+// method's category also decides which account types that agent may hold (see ALLOWED_ACCOUNT_TYPES
+// in agent_accounts.py). Selecting a method therefore narrows the agent list to that category.
+const categoryForMethod = (m?: string | null): string | null => {
+  const v = String(m || '').toUpperCase();
+  if (!v) return null;
+  if (isTokenMethod(v)) return 'CASH';
+  if (isWalletMethod(v)) return 'CRYPTO';
+  return 'BANK_TRANSFER';
+};
+const agentsForMethod = <A extends { category?: string | null }>(agents: A[], m?: string | null): A[] => {
+  const want = categoryForMethod(m);
+  return want ? agents.filter(a => String(a.category || '').toUpperCase() === want) : agents;
+};
+
 // The chain's first two steps are named for what the method actually asks the operator to supply —
 // mirrors _requested_status / _submitted_status in backend/app/api/routes/agent_txns.py. Keep the
 // two in step: the backend rejects an action attempted from the wrong status.
@@ -218,8 +234,6 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const [membershipName, setMembershipName] = useState('');
   const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
   // Supplied by the customer/agent and typed in by the operator — never generated.
-  const [tokenDetails, setTokenDetails] = useState('');
-  const [noteNumber, setNoteNumber] = useState('');
   const [membershipType, setMembershipType] = useState('');
   const [amount, setAmount] = useState('');
   // Transaction type + Sending Account — captured exactly like the merchant Deposit Request.
@@ -264,7 +278,6 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
 
   const reset = () => {
     setAgentId(''); setMembershipId(''); setMembershipName(''); setMemberLocked(false); setMembershipType(''); setAmount('');
-    setTokenDetails(''); setNoteNumber('');
     setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
     setSenderIfsc(''); setSenderBankName(''); setSenderBranch('');
     setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91'); setNotes(''); setInstructions('');
@@ -277,10 +290,6 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
-    if (!isSpecialMethod(txnMethod)) {
-      if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
-      if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
-    }
     if (txnMethod === 'UPI' && !senderUpiId.includes('@')) { showToast('Enter a valid Sender UPI ID (name@bank).', 'error'); return; }
     if (BANK_LIKE.includes(txnMethod) && (!senderAccountHolder.trim() || !senderAccountNumber.trim())) {
       showToast('Enter the Sending Account holder and number.', 'error'); return;
@@ -294,7 +303,9 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       location: location || undefined, mobile: mobile || undefined,
       mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: false,
-      ...(isSpecialMethod(txnMethod) ? {} : { tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim() }),
+      // No deposit collects Token Details / Note Number at creation: Cash captures the token and
+      // Crypto the wallet at Submit Account, and a Bank Transfer never has one — the operator
+      // supplies the agent's bank account and the player pays into it.
       txnMethod,
       senderUpiId: senderUpiId.trim() || undefined,
       senderAccountHolder: senderAccountHolder.trim() || undefined,
@@ -340,7 +351,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       <Card style={{ padding: 22 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
           <Sel label="Select Agent ID" value={agentId} onChange={e => setAgentId(e.target.value)} required
-            options={[{ value: '', label: '— Select an agent —' }, ...fd.agents.map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
+            options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
+                ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
           <ReadField label="Agent Name" value={agent?.name} />
           <ReadField label="Agent Country" value={agent?.country} />
           <ReadField label="Agent State" value={agent?.state} />
@@ -354,7 +366,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
           <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
 
-          <Sel label="Transaction Type" value={txnMethod} onChange={e => setTxnMethod(e.target.value)} required
+          <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); }} required
             options={[{ value: '', label: '— Select —' }, ...(fd.txnMethods || []).map(v => ({ value: v, label: methodLabel(v) }))]} />
           <div />
         </div>
@@ -386,14 +398,9 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
           <PhoneField code={mobileCode} onCode={setMobileCode} value={mobile} onValue={setMobile}
             codeOptions={DIAL_OPTIONS} style={{ marginBottom: 16 }} />
 
-          {/* Token Details / Unique Note Number are entered here for Bank/UPI. For Cash & Crypto they
-              are captured later, at Submit Account, so they are hidden on the create form. */}
-          {!isSpecialMethod(txnMethod) && <>
-            <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
-              required placeholder="As provided by the customer" />
-            <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(e.target.value)}
-              required placeholder="As provided by the customer" hint="Must be unique" />
-          </>}
+          {/* A deposit never asks for Token Details / Unique Note Number here: Cash captures the
+              token and Crypto the wallet at Submit Account, and a Bank Transfer has neither — the
+              operator supplies the agent's bank account and the player pays into it. */}
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
         </div>
@@ -561,7 +568,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
           <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
-          <Sel label="Transaction Type" value={txnMethod} onChange={e => setTxnMethod(e.target.value)} required
+          <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); }} required
             options={[{ value: '', label: '— Select —' },
               ...(isSettlement ? AGENT_SETTLEMENT_METHODS : (fd.txnMethods || [])).map(v => ({ value: v, label: methodLabel(v) }))]} />
           <div />
@@ -581,7 +588,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
           ) : (
             <>
               <Sel label="Select Agent ID" value={agentId} onChange={e => setAgentId(e.target.value)} required
-                options={[{ value: '', label: '— Select an agent —' }, ...fd.agents.map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
+                options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
+                ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
               {autoAgent && (
                 <Btn size="sm" variant="ghost" onClick={() => { setManualOverride(false); setAgentId(String(autoAgent.agentMasterId)); }}>↩ Use auto-fetched agent ({autoAgent.agentCode})</Btn>
               )}
@@ -962,7 +970,6 @@ const AgentTxnManagementPage: React.FC<{
 }> = ({ user, txnType, title, noun, requestLabel, FormComp }) => {
   const { showToast } = useToast();
   const role = String(user.merchantRole || '').toUpperCase();
-  const canManage = ['SUPERVISOR', 'MANAGER', 'DEO'].includes(role);   // amount correction (backend MANAGE_ROLES)
   const canApprove = ['SUPERVISOR', 'MANAGER'].includes(role);
   // Deposit-chain operator steps — the Data Operator does what the Admin does in the merchant flow.
   const canOperate = ['DEO', 'DEPOSIT_OPERATOR'].includes(role);
@@ -976,7 +983,6 @@ const AgentTxnManagementPage: React.FC<{
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [detailRow, setDetailRow] = useState<AgentTxnRow | null>(null);
-  const [manageRow, setManageRow] = useState<AgentTxnRow | null>(null);
   // Deposit-chain steps, each driven by the row's current status.
   const [acctRow, setAcctRow] = useState<AgentTxnRow | null>(null);
   const [slipRow, setSlipRow] = useState<AgentTxnRow | null>(null);
@@ -1009,7 +1015,7 @@ const AgentTxnManagementPage: React.FC<{
   }, [txnType, status, search, dateF, fromF, toF, noun, showToast]);
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  usePoll(() => { if (!showForm && !detailRow && !manageRow) load({ background: true }); });
+  usePoll(() => { if (!showForm && !detailRow) load({ background: true }); });
 
   const runSearch = () => { setPage(1); load(); };
   const clearFilters = () => { setSearch(''); setStatus(''); setDateF(''); setFromF(''); setToF(''); setPage(1); };
@@ -1081,9 +1087,8 @@ const AgentTxnManagementPage: React.FC<{
                       : isSpecialMethod(x.txnMethod) ? 'MANAGER_APPROVED' : 'ACCOUNT_SUBMITTED')
                       && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>
                         {isSpecialMethod(x.txnMethod) ? 'Confirm & Complete' : 'Pay / Upload Slip'}</Btn>}
-                    {/* Manage is CASH-only — hidden entirely for every other method. */}
-                    {canManage && x.txnMethod === 'CASH' && !AGENT_FINAL_STATUSES.includes(x.status)
-                      && <Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn>}
+                    {/* No Manage here — amount corrections are done only in the dedicated
+                        Manage Transaction page, so there is a single entry point. */}
                   </td>
                 </tr>
               ))}
@@ -1105,7 +1110,6 @@ const AgentTxnManagementPage: React.FC<{
         </Modal>
       )}
       {detailRow && <AgentTxnDetailsModal row={detailRow} onClose={() => setDetailRow(null)} />}
-      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} role={role} onClose={() => setManageRow(null)} onRefresh={load} />}
       {acctRow && <SubmitAccountModal row={acctRow} onClose={() => setAcctRow(null)} onDone={load} />}
       {slipRow && <UploadSlipModal row={slipRow} onClose={() => setSlipRow(null)} onDone={load} />}
       {depositRow && <MarkDepositModal row={depositRow} onClose={() => setDepositRow(null)} onDone={load} />}

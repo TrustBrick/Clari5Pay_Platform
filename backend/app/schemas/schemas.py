@@ -368,7 +368,11 @@ class AgentCreate(BaseModel):
     currency: str
     dateOfCreation: Optional[str] = None          # IST YYYY-MM-DD; defaults to today
     reference: Optional[str] = None
-    feesPct: float
+    # Per-leg fees, set manually. Deposit -> payInFee, withdrawal -> payOutFee,
+    # settlement -> settlementFee. These replace the retired single feesPct.
+    payInFee: float
+    payOutFee: float
+    settlementFee: float
     transactionCode: str                          # exactly 3 alphanumeric chars
     category: str                                 # CASH | BANK_TRANSFER | CRYPTO
     notes: Optional[str] = None
@@ -387,7 +391,9 @@ class AgentUpdate(BaseModel):
     email: Optional[str] = None
     currency: Optional[str] = None
     reference: Optional[str] = None
-    feesPct: Optional[float] = None
+    payInFee: Optional[float] = None
+    payOutFee: Optional[float] = None
+    settlementFee: Optional[float] = None
     category: Optional[str] = None
     notes: Optional[str] = None
     riskAnalysis: Optional[bool] = None

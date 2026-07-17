@@ -24,6 +24,38 @@ router = APIRouter(prefix="/api/agents", tags=["agent-accounts"])
 ACCOUNT_TYPES = {"BANK", "UPI", "QR", "CRYPTO"}
 STATUSES = {"ACTIVE", "INACTIVE"}
 
+# An agent's category decides what it can be paid through, so it also decides which account types
+# may exist for it. A CASH agent holds cash and is paid in person — it has no account of any kind.
+# Enforced here AND mirrored in the UI (AgentPages.tsx ALLOWED_ACCOUNT_TYPES); this is the
+# authority, so a request that bypasses the form is still refused.
+ALLOWED_ACCOUNT_TYPES: dict[str, set[str]] = {
+    "CASH": set(),               # no accounts at all
+    "BANK_TRANSFER": {"BANK"},   # bank account only — no UPI/QR/Crypto
+    "CRYPTO": {"CRYPTO"},        # crypto wallet only
+}
+_CATEGORY_LABEL = {"CASH": "Cash", "BANK_TRANSFER": "Bank Transfer", "CRYPTO": "Crypto"}
+
+
+def _require_category_allows(agent: AgentMaster, acc_type: str) -> None:
+    """Refuse an account type the agent's category does not permit."""
+    category = (agent.category or "").upper()
+    allowed = ALLOWED_ACCOUNT_TYPES.get(category)
+    if allowed is None:          # unknown/legacy category — leave as-is rather than block
+        return
+    if not allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A {_CATEGORY_LABEL.get(category, category)} agent cannot have accounts — "
+                   "cash is handled through the Cash workflow only.",
+        )
+    if acc_type not in allowed:
+        nice = " or ".join(sorted(allowed))
+        raise HTTPException(
+            status_code=400,
+            detail=f"A {_CATEGORY_LABEL.get(category, category)} agent can only have a "
+                   f"{nice} account.",
+        )
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _business(user: User) -> str:
@@ -223,6 +255,7 @@ async def create_account(
     acc_type = (data.accountType or "").strip().upper()
     if acc_type not in ACCOUNT_TYPES:
         raise HTTPException(status_code=400, detail="Account Type must be Bank, UPI, QR or Crypto.")
+    _require_category_allows(agent, acc_type)
     _validate_type_fields(acc_type, data)
 
     # Duplicate within the agent (per identifying field for that type).
@@ -255,7 +288,7 @@ async def create_account(
         crypto_network=(data.cryptoNetwork or "").strip() or None,
         crypto_asset=(data.cryptoAsset or "").strip().upper() or None,
         merchant_business=business,
-        created_by=user.name,
+        created_by=user.username,
         created_by_id=user.id,
     )
     db.add(acc)

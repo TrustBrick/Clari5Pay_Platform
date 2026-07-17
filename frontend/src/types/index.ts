@@ -356,7 +356,9 @@ export interface Agent {
   currency: string;
   dateOfCreation?: string | null;   // IST YYYY-MM-DD
   reference?: string | null;
-  feesPct: number;
+  payInFee: number;
+  payOutFee: number;
+  settlementFee: number;
   transactionCode: string;      // exactly 3 chars (immutable)
   category: AgentCategory;
   notes?: string | null;

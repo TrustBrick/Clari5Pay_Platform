@@ -102,7 +102,13 @@ async def agent_dashboard(
         if t.status in COMPLETED_STATUSES:
             f["completed"] += 1
             agent = agent_by_id.get(aid)
-            comm = round((t.amount or 0) * ((agent.fees_pct or 0) / 100.0), 2) if agent else 0.0
+            # Each leg charges its own fee: deposit → Pay-In, withdrawal → Pay-Out,
+            # settlement → Settlement. (The single fees_pct this replaced is retired.)
+            _rate = 0.0
+            if agent:
+                _rate = {"DEPOSIT": agent.pay_in_fee, "WITHDRAWAL": agent.pay_out_fee,
+                         "SETTLEMENT": agent.settlement_fee}.get(base) or 0.0
+            comm = round((t.amount or 0) * (_rate / 100.0), 2) if agent else 0.0
             f["commission"] += comm
             if base == "DEPOSIT":
                 f["deposit"] += (t.amount or 0)
