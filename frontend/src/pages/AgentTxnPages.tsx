@@ -149,7 +149,7 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Overview</h1>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Overview</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Summary of the isolated Agent Transaction subsystem.</p>
       </div>
 
@@ -1139,11 +1139,11 @@ const AgentTxnManagementPage: React.FC<{
 };
 
 export const AgentDepositManagementPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => (
-  <AgentTxnManagementPage user={user} txnType="DEPOSIT" title="Agent Deposit Management" noun="Deposit" requestLabel="Agent Deposit Request" FormComp={AgentDepositRequestPage} />
+  <AgentTxnManagementPage user={user} txnType="DEPOSIT" title="Deposit Request" noun="Deposit" requestLabel="Agent Deposit Request" FormComp={AgentDepositRequestPage} />
 );
 
 export const AgentWithdrawalManagementPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => (
-  <AgentTxnManagementPage user={user} txnType="WITHDRAWAL" title="Agent Withdrawal Management" noun="Withdrawal" requestLabel="Agent Withdrawal Request" FormComp={AgentWithdrawalRequestPage} />
+  <AgentTxnManagementPage user={user} txnType="WITHDRAWAL" title="Withdrawal Request" noun="Withdrawal" requestLabel="Agent Withdrawal Request" FormComp={AgentWithdrawalRequestPage} />
 );
 
 // ─── Agent Settlement Management (Supervisor-only) ─────────────────────────────
@@ -1155,7 +1155,7 @@ const AgentSettlementRequestForm: React.FC<{ user: User; onNavigate?: (p: string
 );
 
 export const AgentSettlementManagementPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => (
-  <AgentTxnManagementPage user={user} txnType="SETTLEMENT" title="Agent Settlement Management"
+  <AgentTxnManagementPage user={user} txnType="SETTLEMENT" title="Settlement Request"
     noun="Settlement" requestLabel="Agent Settlement Request" FormComp={AgentSettlementRequestForm} />
 );
 
@@ -1243,7 +1243,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Reports</h1>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Reports</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Detailed ledger for the isolated Agent Transaction subsystem.</p>
       </div>
 
@@ -1757,7 +1757,7 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Approvals</h1>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Approvals</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>
           Agent {queue.noun} awaiting your approval. {isManager ? 'The operator has paid and uploaded the slip; review it and' : 'Approving sends them back to the Data Operator to'}
           {isManager ? ' complete — approving finishes the withdrawal.' : ' mark as Deposited.'}
@@ -1862,7 +1862,7 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent All Transactions</h1>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>All Transactions</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Every Agent Deposit, Withdrawal and Settlement in the isolated Agent ledger.</p>
       </div>
 
