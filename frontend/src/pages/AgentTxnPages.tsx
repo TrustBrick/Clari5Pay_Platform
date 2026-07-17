@@ -893,7 +893,10 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'], ['Approver', row.approverName],
     ['Approved By', row.approvedBy], ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
     // Payment evidence — stored on the transaction and re-read here; never re-uploaded.
-    ['UTR Number', row.depositUtr],
+    // A cash deposit has no UTR (no rail issues one), so the row is omitted rather than
+    // rendered as a dash. Every other method, and every withdrawal, still shows it.
+    ...(row.type === 'DEPOSIT' && isTokenMethod(row.txnMethod)
+      ? [] : [['UTR Number', row.depositUtr] as [string, React.ReactNode]]),
     ['Slip By', row.slipSubmittedBy],
     ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
     ['Sent To (Agent A/C)', row.agentAccountRef ? `${row.agentAccountRef} · ${row.agentAccountDetail || ''}` : null],
@@ -1563,7 +1566,9 @@ const MarkDepositModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone
   const facts: Array<[string, React.ReactNode]> = [
     ['Reference', row.referenceNumber],
     ['Amount', fmt(row.amount)],
-    ['UTR Number', row.depositUtr],
+    // Mark Deposit is a deposit-only step: cash has no UTR, so omit the row entirely.
+    ...(isTokenMethod(row.txnMethod)
+      ? [] : [['UTR Number', row.depositUtr] as [string, React.ReactNode]]),
     ['Paid By', row.slipSubmittedBy],
     ['Paid At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
     ['Approved By', row.supervisorName],
