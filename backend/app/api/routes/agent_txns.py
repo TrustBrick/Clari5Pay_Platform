@@ -1029,15 +1029,23 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     else:
         raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals and Settlements only.")
     method = str(t.txn_method or "").upper()
-    # CASH/CRYPTO withdrawals reach this step AFTER Manager approval and carry no slip — the
-    # operator simply confirms the token / wallet. Every other method pays here, before the gate.
+    # CASH/CRYPTO withdrawals reach this step AFTER Manager approval — the operator confirms the
+    # token / wallet rather than paying over a rail. Every other method pays here, before the gate.
     confirm_only = t.txn_type == "WITHDRAWAL" and method in SPECIAL_METHODS
+    # A CASH withdrawal hands physical money over, so the operator must evidence it: the Cash
+    # Payment Proof is mandatory even though there is no rail, no slip and no UTR. Crypto confirms
+    # against the wallet address alone and is unchanged.
+    cash_confirm = confirm_only and method in TOKEN_METHODS
     # CASH/CRYPTO confirm AFTER the Manager gate (MANAGER_APPROVED); BANK/UPI pay before it, from
     # the state they were created in; a SETTLEMENT pays from its own SLIP_SUBMITTED gate.
     _require_status(t, ST_MANAGER_APPROVED if confirm_only
                     else ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED,
                     "confirmation" if confirm_only else "payment")
-    if not confirm_only:
+    if cash_confirm:
+        if not body.slipImage:
+            raise HTTPException(status_code=400, detail="Cash Payment Proof is required.")
+        t.slip_image = body.slipImage      # stored on the transaction; shown wherever it is viewed
+    elif not confirm_only:
         if not body.slipImage:
             raise HTTPException(status_code=400, detail="Payment slip image is required.")
         if not (body.utr or "").strip():
@@ -1055,7 +1063,8 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     await _log(db, t,
                "COMPLETED" if (confirm_only or t.txn_type != "WITHDRAWAL") else "SLIP_SUBMITTED",
                user, new_amount=t.amount,
-               note=(f"Confirmed and completed by {user.username}" if confirm_only
+               note=((f"Confirmed and completed by {user.username}"
+                      + (" — cash payment proof attached" if cash_confirm else "")) if confirm_only
                      else f"Paid by {user.username} — awaiting Manager approval" if t.txn_type == "WITHDRAWAL"
                      else f"Settlement paid by {user.username}"))
     await db.commit()

@@ -908,12 +908,17 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ['Created By', row.createdBy], ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`],
   ];
 
-  // The uploaded slip and the Mark-Deposit proof, shown from storage every time.
+  // The uploaded slip and the Mark-Deposit proof, shown from storage every time. Each renders
+  // through SlipView, which shows the image (or names the PDF) and offers a Download.
   const proofLabel = isWalletMethod(row.txnMethod) ? 'Crypto Payment Slip'
     : isTokenMethod(row.txnMethod) ? 'Token Details Image' : 'Account Proof';
+  // A cash withdrawal has no slip — what it carries is the operator's proof that the cash was
+  // handed over, captured at Confirm & Complete. Name it for what it is.
+  const slipLabel = row.type === 'WITHDRAWAL' && isTokenMethod(row.txnMethod)
+    ? 'Cash Payment Proof' : 'Uploaded Slip';
   const images: Array<[string, string]> = [
     ...(row.accountProof ? [[proofLabel, row.accountProof] as [string, string]] : []),
-    ...(row.slipImage ? [['Uploaded Slip', row.slipImage] as [string, string]] : []),
+    ...(row.slipImage ? [[slipLabel, row.slipImage] as [string, string]] : []),
     ...(row.depositProof ? [['Deposit Proof', row.depositProof] as [string, string]] : []),
   ];
 
@@ -1457,6 +1462,9 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   // A CASH deposit has no UTR: the money changes hands in person, so no rail issues a reference and
   // the slip is the only proof. Every other deposit, and every payout, still captures one.
   const isCashDeposit = mode === 'deposit' && isTokenMethod(row.txnMethod);
+  // A CASH withdrawal hands physical money over, so the operator must attach proof of it — there is
+  // no rail, no slip and no UTR to evidence it otherwise. Crypto confirms on the wallet alone.
+  const isCashConfirm = confirmOnly && isTokenMethod(row.txnMethod);
   const [utr, setUtr] = useState('');
   const [slip, setSlip] = useState('');
   const [slipName, setSlipName] = useState('');
@@ -1470,14 +1478,17 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   };
 
   const submit = async () => {
-    // A confirm-only cash/crypto withdrawal needs neither slip nor UTR.
+    if (isCashConfirm && !slip) { showToast('Upload the Cash Payment Proof.', 'error'); return; }
+    // A confirm-only crypto withdrawal needs neither slip nor UTR.
     if (!confirmOnly) {
       if (!slip) { showToast('Upload the payment slip image.', 'error'); return; }
       if (!isCashDeposit && !utr.trim()) { showToast('Enter the UTR Number.', 'error'); return; }
     }
     setBusy(true);
     try {
-      const body = confirmOnly ? {} : { slipImage: slip, ...(isCashDeposit ? {} : { utr: utr.trim() }) };
+      const body = confirmOnly
+        ? (isCashConfirm ? { slipImage: slip } : {})
+        : { slipImage: slip, ...(isCashDeposit ? {} : { utr: utr.trim() }) };
       // Deposit: slip → Supervisor review. Withdrawal: payout after Manager approval → Completed.
       await (mode === 'payout' ? agentTxnsAPI.payout(row.id, body) : agentTxnsAPI.submitSlip(row.id, body));
       showToast(confirmOnly
@@ -1500,15 +1511,27 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
       <Modal title={`Confirm & Complete — ${row.referenceNumber}`} onClose={onClose}>
         <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
           Approved by {row.managerName || 'the Manager'}. Confirm the details below to complete the
-          withdrawal — no payment slip is required for {methodLabel(row.txnMethod)}.
+          withdrawal.{isCashConfirm
+            ? ' Cash is handed over in person, so attach proof of the payment — there is no slip or UTR to evidence it.'
+            : ` No payment slip is required for ${methodLabel(row.txnMethod)}.`}
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
           <DField k="Amount" v={fmt(row.amount)} />
           {detail.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
         </div>
+        {isCashConfirm && (
+          <>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Cash Payment Proof <span style={{ color: T.danger }}>*</span>
+            </label>
+            <input type="file" accept="image/jpeg,image/jpg,image/png,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
+            {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
+            <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>JPG, JPEG, PNG or PDF. Required — it is stored with the transaction and shown wherever it is viewed.</p>
+          </>
+        )}
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-          <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : 'Confirm & Complete'}</Btn>
+          <Btn variant="success" onClick={submit} disabled={busy || (isCashConfirm && !slip)}>{busy ? 'Completing…' : 'Confirm & Complete'}</Btn>
         </div>
       </Modal>
     );
