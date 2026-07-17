@@ -85,6 +85,11 @@ const categoryForMethod = (m?: string | null): string | null => {
   if (isWalletMethod(v)) return 'CRYPTO';
   return 'BANK_TRANSFER';
 };
+// The inverse: an agent's category decides the only transaction type it can serve, so selecting an
+// agent on the Deposit Request fills the Transaction Type in rather than asking for it.
+const methodForCategory = (c?: string | null): string | null =>
+  ({ CASH: 'CASH', BANK_TRANSFER: 'BANK', CRYPTO: 'CRYPTO' }[String(c || '').toUpperCase()] ?? null);
+
 const agentsForMethod = <A extends { category?: string | null }>(agents: A[], m?: string | null): A[] => {
   const want = categoryForMethod(m);
   return want ? agents.filter(a => String(a.category || '').toUpperCase() === want) : agents;
@@ -260,6 +265,13 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
 
   const agent: AgentFormAgent | undefined = fd?.agents.find(a => String(a.id) === agentId);
 
+  // The Transaction Type follows from the agent's category — a Cash agent can only take cash, a
+  // Crypto agent only crypto — so it is fetched from the Agent Master rather than chosen. Clearing
+  // the agent clears it too, so a stale type can never be submitted against a different agent.
+  useEffect(() => {
+    setTxnMethod(agent ? (methodForCategory(agent.category) || '') : '');
+  }, [agent]);
+
   // Auto-fetch the Membership Name as the ID is entered (debounced), mirroring the Merchant Deposit
   // Request flow: an existing membership auto-fills + locks the name; a new ID stays manually editable.
   useEffect(() => {
@@ -351,8 +363,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       <Card style={{ padding: 22 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
           <Sel label="Select Agent ID" value={agentId} onChange={e => setAgentId(e.target.value)} required
-            options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
-                ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
+            options={[{ value: '', label: '— Select an agent —' },
+                ...fd.agents.map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
           <ReadField label="Agent Name" value={agent?.name} />
           <ReadField label="Agent Country" value={agent?.country} />
           <ReadField label="Agent State" value={agent?.state} />
@@ -362,12 +374,14 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
           <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(normalizeMemberId(e.target.value))}
             required placeholder="Enter Membership ID" hint="Uppercase letters and numbers only" />
           <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined} />
+          {/* The agent's category decides how it can be paid, so the Transaction Type follows from
+              the agent rather than being chosen: it belongs with the agent details, not as a
+              separate decision. Read-only — picking a different agent is how you change it. */}
+          <ReadField label="Transaction Type" value={txnMethod ? methodLabel(txnMethod) : undefined}
+            placeholder="Auto-filled from the agent" />
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
           <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
-
-          <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); }} required
-            options={[{ value: '', label: '— Select —' }, ...(fd.txnMethods || []).map(v => ({ value: v, label: methodLabel(v) }))]} />
           <div />
         </div>
 
@@ -1386,8 +1400,10 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
   };
 
   const title = isCash ? 'Submit Token Details' : isCrypto ? 'Submit Wallet Details' : 'Submit Account';
-  const canSubmit = isCash ? (token.trim() && note.trim() && proof)
-    : isCrypto ? (isValidWallet(wallet) && proof)
+  // Cash no longer uploads a token image, so the token + note alone enable Submit. Crypto still
+  // requires its payment slip; Bank/UPI still require an account to be chosen.
+  const canSubmit = isCash ? Boolean(token.trim() && note.trim())
+    : isCrypto ? Boolean(isValidWallet(wallet) && proof)
     : Boolean(sel);
 
   return (
