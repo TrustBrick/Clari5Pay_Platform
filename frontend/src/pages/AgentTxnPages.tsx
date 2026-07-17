@@ -443,6 +443,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [membershipId, setMembershipId] = useState('');
   const [membershipName, setMembershipName] = useState('');
   const [membershipType, setMembershipType] = useState('');
+  // This member's Available Balance in the agent ledger, fetched with the membership lookup and
+  // shown so the operator sees it before submitting. The server validates the balance on create.
+  const [memberBalance, setMemberBalance] = useState<number | null>(null);
   const [agentId, setAgentId] = useState('');
   const [autoAgent, setAutoAgent] = useState<AgentMemberLookup['latestDeposit']>(null);
   const [txnMethod, setTxnMethod] = useState('');
@@ -474,12 +477,13 @@ export const AgentWithdrawalRequestPage: React.FC<{
   // Membership lookup → auto-fetch the agent from the latest agent DEPOSIT for this membership.
   const lookupMember = async () => {
     const id = membershipId.trim();
-    setAutoAgent(null); setManualOverride(false);
+    setAutoAgent(null); setManualOverride(false); setMemberBalance(null);
     if (!id) return;
     setLooking(true);
     try {
       const r = await agentTxnsAPI.member(id);
       if (r.membershipName) setMembershipName(r.membershipName);
+      setMemberBalance(typeof r.availableBalance === 'number' ? r.availableBalance : null);
       // The member's latest agent deposit still auto-links its agent (and its depositId), but only
       // when that agent serves the Transaction Type already chosen — the type is picked before the
       // agent now, so an out-of-category auto-link would drop in an agent the filtered list does
@@ -507,7 +511,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
     setNotes(''); setInstructions(''); setApproverId('');
-    setTxnMethod('');
+    setTxnMethod(''); setMemberBalance(null);
     setTokenDetails(''); setNoteNumber('');
   };
 
@@ -608,7 +612,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
           <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" />
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
-          <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
+          <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal"
+            hint={memberBalance != null ? `Member Available Balance: ₹${fmt(memberBalance)}` : undefined} />
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>

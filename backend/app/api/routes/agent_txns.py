@@ -390,6 +390,83 @@ async def _get_agent(db: AsyncSession, business: str, agent_master_id: int) -> A
     return agent
 
 
+# ── Per-member Available Balance (isolated agent ledger) ──────────────────────────────────────
+# The Agent Module keeps a balance PER Membership ID, computed from that member's own completed
+# agent transactions — the transactions ARE the ledger, exactly as the Merchant module computes its
+# balance from Transaction rows rather than a stored column (so it can never drift). The formula is
+# the Merchant one, applied per leg with each transaction's OWN agent fee, and settlement charging
+# the agent's Settlement Fee (the one deliberate difference the spec calls out vs the merchant, which
+# pools settlement under pay-out):
+#     deposit    → + amount · (1 − pay_in_fee%)      net deposit credited
+#     withdrawal → − amount · (1 + pay_out_fee%)     amount + pay-out commission
+#     settlement → − amount · (1 + settlement_fee%)  amount + settlement commission
+# Balances are scoped to (business, membership_id) and never mix between members.
+def _leg_rate(agent: AgentMaster | None, txn_type: str) -> float:
+    """The agent's fee for this leg, as a fraction. NULL/legacy → 0."""
+    if agent is None:
+        return 0.0
+    pct = {"DEPOSIT": agent.pay_in_fee, "WITHDRAWAL": agent.pay_out_fee,
+           "SETTLEMENT": agent.settlement_fee}.get(txn_type)
+    return (pct or 0.0) / 100.0
+
+
+def _signed_leg(t: AgentTransaction, agent: AgentMaster | None) -> float:
+    """A transaction's effect on the member balance: deposit credits net, withdrawal/settlement
+    debit gross + their own commission."""
+    r = _leg_rate(agent, t.txn_type)
+    amt = t.amount or 0.0
+    if t.txn_type == "DEPOSIT":
+        return amt * (1 - r)
+    return -amt * (1 + r)     # WITHDRAWAL / SETTLEMENT
+
+
+def _completion_note(t: AgentTransaction, agent: AgentMaster | None, actor: User, before: float) -> str:
+    """Audit line for a completed leg — captures the amount, this leg's commission, the member's
+    Available Balance before → after, the Membership ID, the Agent ID and who acted (the timestamp
+    is on the audit row itself). Written into the existing audit note (no schema change)."""
+    rate = _leg_rate(agent, t.txn_type)
+    commission = round((t.amount or 0.0) * rate, 2)
+    after = round(before + _signed_leg(t, agent), 2)
+    leg = {"DEPOSIT": "Deposit", "WITHDRAWAL": "Withdrawal", "SETTLEMENT": "Settlement"}.get(t.txn_type, t.txn_type)
+    return (f"{leg} completed by {actor.username}. "
+            f"Amount ₹{(t.amount or 0):,.2f}, {leg} Commission ₹{commission:,.2f}. "
+            f"Available Balance ₹{before:,.2f} → ₹{after:,.2f}. "
+            f"Membership {t.membership_id or '—'}, Agent {agent.agent_id if agent else '—'}.")
+
+
+async def _member_balance(db: AsyncSession, business: str, membership_id: str) -> dict:
+    """Available + spendable balance for one Membership ID within the agent ledger.
+
+    `available` counts COMPLETED transactions only (a completed deposit is DEPOSITED, or the legacy
+    APPROVED; a completed withdrawal/settlement is COMPLETED) — the figure shown to the operator and
+    reports. `spendable` additionally reserves this member's IN-FLIGHT (not-yet-final) withdrawals
+    and settlements, exactly like the Merchant spendable guard, so two requests cannot each pass and
+    together overdraw. `spendable` is used only to validate a new withdrawal/settlement.
+    """
+    mid = (membership_id or "").strip()
+    if not mid:
+        return {"available": 0.0, "spendable": 0.0}
+    rows = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.merchant_business == business,
+        AgentTransaction.membership_id == mid))).scalars().all()
+    if not rows:
+        return {"available": 0.0, "spendable": 0.0}
+    agents = {a.id: a for a in (await db.execute(select(AgentMaster).where(
+        AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()}
+
+    available = 0.0
+    reserved = 0.0
+    for t in rows:
+        ag = agents.get(t.agent_master_id)
+        if t.status in COMPLETED_STATUSES:
+            available += _signed_leg(t, ag)
+        elif t.status not in REJECTED_STATUSES and t.txn_type in ("WITHDRAWAL", "SETTLEMENT"):
+            # In-flight debit (pending withdrawal/settlement) — reserve it against spending.
+            reserved += -_signed_leg(t, ag)     # _signed_leg is negative for these
+    available = round(available, 2)
+    return {"available": available, "spendable": round(available - reserved, 2)}
+
+
 async def _resolve_approver(db: AsyncSession, business: str, approver_user_id: int | None):
     if approver_user_id is None:
         return None, None
@@ -549,6 +626,21 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     method = (body.txnMethod or "").upper()
     agent = await _get_agent(db, business, body.agentMasterId)
     _require_agent_serves_method(agent, method)
+
+    # A withdrawal or settlement can only draw what the member actually has. The member's Available
+    # Balance (built from completed agent deposits, net of every leg's commission) must cover the
+    # amount PLUS this leg's commission, on the same completed-only basis the Merchant module uses.
+    if txn_type in ("WITHDRAWAL", "SETTLEMENT"):
+        bal = await _member_balance(db, business, body.membershipId)
+        required = (body.amount or 0.0) * (1 + _leg_rate(agent, txn_type))
+        if required > bal["spendable"] + 1e-6:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Insufficient Available Balance.\n"
+                        f"Available Balance: ₹{bal['spendable']:,.2f}\n"
+                        f"Requested Amount + Commission: ₹{required:,.2f}"),
+            )
+
     approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId)
 
     ref = await _next_serial(db, AgentTransaction.reference_number, prefix)
@@ -702,11 +794,15 @@ async def member_lookup(membership_id: str, db: AsyncSession = Depends(get_db),
         "category": dep.agent_category, "depositId": dep.id, "reference": dep.reference_number,
     }
     saved = await _saved_member_accounts(db, business, membership_id.strip())
+    bal = await _member_balance(db, business, membership_id.strip())
     return {
         "membershipId": membership_id.strip(), "membershipName": membership_name,
         "latestDeposit": latest_deposit,
         # Payout accounts already on file for this membership (isolated agent register).
         "savedAccounts": [_member_account_row(a) for a in saved],
+        # This member's Available Balance in the agent ledger — shown on the Withdrawal/Settlement
+        # form so the operator sees it before submitting. The server still validates on create.
+        "availableBalance": bal["available"],
     }
 
 
@@ -931,16 +1027,20 @@ async def mark_deposit(txn_id: int, body: AgentMarkDeposit, db: AsyncSession = D
     never re-uploaded or overwritten here.
     """
     _require(user, DEPOSIT_OPERATOR_ROLES, "mark Agent Deposits as deposited")
-    t = await _load_own(db, _business(user), txn_id)
+    business = _business(user)
+    t = await _load_own(db, business, txn_id)
     _require_deposit(t)
     _require_status(t, ST_SUPERVISOR_APPROVED, "Mark Deposit")
+    # Balance BEFORE this deposit counts (it is not yet DEPOSITED, so excluded), for the audit line.
+    _before = (await _member_balance(db, business, t.membership_id))["available"]
+    _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
     t.status = ST_DEPOSITED
     t.deposited_by = user.username
     t.deposited_at = datetime.utcnow()
     # deposit_utr / slip_image are left exactly as captured at the slip step — no duplicate
     # upload, no overwrite of the original.
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "DEPOSITED", user, new_amount=t.amount, note=f"Marked deposited by {user.username}")
+    await _log(db, t, "DEPOSITED", user, new_amount=t.amount, note=_completion_note(t, _agent, user, _before))
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -979,13 +1079,18 @@ async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession
     _require_withdrawal(t)
     _require_status(t, _withdrawal_gate(t.txn_method), "Manager review")
     special = str(t.txn_method or "").upper() in SPECIAL_METHODS
+    # Balance BEFORE completion (BANK/UPI completes here); captured while still in-flight.
+    _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
+    _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
     t.status = ST_MANAGER_APPROVED if special else ST_COMPLETED
     t.manager_name = user.username
     t.manager_action_at = datetime.utcnow()
     t.review_remark = remark
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    # BANK/UPI completes now → full balance/commission audit line; CASH/CRYPTO only authorised here.
     await _log(db, t, "MANAGER_APPROVED", user, new_amount=t.amount,
-               note=(f"{remark} — awaiting operator confirmation" if special else remark))
+               note=(f"{remark} — awaiting operator confirmation" if special
+                     else f"{remark} · {_completion_note(t, _agent, user, _before)}"))
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -1041,6 +1146,9 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     _require_status(t, ST_MANAGER_APPROVED if confirm_only
                     else ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED,
                     "confirmation" if confirm_only else "payment")
+    # Balance BEFORE this leg completes (still in-flight here, so excluded), for the audit line.
+    _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
+    _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
     if cash_confirm:
         if not body.slipImage:
             raise HTTPException(status_code=400, detail="Cash Payment Proof is required.")
@@ -1060,13 +1168,14 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     t.status = (ST_COMPLETED if confirm_only
                 else ST_MANAGER_REVIEW if t.txn_type == 'WITHDRAWAL' else ST_COMPLETED)
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    # This leg completes here for a cash/crypto withdrawal (confirm) and for a settlement; a BANK/UPI
+    # withdrawal only reaches MANAGER_REVIEW and completes later at manager/approve.
+    _done = t.status == ST_COMPLETED
     await _log(db, t,
                "COMPLETED" if (confirm_only or t.txn_type != "WITHDRAWAL") else "SLIP_SUBMITTED",
                user, new_amount=t.amount,
-               note=((f"Confirmed and completed by {user.username}"
-                      + (" — cash payment proof attached" if cash_confirm else "")) if confirm_only
-                     else f"Paid by {user.username} — awaiting Manager approval" if t.txn_type == "WITHDRAWAL"
-                     else f"Settlement paid by {user.username}"))
+               note=(_completion_note(t, _agent, user, _before) if _done
+                     else f"Paid by {user.username} — awaiting Manager approval"))
     await db.commit()
     await db.refresh(t)
     return _row(t)

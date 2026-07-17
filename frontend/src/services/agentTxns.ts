@@ -171,6 +171,9 @@ export interface AgentMemberLookup {
   };
   /** Payout accounts already on file for this membership (auto-fetched on the form). */
   savedAccounts?: AgentMemberAccount[];
+  /** This member's Available Balance in the agent ledger (completed deposits net of commission,
+   *  less completed withdrawals/settlements). Shown on the Withdrawal/Settlement form. */
+  availableBalance?: number;
 }
 
 export interface AgentDepositBody {

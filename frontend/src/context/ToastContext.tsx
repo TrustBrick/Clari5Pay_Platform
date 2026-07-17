@@ -44,11 +44,13 @@ const Toast: React.FC<{ msg: string; type: string; leaving?: boolean }> = ({ msg
   return (
     <div className={leaving ? 'c5-toast-out' : 'c5-toast-in'} style={{
       background: '#0a2540', color: '#fff', padding: '14px 20px', borderRadius: 14,
-      boxShadow: '0 10px 40px rgba(0,0,0,0.25)', display: 'flex', gap: 10, alignItems: 'center',
+      boxShadow: '0 10px 40px rgba(0,0,0,0.25)', display: 'flex', gap: 10, alignItems: 'flex-start',
       maxWidth: 360, borderLeft: `4px solid ${colors[type] || '#059669'}`,
     }}>
       <span style={{ fontSize: 18 }}>{icon}</span>
-      <span style={{ fontSize: 13, fontWeight: 500 }}>{msg}</span>
+      {/* pre-line so a multi-line message (e.g. the insufficient-balance validation) keeps its
+          line breaks; single-line messages are unaffected. */}
+      <span style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'pre-line' }}>{msg}</span>
     </div>
   );
 };
