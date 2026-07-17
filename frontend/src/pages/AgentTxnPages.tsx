@@ -35,16 +35,25 @@ const IsolationNote: React.FC = () => (
 // Workflow statuses — same labels as the merchant deposit workflow. PENDING/APPROVED are legacy
 // rows created before the chain existed.
 const STATUS_STYLE: Record<string, { c: string; bg: string; label: string }> = {
+  // Cash names its first two steps after the token, Crypto after the wallet, Bank/UPI after the
+  // agent account — each is what the operator actually submits, so one status = one label.
+  TOKEN_REQUESTED: { c: T.warning, bg: T.warningBg, label: 'Token Requested' },
+  TOKEN_SUBMITTED: { c: T.info, bg: T.infoBg, label: 'Token Submitted' },
+  WALLET_REQUESTED: { c: T.warning, bg: T.warningBg, label: 'Wallet Requested' },
+  WALLET_SUBMITTED: { c: T.info, bg: T.infoBg, label: 'Wallet Submitted' },
   ACCOUNT_REQUESTED: { c: T.warning, bg: T.warningBg, label: 'Account Requested' },
   ACCOUNT_SUBMITTED: { c: T.info, bg: T.infoBg, label: 'Account Submitted' },
-  SUPERVISOR_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Supervisor Review' },
-  MANAGER_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Manager Review' },
   SLIP_SUBMITTED: { c: T.blue, bg: `${T.blue}18`, label: 'Slip Submitted' },
+  SUPERVISOR_APPROVED: { c: '#7c3aed', bg: '#7c3aed18', label: 'Approved by Supervisor' },
+  MANAGER_APPROVED: { c: '#7c3aed', bg: '#7c3aed18', label: 'Approved by Manager' },
+  MANAGER_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Manager Review' },
   DEPOSITED: { c: T.success, bg: T.successBg, label: 'Deposited' },
   COMPLETED: { c: T.success, bg: T.successBg, label: 'Completed' },
   APPROVED: { c: T.success, bg: T.successBg, label: 'Approved' },
   PENDING: { c: T.warning, bg: T.warningBg, label: 'Pending' },
   REJECTED: { c: T.danger, bg: T.dangerBg, label: 'Rejected' },
+  // Retired — the deposit slip step is SLIP_SUBMITTED now. Kept so legacy rows still render.
+  SUPERVISOR_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Supervisor Review' },
 };
 
 const StatusPill: React.FC<{ status: string }> = ({ status }) => {
@@ -54,7 +63,9 @@ const StatusPill: React.FC<{ status: string }> = ({ status }) => {
 
 // Status filter — the chain in workflow order, then the legacy values.
 const STATUS_FILTER_OPTIONS = [
-  'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SUPERVISOR_REVIEW', 'SLIP_SUBMITTED',
+  'TOKEN_REQUESTED', 'TOKEN_SUBMITTED', 'WALLET_REQUESTED', 'WALLET_SUBMITTED',
+  'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'SUPERVISOR_APPROVED',
+  'MANAGER_REVIEW', 'MANAGER_APPROVED',
   'DEPOSITED', 'COMPLETED', 'REJECTED', 'PENDING', 'APPROVED',
 ].map(v => ({ value: v, label: STATUS_STYLE[v]?.label || v }));
 
@@ -67,6 +78,14 @@ const BANK_LIKE = ['BANK', 'IMPS', 'NEFT', 'RTGS'];
 const isTokenMethod = (m?: string | null) => m === 'CASH';
 const isWalletMethod = (m?: string | null) => m === 'CRYPTO';
 const isSpecialMethod = (m?: string | null) => isTokenMethod(m) || isWalletMethod(m);
+
+// The chain's first two steps are named for what the method actually asks the operator to supply —
+// mirrors _requested_status / _submitted_status in backend/app/api/routes/agent_txns.py. Keep the
+// two in step: the backend rejects an action attempted from the wrong status.
+const requestedStatus = (m?: string | null) =>
+  isTokenMethod(m) ? 'TOKEN_REQUESTED' : isWalletMethod(m) ? 'WALLET_REQUESTED' : 'ACCOUNT_REQUESTED';
+const submittedStatus = (m?: string | null) =>
+  isTokenMethod(m) ? 'TOKEN_SUBMITTED' : isWalletMethod(m) ? 'WALLET_SUBMITTED' : 'ACCOUNT_SUBMITTED';
 
 // Membership IDs are uppercase letters + digits only (auto-converted; lowercase/spaces/symbols
 // blocked) — the same rule the Merchant Deposit form applies.
@@ -1156,12 +1175,15 @@ const AgentTxnManagementPage: React.FC<{
                     <Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn>
                     {/* The deposit chain's next step, offered only to the operator roles that may
                         perform it and only at the status that expects it. */}
-                    {isDeposit && canOperate && x.status === 'ACCOUNT_REQUESTED' && <Btn size="sm" onClick={() => setAcctRow(x)}>Submit Account</Btn>}
-                    {isDeposit && canOperate && x.status === 'ACCOUNT_SUBMITTED' && <Btn size="sm" onClick={() => setSlipRow(x)}>Pay / Upload Slip</Btn>}
-                    {isDeposit && canOperate && x.status === 'SLIP_SUBMITTED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
-                    {/* Withdrawal: created ready to pay (ACCOUNT_SUBMITTED) → the Manager reviews the
-                        slip afterwards. Settlement: no gate at all, created at SLIP_SUBMITTED. */}
-                    {!isDeposit && canPayout && x.status === (txnType === 'SETTLEMENT' ? 'SLIP_SUBMITTED' : 'ACCOUNT_SUBMITTED')
+                    {isDeposit && canOperate && x.status === requestedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setAcctRow(x)}>Submit Account</Btn>}
+                    {isDeposit && canOperate && x.status === submittedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setSlipRow(x)}>Pay / Upload Slip</Btn>}
+                    {isDeposit && canOperate && x.status === 'SUPERVISOR_APPROVED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
+                    {/* Withdrawal — BANK/UPI: created ready to pay (ACCOUNT_SUBMITTED), the Manager
+                        reviews the slip afterwards. CASH/CRYPTO: authorised first, so the operator
+                        confirms only once the Manager has approved (MANAGER_APPROVED). Settlement:
+                        no gate at all, created at SLIP_SUBMITTED. */}
+                    {!isDeposit && canPayout && x.status === (txnType === 'SETTLEMENT' ? 'SLIP_SUBMITTED'
+                      : isSpecialMethod(x.txnMethod) ? 'MANAGER_APPROVED' : 'ACCOUNT_SUBMITTED')
                       && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>
                         {isSpecialMethod(x.txnMethod) ? 'Confirm & Complete' : 'Pay / Upload Slip'}</Btn>}
                     {/* Manage is CASH-only — hidden entirely for every other method. */}
@@ -1778,9 +1800,12 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
   const [reviewRow, setReviewRow] = useState<AgentTxnRow | null>(null);
   // A Supervisor reviews Deposits, a Manager reviews Withdrawals — the merchant review split.
   const isManager = String(user.merchantRole || '').toUpperCase() === 'MANAGER';
+  // A withdrawal waits at its gate under a method-dependent name: cash/crypto are authorised before
+  // the operator confirms them (TOKEN_SUBMITTED / WALLET_SUBMITTED), bank/UPI are paid first and
+  // arrive at MANAGER_REVIEW. The list endpoint takes a comma-separated status for exactly this.
   const queue = isManager
-    ? { status: 'MANAGER_REVIEW', txn_type: 'WITHDRAWAL', noun: 'Withdrawals' }   // paid, awaiting slip review
-    : { status: 'SUPERVISOR_REVIEW', txn_type: 'DEPOSIT', noun: 'Deposits' };
+    ? { status: 'TOKEN_SUBMITTED,WALLET_SUBMITTED,MANAGER_REVIEW', txn_type: 'WITHDRAWAL', noun: 'Withdrawals' }
+    : { status: 'SLIP_SUBMITTED', txn_type: 'DEPOSIT', noun: 'Deposits' };
 
   const load = useCallback(async () => {
     setLoading(true);

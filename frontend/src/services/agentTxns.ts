@@ -9,9 +9,15 @@ import api from './api';
  *   ACCOUNT_REQUESTED → ACCOUNT_SUBMITTED → SUPERVISOR_REVIEW → SLIP_SUBMITTED → DEPOSITED
  * PENDING / APPROVED are legacy rows created before the chain existed.
  */
+// Cash names its first two steps after the token, Crypto after the wallet, Bank/UPI after the agent
+// account. SLIP_SUBMITTED means the slip is up and the Supervisor has NOT yet decided; their
+// approval is SUPERVISOR_APPROVED. SUPERVISOR_REVIEW is retired — legacy rows only.
 export type AgentTxnStatus =
-  | 'ACCOUNT_REQUESTED' | 'ACCOUNT_SUBMITTED' | 'SUPERVISOR_REVIEW' | 'MANAGER_REVIEW'
-  | 'SLIP_SUBMITTED' | 'DEPOSITED' | 'COMPLETED' | 'REJECTED' | 'PENDING' | 'APPROVED';
+  | 'TOKEN_REQUESTED' | 'TOKEN_SUBMITTED' | 'WALLET_REQUESTED' | 'WALLET_SUBMITTED'
+  | 'ACCOUNT_REQUESTED' | 'ACCOUNT_SUBMITTED'
+  | 'SLIP_SUBMITTED' | 'SUPERVISOR_APPROVED' | 'MANAGER_REVIEW' | 'MANAGER_APPROVED'
+  | 'DEPOSITED' | 'COMPLETED' | 'REJECTED' | 'PENDING' | 'APPROVED'
+  | 'SUPERVISOR_REVIEW';
 
 /** Statuses that mean the money actually moved — the completed-only basis (mirrors the server). */
 export const AGENT_COMPLETED_STATUSES: AgentTxnStatus[] = ['APPROVED', 'DEPOSITED', 'COMPLETED'];

@@ -57,14 +57,29 @@ MEMBERSHIP_TYPES = {"ONLINE", "OFFLINE"}
 #   Mark Deposit     (Data Operator — the merchant flow's Admin step) → DEPOSITED
 ST_ACCOUNT_REQUESTED = "ACCOUNT_REQUESTED"
 ST_ACCOUNT_SUBMITTED = "ACCOUNT_SUBMITTED"
-ST_SUPERVISOR_REVIEW = "SUPERVISOR_REVIEW"
+# CASH names its first two steps after the token, CRYPTO after the wallet — what the operator
+# actually submits at Submit Account. BANK/UPI keep ACCOUNT_*. Use _requested_status/
+# _submitted_status rather than these directly, so the method picks the right pair.
+ST_TOKEN_REQUESTED = "TOKEN_REQUESTED"
+ST_TOKEN_SUBMITTED = "TOKEN_SUBMITTED"
+ST_WALLET_REQUESTED = "WALLET_REQUESTED"
+ST_WALLET_SUBMITTED = "WALLET_SUBMITTED"
 ST_MANAGER_REVIEW = "MANAGER_REVIEW"
+# SLIP_SUBMITTED means what it says: the operator has uploaded the slip and the Supervisor has NOT
+# yet decided. It previously named the step AFTER the Supervisor approved — that step is now
+# SUPERVISOR_APPROVED. Rows carrying the old meaning were migrated; see the deposit chain below.
+# A SETTLEMENT also sits on SLIP_SUBMITTED as its "ready for the Supervisor to pay" gate, which is
+# unchanged and deliberately left alone — every code path that reads it is txn_type-gated.
 ST_SLIP_SUBMITTED = "SLIP_SUBMITTED"
+ST_SUPERVISOR_APPROVED = "SUPERVISOR_APPROVED"
+ST_MANAGER_APPROVED = "MANAGER_APPROVED"
 ST_DEPOSITED = "DEPOSITED"
 ST_COMPLETED = "COMPLETED"
 ST_REJECTED = "REJECTED"
 ST_PENDING = "PENDING"
 ST_APPROVED = "APPROVED"
+# Retired: the deposit slip step is SLIP_SUBMITTED now. Kept only so legacy rows still render.
+ST_SUPERVISOR_REVIEW = "SUPERVISOR_REVIEW"
 
 # Roles that operate the chain. The Data Operator (DEO) drives every operator step.
 OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR", "WITHDRAWAL_OPERATOR")
@@ -89,6 +104,34 @@ SETTLEMENT_METHODS = {"CASH", "BANK", "CRYPTO"}
 TOKEN_METHODS = {"CASH"}          # Submit Account captures Token Details + Note + token image
 WALLET_METHODS = {"CRYPTO"}       # Submit Account captures a Wallet Address + payment slip
 SPECIAL_METHODS = TOKEN_METHODS | WALLET_METHODS
+
+
+def _requested_status(method: str | None) -> str:
+    """The chain's first step, named for what this method actually asks the operator to supply."""
+    m = str(method or "").upper()
+    if m in TOKEN_METHODS:
+        return ST_TOKEN_REQUESTED
+    if m in WALLET_METHODS:
+        return ST_WALLET_REQUESTED
+    return ST_ACCOUNT_REQUESTED
+
+
+def _submitted_status(method: str | None) -> str:
+    """The step after Submit Account — the token / wallet / agent account is now on the record."""
+    m = str(method or "").upper()
+    if m in TOKEN_METHODS:
+        return ST_TOKEN_SUBMITTED
+    if m in WALLET_METHODS:
+        return ST_WALLET_SUBMITTED
+    return ST_ACCOUNT_SUBMITTED
+
+
+def _withdrawal_gate(method: str | None) -> str:
+    """Where the Manager decides a withdrawal. CASH/CRYPTO are authorised before the operator
+    confirms them, so they wait at TOKEN_SUBMITTED / WALLET_SUBMITTED — the state they are created
+    in. BANK/UPI are paid first and reach the Manager at MANAGER_REVIEW (unchanged)."""
+    m = str(method or "").upper()
+    return _submitted_status(m) if m in SPECIAL_METHODS else ST_MANAGER_REVIEW
 
 # Crypto wallet address — structural format check across the common networks. There is no network
 # selector on an agent crypto transaction, so an address is accepted if it is a valid shape on ANY
@@ -535,8 +578,8 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         # needs no approval at all and is created ready for the Supervisor to pay.
         # CASH/CRYPTO withdrawals are authorised BEFORE the operator confirms them, so they open
         # at the Manager gate; BANK/UPI withdrawals are unchanged (operator pays, Manager last).
-        status=(ST_ACCOUNT_REQUESTED if txn_type == "DEPOSIT"
-                else (ST_MANAGER_REVIEW if method in SPECIAL_METHODS else ST_ACCOUNT_SUBMITTED)
+        status=(_requested_status(method) if txn_type == "DEPOSIT"
+                else (_submitted_status(method) if method in SPECIAL_METHODS else ST_ACCOUNT_SUBMITTED)
                 if txn_type == "WITHDRAWAL"
                 else ST_SLIP_SUBMITTED if txn_type == "SETTLEMENT" else ST_PENDING),
         # Payout account (withdrawals) — where the money is sent.
@@ -709,7 +752,7 @@ async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession
     business = _business(user)
     t = await _load_own(db, business, txn_id)
     _require_deposit(t)
-    _require_status(t, ST_ACCOUNT_REQUESTED, "an account submission")
+    _require_status(t, _requested_status(t.txn_method), "an account submission")
     method = str(t.txn_method or "").upper()
 
     if method in TOKEN_METHODS:
@@ -765,9 +808,9 @@ async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession
 
     t.account_submitted_by = user.username
     t.account_submitted_at = datetime.utcnow()
-    t.status = ST_ACCOUNT_SUBMITTED
+    t.status = _submitted_status(t.txn_method)
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "ACCOUNT_SUBMITTED", user, note=note_txt)
+    await _log(db, t, t.status, user, note=note_txt)
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -781,7 +824,7 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     business = _business(user)
     t = await _load_own(db, business, txn_id)
     _require_deposit(t)
-    _require_status(t, ST_ACCOUNT_SUBMITTED, "a slip")
+    _require_status(t, _submitted_status(t.txn_method), "a slip")
     # Both the proof and its reference are mandatory — captured once here and reused unchanged
     # for the rest of the workflow (Approvals, Mark Deposit, Details, Reports).
     if not body.slipImage:
@@ -793,7 +836,7 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     t.deposit_utr = body.utr.strip()          # the only payment reference; Mark Deposit displays it
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
-    t.status = ST_SUPERVISOR_REVIEW          # straight to the Supervisor queue (as the merchant flow does)
+    t.status = ST_SLIP_SUBMITTED             # straight to the Supervisor queue (as the merchant flow does)
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
     await _log(db, t, "SLIP_SUBMITTED", user, note="Slip submitted — awaiting Supervisor approval")
     await db.commit()
@@ -804,15 +847,15 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
 @router.post("/{txn_id}/supervisor/approve")
 async def supervisor_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                              user: User = Depends(get_current_agent_operator)):
-    """Supervisor approves a deposit under review → SLIP_SUBMITTED (awaiting Mark Deposit)."""
+    """Supervisor approves a deposit under review → SUPERVISOR_APPROVED (awaiting Mark Deposit)."""
     _require(user, ("SUPERVISOR",), "approve Agent Deposits")
     remark = (body.remark or "").strip()
     if not remark:
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
     t = await _load_own(db, _business(user), txn_id)
     _require_deposit(t)
-    _require_status(t, ST_SUPERVISOR_REVIEW, "Supervisor review")
-    t.status = ST_SLIP_SUBMITTED
+    _require_status(t, ST_SLIP_SUBMITTED, "Supervisor review")
+    t.status = ST_SUPERVISOR_APPROVED
     t.supervisor_name = user.username
     t.supervisor_action_at = datetime.utcnow()
     t.review_remark = remark
@@ -833,7 +876,7 @@ async def supervisor_reject(txn_id: int, body: AgentReviewAction, db: AsyncSessi
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
     t = await _load_own(db, _business(user), txn_id)
     _require_deposit(t)
-    _require_status(t, ST_SUPERVISOR_REVIEW, "Supervisor review")
+    _require_status(t, ST_SLIP_SUBMITTED, "Supervisor review")
     t.status = ST_REJECTED
     t.supervisor_name = user.username
     t.supervisor_action_at = datetime.utcnow()
@@ -857,7 +900,7 @@ async def mark_deposit(txn_id: int, body: AgentMarkDeposit, db: AsyncSession = D
     _require(user, DEPOSIT_OPERATOR_ROLES, "mark Agent Deposits as deposited")
     t = await _load_own(db, _business(user), txn_id)
     _require_deposit(t)
-    _require_status(t, ST_SLIP_SUBMITTED, "Mark Deposit")
+    _require_status(t, ST_SUPERVISOR_APPROVED, "Mark Deposit")
     t.status = ST_DEPOSITED
     t.deposited_by = user.username
     t.deposited_at = datetime.utcnow()
@@ -901,9 +944,9 @@ async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
     t = await _load_own(db, _business(user), txn_id)
     _require_withdrawal(t)
-    _require_status(t, ST_MANAGER_REVIEW, "Manager review")
+    _require_status(t, _withdrawal_gate(t.txn_method), "Manager review")
     special = str(t.txn_method or "").upper() in SPECIAL_METHODS
-    t.status = ST_ACCOUNT_SUBMITTED if special else ST_COMPLETED
+    t.status = ST_MANAGER_APPROVED if special else ST_COMPLETED
     t.manager_name = user.username
     t.manager_action_at = datetime.utcnow()
     t.review_remark = remark
@@ -925,7 +968,7 @@ async def manager_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession 
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
     t = await _load_own(db, _business(user), txn_id)
     _require_withdrawal(t)
-    _require_status(t, ST_MANAGER_REVIEW, "Manager review")
+    _require_status(t, _withdrawal_gate(t.txn_method), "Manager review")
     t.status = ST_REJECTED
     t.manager_name = user.username
     t.manager_action_at = datetime.utcnow()
@@ -956,7 +999,10 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     # CASH/CRYPTO withdrawals reach this step AFTER Manager approval and carry no slip — the
     # operator simply confirms the token / wallet. Every other method pays here, before the gate.
     confirm_only = t.txn_type == "WITHDRAWAL" and method in SPECIAL_METHODS
-    _require_status(t, ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED,
+    # CASH/CRYPTO confirm AFTER the Manager gate (MANAGER_APPROVED); BANK/UPI pay before it, from
+    # the state they were created in; a SETTLEMENT pays from its own SLIP_SUBMITTED gate.
+    _require_status(t, ST_MANAGER_APPROVED if confirm_only
+                    else ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED,
                     "confirmation" if confirm_only else "payment")
     if not confirm_only:
         if not body.slipImage:
@@ -990,11 +1036,17 @@ async def list_txns(status: str | None = None, txn_type: str | None = None, sear
                     date: str | None = None, date_from: str | None = None, date_to: str | None = None,
                     db: AsyncSession = Depends(get_db), user: User = Depends(get_current_agent_operator)):
     """Business-scoped list of agent transactions with optional status/type/search/date filters.
-    Manage Transaction calls this with status=PENDING. Search matches reference / membership / agent."""
+    Manage Transaction calls this with status=PENDING. Search matches reference / membership / agent.
+
+    `status` accepts a comma-separated list as well as a single value — the Manager's approval queue
+    needs it, because a withdrawal waits at its gate under a method-dependent name (TOKEN_SUBMITTED /
+    WALLET_SUBMITTED for cash/crypto, MANAGER_REVIEW for bank/UPI)."""
     business = _business(user)
     stmt = select(AgentTransaction).where(AgentTransaction.merchant_business == business)
     if status:
-        stmt = stmt.where(AgentTransaction.status == status.upper())
+        wanted = [s.strip().upper() for s in status.split(",") if s.strip()]
+        if wanted:
+            stmt = stmt.where(AgentTransaction.status.in_(wanted))
     if txn_type:
         stmt = stmt.where(AgentTransaction.txn_type == txn_type.upper())
     rows = (await db.execute(stmt.order_by(AgentTransaction.id.desc()))).scalars().all()
@@ -1046,18 +1098,31 @@ MANAGEABLE_METHOD = "CASH"
 # The in-flight order of each chain, and where its approval gate sits. An amount change sends the
 # transaction BACK to its gate — never forward — so a deposit still awaiting account submission or
 # a slip is not jumped past those steps into an approval it has not earned.
-_CHAIN_ORDER = {
-    "DEPOSIT": [ST_ACCOUNT_REQUESTED, ST_ACCOUNT_SUBMITTED, ST_SUPERVISOR_REVIEW, ST_SLIP_SUBMITTED],
-    "WITHDRAWAL": [ST_ACCOUNT_SUBMITTED, ST_MANAGER_REVIEW],          # BANK/UPI: pay → gate
-    "WITHDRAWAL_SPECIAL": [ST_MANAGER_REVIEW, ST_ACCOUNT_SUBMITTED],  # CASH/CRYPTO: gate → confirm
-    "SETTLEMENT": [ST_SLIP_SUBMITTED],
-}
-# Deposit → Supervisor Approval · Withdrawal → Manager Approval · Settlement → Supervisor Completion.
-_APPROVAL_GATE = {
-    "DEPOSIT": ST_SUPERVISOR_REVIEW,
-    "WITHDRAWAL": ST_MANAGER_REVIEW,
-    "SETTLEMENT": ST_SLIP_SUBMITTED,
-}
+# Both are computed per transaction because the first two deposit steps, and the CASH/CRYPTO
+# withdrawal gate, are named after the method (token / wallet / agent account).
+def _chain_order(t: AgentTransaction) -> list[str]:
+    ty = t.txn_type or ""
+    m = str(t.txn_method or "").upper()
+    if ty == "DEPOSIT":
+        return [_requested_status(m), _submitted_status(m), ST_SLIP_SUBMITTED, ST_SUPERVISOR_APPROVED]
+    if ty == "WITHDRAWAL":
+        # CASH/CRYPTO: gate → confirm. BANK/UPI: pay → gate (unchanged).
+        return ([_submitted_status(m), ST_MANAGER_APPROVED] if m in SPECIAL_METHODS
+                else [ST_ACCOUNT_SUBMITTED, ST_MANAGER_REVIEW])
+    if ty == "SETTLEMENT":
+        return [ST_SLIP_SUBMITTED]
+    return []
+
+
+def _gate_for(t: AgentTransaction) -> str | None:
+    ty = t.txn_type or ""
+    if ty == "DEPOSIT":
+        return ST_SLIP_SUBMITTED            # the Supervisor decides once the slip is up
+    if ty == "WITHDRAWAL":
+        return _withdrawal_gate(t.txn_method)
+    if ty == "SETTLEMENT":
+        return ST_SLIP_SUBMITTED
+    return None
 
 
 def _restart_approval(t: AgentTransaction) -> str | None:
@@ -1068,14 +1133,11 @@ def _restart_approval(t: AgentTransaction) -> str | None:
     approval has happened yet and there is nothing to redo. Any prior decision is voided so the
     gate must be passed again from scratch; the audit trail of it is append-only and untouched.
     """
-    # A CASH/CRYPTO withdrawal is gated BEFORE the operator confirms it, so its order is the
-    # reverse of BANK/UPI. Using the wrong one would let an amount change on an already-approved
-    # cash withdrawal skip the Manager gate entirely.
-    key = t.txn_type or ""
-    if key == "WITHDRAWAL" and str(t.txn_method or "").upper() in SPECIAL_METHODS:
-        key = "WITHDRAWAL_SPECIAL"
-    order = _CHAIN_ORDER.get(key, [])
-    gate = _APPROVAL_GATE.get(t.txn_type or "")
+    # _chain_order already accounts for the CASH/CRYPTO withdrawal being gated BEFORE the operator
+    # confirms it — the reverse of BANK/UPI. Using the wrong order would let an amount change on an
+    # already-approved cash withdrawal skip the Manager gate entirely.
+    order = _chain_order(t)
+    gate = _gate_for(t)
     if not gate or gate not in order or t.status not in order:
         return None
     if order.index(t.status) < order.index(gate):
