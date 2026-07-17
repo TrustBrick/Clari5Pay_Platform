@@ -387,7 +387,6 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const [pan, setPan] = useState('');
   const img = useImagePick();
   const [verifying, setVerifying] = useState(false);
-  const [result, setResult] = useState<{ validPan: boolean } | null>(null);
 
   const validPanFmt = KYC_VALIDATION.pan(pan);
   const inputReady = mode === 'id' ? validPanFmt : Boolean(img.dataUrl);
@@ -397,15 +396,15 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
     if (!m.memberId.trim() || !m.memberName.trim()) { showToast('Enter the Membership ID and Member Name first.', 'error'); return; }
     if (mode === 'id' && !validPanFmt) { showToast('Invalid PAN Number — expected format ABCDE1234F.', 'error'); return; }
     if (mode === 'image' && !img.dataUrl) { showToast('Please upload the PAN card image.', 'error'); return; }
-    setVerifying(true); setResult(null);
+    setVerifying(true);
     try {
-      const r = await kycAPI.verifyPanMembership(m.memberId.trim(),
+      // Reaching here means the provider replied success — a failure raises (backend 502).
+      await kycAPI.verifyPanMembership(m.memberId.trim(),
         mode === 'id'
           ? { pan: pan.toUpperCase().trim(), memberName: m.memberName.trim() }
           : { image: img.dataUrl, memberName: m.memberName.trim() });
-      setResult({ validPan: r.validPan });
-      showToast(r.validPan ? 'PAN verified successfully.' : 'PAN verification completed.', 'success');
-      onDone(r.validPan);
+      showToast('PAN verified successfully.', 'success');
+      onDone(true);
     } catch (e) {
       showToast(kycErrorMessage(e, 'PAN verification failed.'), 'error');
       onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
@@ -415,19 +414,12 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   return (
     <VerifyShell icon="pan" view="pan" title="PAN Verification" onBack={onBack}>
       <MembershipFields m={m} />
-      <VerifyBy value={mode} onChange={(v) => { setMode(v as 'id' | 'image'); setResult(null); }}
+      <VerifyBy value={mode} onChange={(v) => setMode(v as 'id' | 'image')}
         options={[{ value: 'id', label: 'ID Number' }, { value: 'image', label: 'Upload Image' }]} />
       {mode === 'id'
         ? <Input label="PAN Number" value={pan} onChange={(e) => setPan(e.target.value.toUpperCase())} placeholder="ABCDE1234F" hint="10-character PAN" />
         : <ImageField label="Upload PAN Card Image" pick={img} />}
       <Btn onClick={verify} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify PAN'}</Btn>
-      {result && (
-        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Valid PAN</span>
-          <span style={{ fontSize: 12, fontWeight: 800, padding: '3px 12px', borderRadius: 20, color: result.validPan ? T.success : T.danger, background: result.validPan ? T.successBg : T.dangerBg }}>{result.validPan ? 'YES' : 'NO'}</span>
-          <span style={{ fontSize: 12, color: T.textMuted }}>See the Verification History for full details.</span>
-        </div>
-      )}
     </VerifyShell>
   );
 };
@@ -442,7 +434,6 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   const front = useImagePick();
   const back = useImagePick();
   const [verifying, setVerifying] = useState(false);
-  const [result, setResult] = useState<{ validPassport: boolean } | null>(null);
 
   const validFmt = KYC_VALIDATION.passport(num);
   const bothImages = Boolean(front.dataUrl) && Boolean(back.dataUrl);
@@ -453,15 +444,15 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
     if (!m.memberId.trim() || !m.memberName.trim()) { showToast('Enter the Membership ID and Member Name first.', 'error'); return; }
     if (mode === 'id' && !validFmt) { showToast('Passport File Number is required and must be alphanumeric.', 'error'); return; }
     if (mode === 'image' && !bothImages) { showToast('Both the Front and Back passport images are required.', 'error'); return; }
-    setVerifying(true); setResult(null);
+    setVerifying(true);
     try {
-      const r = await kycAPI.verifyPassportMembership(m.memberId.trim(),
+      // Reaching here means the provider replied success — a failure raises (backend 502).
+      await kycAPI.verifyPassportMembership(m.memberId.trim(),
         mode === 'id'
           ? { passportNumber: num.toUpperCase().trim(), dateOfBirth: dob || undefined, memberName: m.memberName.trim() }
           : { frontImage: front.dataUrl, backImage: back.dataUrl, memberName: m.memberName.trim() });
-      setResult({ validPassport: r.validPassport });
-      showToast(r.validPassport ? 'Passport verified successfully.' : 'Passport verification completed.', 'success');
-      onDone(r.validPassport);
+      showToast('Passport verified successfully.', 'success');
+      onDone(true);
     } catch (e) {
       showToast(kycErrorMessage(e, 'Passport verification failed.'), 'error');
       onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
@@ -471,7 +462,7 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   return (
     <VerifyShell icon="passport" view="passport" title="Passport Verification" onBack={onBack}>
       <MembershipFields m={m} />
-      <VerifyBy value={mode} onChange={(v) => { setMode(v as 'id' | 'image'); setResult(null); }}
+      <VerifyBy value={mode} onChange={(v) => setMode(v as 'id' | 'image')}
         options={[{ value: 'id', label: 'Passport File Number' }, { value: 'image', label: 'Upload Image' }]} />
       {mode === 'id' ? (
         <>
@@ -496,13 +487,6 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
         </>
       )}
       <Btn onClick={verify} disabled={!canVerify}>{verifying ? <><Spinner /> Verifying…</> : 'Verify Passport'}</Btn>
-      {result && (
-        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Valid Passport</span>
-          <span style={{ fontSize: 12, fontWeight: 800, padding: '3px 12px', borderRadius: 20, color: result.validPassport ? T.success : T.danger, background: result.validPassport ? T.successBg : T.dangerBg }}>{result.validPassport ? 'YES' : 'NO'}</span>
-          <span style={{ fontSize: 12, color: T.textMuted }}>See the Verification History for full details.</span>
-        </div>
-      )}
     </VerifyShell>
   );
 };
@@ -649,7 +633,6 @@ const PanDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ respo
   const extracted = (result.extracted_data || {}) as Record<string, unknown>;
   const validated = (result.validated_data || {}) as Record<string, unknown>;
   const match = (result.data_match || {}) as Record<string, unknown>;
-  const validPan = Boolean(result.valid_pan);
   return (
     <>
       <Section title="Extracted Data"><ObjectGrid obj={extracted} /></Section>
@@ -659,12 +642,6 @@ const PanDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ respo
         {result.data_match_aggregate != null && (
           <div style={{ marginTop: 10, fontSize: 12, color: T.textMuted }}>Aggregate Match: <strong style={{ color: T.textMain }}>{String(result.data_match_aggregate)}</strong></div>
         )}
-      </Section>
-      <Section title="PAN Status">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted }}>Valid PAN</span>
-          <span style={{ fontSize: 13, fontWeight: 800, padding: '3px 14px', borderRadius: 20, color: validPan ? T.success : T.danger, background: validPan ? T.successBg : T.dangerBg }}>{validPan ? 'YES' : 'NO'}</span>
-        </div>
       </Section>
     </>
   );
@@ -679,7 +656,6 @@ const PassportDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ 
   const photo = asImageSrc(profile_image);
   const validated = (result.validated_data || {}) as Record<string, unknown>;
   const match = (result.data_match || {}) as Record<string, unknown>;
-  const validPassport = Boolean(result.valid_passport);
   return (
     <>
       <Section title="Passport Information">
@@ -692,12 +668,6 @@ const PassportDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ 
         {result.data_match_aggregate != null && (
           <div style={{ marginTop: 10, fontSize: 12, color: T.textMuted }}>Aggregate Match: <strong style={{ color: T.textMain }}>{String(result.data_match_aggregate)}</strong></div>
         )}
-      </Section>
-      <Section title="Passport Status">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted }}>Valid Passport</span>
-          <span style={{ fontSize: 13, fontWeight: 800, padding: '3px 14px', borderRadius: 20, color: validPassport ? T.success : T.danger, background: validPassport ? T.successBg : T.dangerBg }}>{validPassport ? 'YES' : 'NO'}</span>
-        </div>
       </Section>
     </>
   );
