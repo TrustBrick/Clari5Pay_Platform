@@ -761,7 +761,9 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
   if (loading) return <LoadingScreen label="Loading agent analytics…" />;
   if (!d) return <Card><div style={{ padding: 40, textAlign: 'center', color: T.textMuted }}>Could not load the dashboard. <Btn variant="ghost" size="sm" onClick={load}>Retry</Btn></div></Card>;
 
-  const trendData = d.financeCharts.commissionTrend[trend];
+  // Empty when the response carried no financial figures (an operator) — the trend card itself is
+  // not rendered in that case, but this must not read through an absent key to get there.
+  const trendData = d.financeCharts?.commissionTrend[trend] ?? [];
   const trendMax = Math.max(1, ...trendData.map((x) => x.value));
 
   const gridCards: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 16 };
@@ -784,15 +786,28 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
         <StatCard icon="bank" label="Agent Accounts" value={d.accounts.total} sub={`${d.accounts.active} active · ${d.accounts.inactive} inactive`} color={T.green} />
       </div>
 
-      {/* ── Financial Summary (cumulative lifetime totals from completed assigned transactions) ── */}
-      <p style={{ margin: '4px 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}><Icon name="available-balance" size={14} /> Financial Summary <span style={{ fontWeight: 600, color: T.textMuted }}>· cumulative (not today)</span></p>
-      <div style={gridCards}>
-        <StatCard icon="deposit" label="Total Deposit Amount" value={fmt(d.financial.totalDeposit)} valueLen={16} sub="completed, assigned to agents" color={T.green} />
-        <StatCard icon="withdrawal" label="Total Withdrawal Amount" value={fmt(d.financial.totalWithdrawal)} valueLen={16} sub="completed, assigned to agents" color={T.danger} />
-        <StatCard icon="commission" label="Total Commission Earned" value={fmt(d.financial.totalCommission)} valueLen={16} sub="agent Fees % on completed txns" color={T.warning} />
-        <StatCard icon="available-balance" label="Available Balance" value={fmt(d.financial.availableBalance)} valueLen={16} sub="deposit − withdrawal − commission" color={T.blue} />
-      </div>
+      {/* Money, or counts. An operator is not authorised to see agent money, so the server omits
+          the financial figures from their response entirely — this renders whichever it was given,
+          rather than deciding by role and hiding what it received. Same cards, same grid. */}
+      {d.financial ? (<>
+        <p style={{ margin: '4px 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}><Icon name="available-balance" size={14} /> Financial Summary <span style={{ fontWeight: 600, color: T.textMuted }}>· cumulative (not today)</span></p>
+        <div style={gridCards}>
+          <StatCard icon="deposit" label="Total Deposit Amount" value={fmt(d.financial.totalDeposit)} valueLen={16} sub="completed, assigned to agents" color={T.green} />
+          <StatCard icon="withdrawal" label="Total Withdrawal Amount" value={fmt(d.financial.totalWithdrawal)} valueLen={16} sub="completed, assigned to agents" color={T.danger} />
+          <StatCard icon="commission" label="Total Commission Earned" value={fmt(d.financial.totalCommission)} valueLen={16} sub="agent Fees % on completed txns" color={T.warning} />
+          <StatCard icon="available-balance" label="Available Balance" value={fmt(d.financial.availableBalance)} valueLen={16} sub="deposit − withdrawal − commission" color={T.blue} />
+        </div>
+      </>) : (<>
+        <p style={{ margin: '4px 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}><Icon name="transactions" size={14} /> Request Summary <span style={{ fontWeight: 600, color: T.textMuted }}>· cumulative (not today)</span></p>
+        <div style={gridCards}>
+          <StatCard icon="deposit" label="Total Deposit Requests" value={d.counts?.deposits ?? 0} sub="assigned to agents" color={T.green} />
+          <StatCard icon="withdrawal" label="Total Withdrawal Requests" value={d.counts?.withdrawals ?? 0} sub="assigned to agents" color={T.danger} />
+          <StatCard icon="settlement" label="Total Settlement Requests" value={d.counts?.settlements ?? 0} sub="assigned to agents" color={T.blue} />
+        </div>
+      </>)}
 
+      {/* Commission Trend is money — absent for an operator, whose response carries no figures. */}
+      {d.financeCharts && (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 16 }}>
         {/* Commission trend with Daily / Weekly / Monthly toggle */}
         <Card style={{ padding: '16px 18px' }}>
@@ -821,6 +836,7 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
           )}
         </Card>
       </div>
+      )}
 
       <div style={gridCharts}>
         <BarList title="Agents by Category" icon="tag" color={T.info} data={toBars(d.agentsByCategory, CATEGORY_LABEL_FULL)} />

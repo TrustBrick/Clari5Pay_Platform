@@ -168,7 +168,7 @@ const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 const AGENT_SUBTABS: Record<string, string[]> = {
   SUPERVISOR: ['agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-settlement-mgmt'],
   MANAGER: ['agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts'],
-  DEO: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage'],
+  DEO: ['agent-dashboard', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage'],
   DEPOSIT_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt'],
   WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-withdrawal-mgmt'],
 };

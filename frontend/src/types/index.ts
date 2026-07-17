@@ -461,13 +461,19 @@ export interface AgentDashboard {
     agentId: string; agentName?: string | null; accountRef: string; accountType: string;
     assignedBy?: string | null; createdAt?: string | null;
   }>;
+  // Request counts, in place of the money. Present ONLY for an operator (Data Operator et al):
+  // they are not authorised to see agent money, so the server omits every financial key from
+  // their response rather than relying on the UI to hide it. Supervisors/Managers get the
+  // financial trio below and no `counts`.
+  counts?: { deposits: number; withdrawals: number; settlements: number };
   // Financial enhancement (cumulative, from completed assigned transactions).
-  financial: {
+  // Optional: absent from an operator's response — see `counts`.
+  financial?: {
     openingBalance: number; totalDeposit: number; totalWithdrawal: number;
     totalCommission: number; netBalance: number; availableBalance: number;
   };
-  agentFinancials: AgentFinancialRow[];
-  financeCharts: {
+  agentFinancials?: AgentFinancialRow[];
+  financeCharts?: {
     topDeposit: Array<{ label: string; value: number }>;
     topCommission: Array<{ label: string; value: number }>;
     depositByAgent: Array<{ label: string; value: number }>;

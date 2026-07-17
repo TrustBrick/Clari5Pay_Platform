@@ -13,7 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.models import AgentAccount, AgentAssignmentHistory, AgentMaster, Transaction, TxStatus, User
-from app.core.deps import get_current_agent_manager
+# Operator-level access: Supervisors/Managers get the full payload, operators a counts-only one
+# (see agent_dashboard). AGENT_MERCHANT_ROLES is the Supervisor/Manager set that gates the money.
+from app.core.deps import get_current_agent_operator, AGENT_MERCHANT_ROLES
 from app.api.routes.agent_transactions import TERMINAL_STATUSES
 
 router = APIRouter(prefix="/api/agent-dashboard", tags=["agent-dashboard"])
@@ -42,8 +44,15 @@ def _ranked(counter: Counter) -> list[dict]:
 @router.get("")
 async def agent_dashboard(
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_agent_manager),
+    user: User = Depends(get_current_agent_operator),
 ):
+    """Agent dashboard. Supervisors and Managers get the full payload, unchanged.
+
+    An operator (Data Operator et al) is not authorised to see agent money, so the financial
+    figures are omitted from the RESPONSE — not merely hidden by the UI, which would still ship
+    every amount to their browser. They receive the same structure minus `financial`,
+    `agentFinancials` and `financeCharts`, plus the request counts they are allowed to see.
+    """
     business = user.name
     agents = (await db.execute(
         select(AgentMaster).where(AgentMaster.merchant_business == business)
@@ -171,7 +180,9 @@ async def agent_dashboard(
         for h in history[:15]
     ]
 
-    return {
+    # Supervisor / Manager only — an operator never receives an amount.
+    is_manager = str(user.merchant_role or "").upper() in AGENT_MERCHANT_ROLES
+    payload = {
         "agents": {"total": len(agents), "active": agent_active, "inactive": len(agents) - agent_active},
         "accounts": {
             "total": len(accounts), "active": acct_active, "inactive": len(accounts) - acct_active,
@@ -186,26 +197,35 @@ async def agent_dashboard(
             "byTxType": _bucketed(by_tx_type, TX_TYPES),
             "byChannel": _bucketed(by_channel, ACCOUNT_TYPES),
         },
-        "financial": {
-            "openingBalance": 0,
-            "totalDeposit": total_deposit,
-            "totalWithdrawal": total_withdrawal,
-            "totalCommission": total_commission,
-            "netBalance": available,          # Opening(0) + Deposit − Withdrawal − Commission
-            "availableBalance": available,
-        },
-        "agentFinancials": agent_financials,
-        "financeCharts": {
-            "topDeposit": _bars("deposit", 10),
-            "topCommission": _bars("commission", 10),
-            "depositByAgent": _bars("deposit"),
-            "withdrawalByAgent": _bars("withdrawal"),
-            "commissionTrend": {
-                "daily": _trend(comm_day, 14),
-                "weekly": _trend(comm_week, 8),
-                "monthly": _trend(comm_month, 6),
-            },
-        },
         "topAgents": top_agents,
         "recent": recent,
     }
+    if not is_manager:
+        # Counts only: what the operator may see in place of the money.
+        payload["counts"] = {
+            "deposits": int(by_tx_type.get("DEPOSIT", 0)),
+            "withdrawals": int(by_tx_type.get("WITHDRAWAL", 0)),
+            "settlements": int(by_tx_type.get("SETTLEMENT", 0)),
+        }
+        return payload
+    payload["financial"] = {
+        "openingBalance": 0,
+        "totalDeposit": total_deposit,
+        "totalWithdrawal": total_withdrawal,
+        "totalCommission": total_commission,
+        "netBalance": available,          # Opening(0) + Deposit − Withdrawal − Commission
+        "availableBalance": available,
+    }
+    payload["agentFinancials"] = agent_financials
+    payload["financeCharts"] = {
+        "topDeposit": _bars("deposit", 10),
+        "topCommission": _bars("commission", 10),
+        "depositByAgent": _bars("deposit"),
+        "withdrawalByAgent": _bars("withdrawal"),
+        "commissionTrend": {
+            "daily": _trend(comm_day, 14),
+            "weekly": _trend(comm_week, 8),
+            "monthly": _trend(comm_month, 6),
+        },
+    }
+    return payload
