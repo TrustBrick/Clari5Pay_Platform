@@ -15,11 +15,11 @@ export const NAV: Record<UserRole, NavItem[]> = {
     // Agent Management — Non-EPS agents (Supervisor & Manager only). Demo-gated until the
     // module is complete (see navForUser gate + App.tsx pageAllowed). Agents never log in.
     {
-      key: 'agent-mgmt', icon: 'users', label: 'Agent Management',
+      key: 'agent-mgmt', icon: 'users', label: 'Management',
       children: [
         { key: 'agent-dashboard', icon: 'dashboard', label: 'Dashboard' },
         { key: 'agents', icon: 'agent', label: 'Agents' },
-        { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
+        { key: 'agent-accounts', icon: 'bank', label: 'Accounts' },
       ],
     },
     { key: 'kyc', icon: 'kyc', label: 'KYC Management' },
@@ -144,18 +144,18 @@ const AGENT_CHILDREN: NavItem[] = [
   { key: 'agent-dashboard', icon: 'dashboard', label: 'Dashboard' },
   // Agent Overview is the operators' dashboard equivalent (Deposit/Withdrawal Operator only —
   // the DEO now has the Agent Dashboard above instead).
-  { key: 'agent-overview', icon: 'dashboard', label: 'Agent Overview' },
+  { key: 'agent-overview', icon: 'dashboard', label: 'Overview' },
   { key: 'agents', icon: 'agent', label: 'Agents' },
-  { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
-  { key: 'agent-deposit-mgmt', icon: 'deposit', label: 'Agent Deposit Management' },
-  { key: 'agent-withdrawal-mgmt', icon: 'withdrawal', label: 'Agent Withdrawal Management' },
-  { key: 'agent-settlement-mgmt', icon: 'settlement', label: 'Agent Settlement Management' },
+  { key: 'agent-accounts', icon: 'bank', label: 'Accounts' },
+  { key: 'agent-deposit-mgmt', icon: 'deposit', label: 'Deposit Request' },
+  { key: 'agent-withdrawal-mgmt', icon: 'withdrawal', label: 'Withdrawal Request' },
+  { key: 'agent-settlement-mgmt', icon: 'settlement', label: 'Settlement Request' },
   // Data Operator only — the single place agent transactions are modified.
   { key: 'agent-manage', icon: 'templates', label: 'Manage Transaction' },
-  { key: 'agent-approvals', icon: 'approvals', label: 'Agent Approvals' },
-  { key: 'agent-all-txns', icon: 'transactions', label: 'Agent All Transactions' },
+  { key: 'agent-approvals', icon: 'approvals', label: 'Approvals' },
+  { key: 'agent-all-txns', icon: 'transactions', label: 'All Transactions' },
   // The single Agent Reports page — the isolated financial ledger.
-  { key: 'agent-txn-reports', icon: 'reports', label: 'Agent Reports' },
+  { key: 'agent-txn-reports', icon: 'reports', label: 'Reports' },
 ];
 
 // Per-role Agent Management sub-tabs. Supervisors/Managers are approval-only for agent payments —

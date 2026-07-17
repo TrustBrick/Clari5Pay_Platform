@@ -51,9 +51,13 @@ const STATUS_STYLE: Record<string, { c: string; bg: string; label: string }> = {
   SUPERVISOR_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Supervisor Review' },
 };
 
-const StatusPill: React.FC<{ status: string }> = ({ status }) => {
+const StatusPill: React.FC<{ status: string; type?: string | null; method?: string | null }> = ({ status, type, method }) => {
   const s = STATUS_STYLE[status] || { c: T.textMuted, bg: T.borderLight, label: status };
-  return <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 20, color: s.c, background: s.bg, whiteSpace: 'nowrap' }}>{s.label}</span>;
+  // A cash deposit uploads a token image, not a slip, so its SLIP_SUBMITTED — the awaiting-Supervisor
+  // state — reads "Supervisor Review". Same colour/state; only the word "Slip" is wrong for cash.
+  const label = (status === 'SLIP_SUBMITTED' && type === 'DEPOSIT' && isTokenMethod(method))
+    ? 'Supervisor Review' : s.label;
+  return <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 20, color: s.c, background: s.bg, whiteSpace: 'nowrap' }}>{label}</span>;
 };
 
 // Status filter — the chain in workflow order, then the legacy values.
@@ -100,7 +104,9 @@ const submittedStatus = (m?: string | null) =>
 
 // Membership IDs are uppercase letters + digits only (auto-converted; lowercase/spaces/symbols
 // blocked) — the same rule the Merchant Deposit form applies.
-const normalizeMemberId = (raw: string) => (raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const upperAlphaNum = (raw: string) => (raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const normalizeMemberId = upperAlphaNum;   // Membership ID: uppercase letters + digits only
+const normalizeNoteNumber = upperAlphaNum; // Unique Note Number: same rule (9ja123 → 9JA123)
 
 // Country / dial-code options from the shared phone-code list (same source as onboarding).
 const DIAL_OPTIONS = COUNTRY_CODES.map(c => ({ value: c.code, label: c.label }));
@@ -206,7 +212,7 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
                   <td style={tdS}>{r.type}</td>
                   <td style={tdS}>{r.membershipId}{r.membershipName ? ` · ${r.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(r.amount)}</td>
-                  <td style={tdS}><StatusPill status={r.status} /></td>
+                  <td style={tdS}><StatusPill status={r.status} type={r.type} method={r.txnMethod} /></td>
                   <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{r.createdDate} {r.createdTime}</td>
                 </tr>
               ))}
@@ -881,7 +887,7 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
 
   const fields: Array<[string, React.ReactNode]> = [
     ['Reference Number', row.referenceNumber], ['Transaction Code', row.transactionCode],
-    ['Type', row.type], ['Status', <StatusPill status={row.status} />],
+    ['Type', row.type], ['Status', <StatusPill status={row.status} type={row.type} method={row.txnMethod} />],
     ['Agent', `${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`],
     ['Agent Country', row.agentCountry], ['Agent State', row.agentState],
     ['Agent Location', row.agentLocation], ['Agent Category', row.agentCategory],
@@ -914,8 +920,11 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     : isTokenMethod(row.txnMethod) ? 'Token Details Image' : 'Account Proof';
   // A cash withdrawal has no slip — what it carries is the operator's proof that the cash was
   // handed over, captured at Confirm & Complete. Name it for what it is.
-  const slipLabel = row.type === 'WITHDRAWAL' && isTokenMethod(row.txnMethod)
-    ? 'Cash Payment Proof' : 'Uploaded Slip';
+  // The stored slip_image is a cash withdrawal's payment proof, a cash deposit's token image, or a
+  // real payment slip for every other method — name it for what it actually is.
+  const slipLabel = isTokenMethod(row.txnMethod)
+    ? (row.type === 'WITHDRAWAL' ? 'Cash Payment Proof' : 'Token Image')
+    : 'Uploaded Slip';
   const images: Array<[string, string]> = [
     ...(row.accountProof ? [[proofLabel, row.accountProof] as [string, string]] : []),
     ...(row.slipImage ? [[slipLabel, row.slipImage] as [string, string]] : []),
@@ -1079,14 +1088,16 @@ const AgentTxnManagementPage: React.FC<{
                   <td style={tdS}>{categoryOf(x)}</td>
                   <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
-                  <td style={tdS}><StatusPill status={x.status} /></td>
+                  <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} /></td>
                   <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
                   <td style={{ ...tdS, whiteSpace: 'nowrap', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn>
                     {/* The deposit chain's next step, offered only to the operator roles that may
                         perform it and only at the status that expects it. */}
-                    {isDeposit && canOperate && x.status === requestedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setAcctRow(x)}>Submit Account</Btn>}
-                    {isDeposit && canOperate && x.status === submittedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setSlipRow(x)}>Pay / Upload Slip</Btn>}
+                    {/* Cash names its two operator steps after the token it handles — Submit Token
+                        then Upload Token — since there is no account to submit and no slip to pay. */}
+                    {isDeposit && canOperate && x.status === requestedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setAcctRow(x)}>{isTokenMethod(x.txnMethod) ? 'Submit Token' : 'Submit Account'}</Btn>}
+                    {isDeposit && canOperate && x.status === submittedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setSlipRow(x)}>{isTokenMethod(x.txnMethod) ? 'Upload Token' : 'Pay / Upload Slip'}</Btn>}
                     {isDeposit && canOperate && x.status === 'SUPERVISOR_APPROVED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
                     {/* Withdrawal — BANK/UPI: created ready to pay (ACCOUNT_SUBMITTED), the Manager
                         reviews the slip afterwards. CASH/CRYPTO: authorised first, so the operator
@@ -1291,7 +1302,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
                   <td style={tdS}>{x.agentCode || '—'}{x.agentName ? ` · ${x.agentName}` : ''}</td>
                   <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
-                  <td style={tdS}><StatusPill status={x.status} /></td>
+                  <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} /></td>
                   <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
                 </tr>
               ))}
@@ -1391,7 +1402,7 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
     finally { setBusy(false); }
   };
 
-  const title = isCash ? 'Submit Token Details' : isCrypto ? 'Submit Wallet Details' : 'Submit Account';
+  const title = isCash ? 'Submit Token' : isCrypto ? 'Submit Wallet Details' : 'Submit Account';
   // Cash no longer uploads a token image, so the token + note alone enable Submit. Crypto still
   // requires its payment slip; Bank/UPI still require an account to be chosen.
   const canSubmit = isCash ? Boolean(token.trim() && note.trim())
@@ -1403,11 +1414,11 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
       {isCash ? (
         <>
           <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
-            Enter the Token Details and Unique Note Number the customer provided, and upload the token image.
-            The Supervisor verifies these before approval.
+            Enter the Token Details and Unique Note Number exactly as the customer provided them.
+            The token image is uploaded at the next step (Upload Token).
           </p>
           <Input label="Token Details" value={token} onChange={e => setToken(e.target.value)} required placeholder="As provided by the customer" />
-          <Input label="Unique Note Number" value={note} onChange={e => setNote(e.target.value)} required placeholder="As provided by the customer" hint="Must be unique" />
+          <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required placeholder="As provided by the customer" hint="Uppercase letters and numbers only; must be unique" />
         </>
       ) : isCrypto ? (
         <>
@@ -1538,7 +1549,18 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   }
 
   return (
-    <Modal title={`Pay / Upload Slip — ${row.referenceNumber}`} onClose={onClose}>
+    <Modal title={`${isCashDeposit ? 'Upload Token' : 'Pay / Upload Slip'} — ${row.referenceNumber}`} onClose={onClose}>
+      {/* Cash has no account to send to — the operator uploads the token image against the Token
+          Details and Unique Note Number entered at Submit Token, so summarise those instead. */}
+      {isCashDeposit ? (
+        <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: '10px 18px' }}>
+            <DField k="Amount" v={fmt(row.amount)} />
+            <DField k="Token Details" v={row.tokenDetails} />
+            <DField k="Unique Note Number" v={row.noteNumber} />
+          </div>
+        </div>
+      ) : (
       <div style={{ padding: 12, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, marginBottom: 14 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
           {mode === 'payout'
@@ -1552,21 +1574,22 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
         </div>
         <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800, color: T.blue }}>{fmt(row.amount)}</div>
       </div>
+      )}
       {/* The UTR is the payment reference for anything paid over a rail — there is no separate
           Reference Number. A cash deposit has none, so only the slip is collected. */}
       {!isCashDeposit && (
         <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)}
           required placeholder="Bank UTR — the payment reference" />
       )}
-      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Slip Image</label>
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{isCashDeposit ? 'Token Image' : 'Slip Image'}</label>
       <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
       {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
       <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>
-        {isCashDeposit ? 'The slip image is required.' : 'Both the UTR Number and the slip image are required.'}
+        {isCashDeposit ? 'The token image is required.' : 'Both the UTR Number and the slip image are required.'}
       </p>
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-        <Btn onClick={submit} disabled={busy || !slip || (!isCashDeposit && !utr.trim())}>{busy ? 'Submitting…' : 'Submit Slip'}</Btn>
+        <Btn onClick={submit} disabled={busy || !slip || (!isCashDeposit && !utr.trim())}>{busy ? 'Submitting…' : (isCashDeposit ? 'Upload Token' : 'Submit Slip')}</Btn>
       </div>
     </Modal>
   );
@@ -1610,7 +1633,7 @@ const MarkDepositModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone
         {facts.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
       </div>
       {row.slipImage
-        ? <div style={{ marginBottom: 14 }}><SlipView label="Uploaded Slip" src={row.slipImage} filename={`${row.referenceNumber}-slip`} /></div>
+        ? <div style={{ marginBottom: 14 }}><SlipView label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Uploaded Slip'} src={row.slipImage} filename={`${row.referenceNumber}-slip`} /></div>
         : <div style={{ marginBottom: 14, fontSize: 12.5, color: T.textMuted }}>No slip image was uploaded for this deposit.</div>}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
@@ -1689,8 +1712,8 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
       )}
       {row.slipImage && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Submitted Slip</div>
-          <SlipView label="Submitted Slip" src={row.slipImage} filename={`${row.referenceNumber}-slip`} />
+          <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{isTokenMethod(row.txnMethod) ? 'Token Image' : 'Submitted Slip'}</div>
+          <SlipView label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Submitted Slip'} src={row.slipImage} filename={`${row.referenceNumber}-slip`} />
         </div>
       )}
       <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -1881,7 +1904,7 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
                   <td style={tdS}>{x.type.charAt(0) + x.type.slice(1).toLowerCase()}</td>
                   <td style={tdS}>{methodLabel(x.txnMethod)}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
-                  <td style={tdS}><StatusPill status={x.status} /></td>
+                  <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} /></td>
                   <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
                   <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn></td>
                 </tr>
