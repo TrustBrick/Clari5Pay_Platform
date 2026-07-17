@@ -21,8 +21,8 @@ import {
   MerchantAnalyticsPage, WhatsAppSettingsPage, DemoToolsPage,
 } from './pages/AdminPages';
 import { KYCPage } from './pages/KYCPage';
-import { AgentDashboardPage, AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
-import { AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage, AgentTxnReportsPage, AgentApprovalsPage, AgentAllTransactionsPage } from './pages/AgentTxnPages';
+import { AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
+import { AgentDashboardPage, AgentBalanceEnquiryPage, AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage, AgentTxnReportsPage, AgentApprovalsPage, AgentAllTransactionsPage } from './pages/AgentTxnPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
@@ -53,14 +53,14 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (page === 'kyc') return ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   // Agent Management — Supervisor & Manager only, and Demo-gated until the module is complete
   // (mirrors the nav.ts demo gate).
-  if (['agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-unassigned', 'agent-audit', 'agent-reports'].includes(page))
+  if (['agents', 'agent-accounts', 'agent-transactions', 'agent-unassigned', 'agent-audit', 'agent-reports'].includes(page))
     return IS_DEMO && ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   // Isolated Agent Transaction subsystem (operator workflow) — demo-gated. Agent Overview is open
   // to every agent role.
   // Agent Overview and the isolated Agent Reports page are open to every agent role.
   // Agent Overview, the isolated Agent Reports and the full agent ledger are read-only views,
   // open to every agent role.
-  if (page === 'agent-overview' || page === 'agent-txn-reports' || page === 'agent-all-txns')
+  if (['agent-dashboard', 'agent-overview', 'agent-txn-reports', 'agent-all-txns', 'agent-balance'].includes(page))
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'DEPOSIT_OPERATOR', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
   // Agent Deposit/Withdrawal Management (and the request forms they embed) are operator-only:
   // Supervisors and Managers are approval-only for agent payments and never create/manage these.
@@ -141,6 +141,7 @@ const App: React.FC = () => {
         'agent-reports': <AgentReportsPage {...props} />,
         // Isolated Agent Transaction subsystem.
         'agent-overview': <AgentOverviewPage {...props} />,
+        'agent-balance': <AgentBalanceEnquiryPage {...props} />,
         'agent-txn-reports': <AgentTxnReportsPage {...props} />,
         'agent-all-txns': <AgentAllTransactionsPage {...props} />,
         'agent-deposit-req': <AgentDepositRequestPage {...props} />,

@@ -92,6 +92,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'agent-approvals': 'Approvals',
   'agent-all-txns': 'All Transactions',
   'agent-txn-reports': 'Reports',
+  'agent-balance': 'Balance Enquiry',
   'agent-manage': 'Manage Transaction',
   'agent-audit': 'Agent Audit Trail',
   'agent-reports': 'Agent Reports',
@@ -156,6 +157,8 @@ const AGENT_CHILDREN: NavItem[] = [
   { key: 'agent-all-txns', icon: 'transactions', label: 'All Transactions' },
   // The single Agent Reports page — the isolated financial ledger.
   { key: 'agent-txn-reports', icon: 'reports', label: 'Reports' },
+  // Read-only per-member financial summary + Available Balance.
+  { key: 'agent-balance', icon: 'balance', label: 'Balance Enquiry' },
 ];
 
 // Per-role Agent Management sub-tabs. Supervisors/Managers are approval-only for agent payments —
@@ -163,11 +166,11 @@ const AGENT_CHILDREN: NavItem[] = [
 // tabs but NOT the operator Deposit/Withdrawal Management pages. Agent Settlement Management is
 // Supervisor-only. Operators (Data/Deposit/Withdrawal) get the management pages their role permits.
 const AGENT_SUBTABS: Record<string, string[]> = {
-  SUPERVISOR: ['agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-settlement-mgmt'],
-  MANAGER: ['agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts'],
-  DEO: ['agent-dashboard', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage'],
-  DEPOSIT_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt'],
-  WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-withdrawal-mgmt'],
+  SUPERVISOR: ['agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-settlement-mgmt', 'agent-balance'],
+  MANAGER: ['agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-balance'],
+  DEO: ['agent-dashboard', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage', 'agent-balance'],
+  DEPOSIT_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-balance'],
+  WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-withdrawal-mgmt', 'agent-balance'],
 };
 
 /**

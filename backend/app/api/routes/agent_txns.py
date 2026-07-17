@@ -467,6 +467,47 @@ async def _member_balance(db: AsyncSession, business: str, membership_id: str) -
     return {"available": available, "spendable": round(available - reserved, 2)}
 
 
+async def _member_summary(db: AsyncSession, business: str, membership_id: str) -> dict:
+    """Full financial summary for one Membership ID — the Balance Enquiry payload. Reuses the same
+    completed-only, per-leg logic as _member_balance (deposit net of Pay-In, withdrawal/settlement
+    plus their Pay-Out/Settlement commission), just broken out per component. `found` distinguishes
+    an unknown membership from a known one with no completed transactions (all zeros)."""
+    mid = (membership_id or "").strip()
+    rows = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.merchant_business == business,
+        AgentTransaction.membership_id == mid))).scalars().all() if mid else []
+    if not rows:
+        return {"found": False}
+    agents = {a.id: a for a in (await db.execute(select(AgentMaster).where(
+        AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()}
+
+    agg = {"DEPOSIT": [0.0, 0.0], "WITHDRAWAL": [0.0, 0.0], "SETTLEMENT": [0.0, 0.0]}  # [amount, commission]
+    member_name = None
+    last_dt = None
+    for t in rows:
+        member_name = member_name or t.membership_name
+        if t.created_at and (last_dt is None or t.created_at > last_dt):
+            last_dt = t.created_at
+        if t.status in COMPLETED_STATUSES and t.txn_type in agg:
+            amt = t.amount or 0.0
+            agg[t.txn_type][0] += amt
+            agg[t.txn_type][1] += round(amt * _leg_rate(agents.get(t.agent_master_id), t.txn_type), 2)
+    dep_amt, dep_com = agg["DEPOSIT"]
+    wd_amt, wd_com = agg["WITHDRAWAL"]
+    st_amt, st_com = agg["SETTLEMENT"]
+    available = round((dep_amt - dep_com) - (wd_amt + wd_com) - (st_amt + st_com), 2)
+    _, l_date, l_time = _ist_parts(last_dt)
+    return {
+        "found": True,
+        "membershipId": mid, "memberName": member_name,
+        "totalDeposits": round(dep_amt, 2), "depositCommission": round(dep_com, 2),
+        "totalWithdrawals": round(wd_amt, 2), "withdrawalCommission": round(wd_com, 2),
+        "totalSettlements": round(st_amt, 2), "settlementCommission": round(st_com, 2),
+        "availableBalance": available,
+        "lastTransactionDate": f"{l_date} {l_time}".strip() if last_dt else None,
+    }
+
+
 async def _resolve_approver(db: AsyncSession, business: str, approver_user_id: int | None):
     if approver_user_id is None:
         return None, None
@@ -1062,6 +1103,15 @@ async def member_accounts(membership_id: str, db: AsyncSession = Depends(get_db)
     return [_member_account_row(a) for a in rows]
 
 
+@router.get("/balance-enquiry/{membership_id}")
+async def balance_enquiry(membership_id: str, db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_agent_operator)):
+    """Read-only financial summary for a Membership ID (Balance Enquiry). Uses the same completed-
+    only, per-leg agent calculation as every other balance figure. Access is the standard agent
+    operator/manager gate — no new permission. `found:false` when the membership is unknown."""
+    return await _member_summary(db, _business(user), membership_id.strip())
+
+
 @router.post("/{txn_id}/manager/approve")
 async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                           user: User = Depends(get_current_agent_operator)):
@@ -1476,8 +1526,12 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
             # Pending = still in flight anywhere in the chain (PENDING, ACCOUNT_REQUESTED,
             # ACCOUNT_SUBMITTED, SUPERVISOR_REVIEW, SLIP_SUBMITTED …) — i.e. not yet final.
             "pending": sum(1 for t in txns if t.status not in FINAL_STATUSES),
-            "approved": len(approved),
+            # "approved" is the Completed count (COMPLETED_STATUSES); alias kept for existing readers.
+            "approved": len(approved), "completed": len(approved),
             "rejected": sum(1 for t in txns if t.status in REJECTED_STATUSES),
+            # Today's transactions (IST) — created today, any status.
+            "today": sum(1 for t in txns if t.created_at
+                         and t.created_at.replace(tzinfo=timezone.utc).astimezone(IST).date() == datetime.now(IST).date()),
             "approvedDeposits": round(gross_amount, 2),
             "approvedWithdrawals": round(total_withdrawal_amount, 2),
             "approvedSettlements": round(total_settlement_amount, 2),

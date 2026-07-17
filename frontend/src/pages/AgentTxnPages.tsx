@@ -9,7 +9,7 @@ import { useToast } from '../context/ToastContext';
 import {
   agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES, AGENT_SETTLEMENT_METHODS,
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
-  type AgentWithdrawalBody, type AgentMemberLookup, type AgentTxnRow,
+  type AgentWithdrawalBody, type AgentMemberLookup, type AgentMemberSummary, type AgentTxnRow,
   type AgentTxnAuditRow, type AgentTxnQuery, type AgentAccountOption, type AgentMemberAccount,
 } from '../services/agentTxns';
 
@@ -220,6 +220,144 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
           </table>
         </div>
       </Card>
+    </div>
+  );
+};
+
+// ─── Agent Dashboard — operational counts only, from the ISOLATED agent ledger ────────────────
+// Deliberately shows NO financial figures (no Available Balance / commission / revenue) and NO
+// merchant data — the Agent and Merchant dashboards are fully separate. Member financials live on
+// the Balance Enquiry page. Sourced from /api/agent-txns/overview (agent_transaction only).
+export const AgentDashboardPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+  const { showToast } = useToast();
+  const [data, setData] = useState<AgentOverview | null>(null);
+  const load = useCallback(() => {
+    agentTxnsAPI.overview().then(setData).catch(() => showToast('Failed to load the Agent Dashboard', 'error'));
+  }, [showToast]);
+  useEffect(() => { load(); }, [load]);
+  usePoll(() => load());
+
+  if (!data) return <LoadingScreen label="Loading Agent Dashboard…" />;
+  const c = data.cards;
+  const cards: Array<[string, number, string]> = [
+    ['Total Deposit Requests', c.depositCount, T.success],
+    ['Total Withdrawal Requests', c.withdrawalCount, T.danger],
+    ['Total Settlement Requests', c.settlementCount, '#7c3aed'],
+    ['Pending Requests', c.pending, T.warning],
+    ['Completed Requests', c.completed, T.success],
+    ['Rejected Requests', c.rejected, T.danger],
+    ["Today's Transactions", c.today, T.blue],
+  ];
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Dashboard</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Agent operational summary — request counts and recent activity.</p>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12, marginBottom: 18 }}>
+        {cards.map(([label, value, color]) => (
+          <Card key={label} style={{ padding: '14px 16px', borderTop: `3px solid ${color}` }}>
+            <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
+            <p style={{ margin: 0, fontSize: 22, fontWeight: 800, color }}>{value}</p>
+          </Card>
+        ))}
+      </div>
+      <Card style={{ overflow: 'hidden' }}>
+        <div style={{ padding: '12px 16px', borderBottom: `1px solid ${T.border}` }}><h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Recent Agent Transactions</h2></div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ background: T.canvas }}>{['Reference', 'Type', 'Membership', 'Amount', 'Status', 'Created (IST)'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <tbody>
+              {data.recent.length === 0 && <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No agent transactions yet.</td></tr>}
+              {data.recent.map(r => (
+                <tr key={r.id} style={{ background: T.surface }}>
+                  <td style={{ ...tdS, fontWeight: 700, color: T.blue }}>{r.referenceNumber}</td>
+                  <td style={tdS}>{r.type.charAt(0) + r.type.slice(1).toLowerCase()}</td>
+                  <td style={tdS}>{r.membershipId}{r.membershipName ? ` · ${r.membershipName}` : ''}</td>
+                  <td style={{ ...tdS, fontWeight: 700 }}>{fmt(r.amount)}</td>
+                  <td style={tdS}><StatusPill status={r.status} type={r.type} method={r.txnMethod} /></td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{r.createdDate} {r.createdTime}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+};
+
+// ─── Balance Enquiry — read-only per-member financial summary (isolated agent ledger) ─────────
+export const AgentBalanceEnquiryPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+  const { showToast } = useToast();
+  const [query, setQuery] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<AgentMemberSummary | null>(null);
+  const [searched, setSearched] = useState('');
+
+  const search = async () => {
+    const id = query.trim();
+    if (!id) { showToast('Enter a Membership ID.', 'error'); return; }
+    setBusy(true);
+    try {
+      const r = await agentTxnsAPI.balanceEnquiry(id);
+      setResult(r); setSearched(id);
+    } catch (e) { showToast(agentTxnError(e, 'Balance enquiry failed.'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  // Completed-only summary; server returns found:false for an unknown membership.
+  const rows: Array<[string, React.ReactNode, boolean?]> = result?.found ? [
+    ['Membership ID', result.membershipId],
+    ['Member Name', result.memberName || '—'],
+    ['Total Deposits', fmt(result.totalDeposits ?? 0)],
+    ['Deposit Commission', fmt(result.depositCommission ?? 0)],
+    ['Total Withdrawals', fmt(result.totalWithdrawals ?? 0)],
+    ['Withdrawal Commission', fmt(result.withdrawalCommission ?? 0)],
+    ['Total Settlements', fmt(result.totalSettlements ?? 0)],
+    ['Settlement Commission', fmt(result.settlementCommission ?? 0)],
+    ['Current Available Balance', fmt(result.availableBalance ?? 0), true],
+    ['Last Transaction Date', result.lastTransactionDate || '—'],
+  ] : [];
+
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Balance Enquiry</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Read-only member financial summary from the isolated Agent ledger (completed transactions only).</p>
+      </div>
+      <Card style={{ padding: 18, marginBottom: 16 }}>
+        {/* Enter submits: wrap so we can catch it without an onKeyDown prop on Input. */}
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}
+          onKeyDown={(e) => { if (e.key === 'Enter') search(); }}>
+          <Input label="Membership ID" value={query} onChange={e => setQuery(normalizeMemberId(e.target.value))}
+            placeholder="Enter Membership ID" style={{ marginBottom: 0, flex: '1 1 240px' }} />
+          <Btn onClick={search} disabled={busy}>{busy ? 'Searching…' : 'Search'}</Btn>
+        </div>
+      </Card>
+
+      {result && !result.found && (
+        <Card style={{ padding: 18, borderLeft: `4px solid ${T.danger}` }}>
+          <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: T.danger }}>No member found for the entered Membership ID.</p>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: T.textMuted }}>Searched: {searched}</p>
+        </Card>
+      )}
+
+      {result?.found && (
+        <Card style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
+            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: T.textMain }}>Financial Summary</h2>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 0 }}>
+            {rows.map(([label, value, highlight]) => (
+              <div key={label as string} style={{ padding: '12px 18px', borderBottom: `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
+                <p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
+                <p style={{ margin: 0, fontSize: highlight ? 18 : 14, fontWeight: highlight ? 800 : 700, color: highlight ? T.success : T.textMain }}>{value}</p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 };

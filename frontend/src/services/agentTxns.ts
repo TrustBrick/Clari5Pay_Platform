@@ -137,7 +137,7 @@ export interface AgentOverview {
     depositCount: number; depositAmount: number;
     withdrawalCount: number; withdrawalAmount: number;
     settlementCount: number; settlementAmount: number;
-    pending: number; approved: number; rejected: number;
+    pending: number; approved: number; completed: number; rejected: number; today: number;
     approvedDeposits: number; approvedWithdrawals: number; approvedSettlements: number;
     grossAmount: number; depositCommission: number; withdrawalCommission: number;
     settlementCommission: number;
@@ -236,10 +236,23 @@ export interface AgentTxnQuery {
   status?: string; txn_type?: string; search?: string; date?: string; date_from?: string; date_to?: string;
 }
 
+export interface AgentMemberSummary {
+  found: boolean;
+  membershipId?: string;
+  memberName?: string | null;
+  totalDeposits?: number; depositCommission?: number;
+  totalWithdrawals?: number; withdrawalCommission?: number;
+  totalSettlements?: number; settlementCommission?: number;
+  availableBalance?: number;
+  lastTransactionDate?: string | null;
+}
+
 export const agentTxnsAPI = {
   overview: async () => (await api.get<AgentOverview>('/api/agent-txns/overview')).data,
   formData: async () => (await api.get<AgentFormData>('/api/agent-txns/form-data')).data,
   member: async (id: string) => (await api.get<AgentMemberLookup>(`/api/agent-txns/member/${encodeURIComponent(id)}`)).data,
+  /** Read-only financial summary for a Membership ID (Balance Enquiry). */
+  balanceEnquiry: async (id: string) => (await api.get<AgentMemberSummary>(`/api/agent-txns/balance-enquiry/${encodeURIComponent(id)}`)).data,
   createDeposit: async (body: AgentDepositBody) => (await api.post<AgentTxnRow>('/api/agent-txns/deposit', body)).data,
   createWithdrawal: async (body: AgentWithdrawalBody) => (await api.post<AgentTxnRow>('/api/agent-txns/withdrawal', body)).data,
   /** Settlement — Supervisor-only and approval-free; created ready for them to pay. */
