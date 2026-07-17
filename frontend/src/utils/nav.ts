@@ -137,30 +137,27 @@ export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
   MANAGER: ['dashboard', 'approvals', 'transactions', 'agent-mgmt', 'templates', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
 };
 
-// Agent Management sub-tabs, resolved per merchant role. The isolated Agent Transaction subsystem
-// (Agent Overview + operator request/manage workflow) is added ALONGSIDE the existing
-// assignment-based tabs for Supervisor/Manager; operators (Data Operator = DEO) see only Agent
-// Overview + the request tabs their role permits. Tabs are added as each phase ships.
+// The Agent Management menu, in the ONE order every role sees it. A role's entry in
+// AGENT_SUBTABS decides only WHICH of these it may see, never their order — so the menu can never
+// drift between roles. Hidden items simply drop out and the rest keep their positions.
 const AGENT_CHILDREN: NavItem[] = [
-  { key: 'agent-overview', icon: 'dashboard', label: 'Agent Overview' },
-  { key: 'agent-all-txns', icon: 'transactions', label: 'Agent All Transactions' },
-  // The single Agent Reports page — the isolated financial ledger. The old assignment-based
-  // `agent-reports` tab was a duplicate and has been retired from the menu.
-  { key: 'agent-txn-reports', icon: 'reports', label: 'Agent Reports' },
   { key: 'agent-dashboard', icon: 'dashboard', label: 'Dashboard' },
+  // Agent Overview is the operators' dashboard equivalent (Deposit/Withdrawal Operator only —
+  // the DEO now has the Agent Dashboard above instead).
+  { key: 'agent-overview', icon: 'dashboard', label: 'Agent Overview' },
   { key: 'agents', icon: 'agent', label: 'Agents' },
   { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
-  // Operator management pages (list + reuse of the existing request form via a "+ Create" button).
   { key: 'agent-deposit-mgmt', icon: 'deposit', label: 'Agent Deposit Management' },
   { key: 'agent-withdrawal-mgmt', icon: 'withdrawal', label: 'Agent Withdrawal Management' },
   { key: 'agent-settlement-mgmt', icon: 'settlement', label: 'Agent Settlement Management' },
-  // Supervisor's review queue for the agent deposit chain (mirrors the merchant Approvals page).
-  { key: 'agent-approvals', icon: 'approvals', label: 'Agent Approvals' },
-  // Data Operator only — the single place agent transactions are modified. The per-row "Manage"
-  // button on Deposit/Withdrawal Management was removed so this is the one entry point.
+  // Data Operator only — the single place agent transactions are modified.
   { key: 'agent-manage', icon: 'templates', label: 'Manage Transaction' },
+  { key: 'agent-approvals', icon: 'approvals', label: 'Agent Approvals' },
+  { key: 'agent-all-txns', icon: 'transactions', label: 'Agent All Transactions' },
+  // The single Agent Reports page — the isolated financial ledger.
+  { key: 'agent-txn-reports', icon: 'reports', label: 'Agent Reports' },
 ];
-const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
+
 // Per-role Agent Management sub-tabs. Supervisors/Managers are approval-only for agent payments —
 // they keep the dashboard/agents/accounts/transactions/approval (Manage Transaction)/audit/reports
 // tabs but NOT the operator Deposit/Withdrawal Management pages. Agent Settlement Management is
@@ -197,8 +194,10 @@ export const navForUser = (user: User): NavItem[] => {
     const item = byKey.get(k);
     // Resolve Agent Management's sub-tabs to the ones this role is allowed to see.
     if (item && k === 'agent-mgmt') {
-      const subs = (AGENT_SUBTABS[role] || []).map((sk) => AGENT_CHILD_BY_KEY.get(sk)).filter((c): c is NavItem => Boolean(c));
-      return { ...item, children: subs };
+      // Filter the canonical list rather than mapping the role's array, so AGENT_CHILDREN alone
+      // decides the order and a role can only remove items from it.
+      const allowed = new Set(AGENT_SUBTABS[role] || []);
+      return { ...item, children: AGENT_CHILDREN.filter((c) => allowed.has(c.key)) };
     }
     return item;
   }).filter((i): i is NavItem => Boolean(i)));

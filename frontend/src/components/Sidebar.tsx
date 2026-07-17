@@ -14,6 +14,26 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+// Per-module sidebar accents. Only the Agent Management group uses the orange one — it is passed
+// down to that group's rows, so the same renderLeaf/renderGroup draw every module and nothing is
+// duplicated. Everything else keeps the existing blue. These live here, not in the theme, because
+// they are deliberately NOT global colours.
+type Accent = {
+  activeText: string; activeBg: string; activeBorder: string; activeIcon?: string;
+  hoverBg: string; hoverText: string; headerText?: string; transition: string;
+};
+const ACCENT_DEFAULT: Accent = {
+  activeText: '#7eb8ff', activeBg: T.sidebarActive, activeBorder: T.blue,
+  hoverBg: T.sidebarHover, hoverText: 'rgba(255,255,255,0.9)', transition: 'all 0.15s ease',
+};
+// Agent Module identity. Active rows read white with an orange icon and left accent over a soft
+// orange wash — never a solid orange fill.
+const ORANGE = '#FF8A00';
+const ACCENT_AGENT: Accent = {
+  activeText: '#ffffff', activeBg: 'rgba(255,138,0,0.15)', activeBorder: ORANGE, activeIcon: ORANGE,
+  hoverBg: 'rgba(255,138,0,0.08)', hoverText: '#FF9F2F', headerText: ORANGE, transition: 'all 0.2s ease',
+};
+
 const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, onClose }) => {
   const nav = navForUser(user);
   const isStaff = user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
@@ -25,7 +45,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
   };
 
   // A single clickable nav row (used for top-level leaves and submenu children).
-  const renderLeaf = (it: NavItem, indent = false) => {
+  const renderLeaf = (it: NavItem, indent = false, accent: Accent = ACCENT_DEFAULT) => {
     const isActive = active === it.key;
     return (
       <div
@@ -38,16 +58,19 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
         style={{
           display:'flex',alignItems:'center',gap:10,padding:indent ? '8px 12px 8px 22px' : '9px 12px',
           borderRadius:10,cursor:'pointer',marginBottom:2,
-          background:isActive ? T.sidebarActive : 'transparent',
-          color:isActive ? '#7eb8ff' : 'rgba(255,255,255,0.6)',
+          background:isActive ? accent.activeBg : 'transparent',
+          color:isActive ? accent.activeText : 'rgba(255,255,255,0.6)',
           fontWeight:isActive ? 700 : 500,
-          fontSize:indent ? 12.5 : 13,transition:'all 0.15s ease',
-          borderLeft:isActive ? `3px solid ${T.blue}` : '3px solid transparent',
+          fontSize:indent ? 12.5 : 13,transition:accent.transition,
+          borderLeft:isActive ? `3px solid ${accent.activeBorder}` : '3px solid transparent',
         }}
-        onMouseEnter={e => { if(!isActive){ (e.currentTarget as HTMLDivElement).style.background=T.sidebarHover; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.9)'; } }}
+        onMouseEnter={e => { if(!isActive){ (e.currentTarget as HTMLDivElement).style.background=accent.hoverBg; (e.currentTarget as HTMLDivElement).style.color=accent.hoverText; } }}
         onMouseLeave={e => { if(!isActive){ (e.currentTarget as HTMLDivElement).style.background='transparent'; (e.currentTarget as HTMLDivElement).style.color='rgba(255,255,255,0.6)'; } }}
       >
-        <span style={{ width:20,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+        {/* An active Agent row keeps white text but an orange icon, so the icon is coloured here
+            rather than inheriting. Everywhere else the icon follows the row's colour as before. */}
+        <span style={{ width:20,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,
+          color: isActive ? accent.activeIcon : undefined }}>
           {isIconName(it.icon)
             ? <Icon name={it.icon} size={indent ? 16 : 18} weight={isActive ? 'fill' : 'regular'} />
             : <span style={{ fontSize:indent ? 13 : 15 }}>{it.icon}</span>}
@@ -66,18 +89,23 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
     if (children.length === 0) return null;
     const opened = groupIsOpen(item);
     const childActive = children.some(c => c.key === active);
+    // The Agent Module carries its own accent so it is recognisable at a glance. Scoped to this
+    // one group key — every other module renders exactly as before.
+    const accent = item.key === 'agent-mgmt' ? ACCENT_AGENT : ACCENT_DEFAULT;
     return (
       <div key={item.key} style={{ marginBottom:2 }}>
         <div
           onClick={() => setOpenGroups(g => ({ ...g, [item.key]: !opened }))}
           style={{
             display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:10,cursor:'pointer',
-            background: childActive && !opened ? T.sidebarActive : 'transparent',
-            color: childActive ? '#7eb8ff' : 'rgba(255,255,255,0.6)',
-            fontWeight: childActive ? 700 : 500, fontSize:13, transition:'all 0.15s ease',
+            background: childActive && !opened ? accent.activeBg : 'transparent',
+            // The Agent title/icon/arrow stay orange whether or not the section is open — that is
+            // the module's identity, not an active state. Other groups behave as before.
+            color: accent.headerText ?? (childActive ? accent.activeText : 'rgba(255,255,255,0.6)'),
+            fontWeight: childActive ? 700 : 500, fontSize:13, transition:accent.transition,
           }}
-          onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background=T.sidebarHover; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = (childActive && !opened) ? T.sidebarActive : 'transparent'; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background=accent.hoverBg; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = (childActive && !opened) ? accent.activeBg : 'transparent'; }}
         >
           <span style={{ width:20,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
             {isIconName(item.icon)
@@ -89,7 +117,7 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
         </div>
         {opened && (
           <div className="animate-fade-in" style={{ marginTop:2 }}>
-            {children.map(c => renderLeaf(c, true))}
+            {children.map(c => renderLeaf(c, true, accent))}
           </div>
         )}
       </div>
