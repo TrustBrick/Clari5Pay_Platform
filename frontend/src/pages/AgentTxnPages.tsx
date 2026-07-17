@@ -474,8 +474,16 @@ export const AgentWithdrawalRequestPage: React.FC<{
     try {
       const r = await agentTxnsAPI.member(id);
       if (r.membershipName) setMembershipName(r.membershipName);
-      if (r.latestDeposit) { setAutoAgent(r.latestDeposit); setAgentId(String(r.latestDeposit.agentMasterId)); }
-      else { setManualOverride(true); }   // no prior agent deposit → manual selection
+      // The member's latest agent deposit still auto-links its agent (and its depositId), but only
+      // when that agent serves the Transaction Type already chosen — the type is picked before the
+      // agent now, so an out-of-category auto-link would drop in an agent the filtered list does
+      // not even offer, and the backend would reject it on submit. When it does not match, the
+      // operator's own choice stands and no deposit link is made.
+      const linked = r.latestDeposit;
+      const linkedFits = linked
+        && (!txnMethod || String(linked.category || '').toUpperCase() === categoryForMethod(txnMethod));
+      if (linked && linkedFits) { setAutoAgent(linked); setAgentId(String(linked.agentMasterId)); }
+      else { setManualOverride(true); }   // no prior deposit, or its agent serves another type
     } catch {
       setManualOverride(true);
     } finally { setLooking(false); }
@@ -562,7 +570,32 @@ export const AgentWithdrawalRequestPage: React.FC<{
       )}
 
       <Card style={{ padding: 22 }}>
+        {/* The member's latest agent deposit pre-selects its agent and links this request to that
+            deposit (linkedDepositId). Picking a different agent below simply drops the link — the
+            Select is always live, so no override toggle is needed. */}
+        {usingAuto && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>✓ Auto-fetched</span>
+            <span style={{ fontSize: 12, color: T.textMuted }}>Agent taken from the latest agent deposit {autoAgent!.reference} for this membership — choose another agent to unlink.</span>
+          </div>
+        )}
+
+        {/* Same order and two-column grid as the Agent Deposit Request: the Transaction Type is
+            chosen first and narrows the agent list to that category; the agent details below are
+            all auto-fetched from the chosen agent. */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
+          <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); setAutoAgent(null); }} required
+            options={[{ value: '', label: '— Select —' },
+              ...(isSettlement ? AGENT_SETTLEMENT_METHODS : (fd.txnMethods || [])).map(v => ({ value: v, label: methodLabel(v) }))]} />
+          <Sel label="Select Agent ID" value={agentId} onChange={e => setAgentId(e.target.value)} required
+            options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
+              ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
+          <ReadField label="Agent Name" value={disp?.name} />
+          <ReadField label="Agent Country" value={disp?.country} />
+          <ReadField label="Agent State" value={disp?.state} />
+          <ReadField label="Agent Location" value={disp?.location} />
+          <ReadField label="Agent Category" value={disp?.category} />
+
           <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(normalizeMemberId(e.target.value))}
             onBlur={lookupMember} required placeholder="Enter Membership ID"
             hint={looking ? 'Looking up…' : 'Uppercase letters and numbers only'} />
@@ -570,40 +603,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
           <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
           <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal" />
-          <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); }} required
-            options={[{ value: '', label: '— Select —' },
-              ...(isSettlement ? AGENT_SETTLEMENT_METHODS : (fd.txnMethods || [])).map(v => ({ value: v, label: methodLabel(v) }))]} />
-          <div />
-        </div>
-
-        {/* Agent — auto-fetched from the latest deposit for this membership, else manual selection */}
-        <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-          {usingAuto ? (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>✓ Auto-fetched</span>
-                <span style={{ fontSize: 12, color: T.textMuted }}>Agent from the latest agent deposit {autoAgent!.reference} for this membership (view only).</span>
-                <Btn size="sm" variant="ghost" onClick={() => setManualOverride(true)} style={{ marginLeft: 'auto' }}>Select a different agent</Btn>
-              </div>
-              <ReadField label="Agent ID" value={disp?.code} />
-            </>
-          ) : (
-            <>
-              <Sel label="Select Agent ID" value={agentId} onChange={e => setAgentId(e.target.value)} required
-                options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
-                ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
-              {autoAgent && (
-                <Btn size="sm" variant="ghost" onClick={() => { setManualOverride(false); setAgentId(String(autoAgent.agentMasterId)); }}>↩ Use auto-fetched agent ({autoAgent.agentCode})</Btn>
-              )}
-            </>
-          )}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px', marginTop: 12 }}>
-            <ReadField label="Agent Name" value={disp?.name} />
-            <ReadField label="Agent Country" value={disp?.country} />
-            <ReadField label="Agent State" value={disp?.state} />
-            <ReadField label="Agent Location" value={disp?.location} />
-            <ReadField label="Agent Category" value={disp?.category} />
-          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
