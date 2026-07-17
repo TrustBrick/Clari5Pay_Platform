@@ -505,7 +505,6 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ user, onNavigate }) => {
                             </>
                           ) : (
                             <>
-                              <Btn variant="ghost" size="sm" onClick={() => { openAgentAccounts(a.id); onNavigate?.('agent-accounts'); }}>Accounts</Btn>
                               <Btn variant={a.status === 'ACTIVE' ? 'secondary' : 'success'} size="sm" disabled={busyId === a.id} onClick={() => toggleStatus(a)}>
                                 {a.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
                               </Btn>
@@ -797,76 +796,10 @@ export const AgentDashboardPage: React.FC<AgentPageProps> = ({ onNavigate }) => 
         </Card>
       </div>
 
-      {/* Agent Performance table (row → Agent Details popup) */}
-      <Card style={{ marginBottom: 16 }}>
-        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Agent Performance</h3>
-        </div>
-        {d.agentFinancials.length === 0 ? <div style={{ padding: '32px', textAlign: 'center', color: T.textMuted, fontSize: 13 }}>No agents yet.</div> : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1000 }}>
-              <thead><tr>{['Agent ID', 'Name', 'Category', 'Deposit', 'Withdrawal', 'Commission', 'Available Balance', 'Pending', 'Completed'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
-              <tbody>{d.agentFinancials.map((r) => (
-                <tr key={r.agentId} style={{ cursor: 'pointer' }} onClick={() => setDetailAgent(r)}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = T.canvas; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}>
-                  <td style={{ ...td, fontWeight: 700, color: T.blue }}>{r.agentId}</td>
-                  <td style={td}>{r.name}</td>
-                  <td style={td}>{CATEGORY_LABEL_FULL[r.category] || r.category}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>{fmt(r.deposit)}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>{fmt(r.withdrawal)}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>{fmt(r.commission)}</td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: T.blue }}>{fmt(r.availableBalance)}</td>
-                  <td style={{ ...td, textAlign: 'center' }}>{r.pending}</td>
-                  <td style={{ ...td, textAlign: 'center' }}>{r.completed}</td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
-        )}
-      </Card>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 16 }}>
-        <BarList title="Top 10 Agents by Deposit" icon="trophy" color={T.green} money data={d.financeCharts.topDeposit} />
-        <BarList title="Top 10 Agents by Commission" icon="fees" color={T.warning} money data={d.financeCharts.topCommission} />
-        <BarList title="Deposit Amount by Agent" icon="deposit" color={T.blue} money data={d.financeCharts.depositByAgent} />
-        <BarList title="Withdrawal Amount by Agent" icon="withdrawal" color={T.danger} money data={d.financeCharts.withdrawalByAgent} />
-      </div>
-
       <div style={gridCharts}>
         <BarList title="Agents by Category" icon="tag" color={T.info} data={toBars(d.agentsByCategory, CATEGORY_LABEL_FULL)} />
-        <BarList title="Accounts by Type" icon="folder" color={T.blue} data={toBars(d.accounts.byType, ACCOUNT_TYPE_LABEL)} />
         <BarList title="Agents by Country" icon="country" color={T.green} data={d.agentsByCountry.map((c) => ({ label: c.label, value: c.count }))} />
-        <BarList title="Top Agents (by transactions handled)" icon="trophy" color={T.warning} data={d.topAgents.map((a) => ({ label: `${a.agentId} · ${a.name}`, value: a.count }))} />
       </div>
-
-      <Card>
-        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Recent Agent Assignments</h3>
-        </div>
-        {d.recent.length === 0 ? (
-          <div style={{ padding: '40px 24px', textAlign: 'center', color: T.textMuted, fontSize: 13 }}>No agent assignments yet.</div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
-              <thead><tr>{['Action', 'Transaction', 'Type', 'Agent', 'Account', 'Assigned By', 'When (IST)'].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
-              <tbody>
-                {d.recent.map((r) => (
-                  <tr key={r.id}>
-                    <td style={td}><span style={{ background: r.action === 'REASSIGN' ? T.warningBg : T.successBg, color: r.action === 'REASSIGN' ? T.warning : T.success, fontSize: 10.5, fontWeight: 800, padding: '2px 8px', borderRadius: 20 }}>{r.action}</span></td>
-                    <td style={{ ...td, fontWeight: 700, color: T.blue }}>{r.txRef}</td>
-                    <td style={td}>{TXTYPE_LABEL[r.txType] || r.txType}</td>
-                    <td style={td}>{r.agentId} · {r.agentName}</td>
-                    <td style={td}>{r.accountRef} ({ACCOUNT_TYPE_LABEL[r.accountType] || r.accountType})</td>
-                    <td style={td}>{r.assignedBy || '—'}</td>
-                    <td style={{ ...td, color: T.textMuted, fontSize: 12 }}>{r.createdAt ? formatDateTimeIST(r.createdAt) : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
 
       {/* Agent Details popup (cumulative totals — correctly labelled "Total …", not "Today's …") */}
       {detailAgent && (

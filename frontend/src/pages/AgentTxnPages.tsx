@@ -26,11 +26,6 @@ const INSTR_LABEL: Record<string, string> = {
 };
 const instrLabel = (v: string) => INSTR_LABEL[v] || v;
 
-const IsolationNote: React.FC = () => (
-  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 8, background: T.infoBg, color: T.info, fontSize: 11.5, fontWeight: 600, marginBottom: 16 }}>
-    <span>ⓘ</span> Isolated module — these figures reflect only Agent Transactions and never affect merchant balances, settlements, treasury, risk or reports.
-  </div>
-);
 
 // Workflow statuses — same labels as the merchant deposit workflow. PENDING/APPROVED are legacy
 // rows created before the chain existed.
@@ -135,7 +130,6 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Overview</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Summary of the isolated Agent Transaction subsystem.</p>
       </div>
-      <IsolationNote />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12, marginBottom: 18 }}>
         {kpis.map(([label, value, color]) => (
@@ -243,8 +237,6 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const [mobileCode, setMobileCode] = useState('+91');
   const [notes, setNotes] = useState('');
   const [instructions, setInstructions] = useState('');
-  const [sendApproval, setSendApproval] = useState(false);
-  const [approverId, setApproverId] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AgentTxnRow | null>(null);
 
@@ -276,7 +268,6 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
     setSenderIfsc(''); setSenderBankName(''); setSenderBranch('');
     setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91'); setNotes(''); setInstructions('');
-    setSendApproval(false); setApproverId('');
   };
 
   const submit = async () => {
@@ -295,7 +286,6 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       showToast('Enter the Sending Account holder and number.', 'error'); return;
     }
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
-    if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setBusy(true); setResult(null);
     const body: AgentDepositBody = {
       agentMasterId: agent.id, membershipId: membershipId.trim(),
@@ -303,7 +293,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       amount: amt, country: country || undefined, state: state || undefined,
       location: location || undefined, mobile: mobile || undefined,
       mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
-      instructions: instructions || undefined, sentForApproval: sendApproval,
+      instructions: instructions || undefined, sentForApproval: false,
       ...(isSpecialMethod(txnMethod) ? {} : { tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim() }),
       txnMethod,
       senderUpiId: senderUpiId.trim() || undefined,
@@ -312,7 +302,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       senderIfsc: senderIfsc.trim() || undefined,
       senderBankName: senderBankName.trim() || undefined,
       senderBranch: senderBranch.trim() || undefined,
-      approverUserId: sendApproval ? Number(approverId) : undefined,
+      // Approval routing follows the business workflow automatically — no manual approver.
     };
     try {
       const row = await agentTxnsAPI.createDeposit(body);
@@ -334,7 +324,6 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Deposit Request</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Record a third-party agent deposit in the isolated Agent ledger.</p>
       </div>
-      <IsolationNote />
       </>)}
 
       {result && !embedded && (
@@ -415,19 +404,6 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
             style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
         </div>
 
-        <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: T.textMain }}>
-            <input type="checkbox" checked={sendApproval} onChange={e => setSendApproval(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
-            Send To Approval (optional)
-          </label>
-          {sendApproval && (
-            <div style={{ marginTop: 12, maxWidth: 360 }}>
-              <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
-                options={[{ value: '', label: '— Select approver —' }, ...fd.approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
-            </div>
-          )}
-        </div>
-
         <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
           <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : 'Submit Agent Deposit'}</Btn>
           <Btn variant="secondary" onClick={reset} disabled={busy}>Clear</Btn>
@@ -459,16 +435,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [tokenDetails, setTokenDetails] = useState('');
   const [noteNumber, setNoteNumber] = useState('');
   const [walletAddress, setWalletAddress] = useState('');
-  // Payout account — saved accounts auto-fetch with the membership; a single one auto-selects.
-  const [savedAccounts, setSavedAccounts] = useState<AgentMemberAccount[]>([]);
-  const [payoutAccountId, setPayoutAccountId] = useState('');
-  const [addingAccount, setAddingAccount] = useState(false);
-  const [payHolder, setPayHolder] = useState('');
-  const [payNumber, setPayNumber] = useState('');
-  const [payIfsc, setPayIfsc] = useState('');
-  const [payBank, setPayBank] = useState('');
-  const [payBranch, setPayBranch] = useState('');
-  const [payUpi, setPayUpi] = useState('');
   const [manualOverride, setManualOverride] = useState(false);
   const [looking, setLooking] = useState(false);
   const [amount, setAmount] = useState('');
@@ -479,7 +445,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [mobileCode, setMobileCode] = useState('+91');
   const [notes, setNotes] = useState('');
   const [instructions, setInstructions] = useState('');
-  const [sendApproval, setSendApproval] = useState(false);
+  // Approval is mandatory on an Agent Withdrawal — the operator must always route it to an
+  // approver, so this is fixed on rather than a choice.
+  const sendApproval = true;
   const [approverId, setApproverId] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AgentTxnRow | null>(null);
@@ -499,16 +467,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
       if (r.membershipName) setMembershipName(r.membershipName);
       if (r.latestDeposit) { setAutoAgent(r.latestDeposit); setAgentId(String(r.latestDeposit.agentMasterId)); }
       else { setManualOverride(true); }   // no prior agent deposit → manual selection
-      // Saved payout accounts for this membership: exactly one → auto-select it; none → the
-      // operator enters the details, which are then saved and re-used next time.
-      const accts = r.savedAccounts || [];
-      setSavedAccounts(accts);
-      const preferred = accts.find(a => a.isDefault) || (accts.length === 1 ? accts[0] : undefined);
-      setPayoutAccountId(preferred ? String(preferred.id) : '');
-      setAddingAccount(accts.length === 0);
     } catch {
       setManualOverride(true);
-      setSavedAccounts([]); setPayoutAccountId(''); setAddingAccount(true);
     } finally { setLooking(false); }
   };
 
@@ -523,10 +483,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const reset = () => {
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
-    setNotes(''); setInstructions(''); setSendApproval(false); setApproverId('');
-    setSavedAccounts([]); setPayoutAccountId(''); setAddingAccount(false); setTxnMethod('');
+    setNotes(''); setInstructions(''); setApproverId('');
+    setTxnMethod('');
     setTokenDetails(''); setNoteNumber('');
-    setPayHolder(''); setPayNumber(''); setPayIfsc(''); setPayBank(''); setPayBranch(''); setPayUpi('');
   };
 
   const submit = async () => {
@@ -536,7 +495,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
     const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
-    if (sendApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
+    if (!approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
     if (isWalletMethod(txnMethod)) {
       if (!walletAddress.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
@@ -545,14 +504,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
       if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
       if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
     }
-    // The payout account: an existing saved one, or new details to be saved for re-use.
-    if (!addingAccount && !payoutAccountId) { showToast('Select the payout account.', 'error'); return; }
-    if (addingAccount && !payNumber.trim() && !payUpi.trim()) {
-      showToast('Enter the payout Account Number or UPI ID.', 'error'); return;
-    }
-    if (addingAccount && payNumber.trim() && !payHolder.trim()) {
-      showToast('Enter the payout Account Holder.', 'error'); return;
-    }
     setBusy(true); setResult(null);
     const body: AgentWithdrawalBody = {
       agentMasterId: Number(agentId), membershipId: membershipId.trim(),
@@ -560,22 +511,13 @@ export const AgentWithdrawalRequestPage: React.FC<{
       amount: amt, country: country || undefined, state: state || undefined,
       location: location || undefined, mobile: mobile || undefined,
       mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
-      instructions: instructions || undefined, sentForApproval: sendApproval,
-      approverUserId: sendApproval ? Number(approverId) : undefined,
+      instructions: instructions || undefined, sentForApproval: true,
+      approverUserId: Number(approverId),
       txnMethod,
       ...(isWalletMethod(txnMethod)
         ? { walletAddress: walletAddress.trim() }
         : { tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim() }),
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
-      ...(addingAccount ? {
-        payoutAccountHolder: payHolder.trim() || undefined,
-        payoutAccountNumber: payNumber.trim() || undefined,
-        payoutIfsc: payIfsc.trim() || undefined,
-        payoutBankName: payBank.trim() || undefined,
-        payoutBranch: payBranch.trim() || undefined,
-        payoutUpiId: payUpi.trim() || undefined,
-        savePayoutAccount: true,
-      } : { payoutAccountId: Number(payoutAccountId) }),
     };
     try {
       const row = await (isSettlement ? agentTxnsAPI.createSettlement(body) : agentTxnsAPI.createWithdrawal(body));
@@ -597,7 +539,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent {NOUN} Request</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Record a third-party agent {NOUN.toLowerCase()} in the isolated Agent ledger.</p>
       </div>
-      <IsolationNote />
       </>)}
 
       {result && !embedded && (
@@ -655,48 +596,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
           </div>
         </div>
 
-        {/* Payout account — where the member is paid. Saved accounts auto-fetch with the
-            membership and a single one auto-selects; new details are saved for re-use. */}
-        <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-            <p style={{ margin: 0, fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Payout Account</p>
-            {savedAccounts.length > 0 && (
-              <Btn size="sm" variant="ghost" style={{ marginLeft: 'auto' }} onClick={() => setAddingAccount(a => !a)}>
-                {addingAccount ? '↩ Use a saved account' : '+ Add Account'}
-              </Btn>
-            )}
-          </div>
-          {!addingAccount ? (
-            <>
-              {savedAccounts.length > 0 && (
-                <span style={{ fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>
-                  ✓ {savedAccounts.length === 1 ? 'Auto-selected the account on file' : `${savedAccounts.length} accounts on file`}
-                </span>
-              )}
-              <Sel label="Saved Account" value={payoutAccountId} onChange={e => setPayoutAccountId(e.target.value)} required
-                style={{ marginTop: 10, marginBottom: 0 }}
-                options={[{ value: '', label: '— Select an account —' },
-                  ...savedAccounts.map(a => ({ value: String(a.id), label: `${a.label || a.accountNumber || a.upiId}${a.isDefault ? ' (default)' : ''}` }))]} />
-            </>
-          ) : (
-            <>
-              <p style={{ margin: '0 0 10px', fontSize: 11.5, color: T.textMuted }}>
-                {savedAccounts.length === 0
-                  ? 'No account on file for this membership — enter it once and it is saved for future withdrawals.'
-                  : 'New account details. Saved against this membership; a repeat of an existing account is reused, not duplicated.'}
-              </p>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
-                <Input label="Account Holder" value={payHolder} onChange={e => setPayHolder(e.target.value)} />
-                <Input label="Account Number" value={payNumber} onChange={e => setPayNumber(e.target.value)} />
-                <Input label="IFSC Code" value={payIfsc} onChange={e => setPayIfsc(e.target.value.toUpperCase())} />
-                <Input label="Bank Name" value={payBank} onChange={e => setPayBank(e.target.value)} />
-                <Input label="Branch" value={payBranch} onChange={e => setPayBranch(e.target.value)} />
-                <Input label="UPI ID" value={payUpi} onChange={e => setPayUpi(e.target.value)} placeholder="Instead of a bank account" />
-              </div>
-            </>
-          )}
-        </div>
-
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
           <SearchSelect label="Country" value={country} onChange={setCountry} options={COUNTRY_OPTIONS} placeholder="Type to search…" />
           <SearchSelect label="State" value={state} onChange={setState} options={STATE_OPTIONS} placeholder="Type to search…" />
@@ -726,16 +625,14 @@ export const AgentWithdrawalRequestPage: React.FC<{
         </div>
 
         <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: 13, fontWeight: 700, color: T.textMain }}>
-            <input type="checkbox" checked={sendApproval} onChange={e => setSendApproval(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
-            Send To Approval (optional)
-          </label>
-          {sendApproval && (
-            <div style={{ marginTop: 12, maxWidth: 360 }}>
-              <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
-                options={[{ value: '', label: '— Select approver —' }, ...fd.approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
-            </div>
-          )}
+          <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
+          <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
+            Every Agent Withdrawal goes to an approver — choose who reviews this one.
+          </p>
+          <div style={{ maxWidth: 360 }}>
+            <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
+              options={[{ value: '', label: '— Select approver —' }, ...fd.approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+          </div>
         </div>
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
@@ -917,7 +814,6 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Manage Transaction</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Correct the amount of an in-flight <strong>Cash</strong> agent transaction — other methods cannot be edited. Changing the amount restarts approval. Agent transactions only; merchant transactions are never affected.</p>
       </div>
-      <IsolationNote />
 
       <Card style={{ padding: 16, marginBottom: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
@@ -1137,7 +1033,6 @@ const AgentTxnManagementPage: React.FC<{
         </div>
         <Btn onClick={() => setShowForm(true)}>+ Create {requestLabel}</Btn>
       </div>
-      <IsolationNote />
 
       <Card style={{ padding: 16, marginBottom: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
@@ -1264,8 +1159,8 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [status, setStatus] = useState('');
   const [type, setType] = useState('');
+  const [status, setStatus] = useState('');
   const [fromF, setFromF] = useState('');
   const [toF, setToF] = useState('');
   const [page, setPage] = useState(1);
@@ -1325,29 +1220,8 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
     <div>
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent Reports</h1>
-        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Financial summary and detailed ledger for the isolated Agent Transaction subsystem.</p>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Detailed ledger for the isolated Agent Transaction subsystem.</p>
       </div>
-      <IsolationNote />
-
-      {/* Financial Summary — shared /overview calculation (same as Agent Overview) */}
-      <Card style={{ padding: 18, marginBottom: 16 }}>
-        <h2 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 800, color: T.textMain }}>Financial Summary (Approved)</h2>
-        {!c ? <div style={{ padding: 16, color: T.textMuted, fontSize: 13 }}>Loading…</div> : (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: 12 }}>
-              {fin.map(([label, value, color]) => (
-                <div key={label} style={{ padding: '12px 14px', borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}`, borderTop: `3px solid ${color}` }}>
-                  <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
-                  <p style={{ margin: 0, fontSize: 17, fontWeight: 800, color }}>{value}</p>
-                </div>
-              ))}
-            </div>
-            <p style={{ margin: '12px 0 0', fontSize: 11.5, color: T.textMuted }}>
-              Net (Approved) = Gross Amount − Deposit Commission − Total Withdrawals − Withdrawal Commission − Total Settlements − Settlement Commission. Total Commission = Deposit + Withdrawal + Settlement Commission. Commission uses each agent's Fees %. Mirrors the Merchant available-balance formula.
-            </p>
-          </>
-        )}
-      </Card>
 
       {/* Per-agent breakdown — from the same overview payload */}
       {ov && ov.byAgent.length > 0 && (
@@ -1826,7 +1700,6 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
           {isManager ? ' complete — approving finishes the withdrawal.' : ' mark as Deposited.'}
         </p>
       </div>
-      <IsolationNote />
 
       <Card style={{ overflow: 'hidden' }}>
         <div style={{ padding: '12px 16px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1864,22 +1737,14 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
 // ─── Agent All Transactions ────────────────────────────────────────────────────
 // The agent counterpart of Merchant → All Transactions: same shape (search + date filters, type
 // and status selects, export, ledger table, "Showing X of Y"), plus the Agent ID / Agent Name /
-// Transaction Type columns. Lists EVERY agent transaction of every type from the isolated ledger —
-// merchant transactions are never mixed in, because this only ever calls /api/agent-txns.
-const AGENT_TYPE_OPTIONS = [
-  { value: '', label: 'All Types' },
-  { value: 'DEPOSIT', label: 'Deposit' },
-  { value: 'WITHDRAWAL', label: 'Withdrawal' },
-  { value: 'SETTLEMENT', label: 'Settlement' },
-];
-
+// Lists EVERY agent transaction of every type from the isolated ledger — merchant transactions are
+// never mixed in, because this only ever calls /api/agent-txns.
 export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
   const { showToast } = useToast();
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailRow, setDetailRow] = useState<AgentTxnRow | null>(null);
   const [search, setSearch] = useState('');
-  const [type, setType] = useState('');
   const [status, setStatus] = useState('');
   const [method, setMethod] = useState('');
   const [fromF, setFromF] = useState('');
@@ -1889,10 +1754,9 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      // Search / type / status / dates go server-side; the transaction-type (method) refinement is
+      // Search / status / dates go server-side; the transaction-type (method) refinement is
       // applied client-side, mirroring how the merchant page refines its server-filtered set.
       const q: AgentTxnQuery = {};
-      if (type) q.txn_type = type;
       if (status) q.status = status;
       if (search.trim()) q.search = search.trim();
       if (fromF) q.date_from = fromF;
@@ -1900,7 +1764,7 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
       setRows(await agentTxnsAPI.list(q));
     } catch { showToast('Failed to load agent transactions.', 'error'); }
     finally { setLoading(false); }
-  }, [type, status, search, fromF, toF, showToast]);
+  }, [status, search, fromF, toF, showToast]);
 
   useEffect(() => { load(); }, [load]);
   usePoll(() => { if (!detailRow) load(); });
@@ -1911,7 +1775,7 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
   const pageRows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const clearFilters = () => {
-    setSearch(''); setType(''); setStatus(''); setMethod(''); setFromF(''); setToF(''); setPage(1);
+    setSearch(''); setStatus(''); setMethod(''); setFromF(''); setToF(''); setPage(1);
   };
 
   const exportCsv = () => {
@@ -1938,12 +1802,10 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Agent All Transactions</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Every Agent Deposit, Withdrawal and Settlement in the isolated Agent ledger.</p>
       </div>
-      <IsolationNote />
 
       <Card style={{ padding: 16, marginBottom: 16 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 12 }}>
           <Input label="Search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Reference / Membership / Agent" style={{ marginBottom: 0 }} />
-          <Sel label="Type" value={type} onChange={e => setType(e.target.value)} style={{ marginBottom: 0 }} options={AGENT_TYPE_OPTIONS} />
           <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} style={{ marginBottom: 0 }}
             options={[{ value: '', label: 'All Statuses' }, ...STATUS_FILTER_OPTIONS]} />
           <Sel label="Transaction Type" value={method} onChange={e => { setMethod(e.target.value); setPage(1); }} style={{ marginBottom: 0 }}

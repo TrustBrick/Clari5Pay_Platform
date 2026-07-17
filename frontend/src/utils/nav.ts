@@ -20,9 +20,6 @@ export const NAV: Record<UserRole, NavItem[]> = {
         { key: 'agent-dashboard', icon: 'dashboard', label: 'Dashboard' },
         { key: 'agents', icon: 'agent', label: 'Agents' },
         { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
-        { key: 'agent-transactions', icon: 'transactions', label: 'Transactions' },
-        { key: 'agent-audit', icon: 'audit', label: 'Audit Trail' },
-        { key: 'agent-reports', icon: 'reports', label: 'Reports' },
       ],
     },
     { key: 'kyc', icon: 'kyc', label: 'KYC Management' },
@@ -146,23 +143,19 @@ export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
 // Overview + the request tabs their role permits. Tabs are added as each phase ships.
 const AGENT_CHILDREN: NavItem[] = [
   { key: 'agent-overview', icon: 'dashboard', label: 'Agent Overview' },
-  // Isolated Agent Reports — financial summary + exportable ledger from the isolated /overview
-  // + list endpoints (distinct from the assignment-based `agent-reports` tab).
   { key: 'agent-all-txns', icon: 'transactions', label: 'Agent All Transactions' },
+  // The single Agent Reports page — the isolated financial ledger. The old assignment-based
+  // `agent-reports` tab was a duplicate and has been retired from the menu.
   { key: 'agent-txn-reports', icon: 'reports', label: 'Agent Reports' },
   { key: 'agent-dashboard', icon: 'dashboard', label: 'Dashboard' },
   { key: 'agents', icon: 'agent', label: 'Agents' },
   { key: 'agent-accounts', icon: 'bank', label: 'Agent Accounts' },
-  { key: 'agent-transactions', icon: 'transactions', label: 'Transactions' },
   // Operator management pages (list + reuse of the existing request form via a "+ Create" button).
   { key: 'agent-deposit-mgmt', icon: 'deposit', label: 'Agent Deposit Management' },
   { key: 'agent-withdrawal-mgmt', icon: 'withdrawal', label: 'Agent Withdrawal Management' },
   { key: 'agent-settlement-mgmt', icon: 'settlement', label: 'Agent Settlement Management' },
   // Supervisor's review queue for the agent deposit chain (mirrors the merchant Approvals page).
   { key: 'agent-approvals', icon: 'approvals', label: 'Agent Approvals' },
-  { key: 'agent-manage', icon: 'templates', label: 'Manage Transaction' },
-  { key: 'agent-audit', icon: 'audit', label: 'Audit Trail' },
-  { key: 'agent-reports', icon: 'reports', label: 'Reports' },
 ];
 const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 // Per-role Agent Management sub-tabs. Supervisors/Managers are approval-only for agent payments —
@@ -170,9 +163,9 @@ const AGENT_CHILD_BY_KEY = new Map(AGENT_CHILDREN.map((c) => [c.key, c]));
 // tabs but NOT the operator Deposit/Withdrawal Management pages. Agent Settlement Management is
 // Supervisor-only. Operators (Data/Deposit/Withdrawal) get the management pages their role permits.
 const AGENT_SUBTABS: Record<string, string[]> = {
-  SUPERVISOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-settlement-mgmt', 'agent-manage', 'agent-audit', 'agent-reports'],
-  MANAGER: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-manage', 'agent-audit', 'agent-reports'],
-  DEO: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt', 'agent-manage'],
+  SUPERVISOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts', 'agent-settlement-mgmt'],
+  MANAGER: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-approvals', 'agent-dashboard', 'agents', 'agent-accounts'],
+  DEO: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt', 'agent-withdrawal-mgmt'],
   DEPOSIT_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-deposit-mgmt'],
   WITHDRAWAL_OPERATOR: ['agent-overview', 'agent-all-txns', 'agent-txn-reports', 'agent-withdrawal-mgmt'],
 };
