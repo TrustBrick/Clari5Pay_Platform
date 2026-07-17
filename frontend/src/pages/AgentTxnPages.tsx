@@ -1361,8 +1361,9 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
     if (isCash) {
       if (!token.trim()) { showToast('Enter the Token Details.', 'error'); return; }
       if (!note.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
-      if (!proof) { showToast('Upload the Token Details image.', 'error'); return; }
-      body = { tokenDetails: token.trim(), noteNumber: note.trim(), accountProof: proof };
+      // Cash has no token image — the token and note ARE the reference, entered exactly as the
+      // customer gave them; the slip uploaded at the next step is the proof.
+      body = { tokenDetails: token.trim(), noteNumber: note.trim() };
     } else if (isCrypto) {
       if (!wallet.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
       if (!isValidWallet(wallet)) { showToast('Enter a valid crypto wallet address.', 'error'); return; }
@@ -1396,9 +1397,6 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
           </p>
           <Input label="Token Details" value={token} onChange={e => setToken(e.target.value)} required placeholder="As provided by the customer" />
           <Input label="Unique Note Number" value={note} onChange={e => setNote(e.target.value)} required placeholder="As provided by the customer" hint="Must be unique" />
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Token Details Image</label>
-          <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
-          {proofName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 12 }}>Attached: {proofName}</div>}
         </>
       ) : isCrypto ? (
         <>
@@ -1450,6 +1448,9 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   const { showToast } = useToast();
   // A CASH/CRYPTO withdrawal is confirm-only after Manager approval — no slip, no UTR.
   const confirmOnly = mode === 'payout' && row.type === 'WITHDRAWAL' && isSpecialMethod(row.txnMethod);
+  // A CASH deposit has no UTR: the money changes hands in person, so no rail issues a reference and
+  // the slip is the only proof. Every other deposit, and every payout, still captures one.
+  const isCashDeposit = mode === 'deposit' && isTokenMethod(row.txnMethod);
   const [utr, setUtr] = useState('');
   const [slip, setSlip] = useState('');
   const [slipName, setSlipName] = useState('');
@@ -1466,11 +1467,11 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
     // A confirm-only cash/crypto withdrawal needs neither slip nor UTR.
     if (!confirmOnly) {
       if (!slip) { showToast('Upload the payment slip image.', 'error'); return; }
-      if (!utr.trim()) { showToast('Enter the UTR Number.', 'error'); return; }
+      if (!isCashDeposit && !utr.trim()) { showToast('Enter the UTR Number.', 'error'); return; }
     }
     setBusy(true);
     try {
-      const body = confirmOnly ? {} : { slipImage: slip, utr: utr.trim() };
+      const body = confirmOnly ? {} : { slipImage: slip, ...(isCashDeposit ? {} : { utr: utr.trim() }) };
       // Deposit: slip → Supervisor review. Withdrawal: payout after Manager approval → Completed.
       await (mode === 'payout' ? agentTxnsAPI.payout(row.id, body) : agentTxnsAPI.submitSlip(row.id, body));
       showToast(confirmOnly
@@ -1522,17 +1523,21 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
         </div>
         <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800, color: T.blue }}>{fmt(row.amount)}</div>
       </div>
-      {/* The UTR is the transaction's only payment reference — there is no separate
-          Reference Number. Both it and the slip image are required to submit. */}
-      <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)}
-        required placeholder="Bank UTR — the payment reference" />
+      {/* The UTR is the payment reference for anything paid over a rail — there is no separate
+          Reference Number. A cash deposit has none, so only the slip is collected. */}
+      {!isCashDeposit && (
+        <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)}
+          required placeholder="Bank UTR — the payment reference" />
+      )}
       <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Slip Image</label>
       <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
       {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
-      <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>Both the UTR Number and the slip image are required.</p>
+      <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>
+        {isCashDeposit ? 'The slip image is required.' : 'Both the UTR Number and the slip image are required.'}
+      </p>
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-        <Btn onClick={submit} disabled={busy || !slip || !utr.trim()}>{busy ? 'Submitting…' : 'Submit Slip'}</Btn>
+        <Btn onClick={submit} disabled={busy || !slip || (!isCashDeposit && !utr.trim())}>{busy ? 'Submitting…' : 'Submit Slip'}</Btn>
       </div>
     </Modal>
   );

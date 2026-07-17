@@ -785,22 +785,22 @@ async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession
     method = str(t.txn_method or "").upper()
 
     if method in TOKEN_METHODS:
-        # CASH — the customer's token is the reference, and its image is the proof.
+        # CASH — the customer's token IS the reference; there is no image. The operator enters the
+        # token and note exactly as the customer supplied them, and the Supervisor verifies those
+        # against the slip uploaded at the next step. accountProof stays accepted (and is still
+        # required for CRYPTO below) but is never collected for cash.
         token = (body.tokenDetails or "").strip()
         note = (body.noteNumber or "").strip()
         if not token:
             raise HTTPException(status_code=400, detail="Token Details are required.")
         if not note:
             raise HTTPException(status_code=400, detail="Unique Note Number is required.")
-        if not body.accountProof:
-            raise HTTPException(status_code=400, detail="Token Details image is required.")
         clash = (await db.execute(select(AgentTransaction.id).where(
             AgentTransaction.note_number == note, AgentTransaction.id != t.id))).scalars().first()
         if clash:
             raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
         t.token_details = token
         t.note_number = note
-        t.account_proof = body.accountProof
         note_txt = f"Token {token} / note {note} submitted"
 
     elif method in WALLET_METHODS:
@@ -854,15 +854,19 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     t = await _load_own(db, business, txn_id)
     _require_deposit(t)
     _require_status(t, _submitted_status(t.txn_method), "a slip")
-    # Both the proof and its reference are mandatory — captured once here and reused unchanged
-    # for the rest of the workflow (Approvals, Mark Deposit, Details, Reports).
+    # The slip image is always mandatory — captured once here and reused unchanged for the rest of
+    # the workflow (Approvals, Mark Deposit, Details, Reports). Cash has no UTR: money changes hands
+    # in person and no rail issues a reference, so the slip is the only proof. Every other method is
+    # paid over a rail that does issue one, and still requires it.
     if not body.slipImage:
         raise HTTPException(status_code=400, detail="Payment slip image is required.")
-    if not (body.utr or "").strip():
+    _is_cash = str(t.txn_method or "").upper() in TOKEN_METHODS
+    if not _is_cash and not (body.utr or "").strip():
         raise HTTPException(status_code=400, detail="UTR Number is required.")
 
     t.slip_image = body.slipImage
-    t.deposit_utr = body.utr.strip()          # the only payment reference; Mark Deposit displays it
+    if (body.utr or "").strip():
+        t.deposit_utr = body.utr.strip()      # the payment reference; Mark Deposit displays it
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
     t.status = ST_SLIP_SUBMITTED             # straight to the Supervisor queue (as the merchant flow does)
