@@ -546,8 +546,8 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "merchantProofs": (json.loads(t.merchant_proofs) if t.merchant_proofs else None) if full else None,
         "merchantRef": t.merchant_ref,
         "adminProof": t.admin_proof if full else None,
-        "adminBankImage": t.admin_bank_image if full else None,   # heavy image — detail fetch only
-        "hasAdminBankImage": bool(t.admin_bank_image),            # lightweight flag for list payloads
+        "adminBankImage": t.admin_bank_image if full else None,   # heavy image — detail fetch only (deferred)
+        "hasAdminBankImage": bool(t.has_admin_bank_image),        # cheap IS NOT NULL flag — never loads the blob
         "adminRef": t.admin_ref,
         "adminBankDetails": t.admin_bank_details,
         "adminUpiId": t.admin_upi_id,
@@ -764,7 +764,7 @@ async def get_transaction_detail(
     # The heavy base64 proof/slip images are deferred on the model (so bulk/list/report queries
     # never drag them). This detail view is the one place they're needed — load them explicitly
     # here; async SQLAlchemy can't lazy-load them on attribute access.
-    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof"])
+    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_bank_image"])
     payload = _t(tx, full=True)
     # Enrich with the creating merchant's risk level for the details view (not stored on the row).
     creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
