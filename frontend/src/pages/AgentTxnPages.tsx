@@ -6,6 +6,15 @@ import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect }
 import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
+import { Icon } from '../components/Icon';
+import { today } from '../utils/helpers';
+import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
+// Shared reporting primitives — the Agent Reports module renders with the SAME table styling,
+// tab pills, section titles, export toolbar and print-to-PDF letterhead as the Merchant/Admin
+// Reports. Imported (not copied) so the three modules can never drift apart.
+import {
+  thR, tdR, pill, RSectionTitle, ReportExportBar, printColumnarReport, downloadCsv, DATE_PRESETS,
+} from './ReportsPage';
 import {
   agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES, AGENT_COMPLETED_STATUSES, AGENT_SETTLEMENT_METHODS,
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
@@ -1597,153 +1606,619 @@ const downloadAgentCsv = (filename: string, headers: string[], rows: Array<Array
   URL.revokeObjectURL(url);
 };
 
-export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+// ── Agent report model ────────────────────────────────────────────────────────────────────────
+// The three reports share ONE applied filter set, exactly like the Merchant/Admin Reports: editing
+// a field only touches `draft`; nothing filters until "Apply Filters" commits it to `f`.
+type AgentRTab = 'full' | 'commission' | 'ledger';
+
+interface AgentRFilters {
+  ref: string; membershipId: string; memberName: string;
+  agentId: string; agentName: string; agentCategory: string;
+  type: string; status: string; approvedBy: string;
+  minA: string; maxA: string; exactA: string;
+  datePreset: string; from: string; to: string;
+}
+const AGENT_EMPTY_FILTERS: AgentRFilters = {
+  ref: '', membershipId: '', memberName: '', agentId: '', agentName: '', agentCategory: '',
+  type: '', status: '', approvedBy: '', minA: '', maxA: '', exactA: '', datePreset: 'all', from: '', to: '',
+};
+
+const AGENT_CATEGORIES = [
+  { value: 'CASH', label: 'Cash' }, { value: 'BANK_TRANSFER', label: 'Bank Transfer' }, { value: 'CRYPTO', label: 'Crypto' },
+];
+const AGENT_TYPE_OPTIONS = [
+  { value: 'DEPOSIT', label: 'Deposit' }, { value: 'WITHDRAWAL', label: 'Withdrawal' }, { value: 'SETTLEMENT', label: 'Settlement' },
+];
+const typeLabelA = (t: string) => AGENT_TYPE_OPTIONS.find(o => o.value === t)?.label || t;
+const statusLabelA = (s: string) => STATUS_STYLE[s]?.label || String(s || '').replace(/_/g, ' ');
+
+/** Only Completed transactions feed reports, cards, ledger, commission and balance. */
+const isCompletedA = (r: AgentTxnRow) => AGENT_COMPLETED_STATUSES.includes(r.status);
+const commissionA = (r: AgentTxnRow) => Math.max(0, r.commissionAmount ?? 0);
+/** This leg's effect on the agent balance — the SAME per-leg formula the backend uses
+ *  (`_signed_leg`): a deposit credits net of Pay-In, a withdrawal/settlement debits the amount
+ *  plus its own Pay-Out/Settlement commission. No new commission formula is introduced here. */
+const signedLegA = (r: AgentTxnRow) =>
+  r.type === 'DEPOSIT' ? (r.amount - commissionA(r)) : -(r.amount + commissionA(r));
+
+const rowTsA = (r: AgentTxnRow) =>
+  new Date(`${r.createdDate || '1970-01-01'}T${r.createdTime || '00:00:00'}`).getTime();
+/** Completed Date & Time — the moment the money actually moved. A deposit records it at Mark
+ *  Deposit; a withdrawal/settlement at its approval, falling back to the last update. */
+const completedAtA = (r: AgentTxnRow): string => {
+  if (!isCompletedA(r)) return '—';
+  const pick: Array<[string | null | undefined, string | null | undefined]> = r.type === 'DEPOSIT'
+    ? [[r.depositedDate, r.depositedTime], [r.approvedDate, r.approvedTime], [r.updatedDate, r.updatedTime]]
+    : [[r.approvedDate, r.approvedTime], [r.depositedDate, r.depositedTime], [r.updatedDate, r.updatedTime]];
+  for (const [d, t] of pick) if (d) return `${d} ${t || ''}`.trim();
+  return '—';
+};
+/** Approver actually on the record — the explicit approver, else the gate that cleared it. */
+const approverA = (r: AgentTxnRow) => r.approvedBy || r.managerName || r.supervisorName || '—';
+
+const inDateWindowA = (r: AgentTxnRow, preset: string, from: string, to: string): boolean => {
+  if (preset === 'all') return true;
+  const d = r.createdDate || '';
+  if (preset === 'custom') return (!from || d >= from) && (!to || d <= to);
+  const ts = rowTsA(r); const now = Date.now(); const day = 86400000;
+  if (preset === '30m') return ts >= now - 30 * 60000;
+  if (preset === '1h') return ts >= now - 3600000;
+  if (preset === '24h') return ts >= now - day;
+  if (preset === '7d') return ts >= now - 7 * day;
+  if (preset === '30d') return ts >= now - 30 * day;
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  if (preset === 'today') return ts >= start.getTime();
+  if (preset === 'yesterday') return ts >= start.getTime() - day && ts < start.getTime();
+  return true;
+};
+
+const matchesA = (r: AgentTxnRow, f: AgentRFilters): boolean => {
+  const inc = (v: string | null | undefined, q: string) => !q || (v || '').toLowerCase().includes(q.toLowerCase());
+  return inc(r.referenceNumber, f.ref) && inc(r.membershipId, f.membershipId) && inc(r.membershipName, f.memberName)
+    && inc(r.agentCode, f.agentId) && inc(r.agentName, f.agentName)
+    && (!f.agentCategory || String(r.agentCategory || '').toUpperCase() === f.agentCategory)
+    && (!f.type || r.type === f.type) && (!f.status || r.status === f.status)
+    && (!f.approvedBy || approverA(r).toLowerCase().includes(f.approvedBy.toLowerCase()))
+    && (!f.minA || r.amount >= Number(parseIndianAmount(f.minA)))
+    && (!f.maxA || r.amount <= Number(parseIndianAmount(f.maxA)))
+    && (!f.exactA || r.amount === Number(parseIndianAmount(f.exactA)))
+    && inDateWindowA(r, f.datePreset, f.from, f.to);
+};
+
+/** Completed-only totals for a set of agent rows, per leg and net of commission. */
+const totalsA = (rows: AgentTxnRow[]) => {
+  const done = rows.filter(isCompletedA);
+  const amt = (t: string) => done.filter(r => r.type === t).reduce((a, r) => a + r.amount, 0);
+  const com = (t: string) => done.filter(r => r.type === t).reduce((a, r) => a + commissionA(r), 0);
+  const deposits = amt('DEPOSIT'), withdrawals = amt('WITHDRAWAL'), settlements = amt('SETTLEMENT');
+  const depositCommission = com('DEPOSIT'), withdrawalCommission = com('WITHDRAWAL'), settlementCommission = com('SETTLEMENT');
+  return {
+    count: done.length, deposits, withdrawals, settlements,
+    depositCommission, withdrawalCommission, settlementCommission,
+    commission: depositCommission + withdrawalCommission + settlementCommission,
+    net: done.reduce((a, r) => a + signedLegA(r), 0),
+  };
+};
+
+const AGENT_FULL_HEADERS = ['Date', 'Time', 'Transaction Reference', 'Membership ID', 'Member Name', 'Agent ID', 'Agent Name', 'Agent Category', 'Transaction Type', 'Gross Amount', 'Commission %', 'Commission Amount', 'Net Amount', 'Status', 'Created By', 'Approved By', 'Created Date & Time', 'Completed Date & Time'];
+const AGENT_FULL_ALIGNS: Array<'l' | 'r'> = ['l', 'l', 'l', 'l', 'l', 'l', 'l', 'l', 'l', 'r', 'r', 'r', 'r', 'l', 'l', 'l', 'l', 'l'];
+const AGENT_COMM_HEADERS = ['Agent ID', 'Agent Name', 'Agent Category', 'Total Deposit Amount', 'Deposit Commission', 'Total Withdrawal Amount', 'Withdrawal Commission', 'Total Settlement Amount', 'Settlement Commission', 'Total Commission Earned', 'Total Completed Transactions'];
+const AGENT_COMM_ALIGNS: Array<'l' | 'r'> = ['l', 'l', 'l', 'r', 'r', 'r', 'r', 'r', 'r', 'r', 'r'];
+const AGENT_LEDGER_HEADERS = ['Date', 'Time', 'Description', 'Transaction Reference', 'Agent ID', 'Agent Name', 'Membership ID', 'Member Name', 'Transaction Type', 'Gross Amount', 'Commission', 'Running Balance', 'Status'];
+const AGENT_LEDGER_ALIGNS: Array<'l' | 'r'> = ['l', 'l', 'l', 'l', 'l', 'l', 'l', 'l', 'l', 'r', 'r', 'r', 'l'];
+
+const signedA = (n: number) => `${n >= 0 ? '+' : '−'}${fmt(Math.abs(n))}`;
+const commissionTextA = (c: number) => (c > 0 ? `−${fmt(c)}` : fmt(0));
+
+/** Summary card — same shape/colour treatment as the Merchant & Admin report cards. */
+const ACard: React.FC<{ label: string; value: React.ReactNode; color: string }> = ({ label, value, color }) => (
+  <Card className="c5-hover-lift" style={{ padding: '14px 16px', borderTop: `3px solid ${color}` }}>
+    <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
+    <p style={{ margin: 0, fontSize: 19, fontWeight: 800, color }}>{value}</p>
+  </Card>
+);
+/** Footer / metadata cell — matches the Merchant report footer summary. */
+const AMeta: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
+  <div>
+    <span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>{label}</span>
+    <span style={{ fontSize: 13, fontWeight: 700, color: T.textMain }}>{value}</span>
+  </div>
+);
+
+export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => {
   const { showToast } = useToast();
   const [ov, setOv] = useState<AgentOverview | null>(null);
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [type, setType] = useState('');
-  const [status, setStatus] = useState('');
-  const [cat, setCat] = useState('');   // Category filter (client-side, on agentCategory)
-  const [fromF, setFromF] = useState('');
-  const [toF, setToF] = useState('');
+  const [tab, setTab] = useState<AgentRTab>('full');
+  const [draft, setDraft] = useState<AgentRFilters>(AGENT_EMPTY_FILTERS);
+  const [f, setF] = useState<AgentRFilters>(AGENT_EMPTY_FILTERS);
+  const [applying, setApplying] = useState(false);
   const [page, setPage] = useState(1);
+  const [genAt] = useState(() => new Date());
+  const set = (k: keyof AgentRFilters, v: string) => setDraft(p => ({ ...p, [k]: v }));
 
   const loadSummary = useCallback(() => {
     agentTxnsAPI.overview().then(setOv).catch(() => showToast('Failed to load financial summary.', 'error'));
   }, [showToast]);
 
-  // See AgentTxnManagementPage.load — background refreshes must not drive the Search button.
+  // The whole (business-scoped) agent ledger is pulled once and filtered client-side — the same
+  // pattern the Merchant/Admin Reports use, so filters, totals and exports always agree.
   const loadRows = useCallback(async (opts?: { background?: boolean }) => {
     const background = opts?.background === true;
     if (!background) setLoading(true);
     try {
       const q: AgentTxnQuery = {};
-      if (status) q.status = status;
-      if (type) q.txn_type = type;
-      if (search.trim()) q.search = search.trim();
-      if (fromF) q.date_from = fromF;
-      if (toF) q.date_to = toF;
       setRows(await agentTxnsAPI.list(q));
     } catch { if (!background) showToast('Failed to load agent transactions.', 'error'); }
     finally { if (!background) setLoading(false); }
-  }, [status, type, search, fromF, toF, showToast]);
+  }, [showToast]);
 
   useEffect(() => { loadSummary(); loadRows(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => { loadSummary(); loadRows({ background: true }); });
 
-  const runSearch = () => { setPage(1); loadRows(); };
-  const clearFilters = () => { setSearch(''); setStatus(''); setType(''); setCat(''); setFromF(''); setToF(''); setPage(1); };
-
-  const c = ov?.cards;
-  // Financial summary — every figure from the shared overview endpoint (isolated agent ledger).
-  const fin: Array<[string, React.ReactNode, string]> = c ? [
-    ['Gross Amount (Approved)', fmt(c.grossAmount), T.blue],
-    ['Deposit Commission', fmt(c.depositCommission), T.green],
-    ['Total Withdrawals (Approved)', fmt(c.approvedWithdrawals), T.danger],
-    ['Withdrawal Commission', fmt(c.withdrawalCommission), T.green],
-    ['Total Settlements (Approved)', fmt(c.approvedSettlements), '#7c3aed'],
-    ['Settlement Commission', fmt(c.settlementCommission), T.green],
-    ['Total Commission', fmt(c.totalCommission), T.green],
-    ['Net (Approved)', fmt(c.netAmount), '#1d4ed8'],
-  ] : [];
-
-  const filtered = cat ? rows.filter(r => String(r.agentCategory || '').toUpperCase() === cat) : rows;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pageRows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
-
-  const exportCsv = () => {
-    if (filtered.length === 0) { showToast('Nothing to export for the current filters.', 'error'); return; }
-    downloadAgentCsv(`agent-transactions-${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}`,
-      ['Reference', 'Type', 'Agent Code', 'Agent Name', 'Membership ID', 'Membership Name', 'Membership Type', 'Amount', 'Commission %', 'Commission Amount', 'Net Amount', 'Status', 'Instructions', 'Created Date (IST)', 'Created Time (IST)'],
-      filtered.map(r => [r.referenceNumber, r.type, r.agentCode || '', r.agentName || '', r.membershipId, r.membershipName || '', r.membershipType, r.amount, r.commissionPct ?? '', r.commissionAmount ?? '', r.netAmount ?? '', r.status, r.instructions ? instrLabel(r.instructions) : '', r.createdDate || '', r.createdTime || '']));
-    showToast(`Exported ${filtered.length} agent transaction${filtered.length === 1 ? '' : 's'}.`, 'success');
+  // Apply Filters — refresh from the server, then commit the draft so table, cards, footer
+  // totals, count and exports all move to the same filter set together.
+  const applyFilters = async () => {
+    if (applying) return;
+    if (draft.datePreset === 'custom' && draft.from && draft.to && draft.to < draft.from) {
+      showToast('“To” date cannot be earlier than “From”.', 'error'); return;
+    }
+    setApplying(true);
+    try { await loadRows({ background: true }); setF(draft); setPage(1); }
+    finally { setApplying(false); }
   };
+  const clearFilters = async () => {
+    if (applying) return;
+    setApplying(true);
+    setDraft(AGENT_EMPTY_FILTERS);
+    try { await loadRows({ background: true }); setF(AGENT_EMPTY_FILTERS); setPage(1); }
+    finally { setApplying(false); }
+  };
+
+  const filtered = rows.filter(r => matchesA(r, f));
+  const tot = totalsA(filtered);
+  const rangeLabel = f.datePreset === 'custom'
+    ? `${f.from || 'start'} → ${f.to || 'today'}`
+    : (DATE_PRESETS.find(d => d[0] === f.datePreset)?.[1] || 'All Time');
+  const generatedBy = user?.name || '—';
+  // Current Available Balance — the module-wide figure from the shared overview endpoint
+  // (completed deposits net of commission, less completed withdrawals/settlements + theirs).
+  const availableBalance = ov?.cards.netAmount ?? 0;
+  // Agent + status dropdown options, derived from the ledger itself (no extra API call).
+  const agentOptions = Array.from(new Map(rows.filter(r => r.agentCode)
+    .map(r => [r.agentCode as string, r.agentName || ''])).entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([code, name]) => ({ value: code, label: name ? `${code} · ${name}` : code }));
+  const statusOptions = Array.from(new Set(rows.map(r => r.status)))
+    .map(s => ({ value: s, label: statusLabelA(s) }));
+
+  // ── Commission Report: completed rows aggregated per agent, using each row's own commission ──
+  const commissionRows = (() => {
+    const by = new Map<string, {
+      agentId: string; agentName: string; category: string;
+      depositAmount: number; depositCommission: number;
+      withdrawalAmount: number; withdrawalCommission: number;
+      settlementAmount: number; settlementCommission: number;
+      totalCommission: number; count: number;
+    }>();
+    for (const r of filtered) {
+      if (!isCompletedA(r)) continue;
+      const key = r.agentCode || '—';
+      let a = by.get(key);
+      if (!a) {
+        a = { agentId: key, agentName: r.agentName || '—', category: String(r.agentCategory || '').toUpperCase(),
+          depositAmount: 0, depositCommission: 0, withdrawalAmount: 0, withdrawalCommission: 0,
+          settlementAmount: 0, settlementCommission: 0, totalCommission: 0, count: 0 };
+        by.set(key, a);
+      }
+      const com = commissionA(r);
+      if (r.type === 'DEPOSIT') { a.depositAmount += r.amount; a.depositCommission += com; }
+      else if (r.type === 'WITHDRAWAL') { a.withdrawalAmount += r.amount; a.withdrawalCommission += com; }
+      else { a.settlementAmount += r.amount; a.settlementCommission += com; }
+      a.totalCommission += com; a.count += 1;
+    }
+    return Array.from(by.values()).sort((x, y) => y.totalCommission - x.totalCommission);
+  })();
+
+  // ── Agent Ledger: completed rows oldest-first with a running balance net of commission.
+  // Computed over the FULL completed ledger and then narrowed to the displayed rows, so the
+  // balance carries forward across a filter exactly like a bank statement (and like the
+  // Merchant Ledger Report). Opening Balance is the balance immediately BEFORE the first row shown.
+  const shown = new Set(filtered);
+  const fullLedger = (() => {
+    const completed = rows.filter(isCompletedA).slice().sort((a, b) => rowTsA(a) - rowTsA(b));
+    let bal = 0;
+    return completed.map(r => {
+      const commission = commissionA(r);
+      bal += signedLegA(r);
+      return {
+        date: r.createdDate || '', time: r.createdTime || '',
+        description: `${typeLabelA(r.type)} — ${r.membershipId}${r.membershipName ? ` · ${r.membershipName}` : ''}`,
+        ref: r.referenceNumber, agentId: r.agentCode || '—', agentName: r.agentName || '—',
+        membershipId: r.membershipId, memberName: r.membershipName || '—', type: r.type,
+        amount: r.amount, signedAmount: signedLegA(r) >= 0 ? r.amount : -r.amount,
+        commission, balance: bal, status: r.status, shown: shown.has(r),
+      };
+    });
+  })();
+  const ledger = fullLedger.filter(l => l.shown);
+  const firstIdx = fullLedger.findIndex(l => l.shown);
+  const opening = firstIdx < 0 ? 0 : (firstIdx > 0 ? fullLedger[firstIdx - 1].balance : 0);
+  const closing = ledger.length ? ledger[ledger.length - 1].balance : opening;
+
+  // ── Pagination (same control as the rest of the Agent module) ──
+  const activeRows: unknown[] = tab === 'full' ? filtered : tab === 'commission' ? commissionRows : ledger;
+  const totalPages = Math.max(1, Math.ceil(activeRows.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const slice = <X,>(xs: X[]) => xs.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  // ── Exports — PDF/Print via the shared print-to-PDF letterhead, Excel via the shared xlsx
+  // helper, CSV via the shared CSV helper. Every export honours the applied filters. ──
+  const stamp = today();
+  const fullCsv = filtered.map(r => [r.createdDate || '', r.createdTime || '', r.referenceNumber, r.membershipId, r.membershipName || '', r.agentCode || '', r.agentName || '', r.agentCategory || '', typeLabelA(r.type), r.amount, r.commissionPct ?? 0, commissionA(r), r.netAmount ?? 0, statusLabelA(r.status), r.createdBy || '', approverA(r) === '—' ? '' : approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r) === '—' ? '' : completedAtA(r)]);
+  const fullPdf = filtered.map(r => [r.createdDate || '—', r.createdTime || '—', r.referenceNumber, r.membershipId, r.membershipName || '—', r.agentCode || '—', r.agentName || '—', r.agentCategory || '—', typeLabelA(r.type), fmt(r.amount), `${r.commissionPct ?? 0}%`, fmt(commissionA(r)), fmt(r.netAmount ?? 0), statusLabelA(r.status), r.createdBy || '—', approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r)]);
+  const commCsv = commissionRows.map(a => [a.agentId, a.agentName, a.category, a.depositAmount, a.depositCommission, a.withdrawalAmount, a.withdrawalCommission, a.settlementAmount, a.settlementCommission, a.totalCommission, a.count]);
+  const commPdf = commissionRows.map(a => [a.agentId, a.agentName, a.category || '—', fmt(a.depositAmount), fmt(a.depositCommission), fmt(a.withdrawalAmount), fmt(a.withdrawalCommission), fmt(a.settlementAmount), fmt(a.settlementCommission), fmt(a.totalCommission), a.count]);
+  const ledgerCsv: Array<Array<string | number>> = [
+    ['', '', 'Opening Balance', '', '', '', '', '', '', '', '', opening, ''],
+    ...ledger.map(l => [l.date, l.time, l.description, l.ref, l.agentId, l.agentName, l.membershipId, l.memberName, typeLabelA(l.type), l.signedAmount, l.commission > 0 ? -l.commission : 0, l.balance, statusLabelA(l.status)]),
+  ];
+  const ledgerPdf: Array<Array<string | number>> = [
+    ['—', '—', 'Opening Balance', '—', '—', '—', '—', '—', '—', '—', '—', fmt(opening), '—'],
+    ...ledger.map(l => [l.date, l.time, l.description, l.ref, l.agentId, l.agentName, l.membershipId, l.memberName, typeLabelA(l.type), signedA(l.signedAmount), commissionTextA(l.commission), fmt(l.balance), statusLabelA(l.status)]),
+  ];
+
+  const onPdf = (autoPrint: boolean) => {
+    const cfg = tab === 'full'
+      ? { title: 'Agent Full Report', headers: AGENT_FULL_HEADERS, rows: fullPdf, aligns: AGENT_FULL_ALIGNS,
+          footerNote: `Completed-only totals — Deposits ${fmt(tot.deposits)}, Withdrawals ${fmt(tot.withdrawals)}, Settlements ${fmt(tot.settlements)}, Commission ${fmt(tot.commission)}. Honours the selected filters.` }
+      : tab === 'commission'
+        ? { title: 'Agent Commission Report', headers: AGENT_COMM_HEADERS, rows: commPdf, aligns: AGENT_COMM_ALIGNS,
+            footerNote: `Overall commission earned ${fmt(tot.commission)} across ${commissionRows.length} agent(s). Completed transactions only. Honours the selected filters.` }
+        : { title: 'Agent Ledger Report', headers: AGENT_LEDGER_HEADERS, rows: ledgerPdf, aligns: AGENT_LEDGER_ALIGNS,
+            footerNote: `Running Balance = Opening + Σ(Deposit − Commission) − Σ(Withdrawal/Settlement + Commission), the same per-leg calculation as the Agent balance. Opening ${fmt(opening)}, Closing ${fmt(closing)}. Honours the selected filters.` };
+    printColumnarReport({ ...cfg, businessName: 'Agent Module', generatedBy, rangeLabel, autoPrint });
+  };
+
+  const onExcel = () => {
+    if (tab === 'full') {
+      downloadXlsx(`clari5pay-agent-full-report-${stamp}.xlsx`, [{
+        name: 'Agent Full Report',
+        columns: [
+          { header: 'Date', get: (r: AgentTxnRow) => r.createdDate || '' },
+          { header: 'Time', get: r => r.createdTime || '' },
+          { header: 'Transaction Reference', get: r => r.referenceNumber, width: 22 },
+          { header: 'Membership ID', get: r => r.membershipId },
+          { header: 'Member Name', get: r => r.membershipName || '', width: 22 },
+          { header: 'Agent ID', get: r => r.agentCode || '' },
+          { header: 'Agent Name', get: r => r.agentName || '', width: 22 },
+          { header: 'Agent Category', get: r => r.agentCategory || '' },
+          { header: 'Transaction Type', get: r => typeLabelA(r.type) },
+          { header: 'Gross Amount', get: r => Number(r.amount), width: 16, z: INR_NUMFMT },
+          { header: 'Commission %', get: r => Number(r.commissionPct ?? 0) },
+          { header: 'Commission Amount', get: r => Number(commissionA(r)), width: 16, z: INR_NUMFMT },
+          { header: 'Net Amount', get: r => Number(r.netAmount ?? 0), width: 16, z: INR_NUMFMT },
+          { header: 'Status', get: r => statusLabelA(r.status) },
+          { header: 'Created By', get: r => r.createdBy || '' },
+          { header: 'Approved By', get: r => (approverA(r) === '—' ? '' : approverA(r)) },
+          { header: 'Created Date & Time', get: r => `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), width: 20 },
+          { header: 'Completed Date & Time', get: r => (completedAtA(r) === '—' ? '' : completedAtA(r)), width: 20 },
+        ],
+        rows: filtered,
+      }]);
+      showToast(`Agent Full Report — ${filtered.length} rows`);
+    } else if (tab === 'commission') {
+      downloadXlsx(`clari5pay-agent-commission-${stamp}.xlsx`, [{
+        name: 'Agent Commission',
+        columns: [
+          { header: 'Agent ID', get: (a: typeof commissionRows[number]) => a.agentId },
+          { header: 'Agent Name', get: a => a.agentName, width: 22 },
+          { header: 'Agent Category', get: a => a.category },
+          { header: 'Total Deposit Amount', get: a => Number(a.depositAmount), width: 18, z: INR_NUMFMT },
+          { header: 'Deposit Commission', get: a => Number(a.depositCommission), width: 18, z: INR_NUMFMT },
+          { header: 'Total Withdrawal Amount', get: a => Number(a.withdrawalAmount), width: 20, z: INR_NUMFMT },
+          { header: 'Withdrawal Commission', get: a => Number(a.withdrawalCommission), width: 20, z: INR_NUMFMT },
+          { header: 'Total Settlement Amount', get: a => Number(a.settlementAmount), width: 20, z: INR_NUMFMT },
+          { header: 'Settlement Commission', get: a => Number(a.settlementCommission), width: 20, z: INR_NUMFMT },
+          { header: 'Total Commission Earned', get: a => Number(a.totalCommission), width: 20, z: INR_NUMFMT },
+          { header: 'Total Completed Transactions', get: a => a.count },
+        ],
+        rows: commissionRows,
+      }]);
+      showToast(`Agent Commission Report — ${commissionRows.length} agents`);
+    } else {
+      downloadXlsx(`clari5pay-agent-ledger-${stamp}.xlsx`, [{
+        name: 'Agent Ledger',
+        columns: [
+          { header: 'Date', get: (l: typeof ledger[number]) => l.date },
+          { header: 'Time', get: l => l.time },
+          { header: 'Description', get: l => l.description, width: 34 },
+          { header: 'Transaction Reference', get: l => l.ref, width: 22 },
+          { header: 'Agent ID', get: l => l.agentId },
+          { header: 'Agent Name', get: l => l.agentName, width: 20 },
+          { header: 'Membership ID', get: l => l.membershipId },
+          { header: 'Member Name', get: l => l.memberName, width: 20 },
+          { header: 'Transaction Type', get: l => typeLabelA(l.type) },
+          { header: 'Gross Amount', get: l => Number(l.signedAmount), width: 16, z: INR_NUMFMT },
+          { header: 'Commission', get: l => (l.commission > 0 ? -Number(l.commission) : 0), width: 16, z: INR_NUMFMT },
+          { header: 'Running Balance', get: l => Number(l.balance), width: 18, z: INR_NUMFMT },
+          { header: 'Status', get: l => statusLabelA(l.status) },
+        ],
+        rows: ledger,
+      }]);
+      showToast(`Agent Ledger Report — ${ledger.length} rows`);
+    }
+  };
+
+  const onCsv = () => {
+    if (tab === 'full') downloadCsv(`clari5pay-agent-full-report-${stamp}.csv`, AGENT_FULL_HEADERS, fullCsv);
+    else if (tab === 'commission') downloadCsv(`clari5pay-agent-commission-${stamp}.csv`, AGENT_COMM_HEADERS, commCsv);
+    else downloadCsv(`clari5pay-agent-ledger-${stamp}.csv`, AGENT_LEDGER_HEADERS, ledgerCsv);
+  };
+
+  const exportCount = tab === 'full' ? filtered.length : tab === 'commission' ? commissionRows.length : ledger.length;
 
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Reports</h1>
-        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Detailed ledger for the isolated Agent Transaction subsystem.</p>
+        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Reports &amp; Analytics</h1>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Financial reporting for the isolated Agent Transaction subsystem — transactions, commission and ledger.</p>
       </div>
 
-      {/* Per-agent breakdown — from the same overview payload */}
-      {ov && ov.byAgent.length > 0 && (
-        <Card style={{ marginBottom: 16, overflow: 'hidden' }}>
-          <div style={{ padding: '12px 16px', borderBottom: `1px solid ${T.border}` }}><h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>By Agent</h2></div>
+      {/* Report-type selector — Full Report · Commission Report · Agent Ledger Report */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+        {([['full', 'analytics', 'Full Report'], ['commission', 'treasury', 'Commission Report'], ['ledger', 'ledger', 'Agent Ledger Report']] as const).map(([k, ic, label]) => (
+          <button key={k} className="c5-btn" onClick={() => { setTab(k); setPage(1); }}
+            style={{ ...pill(tab === k), display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Icon name={ic} size={14} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Summary cards — completed transactions only */}
+      <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12, marginBottom: 16 }}>
+        {tab === 'full' && <>
+          <ACard label="Total Transactions" value={tot.count} color={T.blue} />
+          <ACard label="Total Deposit Amount" value={fmt(tot.deposits)} color={T.success} />
+          <ACard label="Total Withdrawal Amount" value={fmt(tot.withdrawals)} color={T.danger} />
+          <ACard label="Total Settlement Amount" value={fmt(tot.settlements)} color="#7c3aed" />
+          <ACard label="Total Commission Earned" value={fmt(tot.commission)} color={T.green} />
+          <ACard label="Current Available Balance" value={fmt(availableBalance)} color="#1d4ed8" />
+        </>}
+        {tab === 'commission' && <>
+          <ACard label="Total Deposit Commission" value={fmt(tot.depositCommission)} color={T.success} />
+          <ACard label="Total Withdrawal Commission" value={fmt(tot.withdrawalCommission)} color={T.danger} />
+          <ACard label="Total Settlement Commission" value={fmt(tot.settlementCommission)} color="#7c3aed" />
+          <ACard label="Overall Commission Earned" value={fmt(tot.commission)} color={T.green} />
+        </>}
+        {tab === 'ledger' && <>
+          <ACard label="Opening Balance" value={fmt(opening)} color={T.textMuted} />
+          <ACard label="Closing Balance (Current Available)" value={fmt(closing)} color={closing >= 0 ? T.success : T.danger} />
+          <ACard label="Total Entries" value={ledger.length} color={T.blue} />
+          <ACard label="Total Commission" value={fmt(tot.commission)} color={T.green} />
+        </>}
+      </div>
+
+      {/* Report metadata */}
+      <Card style={{ padding: '14px 18px', marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 14 }}>
+          <AMeta label="Module" value="Agent Transactions" />
+          <AMeta label="Generated By" value={generatedBy} />
+          <AMeta label="Generated Date & Time" value={genAt.toLocaleString('en-IN')} />
+          <AMeta label="Selected Date Range" value={rangeLabel} />
+        </div>
+      </Card>
+
+      {/* Advanced filters — one applied set, the fields relevant to the active report */}
+      <RSectionTitle note="Set your filters, then click Apply Filters to update the table, footer totals and exports together."><Icon name="filter" size={15} /> Advanced Filters</RSectionTitle>
+      <Card style={{ padding: 16, marginBottom: 18 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {DATE_PRESETS.map(([k, label]) => (
+            <button key={k} className="c5-btn" onClick={() => set('datePreset', k)} style={pill(draft.datePreset === k)}>{label}</button>
+          ))}
+        </div>
+        {draft.datePreset === 'custom' && (
+          <div style={{ display: 'flex', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+            <Input label="From Date" type="date" value={draft.from} onChange={e => set('from', e.target.value)} />
+            <Input label="To Date" type="date" value={draft.to} onChange={e => set('to', e.target.value)} />
+          </div>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12 }}>
+          {tab === 'full' && <>
+            <Input label="Reference Number" value={draft.ref} onChange={e => set('ref', e.target.value)} />
+            <Input label="Membership ID" value={draft.membershipId} onChange={e => set('membershipId', normalizeMemberId(e.target.value))} />
+            <Input label="Member Name" value={draft.memberName} onChange={e => set('memberName', e.target.value)} />
+            <Input label="Agent ID" value={draft.agentId} onChange={e => set('agentId', e.target.value)} />
+            <Input label="Agent Name" value={draft.agentName} onChange={e => set('agentName', e.target.value)} />
+            <Sel label="Agent Category" value={draft.agentCategory} onChange={e => set('agentCategory', e.target.value)}
+              options={[{ value: '', label: 'All Categories' }, ...AGENT_CATEGORIES]} />
+            <Sel label="Transaction Type" value={draft.type} onChange={e => set('type', e.target.value)}
+              options={[{ value: '', label: 'All Types' }, ...AGENT_TYPE_OPTIONS]} />
+            <Sel label="Status" value={draft.status} onChange={e => set('status', e.target.value)}
+              options={[{ value: '', label: 'All Statuses' }, ...statusOptions]} />
+            <Input label="Approved By" value={draft.approvedBy} onChange={e => set('approvedBy', e.target.value)} placeholder="Supervisor / Manager" />
+            <Input label="Minimum Amount" type="text" inputMode="decimal" value={draft.minA} onChange={e => set('minA', formatIndianAmountInput(e.target.value))} />
+            <Input label="Maximum Amount" type="text" inputMode="decimal" value={draft.maxA} onChange={e => set('maxA', formatIndianAmountInput(e.target.value))} />
+            <Input label="Exact Amount" type="text" inputMode="decimal" value={draft.exactA} onChange={e => set('exactA', formatIndianAmountInput(e.target.value))} />
+          </>}
+          {tab === 'commission' && <>
+            <Sel label="Agent" value={draft.agentId} onChange={e => set('agentId', e.target.value)}
+              options={[{ value: '', label: 'All Agents' }, ...agentOptions]} />
+            <Sel label="Agent Category" value={draft.agentCategory} onChange={e => set('agentCategory', e.target.value)}
+              options={[{ value: '', label: 'All Categories' }, ...AGENT_CATEGORIES]} />
+          </>}
+          {tab === 'ledger' && <>
+            <Sel label="Agent" value={draft.agentId} onChange={e => set('agentId', e.target.value)}
+              options={[{ value: '', label: 'All Agents' }, ...agentOptions]} />
+            <Input label="Membership ID" value={draft.membershipId} onChange={e => set('membershipId', normalizeMemberId(e.target.value))} />
+            <Input label="Member Name" value={draft.memberName} onChange={e => set('memberName', e.target.value)} />
+            <Sel label="Transaction Type" value={draft.type} onChange={e => set('type', e.target.value)}
+              options={[{ value: '', label: 'All Types' }, ...AGENT_TYPE_OPTIONS]} />
+            <Sel label="Status" value={draft.status} onChange={e => set('status', e.target.value)}
+              options={[{ value: '', label: 'All Statuses' }, ...statusOptions]} />
+          </>}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+          <Btn size="sm" onClick={applyFilters} disabled={applying}>{applying ? 'Applying…' : 'Apply Filters'}</Btn>
+          <Btn size="sm" variant="ghost" onClick={clearFilters} disabled={applying}>Clear Filters</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted }}>
+            {applying ? 'Applying filters…' : `${filtered.length} of ${rows.length} transactions`}
+          </span>
+        </div>
+      </Card>
+
+      {/* ── 1. Full Report ── */}
+      {tab === 'full' && <>
+        <RSectionTitle note="Every Agent transaction — Deposit, Withdrawal and Settlement — in one place. Summary cards and footer totals count completed transactions only."><Icon name="analytics" size={15} /> Full Report</RSectionTitle>
+        <ReportExportBar count={exportCount} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={onCsv} onPrint={() => onPdf(true)} />
+        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr style={{ background: T.canvas }}>{['Agent', 'Deposits', 'Withdrawals', 'Transactions'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: T.canvas }}>{AGENT_FULL_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: AGENT_FULL_ALIGNS[i] === 'r' ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
               <tbody>
-                {ov.byAgent.map((a, i) => (
-                  <tr key={i} style={{ background: i % 2 ? T.canvas : T.surface }}>
-                    <td style={{ ...tdS, fontWeight: 700 }}>{a.agentCode || '—'}{a.agentName ? ` · ${a.agentName}` : ''}</td>
-                    <td style={{ ...tdS, color: T.success, fontWeight: 700 }}>{fmt(a.deposits)}</td>
-                    <td style={{ ...tdS, color: T.danger, fontWeight: 700 }}>{fmt(a.withdrawals)}</td>
-                    <td style={tdS}>{a.count}</td>
+                {loading && rows.length === 0 && <tr><td colSpan={AGENT_FULL_HEADERS.length} style={{ ...tdR, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
+                {!loading && filtered.length === 0 && <tr><td colSpan={AGENT_FULL_HEADERS.length} style={{ ...tdR, textAlign: 'center', color: T.textMuted, padding: 22 }}>No agent transactions match the selected filters.</td></tr>}
+                {slice(filtered).map(r => (
+                  <tr key={r.id} className="c5-row-hover">
+                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.createdDate || '—'}</td>
+                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.createdTime || '—'}</td>
+                    <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{r.referenceNumber}</td>
+                    <td style={tdR}>{r.membershipId}</td>
+                    <td style={{ ...tdR, fontWeight: 600 }}>{r.membershipName || '—'}</td>
+                    <td style={tdR}>{r.agentCode || '—'}</td>
+                    <td style={tdR}>{r.agentName || '—'}</td>
+                    <td style={tdR}>{r.agentCategory || '—'}</td>
+                    <td style={tdR}>{typeLabelA(r.type)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', color: T.textMuted }}>{r.commissionPct != null ? `${r.commissionPct}%` : '—'}</td>
+                    <td style={{ ...tdR, textAlign: 'right', color: T.green, fontWeight: 700 }}>{fmt(commissionA(r))}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{r.netAmount != null ? fmt(r.netAmount) : '—'}</td>
+                    <td style={tdR}><StatusPill status={r.status} type={r.type} method={r.txnMethod} /></td>
+                    <td style={{ ...tdR, color: T.textMuted }}>{r.createdBy || '—'}</td>
+                    <td style={{ ...tdR, color: T.textMuted }}>{approverA(r)}</td>
+                    <td style={{ ...tdR, whiteSpace: 'nowrap', color: T.textMuted }}>{`${r.createdDate || ''} ${r.createdTime || ''}`.trim() || '—'}</td>
+                    <td style={{ ...tdR, whiteSpace: 'nowrap', color: T.textMuted }}>{completedAtA(r)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         </Card>
-      )}
-
-      {/* Detailed ledger — isolated list endpoint, filterable + exportable */}
-      <Card style={{ padding: 16, marginBottom: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 12 }}>
-          <Input label="Search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Reference / Membership / Agent" style={{ marginBottom: 0 }} />
-          <Sel label="Type" value={type} onChange={e => setType(e.target.value)} style={{ marginBottom: 0 }}
-            options={[{ value: '', label: 'All Types' }, { value: 'DEPOSIT', label: 'Deposit' }, { value: 'WITHDRAWAL', label: 'Withdrawal' }]} />
-          <Sel label="Category" value={cat} onChange={e => setCat(e.target.value)} style={{ marginBottom: 0 }}
-            options={[{ value: '', label: 'All Categories' }, { value: 'CASH', label: 'Cash' }, { value: 'BANK_TRANSFER', label: 'Bank Transfer' }, { value: 'CRYPTO', label: 'Crypto' }]} />
-          <Sel label="Status" value={status} onChange={e => setStatus(e.target.value)} style={{ marginBottom: 0 }}
-            options={[{ value: '', label: 'All Statuses' }, { value: 'PENDING', label: 'Pending' }, { value: 'APPROVED', label: 'Approved' }, { value: 'REJECTED', label: 'Rejected' }]} />
-          <Input label="From Date" type="date" value={fromF} onChange={e => setFromF(e.target.value)} style={{ marginBottom: 0 }} />
-          <Input label="To Date" type="date" value={toF} onChange={e => setToF(e.target.value)} style={{ marginBottom: 0 }} />
-        </div>
-        <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Btn size="sm" onClick={runSearch} disabled={loading}>{loading ? 'Searching…' : 'Search'}</Btn>
-          <Btn size="sm" variant="ghost" onClick={clearFilters}>Clear</Btn>
-          <Btn size="sm" variant="secondary" onClick={exportCsv}>Export CSV</Btn>
-          <span style={{ fontSize: 12, color: T.textMuted, marginLeft: 'auto' }}>{rows.length} transaction{rows.length === 1 ? '' : 's'}</span>
-        </div>
-      </Card>
-
-      <Card style={{ overflow: 'hidden' }}>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead><tr style={{ background: T.canvas }}>{['Reference', 'Type', 'Agent', 'Membership', 'Amount', 'Comm %', 'Comm Amount', 'Net Amount', 'Status', 'Created (IST)'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
-            <tbody>
-              {loading && rows.length === 0 && <tr><td colSpan={10} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
-              {!loading && pageRows.length === 0 && <tr><td colSpan={10} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No agent transactions match the filters.</td></tr>}
-              {pageRows.map((x, i) => (
-                <tr key={x.id} style={{ background: i % 2 ? T.canvas : T.surface }}>
-                  <td style={{ ...tdS, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
-                  <td style={tdS}>{x.type}</td>
-                  <td style={tdS}>{x.agentCode || '—'}{x.agentName ? ` · ${x.agentName}` : ''}</td>
-                  <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
-                  <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
-                  <td style={{ ...tdS, textAlign: 'right', color: T.textMuted }}>{x.commissionPct != null ? `${x.commissionPct}%` : '—'}</td>
-                  <td style={{ ...tdS, textAlign: 'right', color: T.green }}>{x.commissionAmount != null ? fmt(x.commissionAmount) : '—'}</td>
-                  <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{x.netAmount != null ? fmt(x.netAmount) : '—'}</td>
-                  <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} /></td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {totalPages > 1 && (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, padding: '12px 16px', borderTop: `1px solid ${T.border}` }}>
-            <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</Btn>
-            <span style={{ fontSize: 12, color: T.textMuted }}>Page {safePage} of {totalPages}</span>
-            <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</Btn>
+        <Card style={{ padding: '16px 18px', marginBottom: 18, borderTop: `3px solid ${T.blue}` }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 14 }}>
+            <AMeta label="Total Deposits" value={<span style={{ color: T.success }}>{fmt(tot.deposits)}</span>} />
+            <AMeta label="Total Withdrawals" value={<span style={{ color: T.danger }}>{fmt(tot.withdrawals)}</span>} />
+            <AMeta label="Total Settlements" value={<span style={{ color: '#7c3aed' }}>{fmt(tot.settlements)}</span>} />
+            <AMeta label="Total Commission" value={<span style={{ color: T.green }}>{fmt(tot.commission)}</span>} />
+            <AMeta label="Net Amount" value={<span style={{ color: '#1d4ed8' }}>{fmt(tot.net)}</span>} />
+            <AMeta label="Total Transactions" value={tot.count} />
           </div>
-        )}
-      </Card>
+        </Card>
+      </>}
+
+      {/* ── 2. Commission Report ── */}
+      {tab === 'commission' && <>
+        <RSectionTitle note="Commission earned per Agent, from each transaction's own Pay-In / Pay-Out / Settlement fee. Completed transactions only."><Icon name="treasury" size={15} /> Commission Report</RSectionTitle>
+        <ReportExportBar count={exportCount} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={onCsv} onPrint={() => onPdf(true)} />
+        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: T.canvas }}>{AGENT_COMM_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: AGENT_COMM_ALIGNS[i] === 'r' ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {commissionRows.length === 0 && <tr><td colSpan={AGENT_COMM_HEADERS.length} style={{ ...tdR, textAlign: 'center', color: T.textMuted, padding: 22 }}>No completed agent transactions match the selected filters.</td></tr>}
+                {slice(commissionRows).map(a => (
+                  <tr key={a.agentId} className="c5-row-hover">
+                    <td style={{ ...tdR, fontWeight: 700, color: T.blue }}>{a.agentId}</td>
+                    <td style={{ ...tdR, fontWeight: 600 }}>{a.agentName}</td>
+                    <td style={tdR}>{a.category || '—'}</td>
+                    <td style={{ ...tdR, textAlign: 'right' }}>{fmt(a.depositAmount)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', color: T.green, fontWeight: 700 }}>{fmt(a.depositCommission)}</td>
+                    <td style={{ ...tdR, textAlign: 'right' }}>{fmt(a.withdrawalAmount)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', color: T.green, fontWeight: 700 }}>{fmt(a.withdrawalCommission)}</td>
+                    <td style={{ ...tdR, textAlign: 'right' }}>{fmt(a.settlementAmount)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', color: T.green, fontWeight: 700 }}>{fmt(a.settlementCommission)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 800, color: T.green }}>{fmt(a.totalCommission)}</td>
+                    <td style={{ ...tdR, textAlign: 'right' }}>{a.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        <Card style={{ padding: '16px 18px', marginBottom: 18, borderTop: `3px solid ${T.blue}` }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 14 }}>
+            <AMeta label="Overall Deposit Commission" value={<span style={{ color: T.success }}>{fmt(tot.depositCommission)}</span>} />
+            <AMeta label="Overall Withdrawal Commission" value={<span style={{ color: T.danger }}>{fmt(tot.withdrawalCommission)}</span>} />
+            <AMeta label="Overall Settlement Commission" value={<span style={{ color: '#7c3aed' }}>{fmt(tot.settlementCommission)}</span>} />
+            <AMeta label="Overall Commission Earned" value={<span style={{ color: T.green }}>{fmt(tot.commission)}</span>} />
+          </div>
+        </Card>
+      </>}
+
+      {/* ── 3. Agent Ledger Report ── */}
+      {tab === 'ledger' && <>
+        <RSectionTitle note="Completed transactions in chronological order. Gross Amount is the transaction; Commission is the fee applied by the Agent workflow; Running Balance is net of commission and reconciles to the Current Available Balance."><Icon name="ledger" size={15} /> Agent Ledger Report</RSectionTitle>
+        <ReportExportBar count={exportCount} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={onCsv} onPrint={() => onPdf(true)} />
+        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: T.canvas }}>{AGENT_LEDGER_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: AGENT_LEDGER_ALIGNS[i] === 'r' ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+              <tbody>
+                {/* Opening Balance always leads the report */}
+                <tr style={{ background: T.canvas }}>
+                  <td style={tdR} /><td style={tdR} />
+                  <td style={{ ...tdR, fontWeight: 700, color: T.textMuted }}>Opening Balance</td>
+                  <td style={tdR} /><td style={tdR} /><td style={tdR} /><td style={tdR} /><td style={tdR} /><td style={tdR} />
+                  <td style={{ ...tdR, textAlign: 'right' }}>—</td>
+                  <td style={{ ...tdR, textAlign: 'right' }}>—</td>
+                  <td style={{ ...tdR, textAlign: 'right', fontWeight: 800 }}>{fmt(opening)}</td>
+                  <td style={tdR} />
+                </tr>
+                {ledger.length === 0 && <tr><td colSpan={AGENT_LEDGER_HEADERS.length} style={{ ...tdR, textAlign: 'center', color: T.textMuted, padding: 22 }}>No completed transactions match the selected filters.</td></tr>}
+                {slice(ledger).map((l, i) => (
+                  <tr key={`${l.ref}-${i}`} className="c5-row-hover">
+                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{l.date}</td>
+                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{l.time}</td>
+                    <td style={tdR}>{l.description}</td>
+                    <td style={{ ...tdR, fontFamily: 'monospace', color: T.blue }}>{l.ref}</td>
+                    <td style={tdR}>{l.agentId}</td>
+                    <td style={tdR}>{l.agentName}</td>
+                    <td style={tdR}>{l.membershipId}</td>
+                    <td style={{ ...tdR, fontWeight: 600 }}>{l.memberName}</td>
+                    <td style={tdR}>{typeLabelA(l.type)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 700, color: l.signedAmount >= 0 ? T.success : T.danger }}>{signedA(l.signedAmount)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 700, color: l.commission > 0 ? T.danger : T.textMuted }}>{commissionTextA(l.commission)}</td>
+                    <td style={{ ...tdR, textAlign: 'right', fontWeight: 800 }}>{fmt(l.balance)}</td>
+                    <td style={tdR}><StatusPill status={l.status} type={l.type} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        <Card style={{ padding: '16px 18px', marginBottom: 18, borderTop: `3px solid ${T.blue}` }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 14 }}>
+            <AMeta label="Opening Balance" value={fmt(opening)} />
+            <AMeta label="Total Entries" value={ledger.length} />
+            <AMeta label="Total Deposits" value={<span style={{ color: T.success }}>{fmt(tot.deposits)}</span>} />
+            <AMeta label="Total Withdrawals" value={<span style={{ color: T.danger }}>{fmt(tot.withdrawals)}</span>} />
+            <AMeta label="Total Settlements" value={<span style={{ color: '#7c3aed' }}>{fmt(tot.settlements)}</span>} />
+            <AMeta label="Total Commission" value={<span style={{ color: T.green }}>{fmt(tot.commission)}</span>} />
+            <AMeta label="Closing Balance (Current Available)" value={<span style={{ color: closing >= 0 ? T.success : T.danger }}>{fmt(closing)}</span>} />
+          </div>
+        </Card>
+      </>}
+
+      {/* Pagination — same control as the rest of the Agent module */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, padding: '12px 16px' }}>
+          <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted }}>Page {safePage} of {totalPages}</span>
+          <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</Btn>
+        </div>
+      )}
+      <div style={{ height: 24 }} />
     </div>
   );
 };

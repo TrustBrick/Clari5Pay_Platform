@@ -95,16 +95,18 @@ function exportReportPdf(data: ReportData, businessName: string) {
   setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
 }
 
-const thR: React.CSSProperties = { textAlign: 'left', padding: '11px 14px', fontSize: 11, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: `1px solid ${T.border}` };
-const tdR: React.CSSProperties = { padding: '11px 14px', borderBottom: `1px solid ${T.borderLight}`, color: T.textMain };
+// Shared report primitives — exported so the Agent Reports module renders with the exact same
+// table styling, tab pills, section titles and export toolbar as the Merchant/Admin Reports.
+export const thR: React.CSSProperties = { textAlign: 'left', padding: '11px 14px', fontSize: 11, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: `1px solid ${T.border}` };
+export const tdR: React.CSSProperties = { padding: '11px 14px', borderBottom: `1px solid ${T.borderLight}`, color: T.textMain };
 
-const pill = (active: boolean): React.CSSProperties => ({
+export const pill = (active: boolean): React.CSSProperties => ({
   padding: '8px 14px', borderRadius: 999, border: `1.5px solid ${active ? T.blue : T.border}`,
   background: active ? T.blue : T.surface, color: active ? '#fff' : T.textMuted,
   cursor: 'pointer', fontSize: 12.5, fontWeight: 700, fontFamily: 'inherit',
 });
 
-const RSectionTitle: React.FC<{ children: React.ReactNode; note?: string }> = ({ children, note }) => (
+export const RSectionTitle: React.FC<{ children: React.ReactNode; note?: string }> = ({ children, note }) => (
   <div style={{ margin: '26px 0 12px' }}>
     <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: T.textMain }}>{children}</h3>
     {note && <p style={{ margin: '3px 0 0', fontSize: 12, color: T.textMuted }}>{note}</p>}
@@ -474,7 +476,7 @@ const MemberProfileModal: React.FC<{ data: ReportData; memberId: string; onClose
 
 // ── Main page ──
 // ── Advanced-filter model + matching ───────────────────────────────────────────
-const DATE_PRESETS: [string, string][] = [
+export const DATE_PRESETS: [string, string][] = [
   ['all', 'All Time'], ['today', 'Today'], ['yesterday', 'Yesterday'],
   ['30m', 'Last 30 Minutes'], ['1h', 'Last 1 Hour'], ['24h', 'Last 24 Hours'],
   ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days'], ['custom', 'Custom Range'],
@@ -587,7 +589,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
 const methodLabel = (r: ReportRow) => (r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—');
 
 // Generic CSV download (Excel-friendly: UTF-8 BOM + CRLF, quotes escaped).
-function downloadCsv(filename: string, headers: string[], rows: Array<Array<string | number>>) {
+export function downloadCsv(filename: string, headers: string[], rows: Array<Array<string | number>>) {
   const esc = (v: string | number) => {
     const s = String(v ?? '');
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -604,7 +606,7 @@ function downloadCsv(filename: string, headers: string[], rows: Array<Array<stri
 // Print-to-PDF for a simple columnar report (shared by Treasury & Agent Ledger).
 // `aligns[i] === 'r'` right-aligns that column (amounts). Same brand/letterhead as the
 // existing filtered-report PDF so all exports look consistent.
-function printColumnarReport(opts: {
+export function printColumnarReport(opts: {
   title: string; businessName: string; generatedBy: string; rangeLabel: string;
   headers: string[]; rows: Array<Array<string | number>>; aligns?: Array<'l' | 'r'>;
   footerNote?: string; autoPrint?: boolean;
@@ -638,7 +640,7 @@ function printColumnarReport(opts: {
 }
 
 // Shared export toolbar (PDF / Excel / CSV / Print) for the focused reports.
-const ReportExportBar: React.FC<{ count: number; onPdf: () => void; onExcel: () => void; onCsv: () => void; onPrint: () => void }> =
+export const ReportExportBar: React.FC<{ count: number; onPdf: () => void; onExcel: () => void; onCsv: () => void; onPrint: () => void }> =
   ({ count, onPdf, onExcel, onCsv, onPrint }) => (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
       <Btn size="sm" variant="secondary" onClick={onPdf}><Icon name="pdf" size={14} /> Download PDF</Btn>
