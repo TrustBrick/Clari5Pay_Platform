@@ -3,7 +3,7 @@ from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, case, text
+from sqlalchemy import select, or_, and_, case, func, text
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster
 from app.core.deps import (
@@ -125,6 +125,16 @@ _COMPLETED_STATUSES = {TxStatus.COMPLETED, TxStatus.DEPOSITED}
 _TERMINAL_STATUSES = {
     TxStatus.COMPLETED, TxStatus.DEPOSITED, TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED,
 }
+# Transaction-type groups (mirror the old str.startswith("DEPOSIT"/"WITHDRAWAL"/"SETTLEMENT")),
+# used for SQL conditional aggregation in place of loading every row and filtering in Python.
+_DEPOSIT_TYPES = (TxType.DEPOSIT, TxType.DEPOSIT_REQUEST)
+_WITHDRAWAL_TYPES = (TxType.WITHDRAWAL, TxType.WITHDRAWAL_REQUEST)
+_SETTLEMENT_TYPES = (TxType.SETTLEMENT, TxType.SETTLEMENT_REQUEST)
+_TYPE_GROUP = {
+    **{t: "deposit" for t in _DEPOSIT_TYPES},
+    **{t: "withdrawal" for t in _WITHDRAWAL_TYPES},
+    **{t: "settlement" for t in _SETTLEMENT_TYPES},
+}
 # Shown to the merchant when a withdrawal/settlement exceeds their available balance.
 INSUFFICIENT_BALANCE_MSG = (
     "We cannot process this request. The requested amount exceeds your available balance."
@@ -190,21 +200,38 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     ids = (await db.execute(
         select(User.id).where(User.role == UserRole.MERCHANT, User.name == user.name)
     )).scalars().all()
-    txns = (await db.execute(
-        select(Transaction).where(Transaction.merchant_id.in_(ids))
-    )).scalars().all() if ids else []
-
-    def total(prefix: str, statuses: set[TxStatus] | None = None) -> float:
-        return sum(t.amount for t in txns
-                   if t.type.value.startswith(prefix) and (statuses is None or t.status in statuses))
-
     pay_in_rate = (user.pay_in_fee or 0) / 100
     pay_out_rate = (user.pay_out_fee or 0) / 100
-    # Completed-only basis for every figure below. A completed deposit is COMPLETED (legacy)
-    # or DEPOSITED (new admin final-approval); withdrawals/settlements complete as COMPLETED.
-    total_deposit = total("DEPOSIT", _COMPLETED_STATUSES)
-    total_settled = total("SETTLEMENT", {TxStatus.COMPLETED})
-    total_withdrawn = total("WITHDRAWAL", {TxStatus.COMPLETED})
+
+    # Aggregate in SQL rather than loading the business's entire transaction history into Python —
+    # the DB returns a handful of numbers instead of thousands of full rows, which is what was
+    # flooding Postgres with Client:ClientWrite. Completed-only basis for every figure below: a
+    # completed deposit is COMPLETED (legacy) or DEPOSITED (new admin final-approval);
+    # withdrawals/settlements complete as COMPLETED. Type groups mirror the old str.startswith().
+    _DEP, _WD, _ST = _DEPOSIT_TYPES, _WITHDRAWAL_TYPES, _SETTLEMENT_TYPES
+
+    def _sum(cond):
+        return func.coalesce(func.sum(case((cond, Transaction.amount), else_=0.0)), 0.0)
+
+    if ids:
+        agg = (await db.execute(
+            select(
+                _sum(and_(Transaction.type.in_(_DEP), Transaction.status.in_(_COMPLETED_STATUSES))),
+                _sum(and_(Transaction.type.in_(_ST), Transaction.status == TxStatus.COMPLETED)),
+                _sum(and_(Transaction.type.in_(_WD), Transaction.status == TxStatus.COMPLETED)),
+                # In-flight (non-terminal) withdrawals + settlements — the running-balance base.
+                _sum(and_(Transaction.type.in_(_WD + _ST), Transaction.status.notin_(_TERMINAL_STATUSES))),
+                func.count(case((Transaction.type.in_(_DEP), 1))),
+                func.count(case((Transaction.type.in_(_WD), 1))),
+                func.count(case((Transaction.type.in_(_ST), 1))),
+            ).where(Transaction.merchant_id.in_(ids))
+        )).one()
+        total_deposit, total_settled, total_withdrawn, running_base = (
+            float(agg[0]), float(agg[1]), float(agg[2]), float(agg[3]))
+        deposit_count, withdrawal_count, settlement_count = int(agg[4]), int(agg[5]), int(agg[6])
+    else:
+        total_deposit = total_settled = total_withdrawn = running_base = 0.0
+        deposit_count = withdrawal_count = settlement_count = 0
     pay_in_fees = total_deposit * pay_in_rate         # Total Deposit (Pay-In) Commission
     pay_out_fees = total_withdrawn * pay_out_rate     # Total Withdrawal (Pay-Out) Commission
     settlement_fees = total_settled * pay_out_rate    # Total Settlement (Pay-Out) Commission
@@ -229,22 +256,16 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     # ── Spendable guard — used ONLY to validate new withdrawals/settlements ──
     # The displayed available_balance already accounts for all completed fees (pay-in +
     # pay-out). The spendable limit further deducts in-flight (pending) requests so funds
-    # can never be over-drawn. It is never displayed.
-    running_balance = 0.0
-    for t in txns:
-        if t.status in _TERMINAL_STATUSES:
-            continue
-        if t.type.value.startswith("WITHDRAWAL") or t.type.value.startswith("SETTLEMENT"):
-            running_balance += t.amount * (1 + pay_out_rate)
+    # can never be over-drawn. It is never displayed. running_base is the in-flight
+    # withdrawal+settlement amount already aggregated in SQL above.
+    running_balance = running_base * (1 + pay_out_rate)
     true_wallet = (total_deposit - pay_in_fees
                    - total_settled - settlement_fees
                    - total_withdrawn - pay_out_fees)
     spendable_limit = max(0.0, true_wallet - running_balance)
     max_withdrawable = spendable_limit / (1 + pay_out_rate) if pay_out_rate else spendable_limit
     max_settleable = max_withdrawable
-
-    deposit_count = sum(1 for t in txns if t.type.value.startswith("DEPOSIT"))
-    withdrawal_count = sum(1 for t in txns if t.type.value.startswith("WITHDRAWAL"))
+    # deposit_count / withdrawal_count are aggregated in SQL above (COUNT with a type filter).
 
     return {
         # ── Canonical financial-summary figures (new formulas) — read by EVERY
@@ -271,6 +292,7 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
         "settlementFees": settlement_fees,
         "depositCount": deposit_count,
         "withdrawalCount": withdrawal_count,
+        "settlementCount": settlement_count,
     }
 
 
@@ -853,10 +875,31 @@ async def my_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Business-shared available balance + deposit/withdrawal counts for the current merchant."""
+    """Business-shared available balance + deposit/withdrawal counts for the current merchant.
+    Also returns a compact per-type × status count matrix so the Merchant Dashboard can render
+    its cards and status charts WITHOUT fetching the whole transaction list."""
     if current_user.role != UserRole.MERCHANT:
         raise HTTPException(status_code=403, detail="Merchant only")
-    return await compute_balance(db, current_user)
+    result = await compute_balance(db, current_user)
+
+    ids = (await db.execute(
+        select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
+    )).scalars().all()
+    status_counts: dict[str, dict[str, int]] = {"deposit": {}, "withdrawal": {}, "settlement": {}}
+    if ids:
+        rows = (await db.execute(
+            select(Transaction.type, Transaction.status, func.count())
+            .where(Transaction.merchant_id.in_(ids))
+            .group_by(Transaction.type, Transaction.status)
+        )).all()
+        for ttype, status, cnt in rows:
+            group = _TYPE_GROUP.get(ttype)
+            if not group:
+                continue
+            skey = status.value if hasattr(status, "value") else str(status)
+            status_counts[group][skey] = status_counts[group].get(skey, 0) + int(cnt)
+    result["statusCounts"] = status_counts
+    return result
 
 
 @router.get("/global-summary")
@@ -925,13 +968,7 @@ async def merchant_stats(
         for name, user in rep.items():
             s = await compute_balance(db, user)
             ids = name_ids[name]
-            txns = (await db.execute(
-                select(Transaction).where(Transaction.merchant_id.in_(ids))
-            )).scalars().all()
-            def cnt(pfx: str) -> int:
-                return sum(1 for t in txns if t.type.value.startswith(pfx))
-            # Canonical balances (compute_balance) drive Merchant Analytics — the three
-            # financial-summary figures shown on the Admin / Super Admin cards.
+            # Counts come from compute_balance (SQL-aggregated) — no need to reload every row here.
             out.append({
                 "name": name,
                 "merchantId": user.id,
@@ -940,11 +977,11 @@ async def merchant_stats(
                 "email": user.email,
                 "payInFee": user.pay_in_fee or 0,
                 "payOutFee": user.pay_out_fee or 0,
-                "depositCount": cnt("DEPOSIT"),
+                "depositCount": s["depositCount"],
                 "depositAmount": round(s["totalDeposit"], 2),
-                "withdrawalCount": cnt("WITHDRAWAL"),
+                "withdrawalCount": s["withdrawalCount"],
                 "withdrawalAmount": round(s["totalWithdrawn"], 2),
-                "settlementCount": cnt("SETTLEMENT"),
+                "settlementCount": s["settlementCount"],
                 "settlementAmount": round(s["totalSettled"], 2),
                 # New financial-summary figures (single source of truth).
                 "totalAvailableBalance": round(s["totalAvailableBalance"], 2),
