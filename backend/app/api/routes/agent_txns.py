@@ -481,7 +481,7 @@ async def _member_summary(db: AsyncSession, business: str, membership_id: str) -
     agents = {a.id: a for a in (await db.execute(select(AgentMaster).where(
         AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()}
 
-    agg = {"DEPOSIT": [0.0, 0.0], "WITHDRAWAL": [0.0, 0.0], "SETTLEMENT": [0.0, 0.0]}  # [amount, commission]
+    agg = {"DEPOSIT": [0, 0.0, 0.0], "WITHDRAWAL": [0, 0.0, 0.0], "SETTLEMENT": [0, 0.0, 0.0]}  # [count, amount, commission]
     member_name = None
     last_dt = None
     for t in rows:
@@ -490,19 +490,20 @@ async def _member_summary(db: AsyncSession, business: str, membership_id: str) -
             last_dt = t.created_at
         if t.status in COMPLETED_STATUSES and t.txn_type in agg:
             amt = t.amount or 0.0
-            agg[t.txn_type][0] += amt
-            agg[t.txn_type][1] += round(amt * _leg_rate(agents.get(t.agent_master_id), t.txn_type), 2)
-    dep_amt, dep_com = agg["DEPOSIT"]
-    wd_amt, wd_com = agg["WITHDRAWAL"]
-    st_amt, st_com = agg["SETTLEMENT"]
+            agg[t.txn_type][0] += 1
+            agg[t.txn_type][1] += amt
+            agg[t.txn_type][2] += round(amt * _leg_rate(agents.get(t.agent_master_id), t.txn_type), 2)
+    dep_n, dep_amt, dep_com = agg["DEPOSIT"]
+    wd_n, wd_amt, wd_com = agg["WITHDRAWAL"]
+    st_n, st_amt, st_com = agg["SETTLEMENT"]
     available = round((dep_amt - dep_com) - (wd_amt + wd_com) - (st_amt + st_com), 2)
     _, l_date, l_time = _ist_parts(last_dt)
     return {
         "found": True,
         "membershipId": mid, "memberName": member_name,
-        "totalDeposits": round(dep_amt, 2), "depositCommission": round(dep_com, 2),
-        "totalWithdrawals": round(wd_amt, 2), "withdrawalCommission": round(wd_com, 2),
-        "totalSettlements": round(st_amt, 2), "settlementCommission": round(st_com, 2),
+        "depositCount": dep_n, "totalDeposits": round(dep_amt, 2), "depositCommission": round(dep_com, 2),
+        "withdrawalCount": wd_n, "totalWithdrawals": round(wd_amt, 2), "withdrawalCommission": round(wd_com, 2),
+        "settlementCount": st_n, "totalSettlements": round(st_amt, 2), "settlementCommission": round(st_com, 2),
         "availableBalance": available,
         "lastTransactionDate": f"{l_date} {l_time}".strip() if last_dt else None,
     }

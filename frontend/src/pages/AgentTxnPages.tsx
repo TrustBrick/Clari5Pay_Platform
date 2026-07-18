@@ -7,7 +7,7 @@ import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import {
-  agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES, AGENT_SETTLEMENT_METHODS,
+  agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES, AGENT_COMPLETED_STATUSES, AGENT_SETTLEMENT_METHODS,
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
   type AgentWithdrawalBody, type AgentMemberLookup, type AgentMemberSummary, type AgentTxnRow,
   type AgentPerformance, type AgentPerfRow, type AgentTxnCommission,
@@ -421,11 +421,33 @@ const AgentDetailsModal: React.FC<{ a: AgentPerfRow; onClose: () => void }> = ({
 };
 
 // ─── Balance Enquiry — read-only per-member financial summary (isolated agent ledger) ─────────
-export const AgentBalanceEnquiryPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
+// One labelled figure inside a summary card.
+const BeRow: React.FC<{ k: string; v: React.ReactNode; strong?: boolean; color?: string }> = ({ k, v, strong, color }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '7px 0', gap: 12 }}>
+    <span style={{ fontSize: 12, color: T.textMuted }}>{k}</span>
+    <span style={{ fontSize: strong ? 15 : 13, fontWeight: strong ? 800 : 700, color: color || T.textMain, whiteSpace: 'nowrap' }}>{v}</span>
+  </div>
+);
+// A Deposit / Withdrawal / Settlement summary card (count, gross, commission, net/deducted).
+const BeSummaryCard: React.FC<{ title: string; accent: string; count: number; gross: number; commission: number; lastLabel: string; lastValue: number; lastColor: string }> =
+  ({ title, accent, count, gross, commission, lastLabel, lastValue, lastColor }) => (
+  <Card style={{ padding: 16, borderTop: `3px solid ${accent}` }}>
+    <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>{title}</p>
+    <BeRow k="Total Transactions" v={count} />
+    <BeRow k="Gross Amount" v={fmt(gross)} />
+    <BeRow k="Commission" v={fmt(commission)} color={T.warning} />
+    <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 4 }}>
+      <BeRow k={lastLabel} v={fmt(lastValue)} strong color={lastColor} />
+    </div>
+  </Card>
+);
+
+export const AgentBalanceEnquiryPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ onNavigate }) => {
   const { showToast } = useToast();
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AgentMemberSummary | null>(null);
+  const [recent, setRecent] = useState<AgentTxnRow[]>([]);
   const [searched, setSearched] = useState('');
 
   const search = async () => {
@@ -435,32 +457,31 @@ export const AgentBalanceEnquiryPage: React.FC<{ user: User; onNavigate?: (p: st
     try {
       const r = await agentTxnsAPI.balanceEnquiry(id);
       setResult(r); setSearched(id);
+      // Recent COMPLETED transactions for exactly this member (the list carries commission fields).
+      if (r.found) {
+        const list = await agentTxnsAPI.list({ search: id });
+        setRecent(list
+          .filter(t => t.membershipId === id && (AGENT_COMPLETED_STATUSES as string[]).includes(t.status))
+          .slice(0, 10));
+      } else { setRecent([]); }
     } catch (e) { showToast(agentTxnError(e, 'Balance enquiry failed.'), 'error'); }
     finally { setBusy(false); }
   };
 
-  // Completed-only summary; server returns found:false for an unknown membership.
-  const rows: Array<[string, React.ReactNode, boolean?]> = result?.found ? [
-    ['Membership ID', result.membershipId],
-    ['Member Name', result.memberName || '—'],
-    ['Total Deposits', fmt(result.totalDeposits ?? 0)],
-    ['Deposit Commission', fmt(result.depositCommission ?? 0)],
-    ['Total Withdrawals', fmt(result.totalWithdrawals ?? 0)],
-    ['Withdrawal Commission', fmt(result.withdrawalCommission ?? 0)],
-    ['Total Settlements', fmt(result.totalSettlements ?? 0)],
-    ['Settlement Commission', fmt(result.settlementCommission ?? 0)],
-    ['Current Available Balance', fmt(result.availableBalance ?? 0), true],
-    ['Last Transaction Date', result.lastTransactionDate || '—'],
-  ] : [];
+  const r = result?.found ? result : null;
+  const netDeposits = r ? (r.totalDeposits ?? 0) - (r.depositCommission ?? 0) : 0;
+  const totalWd = r ? (r.totalWithdrawals ?? 0) + (r.withdrawalCommission ?? 0) : 0;
+  const totalSt = r ? (r.totalSettlements ?? 0) + (r.settlementCommission ?? 0) : 0;
 
   return (
-    <div style={{ maxWidth: 720 }}>
+    <div style={{ maxWidth: 1000 }}>
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Balance Enquiry</h1>
-        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Read-only member financial summary from the isolated Agent ledger (completed transactions only).</p>
+        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Read-only member financial breakdown from the isolated Agent ledger — completed transactions only.</p>
       </div>
+
+      {/* 1. Search */}
       <Card style={{ padding: 18, marginBottom: 16 }}>
-        {/* Enter submits: wrap so we can catch it without an onKeyDown prop on Input. */}
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}
           onKeyDown={(e) => { if (e.key === 'Enter') search(); }}>
           <Input label="Membership ID" value={query} onChange={e => setQuery(normalizeMemberId(e.target.value))}
@@ -476,20 +497,66 @@ export const AgentBalanceEnquiryPage: React.FC<{ user: User; onNavigate?: (p: st
         </Card>
       )}
 
-      {result?.found && (
-        <Card style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
-            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: T.textMain }}>Financial Summary</h2>
+      {r && (
+        <>
+          {/* 2. Member Information — no transaction totals mixed in */}
+          <Card style={{ padding: 18, marginBottom: 16 }}>
+            <p style={{ margin: '0 0 12px', fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Member Information</p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '14px 24px' }}>
+              <div><p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Membership ID</p><p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: T.textMain }}>{r.membershipId}</p></div>
+              <div><p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Member Name</p><p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: T.textMain }}>{r.memberName || '—'}</p></div>
+              <div><p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Last Transaction Date</p><p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: T.textMain }}>{r.lastTransactionDate || '—'}</p></div>
+              <div><p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Current Available Balance</p><p style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.success }}>{fmt(r.availableBalance ?? 0)}</p></div>
+            </div>
+          </Card>
+
+          {/* 3-5. Deposit / Withdrawal / Settlement summary cards */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 14, marginBottom: 16 }}>
+            <BeSummaryCard title="Deposit Summary" accent={T.success} count={r.depositCount ?? 0} gross={r.totalDeposits ?? 0} commission={r.depositCommission ?? 0} lastLabel="Net Deposited" lastValue={netDeposits} lastColor={T.success} />
+            <BeSummaryCard title="Withdrawal Summary" accent={T.danger} count={r.withdrawalCount ?? 0} gross={r.totalWithdrawals ?? 0} commission={r.withdrawalCommission ?? 0} lastLabel="Total Deducted" lastValue={totalWd} lastColor={T.danger} />
+            <BeSummaryCard title="Settlement Summary" accent={'#7c3aed'} count={r.settlementCount ?? 0} gross={r.totalSettlements ?? 0} commission={r.settlementCommission ?? 0} lastLabel="Total Deducted" lastValue={totalSt} lastColor={'#7c3aed'} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 0 }}>
-            {rows.map(([label, value, highlight]) => (
-              <div key={label as string} style={{ padding: '12px 18px', borderBottom: `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
-                <p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
-                <p style={{ margin: 0, fontSize: highlight ? 18 : 14, fontWeight: highlight ? 800 : 700, color: highlight ? T.success : T.textMain }}>{value}</p>
+
+          {/* 6. Balance Calculation — fully transparent */}
+          <Card style={{ padding: 18, marginBottom: 16 }}>
+            <p style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Balance Calculation</p>
+            <div style={{ maxWidth: 520 }}>
+              <BeRow k="Total Net Deposits (Gross − Commission)" v={fmt(netDeposits)} color={T.success} />
+              <BeRow k="Less Total Withdrawals (Amount + Commission)" v={`− ${fmt(totalWd)}`} color={T.danger} />
+              <BeRow k="Less Total Settlements (Amount + Commission)" v={`− ${fmt(totalSt)}`} color={'#7c3aed'} />
+              <div style={{ borderTop: `2px solid ${T.border}`, marginTop: 6, paddingTop: 4 }}>
+                <BeRow k="Current Available Balance" v={fmt(r.availableBalance ?? 0)} strong color={T.success} />
               </div>
-            ))}
-          </div>
-        </Card>
+            </div>
+          </Card>
+
+          {/* 7. Recent completed transactions + View All */}
+          <Card style={{ overflow: 'hidden' }}>
+            <div style={{ padding: '12px 16px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Recent Completed Transactions</h2>
+              <Btn size="sm" variant="ghost" onClick={() => onNavigate?.('agent-all-txns')}>View All Transactions →</Btn>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr style={{ background: T.canvas }}>{['Date & Time', 'Type', 'Reference', 'Amount', 'Commission', 'Net Amount', 'Status'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {recent.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No completed transactions for this member.</td></tr>}
+                  {recent.map(t => (
+                    <tr key={t.id} style={{ background: T.surface }}>
+                      <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{t.createdDate} {t.createdTime}</td>
+                      <td style={tdS}>{t.type.charAt(0) + t.type.slice(1).toLowerCase()}</td>
+                      <td style={{ ...tdS, fontWeight: 700, color: T.blue }}>{t.referenceNumber}</td>
+                      <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmt(t.amount)}</td>
+                      <td style={{ ...tdS, textAlign: 'right', color: T.warning }}>{t.commissionAmount != null ? fmt(t.commissionAmount) : '—'}</td>
+                      <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{t.netAmount != null ? fmt(t.netAmount) : '—'}</td>
+                      <td style={tdS}><StatusPill status={t.status} type={t.type} method={t.txnMethod} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </>
       )}
     </div>
   );

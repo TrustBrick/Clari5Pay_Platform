@@ -244,9 +244,9 @@ export interface AgentMemberSummary {
   found: boolean;
   membershipId?: string;
   memberName?: string | null;
-  totalDeposits?: number; depositCommission?: number;
-  totalWithdrawals?: number; withdrawalCommission?: number;
-  totalSettlements?: number; settlementCommission?: number;
+  depositCount?: number; totalDeposits?: number; depositCommission?: number;
+  withdrawalCount?: number; totalWithdrawals?: number; withdrawalCommission?: number;
+  settlementCount?: number; totalSettlements?: number; settlementCommission?: number;
   availableBalance?: number;
   lastTransactionDate?: string | null;
 }
