@@ -1273,11 +1273,15 @@ const TxnTimeline: React.FC<{ row: AgentTxnRow; audit: AgentTxnAuditRow[] }> = (
   });
   if (rejected) nodes.push({ label: 'Rejected', ts: '', dot: T.danger, filled: true, line: T.border, muted: false, current: false });
   // Geometry of the rail, kept in one place so the dot, the connector and the text all line up.
-  // ROW is the fixed distance between two dot centres — equal spacing regardless of whether a
-  // step carries a timestamp — and is a minimum, so a wrapped label grows the row instead of
-  // clipping. The connector stretches to fill whatever height the row ends up with, which is
-  // what makes the segments meet edge-to-edge and read as a single continuous line.
-  const DOT = 14, LINE = 2, ROW = 46, LH = 18;
+  // ROW is the distance between two dot centres — equal spacing whether or not a step carries a
+  // timestamp — and is a minimum, so a wrapped label grows the row instead of clipping. It has to
+  // clear the tallest ordinary row (label + timestamp + the 12px tail) or those rows would push
+  // past it and the spacing would drift. The connector stretches to fill whatever height the row
+  // ends up with, which is what makes the segments meet edge-to-edge as one continuous line.
+  // OFF drops the dot onto the centre of the label's first line; since that offset also pushes the
+  // NEXT row's dot down, the connector reclaims it with an equal negative bottom margin — without
+  // that, every junction shows a 2px break.
+  const DOT = 14, LINE = 2, LH = 18, OFF = (LH - DOT) / 2, ROW = 48;
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Timeline</div>
@@ -1289,8 +1293,8 @@ const TxnTimeline: React.FC<{ row: AgentTxnRow; audit: AgentTxnAuditRow[] }> = (
               {/* Rail: dot on top, connector filling the rest of the row. The column stretches to
                   the full row height, so the connector ends exactly where the next dot begins. */}
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: DOT, flexShrink: 0 }}>
-                <div style={{ width: DOT, height: DOT, borderRadius: '50%', background: n.filled ? n.dot : 'transparent', border: `2px solid ${n.dot}`, flexShrink: 0, marginTop: (LH - DOT) / 2, boxSizing: 'border-box' }} />
-                {!last && <div style={{ width: LINE, flex: 1, minHeight: 8, background: n.line, borderRadius: LINE }} />}
+                <div style={{ width: DOT, height: DOT, borderRadius: '50%', background: n.filled ? n.dot : 'transparent', border: `2px solid ${n.dot}`, flexShrink: 0, marginTop: OFF, boxSizing: 'border-box' }} />
+                {!last && <div style={{ width: LINE, flex: 1, minHeight: 8, background: n.line, borderRadius: LINE, marginBottom: -OFF }} />}
               </div>
               <div style={{ minWidth: 0, paddingBottom: last ? 0 : 12 }}>
                 <p style={{ margin: 0, fontSize: 13, lineHeight: `${LH}px`, fontWeight: n.muted ? 600 : 800, color: n.label === 'Rejected' ? T.danger : n.muted ? T.textMuted : T.textMain, wordBreak: 'break-word' }}>{n.label}{n.current && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 700, color: T.blue }}>CURRENT</span>}</p>
