@@ -26,7 +26,19 @@ _RESET_TABLES = [
     "audit_logs",
     "system_logs",
     "whatsapp_logs",
+    # The isolated agent-transaction subsystem post-dates the original list above. Its ledger is
+    # transaction data too, so a reset that left it behind was only clearing half the box — and
+    # its rows reference transactions that the truncate removes, so keeping them would strand
+    # them against missing parents. agent_master / agent_account / agent_member_bank_account are
+    # deliberately NOT here: those are master data, like users and merchants, and a demo needs
+    # its agents to still exist after a reset.
+    "agent_transaction",
+    "agent_transaction_audit",
+    "agent_assignment_history",
 ]
+# Merchant references come from these Postgres sequences, so they need an explicit restart.
+# Agent references (AGD000001 …) are derived as max(existing) + 1 rather than from a sequence,
+# so emptying agent_transaction is already enough to send them back to 000001.
 _RESET_SEQUENCES = ["deposit_ref_seq", "withdrawal_ref_seq", "settlement_ref_seq"]
 
 
