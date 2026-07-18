@@ -10,7 +10,7 @@ import {
   agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES, AGENT_COMPLETED_STATUSES, AGENT_SETTLEMENT_METHODS,
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
   type AgentWithdrawalBody, type AgentMemberLookup, type AgentMemberSummary, type AgentTxnRow,
-  type AgentPerformance, type AgentTxnCommission,
+  type AgentPerformance, type AgentProfile, type AgentTxnCommission,
   type AgentTxnAuditRow, type AgentTxnQuery, type AgentAccountOption, type AgentMemberAccount,
 } from '../services/agentTxns';
 
@@ -321,6 +321,85 @@ export const AgentDashboardPage: React.FC<{ user: User; onNavigate?: (p: string)
         </div>
       </Card>
     </div>
+  );
+};
+
+// ─── Agent Profile — details, lifetime business/commission, members served, recent activity ───
+// Opened by clicking an agent. Completed-only, same per-leg calculation. No document store exists,
+// so no Documents section. Read-only.
+export const AgentProfileModal: React.FC<{ agentMasterId: number; onClose: () => void }> = ({ agentMasterId, onClose }) => {
+  const { showToast } = useToast();
+  const [p, setP] = useState<AgentProfile | null>(null);
+  useEffect(() => { agentTxnsAPI.agentProfile(agentMasterId).then(setP).catch(() => showToast('Failed to load the agent profile', 'error')); }, [agentMasterId, showToast]);
+  if (!p) return <Modal title="Agent Profile" onClose={onClose} wide><div style={{ padding: 24, textAlign: 'center', color: T.textMuted }}>Loading…</div></Modal>;
+  const a = p.agent, t = p.totals;
+  const info: Array<[string, React.ReactNode]> = [
+    ['Agent ID', a.agentId], ['Agent Name', a.agentName], ['Category', a.category],
+    ['Country', a.country || '—'], ['Currency', a.currency || '—'],
+    ['Created Date', a.createdDate || '—'], ['Status', a.status === 'ACTIVE' ? 'Active' : 'Inactive'],
+  ];
+  const cards: Array<[string, string, string]> = [
+    ['Total Business', fmt(t.totalBusiness), T.blue],
+    ['Total Deposits', `${fmt(t.totalDeposits)}`, T.success],
+    ['Total Withdrawals', `${fmt(t.totalWithdrawals)}`, T.danger],
+    ['Total Settlements', `${fmt(t.totalSettlements)}`, '#7c3aed'],
+    ['Commission Earned', fmt(t.commissionEarned), T.green],
+  ];
+  return (
+    <Modal title={`Agent Profile — ${a.agentId}`} onClose={onClose} wide>
+      <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Agent Details</p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: '10px 18px', marginBottom: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        {info.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, marginBottom: 16 }}>
+        {cards.map(([label, value, color]) => (
+          <Card key={label} style={{ padding: '14px 16px', borderTop: `3px solid ${color}` }}>
+            <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
+            <p style={{ margin: 0, fontSize: 17, fontWeight: 800, color }}>{value}</p>
+          </Card>
+        ))}
+      </div>
+
+      <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Assigned Members <span style={{ fontWeight: 600 }}>· {p.members.length}</span></p>
+      <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10, marginBottom: 16 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ background: T.canvas }}>{['Membership', 'Deposits', 'Withdrawals', 'Settlements', 'Txns'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+          <tbody>
+            {p.members.length === 0 && <tr><td colSpan={5} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 18 }}>No members yet.</td></tr>}
+            {p.members.map(m => (
+              <tr key={m.membershipId} style={{ background: T.surface }}>
+                <td style={{ ...tdS, fontWeight: 700 }}>{m.membershipId}{m.memberName ? ` · ${m.memberName}` : ''}</td>
+                <td style={{ ...tdS, textAlign: 'right', color: T.success }}>{fmt(m.deposits)}</td>
+                <td style={{ ...tdS, textAlign: 'right', color: T.danger }}>{fmt(m.withdrawals)}</td>
+                <td style={{ ...tdS, textAlign: 'right', color: '#7c3aed' }}>{fmt(m.settlements)}</td>
+                <td style={{ ...tdS, textAlign: 'center' }}>{m.count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p style={{ margin: '0 0 8px', fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Activity Timeline <span style={{ fontWeight: 600 }}>· recent</span></p>
+      <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr style={{ background: T.canvas }}>{['Date & Time', 'Reference', 'Type', 'Membership', 'Amount', 'Status'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+          <tbody>
+            {p.activity.length === 0 && <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 18 }}>No activity yet.</td></tr>}
+            {p.activity.map(x => (
+              <tr key={x.id} style={{ background: T.surface }}>
+                <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                <td style={{ ...tdS, fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
+                <td style={tdS}>{x.type.charAt(0) + x.type.slice(1).toLowerCase()}</td>
+                <td style={tdS}>{x.membershipId}</td>
+                <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmt(x.amount)}</td>
+                <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
   );
 };
 
@@ -1128,6 +1207,77 @@ const DField: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
   </div>
 );
 
+// ─── Transaction Timeline — the status progression for one transaction ────────────────────────
+// Built from the SAME per-method chain the backend enforces, so the steps always match the real
+// workflow. Each step is done / current / pending; a rejected transaction ends on a red terminal.
+// Audit timestamps enrich the steps that have actually happened.
+type TlStep = { key: string; label: string };
+const timelineSteps = (row: AgentTxnRow): TlStep[] => {
+  const cash = isTokenMethod(row.txnMethod), crypto = isWalletMethod(row.txnMethod);
+  if (row.type === 'DEPOSIT') {
+    const req = cash ? 'TOKEN_REQUESTED' : crypto ? 'WALLET_REQUESTED' : 'ACCOUNT_REQUESTED';
+    const sub: TlStep = cash ? { key: 'TOKEN_SUBMITTED', label: 'Token Submitted' }
+      : crypto ? { key: 'WALLET_SUBMITTED', label: 'Wallet Submitted' }
+      : { key: 'ACCOUNT_SUBMITTED', label: 'Account Submitted' };
+    return [{ key: req, label: 'Deposit Created' }, sub,
+      { key: 'SLIP_SUBMITTED', label: 'Supervisor Review' },
+      { key: 'SUPERVISOR_APPROVED', label: 'Approved' }, { key: 'DEPOSITED', label: 'Deposited' }];
+  }
+  if (row.type === 'WITHDRAWAL') {
+    if (cash || crypto) return [
+      { key: cash ? 'TOKEN_SUBMITTED' : 'WALLET_SUBMITTED', label: 'Withdrawal Created · Manager Review' },
+      { key: 'MANAGER_APPROVED', label: 'Manager Approved' }, { key: 'COMPLETED', label: 'Completed' }];
+    return [{ key: 'ACCOUNT_SUBMITTED', label: 'Withdrawal Created' },
+      { key: 'MANAGER_REVIEW', label: 'Paid · Manager Review' }, { key: 'COMPLETED', label: 'Completed' }];
+  }
+  return [{ key: 'SLIP_SUBMITTED', label: 'Settlement Created' }, { key: 'COMPLETED', label: 'Completed' }];
+};
+
+const TxnTimeline: React.FC<{ row: AgentTxnRow; audit: AgentTxnAuditRow[] }> = ({ row, audit }) => {
+  const steps = timelineSteps(row);
+  const done = (AGENT_COMPLETED_STATUSES as string[]).includes(row.status);
+  const rejected = row.status === 'REJECTED';
+  const curIdx = steps.findIndex(s => s.key === row.status);
+  const reached = new Set(audit.map(a => a.action));   // statuses that actually happened
+  const when = (k: string) => { const a = audit.find(x => x.action === k); return a ? `${a.createdDate || ''} ${a.createdTime || ''}`.trim() : ''; };
+  const nodeState = (i: number): 'done' | 'current' | 'pending' => {
+    if (done) return 'done';
+    if (rejected) return reached.has(steps[i].key) || i === 0 ? 'done' : 'pending';
+    if (curIdx < 0) return i === 0 ? 'current' : 'pending';
+    return i < curIdx ? 'done' : i === curIdx ? 'current' : 'pending';
+  };
+  const color = { done: T.success, current: T.blue, pending: T.textMuted } as const;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Timeline</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+        {steps.map((s, i) => {
+          const st = nodeState(i);
+          const ts = when(s.key);
+          return (
+            <div key={s.key + i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div style={{ width: 14, height: 14, borderRadius: '50%', background: st === 'pending' ? 'transparent' : color[st], border: `2px solid ${color[st]}`, flexShrink: 0 }} />
+                {i < steps.length - 1 && <div style={{ width: 2, flex: 1, minHeight: 22, background: st === 'done' ? T.success : T.border }} />}
+              </div>
+              <div style={{ paddingBottom: i < steps.length - 1 ? 14 : 0 }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: st === 'pending' ? 600 : 800, color: st === 'pending' ? T.textMuted : T.textMain }}>{s.label}{st === 'current' && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 700, color: T.blue }}>CURRENT</span>}</p>
+                {ts && <p style={{ margin: '2px 0 0', fontSize: 11, color: T.textMuted }}>{ts}</p>}
+              </div>
+            </div>
+          );
+        })}
+        {rejected && (
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ width: 14, height: 14, borderRadius: '50%', background: T.danger, border: `2px solid ${T.danger}`, flexShrink: 0 }} />
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: T.danger }}>Rejected</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> = ({ row, onClose }) => {
   const [audit, setAudit] = useState<AgentTxnAuditRow[]>([]);
   const [comm, setComm] = useState<AgentTxnCommission | null>(null);
@@ -1215,6 +1365,8 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
           </div>
         </div>
       )}
+
+      <TxnTimeline row={row} audit={audit} />
 
       <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Audit History</h3>
       <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10, marginBottom: 16 }}>

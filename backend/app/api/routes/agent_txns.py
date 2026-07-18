@@ -594,6 +594,58 @@ def _agent_or(agents, agent_id):
     return None
 
 
+async def _agent_profile(db: AsyncSession, business: str, agent_master_id: int) -> dict:
+    """One agent's profile — details, lifetime business/commission totals (completed-only, per-leg
+    fee), the members it has served, and its recent activity. Reuses the same calculation as
+    everywhere; scoped to the agent's own business. No document store exists, so no documents."""
+    agent = (await db.execute(select(AgentMaster).where(
+        AgentMaster.id == agent_master_id, AgentMaster.merchant_business == business))).scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found for this business.")
+    txns = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.merchant_business == business,
+        AgentTransaction.agent_master_id == agent_master_id)
+        .order_by(AgentTransaction.id.desc()))).scalars().all()
+
+    leg = {"DEPOSIT": [0, 0.0, 0.0], "WITHDRAWAL": [0, 0.0, 0.0], "SETTLEMENT": [0, 0.0, 0.0]}
+    members: dict = {}   # membership_id -> {name, deposits, withdrawals, settlements, count}
+    for t in txns:
+        m = members.setdefault(t.membership_id, {
+            "membershipId": t.membership_id, "memberName": t.membership_name,
+            "deposits": 0.0, "withdrawals": 0.0, "settlements": 0.0, "count": 0})
+        m["count"] += 1
+        if t.status in COMPLETED_STATUSES and t.txn_type in leg:
+            amt = t.amount or 0.0
+            leg[t.txn_type][0] += 1
+            leg[t.txn_type][1] += amt
+            leg[t.txn_type][2] += round(amt * _leg_rate(agent, t.txn_type), 2)
+            key = {"DEPOSIT": "deposits", "WITHDRAWAL": "withdrawals", "SETTLEMENT": "settlements"}[t.txn_type]
+            m[key] += amt
+    dep_c, dep_a, dep_com = leg["DEPOSIT"]
+    wd_c, wd_a, wd_com = leg["WITHDRAWAL"]
+    st_c, st_a, st_com = leg["SETTLEMENT"]
+    total_commission = round(dep_com + wd_com + st_com, 2)
+    return {
+        "agent": {
+            "agentId": agent.agent_id, "agentName": agent.full_name, "category": agent.category,
+            "country": agent.country, "state": agent.state, "location": agent.location,
+            "currency": agent.currency, "status": agent.status,
+            "createdDate": agent.date_of_creation.isoformat() if agent.date_of_creation else None,
+        },
+        "totals": {
+            "totalBusiness": round(dep_a + wd_a + st_a, 2),
+            "depositCount": dep_c, "totalDeposits": round(dep_a, 2), "depositCommission": round(dep_com, 2),
+            "withdrawalCount": wd_c, "totalWithdrawals": round(wd_a, 2), "withdrawalCommission": round(wd_com, 2),
+            "settlementCount": st_c, "totalSettlements": round(st_a, 2), "settlementCommission": round(st_com, 2),
+            "commissionEarned": total_commission, "totalTransactions": dep_c + wd_c + st_c,
+        },
+        "members": sorted(({**m, "deposits": round(m["deposits"], 2), "withdrawals": round(m["withdrawals"], 2),
+                            "settlements": round(m["settlements"], 2)} for m in members.values()),
+                          key=lambda x: -(x["deposits"] + x["withdrawals"] + x["settlements"])),
+        "activity": [_row(t) for t in txns[:12]],
+    }
+
+
 async def _resolve_approver(db: AsyncSession, business: str, approver_user_id: int | None):
     if approver_user_id is None:
         return None, None
@@ -1240,6 +1292,14 @@ async def agent_performance(db: AsyncSession = Depends(get_db),
     rankings and single-agent highs. Completed-only; commission per leg from each agent's own fee.
     AGENT performance only — no member/membership balances (those live on Balance Enquiry)."""
     return await _agent_performance(db, _business(user))
+
+
+@router.get("/agent/{agent_master_id}/profile")
+async def agent_profile(agent_master_id: int, db: AsyncSession = Depends(get_db),
+                        user: User = Depends(get_current_agent_operator)):
+    """One agent's profile: details, lifetime totals/commission, the members it served, and its
+    recent activity. Same completed-only per-leg calculation; the standard agent access gate."""
+    return await _agent_profile(db, _business(user), agent_master_id)
 
 
 @router.post("/{txn_id}/manager/approve")

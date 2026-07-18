@@ -6,6 +6,7 @@ import { agentAPI, agentAccountAPI, agentAssignmentAPI, agentDashboardAPI, agent
 import { formatDateTimeIST, COUNTRY_CODES, INDIAN_STATES, fileToDataUrl, fmt, downloadText } from '../utils/helpers';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import { downloadXlsx } from '../utils/xlsx';
+import { AgentProfileModal } from './AgentTxnPages';
 import type { Col } from '../utils/xlsx';
 import type { Agent, AgentAccount, AgentAccountType, AgentAssignmentResult, AgentAuditRow, AgentCategory, AgentDashboard, AgentFinancialRow, AgentStatus, AgentTxRow, User } from '../types';
 
@@ -374,6 +375,7 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ user, onNavigate }) => {
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<Mode>({ screen: 'list' });
   const [search, setSearch] = useState('');
+  const [profileId, setProfileId] = useState<number | null>(null);   // isolated Agent Profile modal
   const [fCat, setFCat] = useState('');
   const [fCountry, setFCountry] = useState('');
   const [fState, setFState] = useState('');
@@ -523,6 +525,7 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ user, onNavigate }) => {
                       <td style={td}>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                           <Btn variant="ghost" size="sm" onClick={() => setMode({ screen: 'view', agent: a })}>View</Btn>
+                          <Btn variant="ghost" size="sm" onClick={() => setProfileId(a.id)}>Profile</Btn>
                           <Btn variant="secondary" size="sm" onClick={() => setMode({ screen: 'edit', agent: a })}>Edit</Btn>
                           {pending ? (
                             isManager && <>
@@ -560,6 +563,8 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ user, onNavigate }) => {
           </div>
         )}
       </Card>
+
+      {profileId != null && <AgentProfileModal agentMasterId={profileId} onClose={() => setProfileId(null)} />}
 
       {toDelete && (
         <Modal title="Delete Agent" onClose={() => setToDelete(null)}>

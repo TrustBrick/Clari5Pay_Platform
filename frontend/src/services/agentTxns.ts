@@ -275,6 +275,20 @@ export interface AgentTxnCommission {
   balanceBefore: number; balanceAfter: number;
 }
 
+export interface AgentProfile {
+  agent: { agentId: string; agentName: string; category: string; country?: string | null; state?: string | null;
+    location?: string | null; currency?: string | null; status: string; createdDate?: string | null };
+  totals: {
+    totalBusiness: number;
+    depositCount: number; totalDeposits: number; depositCommission: number;
+    withdrawalCount: number; totalWithdrawals: number; withdrawalCommission: number;
+    settlementCount: number; totalSettlements: number; settlementCommission: number;
+    commissionEarned: number; totalTransactions: number;
+  };
+  members: Array<{ membershipId: string; memberName?: string | null; deposits: number; withdrawals: number; settlements: number; count: number }>;
+  activity: AgentTxnRow[];
+}
+
 export const agentTxnsAPI = {
   overview: async () => (await api.get<AgentOverview>('/api/agent-txns/overview')).data,
   formData: async () => (await api.get<AgentFormData>('/api/agent-txns/form-data')).data,
@@ -282,6 +296,7 @@ export const agentTxnsAPI = {
   /** Read-only financial summary for a Membership ID (Balance Enquiry). */
   balanceEnquiry: async (id: string) => (await api.get<AgentMemberSummary>(`/api/agent-txns/balance-enquiry/${encodeURIComponent(id)}`)).data,
   performance: async () => (await api.get<AgentPerformance>('/api/agent-txns/performance')).data,
+  agentProfile: async (agentMasterId: number) => (await api.get<AgentProfile>(`/api/agent-txns/agent/${agentMasterId}/profile`)).data,
   txnCommission: async (id: number) => (await api.get<AgentTxnCommission>(`/api/agent-txns/${id}/commission`)).data,
   createDeposit: async (body: AgentDepositBody) => (await api.post<AgentTxnRow>('/api/agent-txns/deposit', body)).data,
   createWithdrawal: async (body: AgentWithdrawalBody) => (await api.post<AgentTxnRow>('/api/agent-txns/withdrawal', body)).data,
