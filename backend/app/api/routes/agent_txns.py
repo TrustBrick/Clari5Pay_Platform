@@ -78,6 +78,15 @@ ST_COMPLETED = "COMPLETED"
 ST_REJECTED = "REJECTED"
 ST_PENDING = "PENDING"
 ST_APPROVED = "APPROVED"
+# ── Settlement chain ──────────────────────────────────────────────────────────
+# Settlement Requested → Settlement Accepted → Proof Uploaded → Settled, with Rejected reachable
+# from either of the first two. The payment itself happens OFFLINE (cash / bank transfer / crypto);
+# the platform only records the workflow and the proof, and never initiates or verifies a payment.
+# These are plain strings in the existing VARCHAR(24) status column — no schema change.
+ST_SETTLEMENT_REQUESTED = "SETTLEMENT_REQUESTED"
+ST_SETTLEMENT_ACCEPTED = "SETTLEMENT_ACCEPTED"
+ST_PROOF_UPLOADED = "PROOF_UPLOADED"
+ST_SETTLED = "SETTLED"
 # Retired: the deposit slip step is SLIP_SUBMITTED now. Kept only so legacy rows still render.
 ST_SUPERVISOR_REVIEW = "SUPERVISOR_REVIEW"
 
@@ -89,7 +98,11 @@ DEPOSIT_OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR")
 # figure, mirroring the merchant rule ("a completed deposit is COMPLETED (legacy) or DEPOSITED").
 # APPROVED covers agent rows created before the chain existed; DEPOSITED ends the deposit chain;
 # COMPLETED ends the withdrawal/settlement chains.
-COMPLETED_STATUSES = {ST_APPROVED, ST_DEPOSITED, ST_COMPLETED}
+# SETTLED ends the settlement chain, so it counts exactly like DEPOSITED/COMPLETED do for the
+# other two. A settlement that is still Requested/Accepted/Proof-Uploaded has not moved money yet
+# and is excluded, and REJECTED never counts — so a rejected settlement cannot touch balances,
+# reports or the ledger.
+COMPLETED_STATUSES = {ST_APPROVED, ST_DEPOSITED, ST_COMPLETED, ST_SETTLED}
 REJECTED_STATUSES = {ST_REJECTED}
 FINAL_STATUSES = COMPLETED_STATUSES | REJECTED_STATUSES
 
@@ -412,6 +425,22 @@ def _leg_rate(agent: AgentMaster | None, txn_type: str) -> float:
     pct = {"DEPOSIT": agent.pay_in_fee, "WITHDRAWAL": agent.pay_out_fee,
            "SETTLEMENT": agent.settlement_fee}.get(txn_type)
     return (pct or 0.0) / 100.0
+
+
+# An agent's Category decides how it settles, so the Settlement Method follows from it rather than
+# being picked by a user: a Cash agent settles in cash, a Bank Transfer agent by bank transfer, a
+# Crypto agent in crypto. Mirrors categoryForMethod() on the frontend, inverted.
+_CATEGORY_SETTLEMENT_METHOD = {"CASH": "CASH", "BANK_TRANSFER": "BANK", "CRYPTO": "CRYPTO"}
+
+
+def _settlement_method_for(agent: AgentMaster) -> str:
+    method = _CATEGORY_SETTLEMENT_METHOD.get(str(agent.category or "").upper())
+    if not method:
+        raise HTTPException(
+            status_code=400,
+            detail="This agent has no settlement category configured (expected Cash, Bank Transfer or Crypto).",
+        )
+    return method
 
 
 def _signed_leg(t: AgentTransaction, agent: AgentMaster | None) -> float:
@@ -883,7 +912,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         status=(_requested_status(method) if txn_type == "DEPOSIT"
                 else (_submitted_status(method) if method in SPECIAL_METHODS else ST_ACCOUNT_SUBMITTED)
                 if txn_type == "WITHDRAWAL"
-                else ST_SLIP_SUBMITTED if txn_type == "SETTLEMENT" else ST_PENDING),
+                else ST_SETTLEMENT_REQUESTED if txn_type == "SETTLEMENT" else ST_PENDING),
         # Payout account (withdrawals) — where the money is sent.
         payout_account_id=(payout.id if payout is not None else None),
         payout_account_holder=(payout.account_holder if payout else None),
@@ -1019,9 +1048,15 @@ async def create_withdrawal(body: AgentWithdrawalCreate, db: AsyncSession = Depe
 @router.post("/settlement")
 async def create_settlement(body: AgentSettlementCreate, db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_agent_operator)):
-    """Create an Agent Settlement. Supervisor-only and approval-free: the Supervisor performs
-    every step, so it is created at SLIP_SUBMITTED, ready for them to pay and complete."""
+    """Create an Agent Settlement, opening the settlement chain at Settlement Requested.
+
+    The Settlement Method is NOT chosen by the user: it is derived from the assigned Agent's
+    configured Category (Cash / Bank Transfer / Crypto), so the recorded method can never disagree
+    with the agent actually performing the offline payment. Anything sent in txnMethod is ignored.
+    """
     _require(user, ("SUPERVISOR",), "create Agent Settlement Requests")
+    agent = await _get_agent(db, _business(user), body.agentMasterId)
+    body.txnMethod = _settlement_method_for(agent)
     membership_id = body.membershipId.strip()
     payout = await _resolve_payout_account(db, user, body, membership_id, (body.membershipName or None))
     return await _create(db, user, body, "SETTLEMENT", "AGS", "S", None, payout=payout)
@@ -1377,10 +1412,15 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     The merchant workflow's Admin payout step, performed here by the Data Operator.
     """
     t = await _load_own(db, _business(user), txn_id)
-    # Withdrawals are paid by the operator; settlements by the Supervisor who raised them.
+    # Settlements no longer complete here: they follow their own chain (Requested → Accepted →
+    # Proof Uploaded → Settled) via /settlement/*, so that a settlement can only ever be completed
+    # with proof of the offline payment attached. Rejected explicitly rather than silently ignored.
     if t.txn_type == "SETTLEMENT":
-        _require(user, ("SUPERVISOR",), "complete Agent Settlements")
-    elif t.txn_type == "WITHDRAWAL":
+        raise HTTPException(
+            status_code=400,
+            detail="Agent Settlements are completed through the settlement workflow (accept, upload proof, settle).",
+        )
+    if t.txn_type == "WITHDRAWAL":
         _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
     else:
         raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals and Settlements only.")
@@ -1393,9 +1433,9 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     # against the wallet address alone and is unchanged.
     cash_confirm = confirm_only and method in TOKEN_METHODS
     # CASH/CRYPTO confirm AFTER the Manager gate (MANAGER_APPROVED); BANK/UPI pay before it, from
-    # the state they were created in; a SETTLEMENT pays from its own SLIP_SUBMITTED gate.
-    _require_status(t, ST_MANAGER_APPROVED if confirm_only
-                    else ST_ACCOUNT_SUBMITTED if t.txn_type == "WITHDRAWAL" else ST_SLIP_SUBMITTED,
+    # the state they were created in. Only withdrawals reach this endpoint (settlements are
+    # rejected above and follow their own chain).
+    _require_status(t, ST_MANAGER_APPROVED if confirm_only else ST_ACCOUNT_SUBMITTED,
                     "confirmation" if confirm_only else "payment")
     # Balance BEFORE this leg completes (still in-flight here, so excluded), for the audit line.
     _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
@@ -1415,9 +1455,8 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     if body.utr is not None and (body.utr or '').strip():
         t.deposit_utr = body.utr.strip()          # UTR of the payment, shown wherever the txn is viewed
     # CASH/CRYPTO withdrawal: already approved, so confirming completes it. BANK/UPI withdrawal:
-    # paid now, so it goes to the Manager. Settlement: no gate, done.
-    t.status = (ST_COMPLETED if confirm_only
-                else ST_MANAGER_REVIEW if t.txn_type == 'WITHDRAWAL' else ST_COMPLETED)
+    # paid now, so it goes to the Manager.
+    t.status = ST_COMPLETED if confirm_only else ST_MANAGER_REVIEW
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
     # This leg completes here for a cash/crypto withdrawal (confirm) and for a settlement; a BANK/UPI
     # withdrawal only reaches MANAGER_REVIEW and completes later at manager/approve.
@@ -1425,10 +1464,112 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     if _done:
         t.completed_at = t.updated_at
     await _log(db, t,
-               "COMPLETED" if (confirm_only or t.txn_type != "WITHDRAWAL") else "SLIP_SUBMITTED",
+               "COMPLETED" if confirm_only else "SLIP_SUBMITTED",
                user, new_amount=t.amount,
                note=(_completion_note(t, _agent, user, _before) if _done
                      else f"Paid by {user.username} — awaiting Manager approval"))
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+# ── Settlement chain ─────────────────────────────────────────────────────────────
+# Settlement Requested → Settlement Accepted → Proof Uploaded → Settled, Rejected reachable from
+# the first two. The payment happens OFFLINE; these endpoints only record the workflow and the
+# proof. Nothing here initiates, verifies or simulates a payment.
+def _require_settlement(t: AgentTransaction) -> None:
+    if t.txn_type != "SETTLEMENT":
+        raise HTTPException(status_code=400, detail="This action applies to Agent Settlements only.")
+
+
+async def _settlement_step(db: AsyncSession, user: User, txn_id: int, expected: str, what: str) -> AgentTransaction:
+    """Load a settlement and assert it is at the expected point in the chain. Supervisor-only —
+    the same role that raises a settlement drives it to completion."""
+    _require(user, ("SUPERVISOR",), "manage Agent Settlements")
+    t = await _load_own(db, _business(user), txn_id)
+    _require_settlement(t)
+    _require_status(t, expected, what)
+    return t
+
+
+@router.post("/{txn_id}/settlement/accept")
+async def settlement_accept(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_agent_operator)):
+    """Supervisor accepts the request. The agent then settles OFFLINE — outside Clari5Pay."""
+    t = await _settlement_step(db, user, txn_id, ST_SETTLEMENT_REQUESTED, "acceptance")
+    t.status = ST_SETTLEMENT_ACCEPTED
+    t.supervisor_name = user.username
+    t.supervisor_action_at = datetime.utcnow()
+    t.review_remark = (body.remark or "").strip() or None
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "SETTLEMENT_ACCEPTED", user, new_amount=t.amount,
+               note=f"Settlement accepted by {user.username} — payment to be made offline"
+                    + (f". {t.review_remark}" if t.review_remark else ""))
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/settlement/reject")
+async def settlement_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_agent_operator)):
+    """Reject before the payment process begins — allowed while Requested or Accepted. A rejected
+    settlement never reaches SETTLED, so it can never affect balances, reports or the ledger."""
+    _require(user, ("SUPERVISOR",), "manage Agent Settlements")
+    t = await _load_own(db, _business(user), txn_id)
+    _require_settlement(t)
+    if t.status not in (ST_SETTLEMENT_REQUESTED, ST_SETTLEMENT_ACCEPTED):
+        raise HTTPException(status_code=400,
+                            detail="Only a settlement still awaiting payment can be rejected.")
+    t.status = ST_REJECTED
+    t.supervisor_name = user.username
+    t.supervisor_action_at = datetime.utcnow()
+    t.review_remark = (body.remark or "").strip() or None
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "REJECTED", user, new_amount=t.amount,
+               note=f"Settlement rejected by {user.username}"
+                    + (f". {t.review_remark}" if t.review_remark else ""))
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/settlement/proof")
+async def settlement_proof(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Depends(get_db),
+                           user: User = Depends(get_current_agent_operator)):
+    """Supervisor uploads the proof of the completed offline payment (bank receipt, cash
+    acknowledgement or crypto transfer proof). The proof is mandatory — that is the whole point
+    of the step. An optional reference (UTR / txn hash) is stored alongside it."""
+    t = await _settlement_step(db, user, txn_id, ST_SETTLEMENT_ACCEPTED, "proof upload")
+    if not body.slipImage:
+        raise HTTPException(status_code=400, detail="Payment proof is required.")
+    t.status = ST_PROOF_UPLOADED
+    t.slip_image = body.slipImage
+    t.slip_submitted_by = user.username
+    t.slip_submitted_at = datetime.utcnow()
+    if (body.utr or "").strip():
+        t.deposit_utr = body.utr.strip()
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "PROOF_UPLOADED", user, new_amount=t.amount,
+               note=f"Payment proof uploaded by {user.username}")
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/settlement/settle")
+async def settlement_settle(txn_id: int, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_agent_operator)):
+    """Mark the settlement Settled. Only reachable once the proof is on the record, so a
+    settlement can never complete without evidence of the offline payment."""
+    t = await _settlement_step(db, user, txn_id, ST_PROOF_UPLOADED, "settlement")
+    _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
+    _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
+    t.status = ST_SETTLED
+    t.completed_at = datetime.utcnow()
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "SETTLED", user, new_amount=t.amount,
+               note=_completion_note(t, _agent, user, _before))
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -1528,7 +1669,7 @@ def _chain_order(t: AgentTransaction) -> list[str]:
         return ([_submitted_status(m), ST_MANAGER_APPROVED] if m in SPECIAL_METHODS
                 else [ST_ACCOUNT_SUBMITTED, ST_MANAGER_REVIEW])
     if ty == "SETTLEMENT":
-        return [ST_SLIP_SUBMITTED]
+        return [ST_SETTLEMENT_REQUESTED, ST_SETTLEMENT_ACCEPTED, ST_PROOF_UPLOADED]
     return []
 
 
@@ -1539,7 +1680,7 @@ def _gate_for(t: AgentTransaction) -> str | None:
     if ty == "WITHDRAWAL":
         return _withdrawal_gate(t.txn_method)
     if ty == "SETTLEMENT":
-        return ST_SLIP_SUBMITTED
+        return ST_SETTLEMENT_REQUESTED     # the Supervisor's accept/reject decision point
     return None
 
 

@@ -61,6 +61,11 @@ const STATUS_STYLE: Record<string, { c: string; bg: string; label: string }> = {
   REJECTED: { c: T.danger, bg: T.dangerBg, label: 'Rejected' },
   // Retired — the deposit slip step is SLIP_SUBMITTED now. Kept so legacy rows still render.
   SUPERVISOR_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Supervisor Review' },
+  // Settlement chain — the payment itself happens offline; these only record the workflow.
+  SETTLEMENT_REQUESTED: { c: T.warning, bg: T.warningBg, label: 'Settlement Requested' },
+  SETTLEMENT_ACCEPTED: { c: T.info, bg: T.infoBg, label: 'Settlement Accepted' },
+  PROOF_UPLOADED: { c: T.blue, bg: `${T.blue}18`, label: 'Proof Uploaded' },
+  SETTLED: { c: T.success, bg: T.successBg, label: 'Settled' },
 };
 
 const StatusPill: React.FC<{ status: string; type?: string | null; method?: string | null }> = ({ status, type, method }) => {
@@ -77,6 +82,7 @@ const STATUS_FILTER_OPTIONS = [
   'TOKEN_REQUESTED', 'TOKEN_SUBMITTED', 'WALLET_REQUESTED', 'WALLET_SUBMITTED',
   'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'SUPERVISOR_APPROVED',
   'MANAGER_REVIEW', 'MANAGER_APPROVED',
+  'SETTLEMENT_REQUESTED', 'SETTLEMENT_ACCEPTED', 'PROOF_UPLOADED', 'SETTLED',
   'DEPOSITED', 'COMPLETED', 'REJECTED', 'PENDING', 'APPROVED',
 ].map(v => ({ value: v, label: STATUS_STYLE[v]?.label || v }));
 
@@ -94,6 +100,11 @@ const isSpecialMethod = (m?: string | null) => isTokenMethod(m) || isWalletMetho
 // Cash agent, a bank transfer through a Bank Transfer agent, crypto through a Crypto agent. The
 // method's category also decides which account types that agent may hold (see ALLOWED_ACCOUNT_TYPES
 // in agent_accounts.py). Selecting a method therefore narrows the agent list to that category.
+const CATEGORY_LABEL_A: Record<string, string> = { CASH: 'Cash', BANK_TRANSFER: 'Bank Transfer', CRYPTO: 'Crypto' };
+// A Settlement's method is dictated by the agent's Category, never chosen. Mirrors
+// _CATEGORY_SETTLEMENT_METHOD in backend/app/api/routes/agent_txns.py — keep the two in step.
+const SETTLEMENT_METHOD_FOR_CATEGORY: Record<string, string> = { CASH: 'CASH', BANK_TRANSFER: 'BANK', CRYPTO: 'CRYPTO' };
+
 const categoryForMethod = (m?: string | null): string | null => {
   const v = String(m || '').toUpperCase();
   if (!v) return null;
@@ -842,6 +853,11 @@ export const AgentWithdrawalRequestPage: React.FC<{
     : (autoAgent && String(autoAgent.agentMasterId) === agentId
         ? { code: autoAgent.agentCode || '', name: autoAgent.agentName || '', country: autoAgent.country || '', state: autoAgent.state || '', location: autoAgent.location || '', category: autoAgent.category || '' }
         : undefined);
+  // Settlement Method follows the assigned agent's Category — read-only, never user-selected.
+  const settlementMethod = isSettlement
+    ? (SETTLEMENT_METHOD_FOR_CATEGORY[String(disp?.category || '').toUpperCase()] || '')
+    : '';
+  useEffect(() => { if (isSettlement) setTxnMethod(settlementMethod); }, [isSettlement, settlementMethod]);
 
   const reset = () => {
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
@@ -930,17 +946,24 @@ export const AgentWithdrawalRequestPage: React.FC<{
             chosen first and narrows the agent list to that category; the agent details below are
             all auto-fetched from the chosen agent. */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
-          <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); setAutoAgent(null); }} required
-            options={[{ value: '', label: '— Select —' },
-              ...(isSettlement ? AGENT_SETTLEMENT_METHODS : (fd.txnMethods || [])).map(v => ({ value: v, label: methodLabel(v) }))]} />
-          <Sel label="Select Agent ID" value={agentId} onChange={e => setAgentId(e.target.value)} required
-            options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
-              ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
+          {/* Settlement: the Agent is chosen first and the Settlement Method follows from that
+              agent's Category (Cash / Bank Transfer / Crypto) — it is never selectable, so the
+              recorded method cannot disagree with the agent performing the offline payment.
+              Withdrawal keeps the existing method-first flow. */}
+          {!isSettlement && (
+            <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); setAutoAgent(null); }} required
+              options={[{ value: '', label: '— Select —' },
+                ...(fd.txnMethods || []).map(v => ({ value: v, label: methodLabel(v) }))]} />
+          )}
+          <Sel label={isSettlement ? 'Assigned Agent' : 'Select Agent ID'} value={agentId} onChange={e => setAgentId(e.target.value)} required
+            options={[{ value: '', label: isSettlement ? '— Select an agent —' : (txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —') },
+              ...(isSettlement ? fd.agents : agentsForMethod(fd.agents, txnMethod)).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
           <ReadField label="Agent Name" value={disp?.name} />
-          <ReadField label="Agent Country" value={disp?.country} />
-          <ReadField label="Agent State" value={disp?.state} />
-          <ReadField label="Agent Location" value={disp?.location} />
-          <ReadField label="Agent Category" value={disp?.category} />
+          {!isSettlement && <ReadField label="Agent Country" value={disp?.country} />}
+          {!isSettlement && <ReadField label="Agent State" value={disp?.state} />}
+          {!isSettlement && <ReadField label="Agent Location" value={disp?.location} />}
+          <ReadField label="Agent Category" value={disp?.category ? (CATEGORY_LABEL_A[String(disp.category).toUpperCase()] || disp.category) : undefined} />
+          {isSettlement && <ReadField label="Settlement Method" value={settlementMethod ? methodLabel(settlementMethod) : undefined} />}
 
           <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(normalizeMemberId(e.target.value))}
             onBlur={lookupMember} required placeholder="Enter Membership ID"
@@ -952,7 +975,10 @@ export const AgentWithdrawalRequestPage: React.FC<{
             hint={memberBalance != null ? `Member Available Balance: ₹${fmt(memberBalance)}` : undefined} />
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
+        {/* Country / State / Location / Mobile / Token / Note / Instructions describe the member
+            and how the operator contacts them — all Deposit/Withdrawal concerns. A Settlement is
+            an offline merchant↔agent payment with no member contact step, so none of it applies. */}
+        {!isSettlement && <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
           <SearchSelect label="Country" value={country} onChange={setCountry} options={COUNTRY_OPTIONS} placeholder="Type to search…" />
           <SearchSelect label="State" value={state} onChange={setState} options={STATE_OPTIONS} placeholder="Type to search…" />
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
@@ -972,15 +998,17 @@ export const AgentWithdrawalRequestPage: React.FC<{
           </>)}
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
-        </div>
+        </div>}
 
         <div style={{ marginTop: 8 }}>
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes <span style={{ color: T.textLight, fontWeight: 600 }}>({notes.length}/100)</span></label>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{isSettlement ? 'Remarks' : 'Notes'} <span style={{ color: T.textLight, fontWeight: 600 }}>({notes.length}/100)</span></label>
           <textarea value={notes} maxLength={100} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Up to 100 characters"
             style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
         </div>
 
-        <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        {/* A Settlement has no approver: the Supervisor raises it and drives the whole chain
+            (accept → upload proof → settle). */}
+        {!isSettlement && <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
           <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
           <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
             Every Agent Withdrawal goes to an approver — choose who reviews this one.
@@ -989,7 +1017,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
             <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
               options={[{ value: '', label: '— Select approver —' }, ...fd.approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
           </div>
-        </div>
+        </div>}
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
           <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : `Submit Agent ${NOUN}`}</Btn>
@@ -1422,6 +1450,142 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
   );
 };
 
+// ─── Settlement chain modals ───────────────────────────────────────────────────
+// Settlement Requested → Settlement Accepted → Proof Uploaded → Settled. The payment itself is
+// made OFFLINE (cash / bank transfer / crypto) between the merchant and the agent — nothing here
+// initiates, verifies or simulates a payment. Clari5Pay records the workflow and the proof only.
+
+/** Accept or reject a settlement request. Reject stays available until the payment begins. */
+const SettlementDecisionModal: React.FC<{ row: AgentTxnRow; action: 'accept' | 'reject'; onClose: () => void; onDone: () => void }> =
+  ({ row, action, onClose, onDone }) => {
+    const { showToast } = useToast();
+    const [remark, setRemark] = useState('');
+    const [busy, setBusy] = useState(false);
+    const accepting = action === 'accept';
+    const go = async () => {
+      if (!accepting && !remark.trim()) { showToast('A reason is required to reject.', 'error'); return; }
+      setBusy(true);
+      try {
+        await (accepting ? agentTxnsAPI.settlementAccept(row.id, remark.trim())
+          : agentTxnsAPI.settlementReject(row.id, remark.trim()));
+        showToast(accepting ? 'Settlement accepted — the agent now settles offline.' : 'Settlement rejected.', 'success');
+        onDone(); onClose();
+      } catch (e) { showToast(agentTxnError(e, 'Could not update the settlement.'), 'error'); }
+      finally { setBusy(false); }
+    };
+    return (
+      <Modal title={`${accepting ? 'Accept' : 'Reject'} Settlement — ${row.referenceNumber}`} onClose={onClose}>
+        <div style={{ display: 'grid', gap: 4, marginBottom: 14 }}>
+          <ReadField label="Assigned Agent" value={`${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`} />
+          <ReadField label="Settlement Method" value={methodLabel(row.txnMethod)} />
+          <ReadField label="Settlement Amount" value={fmt(row.amount)} />
+        </div>
+        {accepting && (
+          <p style={{ margin: '0 0 12px', fontSize: 12.5, color: T.textMuted, lineHeight: 1.5 }}>
+            Accepting records that the agent will now settle <strong>outside Clari5Pay</strong> by {methodLabel(row.txnMethod)}.
+            Upload the payment proof here once that is done.
+          </p>
+        )}
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {accepting ? 'Remarks (optional)' : 'Reason for rejection'}
+        </label>
+        <textarea value={remark} maxLength={200} rows={3} onChange={e => setRemark(e.target.value)}
+          placeholder={accepting ? 'Optional note' : 'Why is this being rejected?'}
+          style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
+        <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+          <Btn variant={accepting ? 'success' : 'danger'} onClick={go} disabled={busy}>
+            {busy ? 'Saving…' : accepting ? 'Accept Settlement' : 'Reject Settlement'}</Btn>
+          <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+        </div>
+      </Modal>
+    );
+  };
+
+/** Upload proof of the completed offline payment. Mandatory before a settlement can be settled. */
+const SettlementProofModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [proof, setProof] = useState('');
+  const [utr, setUtr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const PROOF_HINT: Record<string, string> = {
+    CASH: 'a cash receipt or acknowledgement', BANK: 'a bank transfer receipt', CRYPTO: 'a crypto transfer proof',
+  };
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (f.size > 3 * 1024 * 1024) { showToast('Proof must be under 3 MB.', 'error'); return; }
+    try { setProof(await fileToDataUrl(f)); } catch { showToast('Could not read that file.', 'error'); }
+  };
+  const go = async () => {
+    if (!proof) { showToast('Payment proof is required.', 'error'); return; }
+    setBusy(true);
+    try {
+      await agentTxnsAPI.settlementProof(row.id, { slipImage: proof, utr: utr.trim() || undefined });
+      showToast('Proof uploaded.', 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Could not upload the proof.'), 'error'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Modal title={`Upload Payment Proof — ${row.referenceNumber}`} onClose={onClose}>
+      <div style={{ display: 'grid', gap: 4, marginBottom: 14 }}>
+        <ReadField label="Assigned Agent" value={`${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`} />
+        <ReadField label="Settlement Method" value={methodLabel(row.txnMethod)} />
+        <ReadField label="Settlement Amount" value={fmt(row.amount)} />
+      </div>
+      <p style={{ margin: '0 0 12px', fontSize: 12.5, color: T.textMuted, lineHeight: 1.5 }}>
+        Attach evidence of the payment already made offline — {PROOF_HINT[String(row.txnMethod || '').toUpperCase()] || 'a payment receipt'}.
+      </p>
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        Payment Proof <span style={{ color: T.danger }}>*</span>
+      </label>
+      <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 12, fontSize: 13 }} />
+      {proof && !proof.startsWith('data:application/pdf') && (
+        <img src={proof} alt="Payment proof" style={{ maxWidth: 220, maxHeight: 200, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}`, display: 'block', marginBottom: 12 }} />)}
+      {proof.startsWith('data:application/pdf') && <p style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 12 }}>PDF attached.</p>}
+      <Input label="Reference / UTR (optional)" value={utr} onChange={e => setUtr(e.target.value)}
+        placeholder="UTR, transaction hash or receipt number" />
+      <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+        <Btn variant="success" onClick={go} disabled={busy}>{busy ? 'Uploading…' : 'Upload Proof'}</Btn>
+        <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+/** Final step — mark the settlement Settled. Only reachable once the proof is on the record. */
+const SettlementSettleModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true);
+    try {
+      await agentTxnsAPI.settlementSettle(row.id);
+      showToast('Settlement completed.', 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Could not complete the settlement.'), 'error'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Modal title={`Mark Settled — ${row.referenceNumber}`} onClose={onClose}>
+      <div style={{ display: 'grid', gap: 4, marginBottom: 14 }}>
+        <ReadField label="Assigned Agent" value={`${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`} />
+        <ReadField label="Settlement Method" value={methodLabel(row.txnMethod)} />
+        <ReadField label="Settlement Amount" value={fmt(row.amount)} />
+      </div>
+      {row.slipImage && <SlipView label="Payment Proof" src={row.slipImage} filename={`proof-${row.referenceNumber}`} />}
+      <p style={{ margin: '12px 0', fontSize: 12.5, color: T.textMuted, lineHeight: 1.5 }}>
+        This records the settlement as complete against the uploaded proof. It does not move any
+        money — the payment was made offline.
+      </p>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <Btn variant="success" onClick={go} disabled={busy}>{busy ? 'Saving…' : 'Mark Settled'}</Btn>
+        <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+      </div>
+    </Modal>
+  );
+};
+
 // ─── Agent Deposit / Withdrawal Management (operator list + create) ─────────────
 // Mirrors the Merchant Deposit/Withdrawal Management pages, but reads and writes ONLY the isolated
 // Agent Transaction ledger (filtered to this txn_type) — never any merchant module. The "+ Create"
@@ -1456,6 +1620,11 @@ const AgentTxnManagementPage: React.FC<{
   const [slipRow, setSlipRow] = useState<AgentTxnRow | null>(null);
   const [depositRow, setDepositRow] = useState<AgentTxnRow | null>(null);
   const [payoutRow, setPayoutRow] = useState<AgentTxnRow | null>(null);
+  // Settlement chain steps.
+  const [acceptRow, setAcceptRow] = useState<AgentTxnRow | null>(null);
+  const [rejectRow, setRejectRow] = useState<AgentTxnRow | null>(null);
+  const [proofRow, setProofRow] = useState<AgentTxnRow | null>(null);
+  const [settleRow, setSettleRow] = useState<AgentTxnRow | null>(null);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [dateF, setDateF] = useState('');
@@ -1553,10 +1722,22 @@ const AgentTxnManagementPage: React.FC<{
                         reviews the slip afterwards. CASH/CRYPTO: authorised first, so the operator
                         confirms only once the Manager has approved (MANAGER_APPROVED). Settlement:
                         no gate at all, created at SLIP_SUBMITTED. */}
-                    {!isDeposit && canPayout && x.status === (txnType === 'SETTLEMENT' ? 'SLIP_SUBMITTED'
-                      : isSpecialMethod(x.txnMethod) ? 'MANAGER_APPROVED' : 'ACCOUNT_SUBMITTED')
+                    {!isDeposit && txnType !== 'SETTLEMENT' && canPayout && x.status === (
+                      isSpecialMethod(x.txnMethod) ? 'MANAGER_APPROVED' : 'ACCOUNT_SUBMITTED')
                       && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>
                         {isSpecialMethod(x.txnMethod) ? 'Confirm & Complete' : 'Pay / Upload Slip'}</Btn>}
+                    {/* Settlement chain — Requested → Accepted → Proof Uploaded → Settled. The
+                        payment happens offline between merchant and agent; these actions only
+                        record the workflow and the proof. Reject is available until the payment
+                        process begins (i.e. up to and including Accepted). */}
+                    {txnType === 'SETTLEMENT' && x.status === 'SETTLEMENT_REQUESTED' && (
+                      <Btn size="sm" variant="success" onClick={() => setAcceptRow(x)}>Accept</Btn>)}
+                    {txnType === 'SETTLEMENT' && x.status === 'SETTLEMENT_ACCEPTED' && (
+                      <Btn size="sm" variant="success" onClick={() => setProofRow(x)}>Upload Proof</Btn>)}
+                    {txnType === 'SETTLEMENT' && x.status === 'PROOF_UPLOADED' && (
+                      <Btn size="sm" variant="success" onClick={() => setSettleRow(x)}>Mark Settled</Btn>)}
+                    {txnType === 'SETTLEMENT' && ['SETTLEMENT_REQUESTED', 'SETTLEMENT_ACCEPTED'].includes(x.status) && (
+                      <Btn size="sm" variant="danger" onClick={() => setRejectRow(x)}>Reject</Btn>)}
                     {/* No Manage here — amount corrections are done only in the dedicated
                         Manage Transaction page, so there is a single entry point. */}
                   </td>
@@ -1584,6 +1765,10 @@ const AgentTxnManagementPage: React.FC<{
       {slipRow && <UploadSlipModal row={slipRow} onClose={() => setSlipRow(null)} onDone={load} />}
       {depositRow && <MarkDepositModal row={depositRow} onClose={() => setDepositRow(null)} onDone={load} />}
       {payoutRow && <UploadSlipModal row={payoutRow} mode="payout" onClose={() => setPayoutRow(null)} onDone={load} />}
+      {acceptRow && <SettlementDecisionModal row={acceptRow} action="accept" onClose={() => setAcceptRow(null)} onDone={load} />}
+      {rejectRow && <SettlementDecisionModal row={rejectRow} action="reject" onClose={() => setRejectRow(null)} onDone={load} />}
+      {proofRow && <SettlementProofModal row={proofRow} onClose={() => setProofRow(null)} onDone={load} />}
+      {settleRow && <SettlementSettleModal row={settleRow} onClose={() => setSettleRow(null)} onDone={load} />}
     </div>
   );
 };

@@ -17,10 +17,12 @@ export type AgentTxnStatus =
   | 'ACCOUNT_REQUESTED' | 'ACCOUNT_SUBMITTED'
   | 'SLIP_SUBMITTED' | 'SUPERVISOR_APPROVED' | 'MANAGER_REVIEW' | 'MANAGER_APPROVED'
   | 'DEPOSITED' | 'COMPLETED' | 'REJECTED' | 'PENDING' | 'APPROVED'
-  | 'SUPERVISOR_REVIEW';
+  | 'SUPERVISOR_REVIEW'
+  // Settlement chain: the offline payment workflow. SETTLED is the completed state.
+  | 'SETTLEMENT_REQUESTED' | 'SETTLEMENT_ACCEPTED' | 'PROOF_UPLOADED' | 'SETTLED';
 
 /** Statuses that mean the money actually moved — the completed-only basis (mirrors the server). */
-export const AGENT_COMPLETED_STATUSES: AgentTxnStatus[] = ['APPROVED', 'DEPOSITED', 'COMPLETED'];
+export const AGENT_COMPLETED_STATUSES: AgentTxnStatus[] = ['APPROVED', 'DEPOSITED', 'COMPLETED', 'SETTLED'];
 export const AGENT_FINAL_STATUSES: AgentTxnStatus[] = [...AGENT_COMPLETED_STATUSES, 'REJECTED'];
 
 /** A payout account saved against a Membership ID in the isolated agent register. */
@@ -339,6 +341,16 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
   payout: async (id: number, body: { slipImage?: string; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
+  // ── Settlement chain: Requested → Accepted → Proof Uploaded → Settled (payment is offline) ──
+  settlementAccept: async (id: number, remark: string) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/settlement/accept`, { remark })).data,
+  settlementReject: async (id: number, remark: string) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/settlement/reject`, { remark })).data,
+  /** Proof of the completed offline payment — mandatory before a settlement can be settled. */
+  settlementProof: async (id: number, body: { slipImage?: string; utr?: string }) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/settlement/proof`, body)).data,
+  settlementSettle: async (id: number) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/settlement/settle`)).data,
   approve: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/approve`)).data,
   reject: async (id: number) => (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/reject`)).data,
   audit: async (id: number) => (await api.get<AgentTxnAuditRow[]>(`/api/agent-txns/${id}/audit`)).data,
