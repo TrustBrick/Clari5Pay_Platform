@@ -1698,10 +1698,12 @@ const periodBoundsA = (preset: string, from: string, to: string): [number, numbe
     default: return [-Infinity, Infinity];   // 'all'
   }
 };
-/** Completed Date & Time — the moment the money actually moved. A deposit records it at Mark
- *  Deposit; a withdrawal/settlement at its approval, falling back to the last update. */
+/** Completed Date & Time — the authoritative moment the money moved, stamped by whichever route
+ *  completed the transaction (`completed_at`). Historical rows were backfilled from the audit
+ *  trail. The per-route fallback only covers a row the backfill could not resolve at all. */
 const completedAtA = (r: AgentTxnRow): string => {
   if (!isCompletedA(r)) return '—';
+  if (r.completedDate) return `${r.completedDate} ${r.completedTime || ''}`.trim();
   const pick: Array<[string | null | undefined, string | null | undefined]> = r.type === 'DEPOSIT'
     ? [[r.depositedDate, r.depositedTime], [r.approvedDate, r.approvedTime], [r.updatedDate, r.updatedTime]]
     : [[r.approvedDate, r.approvedTime], [r.depositedDate, r.depositedTime], [r.updatedDate, r.updatedTime]];

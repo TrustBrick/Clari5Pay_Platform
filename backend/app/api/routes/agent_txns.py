@@ -373,6 +373,10 @@ def _row(t: AgentTransaction) -> dict:
         "sentForApproval": t.sent_for_approval,
         "approverName": t.approver_name,
         "approvedBy": t.approved_by, "approvedDate": a_date, "approvedTime": a_time, "approvedAt": a_iso,
+        # When the money actually moved, whichever route completed it. Null until it completes.
+        "completedAt": _ist_parts(t.completed_at)[0],
+        "completedDate": _ist_parts(t.completed_at)[1],
+        "completedTime": _ist_parts(t.completed_at)[2],
         "linkedDepositId": t.linked_deposit_id,
         "createdBy": t.created_by, "createdAt": c_iso, "createdDate": c_date, "createdTime": c_time,
         "updatedBy": t.updated_by, "updatedAt": u_iso, "updatedDate": u_date, "updatedTime": u_time,
@@ -1216,6 +1220,8 @@ async def mark_deposit(txn_id: int, body: AgentMarkDeposit, db: AsyncSession = D
     t.status = ST_DEPOSITED
     t.deposited_by = user.username
     t.deposited_at = datetime.utcnow()
+    t.completed_at = t.deposited_at       # the deposit completes here
+
     # deposit_utr / slip_image are left exactly as captured at the slip step — no duplicate
     # upload, no overwrite of the original.
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
@@ -1325,6 +1331,11 @@ async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession
     t.status = ST_MANAGER_APPROVED if special else ST_COMPLETED
     t.manager_name = user.username
     t.manager_action_at = datetime.utcnow()
+    # A BANK/UPI withdrawal completes at this gate; a CASH/CRYPTO one is only authorised here and
+    # completes later at payout, so it must NOT be stamped yet.
+    if not special:
+        t.completed_at = t.manager_action_at
+
     t.review_remark = remark
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
     # BANK/UPI completes now → full balance/commission audit line; CASH/CRYPTO only authorised here.
@@ -1411,6 +1422,8 @@ async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession
     # This leg completes here for a cash/crypto withdrawal (confirm) and for a settlement; a BANK/UPI
     # withdrawal only reaches MANAGER_REVIEW and completes later at manager/approve.
     _done = t.status == ST_COMPLETED
+    if _done:
+        t.completed_at = t.updated_at
     await _log(db, t,
                "COMPLETED" if (confirm_only or t.txn_type != "WITHDRAWAL") else "SLIP_SUBMITTED",
                user, new_amount=t.amount,
@@ -1621,6 +1634,8 @@ async def _decide(db: AsyncSession, user: User, txn_id: int, approve: bool) -> d
     t.approved_by = user.username
     t.approved_by_id = user.id
     t.approved_at = datetime.utcnow()
+    if approve:
+        t.completed_at = t.approved_at    # legacy one-step approval completes the transaction
     t.updated_by = user.username
     t.updated_by_id = user.id
     t.updated_at = datetime.utcnow()

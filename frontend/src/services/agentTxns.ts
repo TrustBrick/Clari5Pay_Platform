@@ -123,6 +123,11 @@ export interface AgentTxnRow {
   approvedBy?: string | null;
   approvedDate?: string | null;
   approvedTime?: string | null;
+  /** When the money actually moved — set by whichever route completed the transaction
+   *  (Mark Deposit, the Manager gate, payout, or the legacy approve). Null until completed. */
+  completedAt?: string | null;
+  completedDate?: string | null;
+  completedTime?: string | null;
   linkedDepositId?: number | null;
   createdBy?: string | null;
   /** True instant (UTC ISO). Prefer this for ordering/relative windows — `createdTime` is an

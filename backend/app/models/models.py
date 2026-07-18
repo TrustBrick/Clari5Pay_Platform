@@ -890,6 +890,12 @@ class AgentTransaction(Base):
     approved_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # The single moment the money actually moved — set wherever the status enters a COMPLETED
+    # state, whichever route it took. Each route records its own step timestamp (deposited_at at
+    # Mark Deposit, manager_action_at at the Manager gate, only updated_at at payout, approved_at
+    # on the legacy approve), so none of those alone can answer "when did this complete?".
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
     # Withdrawal only — the deposit whose agent was auto-fetched (latest deposit for the membership).
     linked_deposit_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("agent_transaction.id"), nullable=True)
 

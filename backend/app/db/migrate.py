@@ -178,6 +178,10 @@ _NEW_COLUMNS = [
     ("agent_master", "pay_in_fee", "DOUBLE PRECISION"),
     ("agent_master", "pay_out_fee", "DOUBLE PRECISION"),
     ("agent_master", "settlement_fee", "DOUBLE PRECISION"),
+    # When the agent transaction actually completed. Each completion route previously recorded
+    # only its own step timestamp, so "Completed Date & Time" had to guess; this is the one
+    # authoritative value. Backfilled from the audit trail below.
+    ("agent_transaction", "completed_at", "TIMESTAMP"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -218,6 +222,24 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "pay_out_fee = COALESCE(pay_out_fee, fees_pct), "
             "settlement_fee = COALESCE(settlement_fee, fees_pct) "
             "WHERE pay_in_fee IS NULL OR pay_out_fee IS NULL OR settlement_fee IS NULL"
+        ))
+        # Backfill completed_at for agent transactions that finished before the column existed.
+        # agent_transaction_audit records every workflow step with its exact timestamp, so the
+        # LATEST completing action on a row IS the moment it completed — this recovers the true
+        # value rather than approximating it. MANAGER_APPROVED counts because a BANK/UPI withdrawal
+        # completes at the Manager gate; for a CASH/CRYPTO withdrawal a later COMPLETED entry
+        # exists and MAX() correctly prefers it. The COALESCE tail covers rows whose audit history
+        # predates the action names, degrading to the step timestamp each route did record.
+        # Scoped to already-completed rows and to completed_at IS NULL, so it is idempotent and can
+        # never overwrite a value written by the application.
+        await conn.execute(text(
+            "UPDATE agent_transaction t SET completed_at = COALESCE("
+            "  (SELECT MAX(a.created_at) FROM agent_transaction_audit a"
+            "     WHERE a.agent_transaction_id = t.id"
+            "       AND a.action IN ('DEPOSITED', 'COMPLETED', 'APPROVED', 'MANAGER_APPROVED')),"
+            "  t.deposited_at, t.approved_at, t.manager_action_at, t.updated_at, t.created_at) "
+            "WHERE t.completed_at IS NULL "
+            "  AND t.status IN ('APPROVED', 'DEPOSITED', 'COMPLETED')"
         ))
         # created_by used to record the actor's NAME, but every merchant user shares the business
         # name (e.g. "BELLAGIO"), so it identified nobody. It records the username now; repoint the
