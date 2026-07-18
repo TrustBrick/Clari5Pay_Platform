@@ -170,10 +170,15 @@ class Transaction(Base):
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # when it was cancelled
 
     # Proof / verification workflow
-    merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # first merchant slip image (data URL) — kept for back-compat
-    merchant_proofs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array of up to 3 proof/slip files (data URLs)
+    # These base64 image data-URLs are large and are ONLY needed on the single-row detail fetch
+    # (_serialize full=True). deferred=True keeps them OUT of every bulk query (lists, dashboards,
+    # balances, reports, risk aggregates) so those SELECTs don't drag megabytes of base64 across
+    # the wire — the root cause of the DB `Client:ClientWrite` saturation. They load lazily on the
+    # detail row when accessed within the request's session.
+    merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)  # first merchant slip image (data URL) — kept for back-compat
+    merchant_proofs: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)  # JSON array of up to 3 proof/slip files (data URLs)
     merchant_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # merchant payment reference number
-    admin_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # admin-uploaded bank-details image (data URL)
+    admin_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)     # admin-uploaded bank-details image (data URL)
     admin_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # admin reference number
     admin_bank_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # admin manually-entered bank details
     admin_bank_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # admin custom bank-details image (data URL) — overrides the auto card

@@ -761,6 +761,10 @@ async def get_transaction_detail(
     opened. Read-only for the owner merchant, oversight roles (Supervisor/Manager) and admins;
     slips remain accessible permanently, including after completion."""
     tx = await _tx_with_view_access(tx_id, db, current_user)
+    # The heavy base64 proof/slip images are deferred on the model (so bulk/list/report queries
+    # never drag them). This detail view is the one place they're needed — load them explicitly
+    # here; async SQLAlchemy can't lazy-load them on attribute access.
+    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof"])
     payload = _t(tx, full=True)
     # Enrich with the creating merchant's risk level for the details view (not stored on the row).
     creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
