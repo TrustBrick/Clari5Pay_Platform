@@ -47,10 +47,19 @@ Within `transactions` — 78 rows, ~2 MB average per row:
 **In scope:** those four columns, and nothing else. Profile pictures, news covers, blog images and
 support attachments are rounding errors; leaving them as data URLs is deliberate.
 
-**Build for, but do not migrate yet:** `agent_transaction` (`slip_image`, `account_proof`,
-`deposit_proof`) has the identical pattern and is absent from production only because the agent
-module is demo-gated. The storage helper should be generic so un-gating that module does not
-recreate this problem.
+**Deliberately deferred:** `agent_transaction` (`slip_image`, `account_proof`, `deposit_proof`) has
+the identical pattern and is absent from production only because the agent module is demo-gated.
+
+Decided 2026-07-18: **the agent module ships as-is, unmigrated, and both tables are migrated
+together later.** Sequencing the S3 work ahead of the agent deploy would mean proving an unbuilt
+storage path inside a subsystem facing its first production UAT — risk added to the very deploy
+being derisked. Production has zero agent rows today, and at the merchant table's observed rate
+(5–15 MB/day) there is substantial runway after un-gating before this bites; `deferred=True`
+keeps bulk queries fast meanwhile.
+
+This is tracked, not forgotten: the agent module's image columns are known-unmigrated, and
+Phase 6 covers them. The storage helper must still be written generically so extending it to
+`agent_transaction` is configuration, not a second implementation.
 
 ### Re-deriving these numbers
 
@@ -148,7 +157,9 @@ while the app serves traffic.
 lock. Only after backfill verification. Expect ~162 MB to drop to a few hundred kB.
 
 ### 6 — Agent columns
-Apply the same helper to `agent_transaction`, before that module reaches production.
+Apply the same helper to `agent_transaction`. Runs *after* the agent module has shipped and been
+migrated alongside the merchant columns — see [Scope](#scope--measured-on-production-2026-07-18)
+for why this deliberately does not precede the agent deploy.
 
 ---
 
