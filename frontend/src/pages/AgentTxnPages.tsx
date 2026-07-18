@@ -853,12 +853,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
     : (autoAgent && String(autoAgent.agentMasterId) === agentId
         ? { code: autoAgent.agentCode || '', name: autoAgent.agentName || '', country: autoAgent.country || '', state: autoAgent.state || '', location: autoAgent.location || '', category: autoAgent.category || '' }
         : undefined);
-  // Settlement Method follows the assigned agent's Category — read-only, never user-selected.
-  const settlementMethod = isSettlement
-    ? (SETTLEMENT_METHOD_FOR_CATEGORY[String(disp?.category || '').toUpperCase()] || '')
-    : '';
-  useEffect(() => { if (isSettlement) setTxnMethod(settlementMethod); }, [isSettlement, settlementMethod]);
-
   const reset = () => {
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
@@ -868,23 +862,38 @@ export const AgentWithdrawalRequestPage: React.FC<{
   };
 
   const submit = async () => {
-    if (!membershipId.trim()) { showToast('Membership ID is required.', 'error'); return; }
-    if (!membershipType) { showToast('Select a Membership Type.', 'error'); return; }
+    if (!isSettlement && !membershipId.trim()) { showToast('Membership ID is required.', 'error'); return; }
+    if (!isSettlement && !membershipType) { showToast('Select a Membership Type.', 'error'); return; }
     if (!agentId) { showToast('Select an Agent ID.', 'error'); return; }
     const amt = Number(parseIndianAmount(amount));
-    if (!amt || amt <= 0) { showToast('Enter a valid Transaction Amount.', 'error'); return; }
-    if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
-    if (!approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
+    if (!amt || amt <= 0) { showToast(`Enter a valid ${isSettlement ? 'Settlement' : 'Transaction'} Amount.`, 'error'); return; }
+    if (notes.length > 100) { showToast(`${isSettlement ? 'Remarks' : 'Notes'} must be 100 characters or fewer.`, 'error'); return; }
+    if (!isSettlement && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
-    if (isWalletMethod(txnMethod)) {
-      if (!walletAddress.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
-      if (!isValidWallet(walletAddress)) { showToast('Enter a valid crypto wallet address.', 'error'); return; }
-    } else {
-      if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
-      if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+    if (!agentId) { showToast('Select an Assigned Agent.', 'error'); return; }
+    // The agent list is already filtered by Transaction Type; this is the last-line guard that a
+    // stale selection can never be submitted against a mismatched category.
+    if (disp?.category && categoryForMethod(txnMethod) &&
+        String(disp.category).toUpperCase() !== categoryForMethod(txnMethod)) {
+      showToast('The selected Agent does not belong to the chosen Transaction Type.', 'error'); return;
+    }
+    // Token / wallet capture is a Withdrawal concern — a settlement is paid offline.
+    if (!isSettlement) {
+      if (isWalletMethod(txnMethod)) {
+        if (!walletAddress.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
+        if (!isValidWallet(walletAddress)) { showToast('Enter a valid crypto wallet address.', 'error'); return; }
+      } else {
+        if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
+        if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+      }
     }
     setBusy(true); setResult(null);
-    const body: AgentWithdrawalBody = {
+    const body: AgentWithdrawalBody = isSettlement ? {
+      // Settlement: agent, method, amount and remarks only. No membership, no contact details,
+      // no token/wallet, no approver — the payment is made offline.
+      agentMasterId: Number(agentId), membershipId: '', membershipType: '',
+      amount: amt, notes: notes || undefined, sentForApproval: false, txnMethod,
+    } : {
       agentMasterId: Number(agentId), membershipId: membershipId.trim(),
       membershipName: membershipName.trim() || undefined, membershipType,
       amount: amt, country: country || undefined, state: state || undefined,
@@ -946,33 +955,31 @@ export const AgentWithdrawalRequestPage: React.FC<{
             chosen first and narrows the agent list to that category; the agent details below are
             all auto-fetched from the chosen agent. */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
-          {/* Settlement: the Agent is chosen first and the Settlement Method follows from that
-              agent's Category (Cash / Bank Transfer / Crypto) — it is never selectable, so the
-              recorded method cannot disagree with the agent performing the offline payment.
-              Withdrawal keeps the existing method-first flow. */}
-          {!isSettlement && (
-            <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); setAutoAgent(null); }} required
-              options={[{ value: '', label: '— Select —' },
-                ...(fd.txnMethods || []).map(v => ({ value: v, label: methodLabel(v) }))]} />
-          )}
+          {/* Transaction Type is chosen first and narrows the agent list to that category, so the
+              selected agent always matches it. A settlement offers only Cash / Bank Transfer /
+              Crypto; deposits and withdrawals keep the full method list. */}
+          <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); setAutoAgent(null); }} required
+            options={[{ value: '', label: '— Select —' },
+              ...(isSettlement ? AGENT_SETTLEMENT_METHODS : (fd.txnMethods || [])).map(v => ({ value: v, label: methodLabel(v) }))]} />
           <Sel label={isSettlement ? 'Assigned Agent' : 'Select Agent ID'} value={agentId} onChange={e => setAgentId(e.target.value)} required
-            options={[{ value: '', label: isSettlement ? '— Select an agent —' : (txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —') },
-              ...(isSettlement ? fd.agents : agentsForMethod(fd.agents, txnMethod)).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
+            options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
+              ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
           <ReadField label="Agent Name" value={disp?.name} />
           {!isSettlement && <ReadField label="Agent Country" value={disp?.country} />}
           {!isSettlement && <ReadField label="Agent State" value={disp?.state} />}
           {!isSettlement && <ReadField label="Agent Location" value={disp?.location} />}
           <ReadField label="Agent Category" value={disp?.category ? (CATEGORY_LABEL_A[String(disp.category).toUpperCase()] || disp.category) : undefined} />
-          {isSettlement && <ReadField label="Settlement Method" value={settlementMethod ? methodLabel(settlementMethod) : undefined} />}
 
-          <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(normalizeMemberId(e.target.value))}
+          {/* A settlement is an offline merchant↔agent payment — no member on either side, so it
+              captures no membership at all. */}
+          {!isSettlement && <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(normalizeMemberId(e.target.value))}
             onBlur={lookupMember} required placeholder="Enter Membership ID"
-            hint={looking ? 'Looking up…' : 'Uppercase letters and numbers only'} />
-          <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" />
-          <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
-            options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />
-          <Input label="Transaction Amount" type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal"
-            hint={memberBalance != null ? `Member Available Balance: ₹${fmt(memberBalance)}` : undefined} />
+            hint={looking ? 'Looking up…' : 'Uppercase letters and numbers only'} />}
+          {!isSettlement && <Input label="Membership Name" value={membershipName} onChange={e => setMembershipName(e.target.value)} placeholder="Manual or auto-fetched" />}
+          {!isSettlement && <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
+            options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />}
+          <Input label={isSettlement ? 'Settlement Amount' : 'Transaction Amount'} type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal"
+            hint={!isSettlement && memberBalance != null ? `Member Available Balance: ₹${fmt(memberBalance)}` : undefined} />
         </div>
 
         {/* Country / State / Location / Mobile / Token / Note / Instructions describe the member

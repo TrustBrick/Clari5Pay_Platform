@@ -785,10 +785,13 @@ class AgentManage(BaseModel):
 def _validate_common(body: _Base, txn_type: str) -> None:
     if body.amount is None or body.amount <= 0:
         raise HTTPException(status_code=400, detail="Transaction Amount must be greater than zero.")
-    if body.membershipType.upper() not in MEMBERSHIP_TYPES:
-        raise HTTPException(status_code=400, detail="Membership Type must be Online or Offline.")
-    if not body.membershipId.strip():
-        raise HTTPException(status_code=400, detail="Membership ID is required.")
+    # A SETTLEMENT is an offline merchant<->agent payment with no member on either side, so it
+    # carries no membership at all. Deposits and withdrawals still require one.
+    if txn_type != "SETTLEMENT":
+        if body.membershipType.upper() not in MEMBERSHIP_TYPES:
+            raise HTTPException(status_code=400, detail="Membership Type must be Online or Offline.")
+        if not body.membershipId.strip():
+            raise HTTPException(status_code=400, detail="Membership ID is required.")
     if body.notes and len(body.notes) > 100:
         raise HTTPException(status_code=400, detail="Notes must be 100 characters or fewer.")
     if body.instructions and body.instructions.upper() not in INSTRUCTIONS:
@@ -842,7 +845,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     # A withdrawal or settlement can only draw what the member actually has. The member's Available
     # Balance (built from completed agent deposits, net of every leg's commission) must cover the
     # amount PLUS this leg's commission, on the same completed-only basis the Merchant module uses.
-    if txn_type in ("WITHDRAWAL", "SETTLEMENT"):
+    if txn_type == "WITHDRAWAL":
         bal = await _member_balance(db, business, body.membershipId)
         required = (body.amount or 0.0) * (1 + _leg_rate(agent, txn_type))
         if required > bal["spendable"] + 1e-6:
@@ -885,8 +888,9 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         agent_master_id=agent.id, agent_code=agent.agent_id, agent_name=agent.full_name,
         agent_country=agent.country, agent_state=agent.state, agent_location=agent.location,
         agent_category=agent.category,
-        membership_id=body.membershipId.strip(), membership_name=membership_name,
-        membership_type=body.membershipType.upper(),
+        membership_id=("" if txn_type == "SETTLEMENT" else body.membershipId.strip()),
+        membership_name=(None if txn_type == "SETTLEMENT" else membership_name),
+        membership_type=("" if txn_type == "SETTLEMENT" else body.membershipType.upper()),
         amount=round(body.amount, 2),
         txn_country=body.country, txn_state=body.state, txn_location=body.location,
         mobile=body.mobile, mobile_code=(body.mobileCode or None),
@@ -1056,10 +1060,11 @@ async def create_settlement(body: AgentSettlementCreate, db: AsyncSession = Depe
     """
     _require(user, ("SUPERVISOR",), "create Agent Settlement Requests")
     agent = await _get_agent(db, _business(user), body.agentMasterId)
+    # The Transaction Type chosen on the form narrows the agent list to that category, so the two
+    # always agree; deriving the method from the agent here is the server-side guard that makes a
+    # mismatched pair impossible even if the client sends one.
     body.txnMethod = _settlement_method_for(agent)
-    membership_id = body.membershipId.strip()
-    payout = await _resolve_payout_account(db, user, body, membership_id, (body.membershipName or None))
-    return await _create(db, user, body, "SETTLEMENT", "AGS", "S", None, payout=payout)
+    return await _create(db, user, body, "SETTLEMENT", "AGS", "S", None, payout=None)
 
 
 # ── Deposit chain: Submit Account → Upload Slip → Supervisor Approval → Mark Deposit ──────
