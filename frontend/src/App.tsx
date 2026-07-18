@@ -33,6 +33,16 @@ import { activeUsersAPI } from './services/api';
 const defaultPageFor = (role?: string) =>
   role === 'MERCHANT' ? 'dashboard' : role === 'ADMIN' ? 'admin-dashboard' : 'sa-dashboard';
 
+// ── Address bar <-> page key ──────────────────────────────────────────────────
+// Navigation is state-based (no react-router). Mirroring the page key into the URL is what makes
+// a refresh, Back/Forward and a pasted link all land on the page the user was actually on —
+// without it the mount always falls back to the role's dashboard. Page keys are already URL-safe
+// slugs ('agent-txn-reports'), so the mapping is 1:1 and no route table is introduced.
+// nginx serves index.html for any unmatched path (try_files $uri $uri/ /index.html), so a deep
+// link loads the SPA rather than 404ing.
+const pageFromUrl = () => decodeURIComponent(window.location.pathname).replace(/^\/+|\/+$/g, '');
+const urlForPage = (page: string) => `/${page}`;
+
 // Direct-transaction pages an approval-only Manager must never reach.
 const MANAGER_BLOCKED_PAGES = ['deposit', 'withdrawal', 'settlement'];
 
@@ -88,22 +98,57 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
 
 const App: React.FC = () => {
   const { user, logout } = useAuth();
-  const [page, setPage] = useState('');
+  // Seeded from the URL so a refresh or deep link starts on the right page instead of the
+  // dashboard. Still just a page key — everything downstream is unchanged.
+  const [page, setPage] = useState(pageFromUrl);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Bumped on every sidebar click, including a click on the page already shown (which changes no
   // state and so would otherwise leave that page's internal view untouched). KYC Management keys
   // off this to drop any open verification form and land back on its dashboard.
   const [navTick, setNavTick] = useState(0);
 
-  // Reset to the role's dashboard whenever the logged-in user changes (login / account switch).
+  // Navigate: set the page AND push a history entry, so Back/Forward walk the pages the user
+  // actually visited. Guarded against pushing a duplicate entry for the page already shown.
+  const navigate = React.useCallback((key: string) => {
+    setPage(key);
+    if (pageFromUrl() !== key) window.history.pushState({ page: key }, '', urlForPage(key));
+  }, []);
+
+  // Browser Back / Forward — adopt whatever page the restored history entry points at. The
+  // pageAllowed gate below still applies, so Back can never reach a page the user may not see.
+  React.useEffect(() => {
+    const onPop = () => setPage(pageFromUrl());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+
+  // On a fresh mount (refresh, deep link, or returning from login) keep the page the URL asks
+  // for; only an actual account switch resets to that role's dashboard.
   const prevUserId = React.useRef<number | null>(null);
   React.useEffect(() => {
     if (!user) { prevUserId.current = null; return; }
     if (user.id !== prevUserId.current) {
+      const switched = prevUserId.current !== null;
       prevUserId.current = user.id;
-      setPage(defaultPageFor(user.role));
+      const wanted = pageFromUrl();
+      setPage(switched || !pageAllowed(user, wanted) ? defaultPageFor(user.role) : wanted);
     }
   }, [user]);
+
+  // Effective page: fall back to the role default if the current page isn't valid for this role
+  // (a stale link, another role's page, or a page left over from a previous session).
+  const activePage = user ? (pageAllowed(user, page) ? page : defaultPageFor(user.role)) : '';
+
+  // Keep the address bar honest about what is actually on screen, so refreshing again is stable.
+  // replaceState (not push) — correcting a bad or bare URL must not add a history entry the user
+  // would have to Back through. Skipped while logged out so a deep link survives the login round
+  // trip and the user returns to the page they were on.
+  React.useEffect(() => {
+    if (!user || PORTAL === 'app') return;
+    if (pageFromUrl() !== activePage) {
+      window.history.replaceState({ page: activePage }, '', urlForPage(activePage));
+    }
+  }, [user, activePage]);
 
   // Presence heartbeat — keeps the logged-in user marked Online for the Active Users view.
   // Best-effort; fires on interval + focus/visibility like the rest of the app.
@@ -113,12 +158,8 @@ const App: React.FC = () => {
   if (PORTAL === 'app') return (<><DemoBanner /><PortalChooser /></>);
   if (!user) return (<><DemoBanner /><LoginPage /></>);
 
-  // Effective page: fall back to the role default if the current page isn't valid for this role
-  // (e.g. a stale page left over from a previous session/role).
-  const activePage = pageAllowed(user, page) ? page : defaultPageFor(user.role);
-
   const renderPage = () => {
-    const props = { user, onNavigate: setPage };
+    const props = { user, onNavigate: navigate };
     const map: Record<string, React.ReactNode> = {
       dashboard: <MerchantDashboard {...props} />,
       deposit: <DepositManagement {...props} />,
@@ -170,7 +211,7 @@ const App: React.FC = () => {
       'admin-transactions': <AdminTransactionsPage />,
       'admin-accounts': <AdminAccountsPage />,
       'admin-whatsapp': <WhatsAppSettingsPage />,
-      'sa-dashboard': <SaDashboard onNavigate={setPage} />,
+      'sa-dashboard': <SaDashboard onNavigate={navigate} />,
       'sa-active-users': <ActiveUsersPage user={user} />,
       'sa-support': <SupportManagementPage user={user} />,
       'sa-analytics': <MerchantAnalyticsPage />,
@@ -215,7 +256,7 @@ const App: React.FC = () => {
       <Sidebar
         user={user}
         active={activePage}
-        onNav={(key) => { setPage(key); setNavTick((t) => t + 1); setSidebarOpen(false); }}
+        onNav={(key) => { navigate(key); setNavTick((t) => t + 1); setSidebarOpen(false); }}
         onLogout={logout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
