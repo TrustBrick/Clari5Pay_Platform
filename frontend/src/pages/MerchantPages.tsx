@@ -377,35 +377,40 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
   const [loading, setLoading] = useState(true);
   const go = (p: string) => onNavigate?.(p);
 
-  const reload = () => Promise.all([transactionAPI.getMine(), transactionAPI.summary()])
+  // The dashboard renders only a 6-row preview of in-flight requests, so fetch just the recent
+  // 50 (not the whole history). All cards/charts read their counts from the aggregated summary
+  // (statusCounts), so they stay exact & live without pulling every row on each poll.
+  const reload = () => Promise.all([transactionAPI.getMine({ limit: 50 }), transactionAPI.summary()])
     .then(([t, s]) => { setTxns(t); setSummary(s); })
     .catch(()=>{});
   useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
   usePoll(reload);
 
-  // Dashboard shows only in-flight requests (Account Requested / Submitted / Pending).
-  const inFlight = txns.filter(t => t.status === 'ACCOUNT_REQUESTED' || t.status === 'ACCOUNT_SUBMITTED' || t.status === 'SLIP_SUBMITTED');
-
-  // Real-time graphs from this merchant's own records.
-  const settlementCount = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
-  const depTx = txns.filter(t => t.type.startsWith('DEPOSIT'));
-  const wdTx = txns.filter(t => t.type.startsWith('WITHDRAWAL'));
-  const byStatus = (arr: Transaction[], s: string) => arr.filter(t => t.status === s).length;
+  // Counts/charts come from the backend summary (SQL-aggregated over the full history).
+  const IN_FLIGHT = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED'];
+  const sc = summary?.statusCounts;
+  const scAt = (g: 'deposit' | 'withdrawal' | 'settlement', s: string) => sc?.[g]?.[s] ?? 0;
+  const inFlightCount = (['deposit', 'withdrawal', 'settlement'] as const)
+    .reduce((n, g) => n + IN_FLIGHT.reduce((m, s) => m + scAt(g, s), 0), 0);
+  const settlementCount = summary?.settlementCount ?? 0;
+  // Recent in-flight rows for the 6-row preview table (pending requests are the newest, so the
+  // recent-50 window covers them; the accurate total is inFlightCount above).
+  const inFlight = txns.filter(t => IN_FLIGHT.includes(t.status));
   const depositGraph = [
-    { label: 'Requested', value: byStatus(depTx, 'ACCOUNT_REQUESTED'), color: T.warning },
-    { label: 'Submitted', value: byStatus(depTx, 'ACCOUNT_SUBMITTED'), color: T.info },
-    { label: 'Slip', value: byStatus(depTx, 'SLIP_SUBMITTED'), color: T.blue },
-    { label: 'Deposited', value: byStatus(depTx, 'COMPLETED'), color: T.success },
+    { label: 'Requested', value: scAt('deposit', 'ACCOUNT_REQUESTED'), color: T.warning },
+    { label: 'Submitted', value: scAt('deposit', 'ACCOUNT_SUBMITTED'), color: T.info },
+    { label: 'Slip', value: scAt('deposit', 'SLIP_SUBMITTED'), color: T.blue },
+    { label: 'Deposited', value: scAt('deposit', 'COMPLETED'), color: T.success },
   ];
   const withdrawalGraph = [
-    { label: 'Submitted', value: byStatus(wdTx, 'ACCOUNT_REQUESTED'), color: T.warning },
-    { label: 'Completed', value: byStatus(wdTx, 'COMPLETED'), color: T.success },
+    { label: 'Submitted', value: scAt('withdrawal', 'ACCOUNT_REQUESTED'), color: T.warning },
+    { label: 'Completed', value: scAt('withdrawal', 'COMPLETED'), color: T.success },
   ];
 
   // Role-scoped dashboard cards (count-up values; click jumps to the relevant page).
   const role = String(user.merchantRole || '').toUpperCase();
   const balLen = fmt(summary?.available ?? 0).length;
-  const pendingCard = <StatCard icon="pending-requests" label="Pending Requests" value={<CountUp value={inFlight.length} />} sub="In progress" color={T.warning} onClick={()=>go('transactions')}/>;
+  const pendingCard = <StatCard icon="pending-requests" label="Pending Requests" value={<CountUp value={inFlightCount} />} sub="In progress" color={T.warning} onClick={()=>go('transactions')}/>;
   const balanceCard = <StatCard icon="available-balance" label="Available Balance" value={<CountUp value={summary?.available ?? 0} format={fmt} />} valueLen={balLen} sub="Updated now" color={T.success} onClick={()=>go('balance')}/>;
   let cards: React.ReactNode;
   if (role === 'DEPOSIT_OPERATOR') {

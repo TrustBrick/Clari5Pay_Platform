@@ -565,6 +565,14 @@ export interface BalanceSummary {
   payOutFees: number;
   depositCount: number;
   withdrawalCount: number;
+  settlementCount?: number;
+  // Per type-group × status counts for the dashboard cards/charts (so the dashboard needn't
+  // fetch the whole transaction list). e.g. statusCounts.deposit.ACCOUNT_REQUESTED.
+  statusCounts?: {
+    deposit?: Record<string, number>;
+    withdrawal?: Record<string, number>;
+    settlement?: Record<string, number>;
+  };
 }
 
 export interface SystemLogEntry {
