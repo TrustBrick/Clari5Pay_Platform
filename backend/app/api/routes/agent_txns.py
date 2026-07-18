@@ -508,6 +508,91 @@ async def _member_summary(db: AsyncSession, business: str, membership_id: str) -
     }
 
 
+async def _agent_performance(db: AsyncSession, business: str) -> dict:
+    """Agent financial performance for the Agent Dashboard — overall totals, a per-agent breakdown,
+    rankings and single-agent highs. Completed-only (COMPLETED_STATUSES), commission per leg from
+    each agent's own Pay-In / Pay-Out / Settlement fee — the SAME calculation as everywhere else, no
+    new formula. This is AGENT performance; member balances live only on Balance Enquiry."""
+    agents = (await db.execute(select(AgentMaster).where(
+        AgentMaster.merchant_business == business).order_by(AgentMaster.id))).scalars().all()
+    txns = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.merchant_business == business))).scalars().all()
+
+    # Per-agent accumulator: each leg → [count, amount, commission].
+    zero = lambda: {"DEPOSIT": [0, 0.0, 0.0], "WITHDRAWAL": [0, 0.0, 0.0], "SETTLEMENT": [0, 0.0, 0.0]}
+    acc = {a.id: zero() for a in agents}
+    last_dt: dict = {}
+    for t in txns:
+        if t.created_at and (t.agent_master_id not in last_dt or t.created_at > last_dt[t.agent_master_id]):
+            last_dt[t.agent_master_id] = t.created_at
+        if t.status in COMPLETED_STATUSES and t.txn_type in acc.get(t.agent_master_id, {}):
+            leg = acc[t.agent_master_id][t.txn_type]
+            amt = t.amount or 0.0
+            leg[0] += 1
+            leg[1] += amt
+            leg[2] += round(amt * _leg_rate(_agent_or(agents, t.agent_master_id), t.txn_type), 2)
+
+    rows = []
+    for a in agents:
+        d = acc[a.id]
+        dep_c, dep_a, dep_com = d["DEPOSIT"]
+        wd_c, wd_a, wd_com = d["WITHDRAWAL"]
+        st_c, st_a, st_com = d["SETTLEMENT"]
+        total_com = round(dep_com + wd_com + st_com, 2)
+        _, l_date, l_time = _ist_parts(last_dt.get(a.id))
+        rows.append({
+            "agentMasterId": a.id, "agentId": a.agent_id, "agentName": a.full_name,
+            "category": a.category, "status": a.status,
+            "country": a.country, "currency": a.currency,
+            "createdDate": a.date_of_creation.isoformat() if a.date_of_creation else None,
+            "depositCount": dep_c, "depositAmount": round(dep_a, 2), "depositCommission": round(dep_com, 2),
+            "withdrawalCount": wd_c, "withdrawalAmount": round(wd_a, 2), "withdrawalCommission": round(wd_com, 2),
+            "settlementCount": st_c, "settlementAmount": round(st_a, 2), "settlementCommission": round(st_com, 2),
+            "totalCommission": total_com, "totalTransactions": dep_c + wd_c + st_c,
+            "lastTransactionDate": f"{l_date} {l_time}".strip() if last_dt.get(a.id) else None,
+        })
+
+    def _top(key, n=5):
+        return [{"agentId": r["agentId"], "agentName": r["agentName"], "value": r[key]}
+                for r in sorted(rows, key=lambda r: -r[key]) if r[key] > 0][:n]
+
+    def _high(key):
+        best = max(rows, key=lambda r: r[key], default=None)
+        return {"agentId": best["agentId"], "agentName": best["agentName"], "value": best[key]} \
+            if best and best[key] > 0 else None
+
+    return {
+        "overall": {
+            "totalDepositAmount": round(sum(r["depositAmount"] for r in rows), 2),
+            "totalWithdrawalAmount": round(sum(r["withdrawalAmount"] for r in rows), 2),
+            "totalSettlementAmount": round(sum(r["settlementAmount"] for r in rows), 2),
+            "totalDepositCommission": round(sum(r["depositCommission"] for r in rows), 2),
+            "totalWithdrawalCommission": round(sum(r["withdrawalCommission"] for r in rows), 2),
+            "totalSettlementCommission": round(sum(r["settlementCommission"] for r in rows), 2),
+            "totalCommission": round(sum(r["totalCommission"] for r in rows), 2),
+            "activeAgents": sum(1 for a in agents if str(a.status).upper() == "ACTIVE"),
+            "inactiveAgents": sum(1 for a in agents if str(a.status).upper() != "ACTIVE"),
+            "totalTransactions": sum(r["totalTransactions"] for r in rows),
+        },
+        "agents": sorted(rows, key=lambda r: -r["totalCommission"]),
+        "rankings": {
+            "topDeposit": _top("depositAmount"), "topWithdrawal": _top("withdrawalAmount"),
+            "topSettlement": _top("settlementAmount"), "topCommission": _top("totalCommission"),
+        },
+        "highest": {
+            "deposit": _high("depositAmount"), "withdrawal": _high("withdrawalAmount"),
+            "settlement": _high("settlementAmount"), "commission": _high("totalCommission"),
+        },
+    }
+
+
+def _agent_or(agents, agent_id):
+    for a in agents:
+        if a.id == agent_id:
+            return a
+    return None
+
+
 async def _resolve_approver(db: AsyncSession, business: str, approver_user_id: int | None):
     if approver_user_id is None:
         return None, None
@@ -1112,6 +1197,50 @@ async def balance_enquiry(membership_id: str, db: AsyncSession = Depends(get_db)
     return await _member_summary(db, _business(user), membership_id.strip())
 
 
+@router.get("/{txn_id}/commission")
+async def txn_commission(txn_id: int, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_agent_operator)):
+    """Commission breakdown for one transaction — the exact figures behind it (item 6): the leg's
+    commission %, commission amount, net amount, and the member's Available Balance before → after.
+    Computed with the same per-leg agent fee; balance is completed-only. For an in-flight row the
+    'after' is the projected balance once it completes."""
+    business = _business(user)
+    t = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.id == txn_id, AgentTransaction.merchant_business == business))).scalar_one_or_none()
+    if t is None:
+        raise HTTPException(status_code=404, detail="Agent transaction not found.")
+    agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
+    rate = _leg_rate(agent, t.txn_type)
+    amt = t.amount or 0.0
+    commission = round(amt * rate, 2)
+    # Deposit credits net (amount − commission); withdrawal/settlement deduct amount + commission.
+    net = round(amt - commission, 2) if t.txn_type == "DEPOSIT" else round(amt + commission, 2)
+    # Balance before = the member's completed balance EXCLUDING this row; after = before + its leg.
+    rows = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.merchant_business == business,
+        AgentTransaction.membership_id == t.membership_id))).scalars().all()
+    agents = {a.id: a for a in (await db.execute(select(AgentMaster).where(
+        AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()}
+    before = round(sum(_signed_leg(r, agents.get(r.agent_master_id))
+                       for r in rows if r.id != t.id and r.status in COMPLETED_STATUSES), 2)
+    after = round(before + _signed_leg(t, agent), 2)
+    return {
+        "agentId": t.agent_code, "agentName": t.agent_name, "membershipId": t.membership_id,
+        "amount": round(amt, 2), "commissionPct": round(rate * 100, 4),
+        "commissionAmount": commission, "netAmount": net,
+        "balanceBefore": before, "balanceAfter": after,
+    }
+
+
+@router.get("/performance")
+async def agent_performance(db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_agent_operator)):
+    """Agent financial performance for the Agent Dashboard — overall totals, per-agent breakdown,
+    rankings and single-agent highs. Completed-only; commission per leg from each agent's own fee.
+    AGENT performance only — no member/membership balances (those live on Balance Enquiry)."""
+    return await _agent_performance(db, _business(user))
+
+
 @router.post("/{txn_id}/manager/approve")
 async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                           user: User = Depends(get_current_agent_operator)):
@@ -1267,7 +1396,21 @@ async def list_txns(status: str | None = None, txn_type: str | None = None, sear
         rows = [r for r in rows if _d(r) >= date_from]
     if date_to:
         rows = [r for r in rows if _d(r) <= date_to]
-    return [_row(r) for r in rows]
+    # Attach the per-leg commission to each row (item 4 report columns): Commission %, Commission
+    # Amount and Net Amount, using each agent's own fee — the same calculation everywhere else.
+    agents = {a.id: a for a in (await db.execute(select(AgentMaster).where(
+        AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()} if rows else {}
+    out = []
+    for r in rows:
+        rate = _leg_rate(agents.get(r.agent_master_id), r.txn_type)
+        amt = r.amount or 0.0
+        commission = round(amt * rate, 2)
+        d = _row(r)
+        d["commissionPct"] = round(rate * 100, 4)
+        d["commissionAmount"] = commission
+        d["netAmount"] = round(amt - commission, 2) if r.txn_type == "DEPOSIT" else round(amt + commission, 2)
+        out.append(d)
+    return out
 
 
 @router.get("/{txn_id}/audit")

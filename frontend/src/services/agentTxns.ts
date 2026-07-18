@@ -129,6 +129,10 @@ export interface AgentTxnRow {
   createdTime?: string | null;
   updatedDate?: string | null;
   updatedTime?: string | null;
+  // Per-leg commission (attached by the list endpoint for the Reports columns).
+  commissionPct?: number;
+  commissionAmount?: number;
+  netAmount?: number;
 }
 
 export interface AgentOverview {
@@ -247,12 +251,38 @@ export interface AgentMemberSummary {
   lastTransactionDate?: string | null;
 }
 
+export interface AgentPerfRow {
+  agentMasterId: number; agentId: string; agentName: string; category: string; status: string;
+  country?: string | null; currency?: string | null; createdDate?: string | null;
+  depositCount: number; depositAmount: number; depositCommission: number;
+  withdrawalCount: number; withdrawalAmount: number; withdrawalCommission: number;
+  settlementCount: number; settlementAmount: number; settlementCommission: number;
+  totalCommission: number; totalTransactions: number; lastTransactionDate?: string | null;
+}
+export interface AgentPerformance {
+  overall: {
+    totalDepositAmount: number; totalWithdrawalAmount: number; totalSettlementAmount: number;
+    totalDepositCommission: number; totalWithdrawalCommission: number; totalSettlementCommission: number;
+    totalCommission: number; activeAgents: number; inactiveAgents: number; totalTransactions: number;
+  };
+  agents: AgentPerfRow[];
+  rankings: Record<'topDeposit'|'topWithdrawal'|'topSettlement'|'topCommission', Array<{ agentId: string; agentName: string; value: number }>>;
+  highest: Record<'deposit'|'withdrawal'|'settlement'|'commission', null | { agentId: string; agentName: string; value: number }>;
+}
+export interface AgentTxnCommission {
+  agentId?: string | null; agentName?: string | null; membershipId: string;
+  amount: number; commissionPct: number; commissionAmount: number; netAmount: number;
+  balanceBefore: number; balanceAfter: number;
+}
+
 export const agentTxnsAPI = {
   overview: async () => (await api.get<AgentOverview>('/api/agent-txns/overview')).data,
   formData: async () => (await api.get<AgentFormData>('/api/agent-txns/form-data')).data,
   member: async (id: string) => (await api.get<AgentMemberLookup>(`/api/agent-txns/member/${encodeURIComponent(id)}`)).data,
   /** Read-only financial summary for a Membership ID (Balance Enquiry). */
   balanceEnquiry: async (id: string) => (await api.get<AgentMemberSummary>(`/api/agent-txns/balance-enquiry/${encodeURIComponent(id)}`)).data,
+  performance: async () => (await api.get<AgentPerformance>('/api/agent-txns/performance')).data,
+  txnCommission: async (id: number) => (await api.get<AgentTxnCommission>(`/api/agent-txns/${id}/commission`)).data,
   createDeposit: async (body: AgentDepositBody) => (await api.post<AgentTxnRow>('/api/agent-txns/deposit', body)).data,
   createWithdrawal: async (body: AgentWithdrawalBody) => (await api.post<AgentTxnRow>('/api/agent-txns/withdrawal', body)).data,
   /** Settlement — Supervisor-only and approval-free; created ready for them to pay. */
