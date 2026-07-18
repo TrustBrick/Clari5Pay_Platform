@@ -808,7 +808,9 @@ def _validate_common(body: _Base, txn_type: str) -> None:
     #   • CASH/CRYPTO  → captured later, at Submit Account (token image / wallet).
     #   • BANK         → never; the agent's bank account is supplied at Submit Account and the
     #                    player pays into it, exactly as the merchant bank deposit works.
-    deposit_defers = txn_type == "DEPOSIT"
+    # A SETTLEMENT captures neither: it is an offline merchant<->agent payment, evidenced by the
+    # proof uploaded later in its own chain, not by a customer-supplied token or note.
+    deposit_defers = txn_type in ("DEPOSIT", "SETTLEMENT")
     crypto_withdrawal = txn_type == "WITHDRAWAL" and method in WALLET_METHODS
     if crypto_withdrawal:
         if not (body.walletAddress or "").strip():
