@@ -7,6 +7,8 @@ import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { Icon } from '../components/Icon';
+import { IfscField } from '../components/IfscField';
+import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { today } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 // Shared reporting primitives — the Agent Reports module renders with the SAME table styling,
@@ -580,6 +582,10 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const [senderIfsc, setSenderIfsc] = useState('');
   const [senderBankName, setSenderBankName] = useState('');
   const [senderBranch, setSenderBranch] = useState('');
+  // Same shared IFSC auto-fill as the Agent Account form.
+  const senderIfscFill = useIfscAutoFill(senderIfsc, setSenderIfsc, (bank, branch) => {
+    setSenderBankName(bank); setSenderBranch(branch);
+  });
   const [country, setCountry] = useState('');
   const [state, setState] = useState('');
   const [location, setLocation] = useState('');
@@ -615,7 +621,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const reset = () => {
     setAgentId(''); setMembershipId(''); setMembershipName(''); setMemberLocked(false); setMembershipType(''); setAmount('');
     setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
-    setSenderIfsc(''); setSenderBankName(''); setSenderBranch('');
+    setSenderIfsc(''); setSenderBankName(''); setSenderBranch(''); senderIfscFill.reset();
     setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91'); setNotes(''); setInstructions('');
   };
 
@@ -721,9 +727,9 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
                 <Input label="Account Holder" value={senderAccountHolder} onChange={e => setSenderAccountHolder(e.target.value)} required />
                 <Input label="Account Number" value={senderAccountNumber} onChange={e => setSenderAccountNumber(e.target.value)} required />
-                <Input label="IFSC Code" value={senderIfsc} onChange={e => setSenderIfsc(e.target.value.toUpperCase())} />
-                <Input label="Bank Name" value={senderBankName} onChange={e => setSenderBankName(e.target.value)} />
-                <Input label="Branch" value={senderBranch} onChange={e => setSenderBranch(e.target.value)} />
+                <IfscField label="IFSC Code" value={senderIfsc} ifsc={senderIfscFill} />
+                <Input label="Bank Name" value={senderBankName} onChange={e => setSenderBankName(e.target.value)} readOnly={senderIfscFill.locked} />
+                <Input label="Branch" value={senderBranch} onChange={e => setSenderBranch(e.target.value)} readOnly={senderIfscFill.locked} />
               </div>
             )}
           </div>
@@ -1256,32 +1262,43 @@ const TxnTimeline: React.FC<{ row: AgentTxnRow; audit: AgentTxnAuditRow[] }> = (
     return i < curIdx ? 'done' : i === curIdx ? 'current' : 'pending';
   };
   const color = { done: T.success, current: T.blue, pending: T.textMuted } as const;
+  // One flat node list — the workflow steps, plus the red terminal when the transaction was
+  // rejected. Rendering every node through the same row keeps the rail unbroken all the way to
+  // the last entry instead of leaving the terminal floating below a stub of line.
+  type TlNode = { label: string; ts: string; dot: string; filled: boolean; line: string; muted: boolean; current: boolean };
+  const nodes: TlNode[] = steps.map((s, i) => {
+    const st = nodeState(i);
+    return { label: s.label, ts: when(s.key), dot: color[st], filled: st !== 'pending',
+      line: st === 'done' ? T.success : T.border, muted: st === 'pending', current: st === 'current' };
+  });
+  if (rejected) nodes.push({ label: 'Rejected', ts: '', dot: T.danger, filled: true, line: T.border, muted: false, current: false });
+  // Geometry of the rail, kept in one place so the dot, the connector and the text all line up.
+  // ROW is the fixed distance between two dot centres — equal spacing regardless of whether a
+  // step carries a timestamp — and is a minimum, so a wrapped label grows the row instead of
+  // clipping. The connector stretches to fill whatever height the row ends up with, which is
+  // what makes the segments meet edge-to-edge and read as a single continuous line.
+  const DOT = 14, LINE = 2, ROW = 46, LH = 18;
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Timeline</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-        {steps.map((s, i) => {
-          const st = nodeState(i);
-          const ts = when(s.key);
+      <div style={{ display: 'flex', flexDirection: 'column' }}>
+        {nodes.map((n, i) => {
+          const last = i === nodes.length - 1;
           return (
-            <div key={s.key + i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <div style={{ width: 14, height: 14, borderRadius: '50%', background: st === 'pending' ? 'transparent' : color[st], border: `2px solid ${color[st]}`, flexShrink: 0 }} />
-                {i < steps.length - 1 && <div style={{ width: 2, flex: 1, minHeight: 22, background: st === 'done' ? T.success : T.border }} />}
+            <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'stretch', minHeight: last ? undefined : ROW }}>
+              {/* Rail: dot on top, connector filling the rest of the row. The column stretches to
+                  the full row height, so the connector ends exactly where the next dot begins. */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: DOT, flexShrink: 0 }}>
+                <div style={{ width: DOT, height: DOT, borderRadius: '50%', background: n.filled ? n.dot : 'transparent', border: `2px solid ${n.dot}`, flexShrink: 0, marginTop: (LH - DOT) / 2, boxSizing: 'border-box' }} />
+                {!last && <div style={{ width: LINE, flex: 1, minHeight: 8, background: n.line, borderRadius: LINE }} />}
               </div>
-              <div style={{ paddingBottom: i < steps.length - 1 ? 14 : 0 }}>
-                <p style={{ margin: 0, fontSize: 13, fontWeight: st === 'pending' ? 600 : 800, color: st === 'pending' ? T.textMuted : T.textMain }}>{s.label}{st === 'current' && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 700, color: T.blue }}>CURRENT</span>}</p>
-                {ts && <p style={{ margin: '2px 0 0', fontSize: 11, color: T.textMuted }}>{ts}</p>}
+              <div style={{ minWidth: 0, paddingBottom: last ? 0 : 12 }}>
+                <p style={{ margin: 0, fontSize: 13, lineHeight: `${LH}px`, fontWeight: n.muted ? 600 : 800, color: n.label === 'Rejected' ? T.danger : n.muted ? T.textMuted : T.textMain, wordBreak: 'break-word' }}>{n.label}{n.current && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 700, color: T.blue }}>CURRENT</span>}</p>
+                {n.ts && <p style={{ margin: '2px 0 0', fontSize: 11, lineHeight: '15px', color: T.textMuted }}>{n.ts}</p>}
               </div>
             </div>
           );
         })}
-        {rejected && (
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            <div style={{ width: 14, height: 14, borderRadius: '50%', background: T.danger, border: `2px solid ${T.danger}`, flexShrink: 0 }} />
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: T.danger }}>Rejected</p>
-          </div>
-        )}
       </div>
     </div>
   );

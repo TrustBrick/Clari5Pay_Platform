@@ -4,7 +4,9 @@ import { Card, Btn, Input, Sel, Modal, TableSkeleton, LoadingScreen, StatCard, B
 import { Icon, isIconName } from '../components/Icon';
 import { agentAPI, agentAccountAPI, agentAssignmentAPI, agentDashboardAPI, agentTransactionAPI } from '../services/api';
 import { formatDateTimeIST, COUNTRY_CODES, INDIAN_STATES, fileToDataUrl, fmt, downloadText } from '../utils/helpers';
-import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
+import { BANK_NAMES } from '../utils/ifsc';
+import { useIfscAutoFill } from '../utils/useIfscAutoFill';
+import { IfscField } from '../components/IfscField';
 import { downloadXlsx } from '../utils/xlsx';
 import { AgentProfileModal } from './AgentTxnPages';
 import type { Col } from '../utils/xlsx';
@@ -907,6 +909,13 @@ const AccountForm: React.FC<{
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const set = <K extends keyof AcctForm>(k: K, v: AcctForm[K]) => setForm((f) => ({ ...f, [k]: v }));
+  // Shared IFSC auto-fill. Works identically in create and edit: re-entering the IFSC on an
+  // existing account looks it up again and refreshes Bank Name + Branch.
+  const ifsc = useIfscAutoFill(
+    form.ifsc,
+    (v) => set('ifsc', v),
+    (bank, branch) => setForm((f) => ({ ...f, bankName: bank, branch })),
+  );
 
   const onQr = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -989,19 +998,15 @@ const AccountForm: React.FC<{
             <div style={grid2}>
               <Input label="Account Holder" value={form.accountHolder} onChange={(e) => set('accountHolder', e.target.value)} required />
               <Input label="Account Number" value={form.accountNumber} onChange={(e) => set('accountNumber', e.target.value)} required />
-              {/* IFSC auto-fill — the SAME utils/ifsc lookup + validation Admin → Account
-                  Management uses (Razorpay IFSC API); falls back to manual on failure. */}
-              <Input label="IFSC / Routing" value={form.ifsc} required hint="Auto-fills bank & branch"
-                onChange={async (e) => {
-                  const up = e.target.value.toUpperCase();
-                  set('ifsc', up);
-                  if (isValidIfsc(up)) {
-                    const info = await lookupIfsc(up);
-                    if (info) setForm((f) => ({ ...f, ifsc: up, bankName: info.bank, branch: info.branch }));
-                  }
-                }} />
-              <Input label="Bank Name" value={form.bankName} onChange={(e) => set('bankName', e.target.value)} required list="bank-names" />
-              <Input label="Branch" value={form.branch} onChange={(e) => set('branch', e.target.value)} />
+              {/* IFSC auto-fill — the SAME utils/ifsc lookup Admin → Account Management uses
+                  (Razorpay IFSC API), via the shared hook that adds the blur trigger, the
+                  in-flight guard, the spinner and the validation/service messages. Bank Name and
+                  Branch are read-only once auto-filled; values loaded from an existing record
+                  stay editable, so previously saved accounts keep working. */}
+              <IfscField label="IFSC / Routing" value={form.ifsc} ifsc={ifsc} required />
+              <Input label="Bank Name" value={form.bankName} onChange={(e) => set('bankName', e.target.value)} required
+                list={ifsc.locked ? undefined : 'bank-names'} readOnly={ifsc.locked} />
+              <Input label="Branch" value={form.branch} onChange={(e) => set('branch', e.target.value)} readOnly={ifsc.locked} />
               <BankNamesDatalist names={BANK_NAMES} />
             </div>
           </Section>
