@@ -1641,8 +1641,63 @@ const commissionA = (r: AgentTxnRow) => Math.max(0, r.commissionAmount ?? 0);
 const signedLegA = (r: AgentTxnRow) =>
   r.type === 'DEPOSIT' ? (r.amount - commissionA(r)) : -(r.amount + commissionA(r));
 
-const rowTsA = (r: AgentTxnRow) =>
-  new Date(`${r.createdDate || '1970-01-01'}T${r.createdTime || '00:00:00'}`).getTime();
+// ── Timestamps ────────────────────────────────────────────────────────────────────────────────
+// The API returns the IST *display* parts (`createdDate` "2026-07-18", `createdTime` "10:34:24 AM")
+// alongside the true UTC instant (`createdAt`). The 12-hour time is NOT parseable by `new Date()`
+// — `new Date("2026-07-18T10:34:24 AM")` is Invalid Date — so every comparison against it silently
+// yields NaN. Always resolve the instant through this helper.
+const IST_TZ = 'Asia/Kolkata';
+const rowTsA = (r: AgentTxnRow): number => {
+  if (r.createdAt) {
+    const t = Date.parse(r.createdAt);
+    if (!Number.isNaN(t)) return t;
+  }
+  const d = (r.createdDate || '').trim();
+  if (!d) return 0;
+  // Fall back to the IST display parts, converting the 12-hour clock to 24-hour and pinning the
+  // offset to IST so the viewer's own timezone cannot shift the instant.
+  const m = /^(\d{1,2}):(\d{2}):(\d{2})\s*([AP]M)?$/i.exec((r.createdTime || '').trim());
+  let h = 0, mi = 0, s = 0;
+  if (m) {
+    h = Number(m[1]); mi = Number(m[2]); s = Number(m[3]);
+    const ap = (m[4] || '').toUpperCase();
+    if (ap === 'PM' && h < 12) h += 12;
+    if (ap === 'AM' && h === 12) h = 0;
+  }
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const t = Date.parse(`${d}T${pad(h)}:${pad(mi)}:${pad(s)}+05:30`);
+  return Number.isNaN(t) ? 0 : t;
+};
+
+/** An IST calendar date (YYYY-MM-DD), optionally shifted by whole days. */
+const istDateStr = (shiftDays = 0) =>
+  new Date(Date.now() + shiftDays * 86400000).toLocaleDateString('en-CA', { timeZone: IST_TZ });
+/** The instant of 00:00:00 IST on an IST calendar date. */
+const istMidnight = (dateStr: string) => Date.parse(`${dateStr}T00:00:00+05:30`);
+
+/**
+ * [start, end] instants for a date preset — the SINGLE source of truth for the period. The table,
+ * summary cards, footer totals, Opening/Closing Balance and every export all derive from these
+ * bounds, so they can never disagree. Calendar presets (Today/Yesterday/7d/30d/Custom) resolve on
+ * IST calendar days; rolling presets (30m/1h/24h) are true time windows ending now.
+ */
+const periodBoundsA = (preset: string, from: string, to: string): [number, number] => {
+  const now = Date.now();
+  switch (preset) {
+    case 'today': return [istMidnight(istDateStr(0)), now];
+    case 'yesterday': return [istMidnight(istDateStr(-1)), istMidnight(istDateStr(0)) - 1];
+    case '30m': return [now - 30 * 60000, now];
+    case '1h': return [now - 3600000, now];
+    case '24h': return [now - 86400000, now];
+    case '7d': return [istMidnight(istDateStr(-7)), now];
+    case '30d': return [istMidnight(istDateStr(-30)), now];
+    case 'custom': return [
+      from ? istMidnight(from) : -Infinity,
+      to ? istMidnight(to) + 86400000 - 1 : Infinity,
+    ];
+    default: return [-Infinity, Infinity];   // 'all'
+  }
+};
 /** Completed Date & Time — the moment the money actually moved. A deposit records it at Mark
  *  Deposit; a withdrawal/settlement at its approval, falling back to the last update. */
 const completedAtA = (r: AgentTxnRow): string => {
@@ -1656,23 +1711,14 @@ const completedAtA = (r: AgentTxnRow): string => {
 /** Approver actually on the record — the explicit approver, else the gate that cleared it. */
 const approverA = (r: AgentTxnRow) => r.approvedBy || r.managerName || r.supervisorName || '—';
 
-const inDateWindowA = (r: AgentTxnRow, preset: string, from: string, to: string): boolean => {
-  if (preset === 'all') return true;
-  const d = r.createdDate || '';
-  if (preset === 'custom') return (!from || d >= from) && (!to || d <= to);
-  const ts = rowTsA(r); const now = Date.now(); const day = 86400000;
-  if (preset === '30m') return ts >= now - 30 * 60000;
-  if (preset === '1h') return ts >= now - 3600000;
-  if (preset === '24h') return ts >= now - day;
-  if (preset === '7d') return ts >= now - 7 * day;
-  if (preset === '30d') return ts >= now - 30 * day;
-  const start = new Date(); start.setHours(0, 0, 0, 0);
-  if (preset === 'today') return ts >= start.getTime();
-  if (preset === 'yesterday') return ts >= start.getTime() - day && ts < start.getTime();
-  return true;
+const inBoundsA = (r: AgentTxnRow, [start, end]: [number, number]): boolean => {
+  const ts = rowTsA(r);
+  return ts >= start && ts <= end;
 };
 
-const matchesA = (r: AgentTxnRow, f: AgentRFilters): boolean => {
+/** Every filter EXCEPT the date window. Split out because the Agent Ledger needs to accumulate the
+ *  running balance over this scope *before* the period starts, to derive the Opening Balance. */
+const matchesNonDateA = (r: AgentTxnRow, f: AgentRFilters): boolean => {
   const inc = (v: string | null | undefined, q: string) => !q || (v || '').toLowerCase().includes(q.toLowerCase());
   return inc(r.referenceNumber, f.ref) && inc(r.membershipId, f.membershipId) && inc(r.membershipName, f.memberName)
     && inc(r.agentCode, f.agentId) && inc(r.agentName, f.agentName)
@@ -1681,9 +1727,11 @@ const matchesA = (r: AgentTxnRow, f: AgentRFilters): boolean => {
     && (!f.approvedBy || approverA(r).toLowerCase().includes(f.approvedBy.toLowerCase()))
     && (!f.minA || r.amount >= Number(parseIndianAmount(f.minA)))
     && (!f.maxA || r.amount <= Number(parseIndianAmount(f.maxA)))
-    && (!f.exactA || r.amount === Number(parseIndianAmount(f.exactA)))
-    && inDateWindowA(r, f.datePreset, f.from, f.to);
+    && (!f.exactA || r.amount === Number(parseIndianAmount(f.exactA)));
 };
+
+const matchesA = (r: AgentTxnRow, f: AgentRFilters, bounds: [number, number]): boolean =>
+  matchesNonDateA(r, f) && inBoundsA(r, bounds);
 
 /** Completed-only totals for a set of agent rows, per leg and net of commission. */
 const totalsA = (rows: AgentTxnRow[]) => {
@@ -1724,6 +1772,27 @@ const AMeta: React.FC<{ label: string; value: React.ReactNode }> = ({ label, val
     <span style={{ fontSize: 13, fontWeight: 700, color: T.textMain }}>{value}</span>
   </div>
 );
+
+// The table body scrolls inside a capped viewport so the totals card sits immediately beneath the
+// table however many rows are on the page — no hunting for the footer, and no dead space when the
+// page is short. The header stays pinned while the rows scroll.
+const A_SCROLL: React.CSSProperties = { overflowX: 'auto', overflowY: 'auto', maxHeight: 420 };
+const thStickyA: React.CSSProperties = { ...thR, position: 'sticky', top: 0, zIndex: 1, background: T.canvas, whiteSpace: 'nowrap' };
+
+/** Row count + pager, rendered inside the table card so it never separates from its table. */
+const APager: React.FC<{ page: number; totalPages: number; count: number; onPage: (p: number) => void }> =
+  ({ page, totalPages, count, onPage }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '9px 14px', borderTop: `1px solid ${T.border}` }}>
+      <span style={{ fontSize: 12, color: T.textMuted }}>{count} row{count === 1 ? '' : 's'}</span>
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Btn size="sm" variant="ghost" onClick={() => onPage(Math.max(1, page - 1))} disabled={page <= 1}>‹ Prev</Btn>
+          <span style={{ fontSize: 12, color: T.textMuted }}>Page {page} of {totalPages}</span>
+          <Btn size="sm" variant="ghost" onClick={() => onPage(Math.min(totalPages, page + 1))} disabled={page >= totalPages}>Next ›</Btn>
+        </div>
+      )}
+    </div>
+  );
 
 export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ user }) => {
   const { showToast } = useToast();
@@ -1776,7 +1845,8 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
     finally { setApplying(false); }
   };
 
-  const filtered = rows.filter(r => matchesA(r, f));
+  const bounds = periodBoundsA(f.datePreset, f.from, f.to);
+  const filtered = rows.filter(r => matchesA(r, f, bounds));
   const tot = totalsA(filtered);
   const rangeLabel = f.datePreset === 'custom'
     ? `${f.from || 'start'} → ${f.to || 'today'}`
@@ -1825,26 +1895,34 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   // Computed over the FULL completed ledger and then narrowed to the displayed rows, so the
   // balance carries forward across a filter exactly like a bank statement (and like the
   // Merchant Ledger Report). Opening Balance is the balance immediately BEFORE the first row shown.
-  const shown = new Set(filtered);
-  const fullLedger = (() => {
-    const completed = rows.filter(isCompletedA).slice().sort((a, b) => rowTsA(a) - rowTsA(b));
-    let bal = 0;
-    return completed.map(r => {
-      const commission = commissionA(r);
-      bal += signedLegA(r);
-      return {
-        date: r.createdDate || '', time: r.createdTime || '',
-        description: `${typeLabelA(r.type)} — ${r.membershipId}${r.membershipName ? ` · ${r.membershipName}` : ''}`,
-        ref: r.referenceNumber, agentId: r.agentCode || '—', agentName: r.agentName || '—',
-        membershipId: r.membershipId, memberName: r.membershipName || '—', type: r.type,
-        amount: r.amount, signedAmount: signedLegA(r) >= 0 ? r.amount : -r.amount,
-        commission, balance: bal, status: r.status, shown: shown.has(r),
-      };
-    });
-  })();
+  // The ledger scope is every completed transaction matching the NON-date filters, oldest first.
+  // The running balance accumulates across that whole scope; the date period then decides which
+  // rows are displayed. So Opening Balance is the balance carried INTO the period — the balance
+  // after every scoped transaction that happened before it — and stays correct even when the
+  // period itself contains no transactions.
+  const [periodStart] = bounds;
+  const scope = rows.filter(r => isCompletedA(r) && matchesNonDateA(r, f))
+    .slice().sort((a, b) => rowTsA(a) - rowTsA(b));
+  let running = 0;
+  const fullLedger = scope.map(r => {
+    running += signedLegA(r);
+    return {
+      date: r.createdDate || '', time: r.createdTime || '',
+      description: `${typeLabelA(r.type)} — ${r.membershipId}${r.membershipName ? ` · ${r.membershipName}` : ''}`,
+      ref: r.referenceNumber, agentId: r.agentCode || '—', agentName: r.agentName || '—',
+      membershipId: r.membershipId, memberName: r.membershipName || '—', type: r.type,
+      amount: r.amount, signedAmount: signedLegA(r) >= 0 ? r.amount : -r.amount,
+      commission: commissionA(r), balance: running, status: r.status,
+      ts: rowTsA(r), shown: inBoundsA(r, bounds),
+    };
+  });
   const ledger = fullLedger.filter(l => l.shown);
-  const firstIdx = fullLedger.findIndex(l => l.shown);
-  const opening = firstIdx < 0 ? 0 : (firstIdx > 0 ? fullLedger[firstIdx - 1].balance : 0);
+  // Opening Balance = balance after everything BEFORE the period start. For All Time there is
+  // nothing before, so it is the initial ledger balance of 0.
+  const before = fullLedger.filter(l => l.ts < periodStart);
+  const opening = before.length ? before[before.length - 1].balance : 0;
+  // Closing Balance = the last Running Balance in the report; with no entries the period neither
+  // credits nor debits, so it closes where it opened.
   const closing = ledger.length ? ledger[ledger.length - 1].balance : opening;
 
   // ── Pagination (same control as the rest of the Agent module) ──
@@ -2072,10 +2150,10 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
       {tab === 'full' && <>
         <RSectionTitle note="Every Agent transaction — Deposit, Withdrawal and Settlement — in one place. Summary cards and footer totals count completed transactions only."><Icon name="analytics" size={15} /> Full Report</RSectionTitle>
         <ReportExportBar count={exportCount} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={onCsv} onPrint={() => onPdf(true)} />
-        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
-          <div style={{ overflowX: 'auto' }}>
+        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
+          <div style={A_SCROLL}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ background: T.canvas }}>{AGENT_FULL_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: AGENT_FULL_ALIGNS[i] === 'r' ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+              <thead><tr>{AGENT_FULL_HEADERS.map((h, i) => <th key={h} style={{ ...thStickyA, textAlign: AGENT_FULL_ALIGNS[i] === 'r' ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
               <tbody>
                 {loading && rows.length === 0 && <tr><td colSpan={AGENT_FULL_HEADERS.length} style={{ ...tdR, textAlign: 'center', color: T.textMuted, padding: 22 }}>Loading…</td></tr>}
                 {!loading && filtered.length === 0 && <tr><td colSpan={AGENT_FULL_HEADERS.length} style={{ ...tdR, textAlign: 'center', color: T.textMuted, padding: 22 }}>No agent transactions match the selected filters.</td></tr>}
@@ -2104,6 +2182,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
               </tbody>
             </table>
           </div>
+          <APager page={safePage} totalPages={totalPages} count={filtered.length} onPage={setPage} />
         </Card>
         <Card style={{ padding: '16px 18px', marginBottom: 18, borderTop: `3px solid ${T.blue}` }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 14 }}>
@@ -2121,10 +2200,10 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
       {tab === 'commission' && <>
         <RSectionTitle note="Commission earned per Agent, from each transaction's own Pay-In / Pay-Out / Settlement fee. Completed transactions only."><Icon name="treasury" size={15} /> Commission Report</RSectionTitle>
         <ReportExportBar count={exportCount} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={onCsv} onPrint={() => onPdf(true)} />
-        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
-          <div style={{ overflowX: 'auto' }}>
+        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
+          <div style={A_SCROLL}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ background: T.canvas }}>{AGENT_COMM_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: AGENT_COMM_ALIGNS[i] === 'r' ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+              <thead><tr>{AGENT_COMM_HEADERS.map((h, i) => <th key={h} style={{ ...thStickyA, textAlign: AGENT_COMM_ALIGNS[i] === 'r' ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
               <tbody>
                 {commissionRows.length === 0 && <tr><td colSpan={AGENT_COMM_HEADERS.length} style={{ ...tdR, textAlign: 'center', color: T.textMuted, padding: 22 }}>No completed agent transactions match the selected filters.</td></tr>}
                 {slice(commissionRows).map(a => (
@@ -2145,6 +2224,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
               </tbody>
             </table>
           </div>
+          <APager page={safePage} totalPages={totalPages} count={commissionRows.length} onPage={setPage} />
         </Card>
         <Card style={{ padding: '16px 18px', marginBottom: 18, borderTop: `3px solid ${T.blue}` }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 14 }}>
@@ -2160,10 +2240,10 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
       {tab === 'ledger' && <>
         <RSectionTitle note="Completed transactions in chronological order. Gross Amount is the transaction; Commission is the fee applied by the Agent workflow; Running Balance is net of commission and reconciles to the Current Available Balance."><Icon name="ledger" size={15} /> Agent Ledger Report</RSectionTitle>
         <ReportExportBar count={exportCount} onPdf={() => onPdf(true)} onExcel={onExcel} onCsv={onCsv} onPrint={() => onPdf(true)} />
-        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 14 }}>
-          <div style={{ overflowX: 'auto' }}>
+        <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
+          <div style={A_SCROLL}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead><tr style={{ background: T.canvas }}>{AGENT_LEDGER_HEADERS.map((h, i) => <th key={h} style={{ ...thR, textAlign: AGENT_LEDGER_ALIGNS[i] === 'r' ? 'right' : 'left', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+              <thead><tr>{AGENT_LEDGER_HEADERS.map((h, i) => <th key={h} style={{ ...thStickyA, textAlign: AGENT_LEDGER_ALIGNS[i] === 'r' ? 'right' : 'left' }}>{h}</th>)}</tr></thead>
               <tbody>
                 {/* Opening Balance always leads the report */}
                 <tr style={{ background: T.canvas }}>
@@ -2196,6 +2276,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
               </tbody>
             </table>
           </div>
+          <APager page={safePage} totalPages={totalPages} count={ledger.length} onPage={setPage} />
         </Card>
         <Card style={{ padding: '16px 18px', marginBottom: 18, borderTop: `3px solid ${T.blue}` }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 14 }}>
@@ -2210,14 +2291,6 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
         </Card>
       </>}
 
-      {/* Pagination — same control as the rest of the Agent module */}
-      {totalPages > 1 && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, padding: '12px 16px' }}>
-          <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</Btn>
-          <span style={{ fontSize: 12, color: T.textMuted }}>Page {safePage} of {totalPages}</span>
-          <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</Btn>
-        </div>
-      )}
       <div style={{ height: 24 }} />
     </div>
   );

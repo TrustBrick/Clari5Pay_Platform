@@ -125,6 +125,9 @@ export interface AgentTxnRow {
   approvedTime?: string | null;
   linkedDepositId?: number | null;
   createdBy?: string | null;
+  /** True instant (UTC ISO). Prefer this for ordering/relative windows — `createdTime` is an
+   *  IST 12-hour display string ("10:34:24 AM") and is NOT machine-parseable by `new Date()`. */
+  createdAt?: string | null;
   createdDate?: string | null;
   createdTime?: string | null;
   updatedDate?: string | null;
