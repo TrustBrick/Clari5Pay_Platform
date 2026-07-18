@@ -944,3 +944,56 @@ class AgentTransactionAudit(Base):
     actor_username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     actor_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class TransactionAttachment(Base):
+    """Metadata for one uploaded file that now lives in object storage, not in the row.
+
+    Historically a proof/bank image was a base64 data URL held directly in a `transactions`
+    TEXT column — ~2 MB per row, 162 MB in total (see S3_IMAGE_MIGRATION.md). Under the object
+    storage backend the bytes move to object storage and the column keeps only a provider-neutral
+    ``storage://<key>`` reference;
+    this table records everything ABOUT that object which the column alone cannot express.
+
+    Deliberately NOT on the read path. `_t()` serialises a transaction synchronously and cannot
+    issue a query, so it resolves the reference held on the row itself. This table exists for
+    metadata, operations and audit — "what was uploaded, how big, what type, when" — and can be
+    joined when that is actually wanted. Losing a row here degrades reporting, never rendering.
+
+    One row per (transaction, field, key). `merchant_proofs` holds up to three files, so a
+    single transaction/field pair can legitimately have several rows; the key distinguishes them.
+    """
+    __tablename__ = "transaction_attachment"
+    __table_args__ = (
+        UniqueConstraint("transaction_id", "field", "object_key", name="uq_txn_attachment"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    transaction_id: Mapped[int] = mapped_column(Integer, ForeignKey("transactions.id"), index=True, nullable=False)
+    # Which column the file belongs to: merchant_proof | merchant_proofs | admin_proof | admin_bank_image.
+    field: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # Which backend actually holds the bytes ("s3", and later "minio" / "azure" / "gcs"). The
+    # reference on the transactions row stays provider-NEUTRAL (`storage://<key>`) so the data
+    # never hard-codes today's provider; this column is where the answer lives, per file, so a
+    # future migration can tell what needs moving without rewriting a single reference.
+    storage_backend: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # `object_key` is the container/bucket-relative key — the portable part, identical whichever
+    # provider stores it. `object_url` is the provider-native DURABLE URI (e.g. s3://bucket/key)
+    # kept for operators and tooling; never a presigned link, which expires and would be useless
+    # once stored (the KYC module records being caught by exactly that with the provider's 48h URLs).
+    object_key: Mapped[str] = mapped_column(String(512), index=True, nullable=False)
+    object_url: Mapped[Optional[str]] = mapped_column(String(768), nullable=True)
+
+    file_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    mime_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)   # decoded bytes
+    # SHA-256 of the content. The key embeds its first 16 chars, so this is both an integrity
+    # check and what makes a re-run of the backfill recognise an object it already uploaded.
+    checksum: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    # Set when the original base64 was cleared from the transactions row, i.e. the point of no
+    # return for that file. NULL means the column still holds the inline copy and rollback is
+    # still possible.
+    source_cleared_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
