@@ -20,6 +20,7 @@ from app.services.membership import lookup_member_name, resolve_member_name, nor
 from app.services import tg_notify as tgn
 from app.core.cache import cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
+from app.core import storage
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -91,8 +92,49 @@ MAX_PROOFS = 3
 PROOF_LIMIT_MSG = "You can upload a maximum of 3 proof/slip files per request."
 
 
-def _clean_proofs(proofs: list[str] | None, single: str | None = None) -> list[str]:
-    """Validate uploaded proofs: at most 3 files, each a JPG/JPEG/PNG/PDF within the size limit."""
+def _resolve_proofs(raw: str | None) -> list[str] | None:
+    """Resolve the `merchant_proofs` JSON array (up to 3 files) for output.
+
+    Entries are resolved individually, so a mixed array — some files already migrated to object
+    storage, others still inline — renders correctly during the backfill. An entry that cannot be
+    signed is dropped rather than emitted as null, keeping the list usable by the frontend.
+    """
+    if not raw:
+        return None
+    try:
+        items = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    resolved = [storage.resolve_value(p) for p in items if p]
+    return [p for p in resolved if p] or None
+
+
+def _store(value: str | None, *, field: str) -> str | None:
+    """Hand one validated upload to object storage, returning what the column should hold.
+
+    With STORAGE_BACKEND="db" (the default) this returns the value untouched and the request
+    behaves exactly as it always has. With "s3" the bytes are uploaded and a ``storage://<key>``
+    reference comes back instead.
+
+    A storage failure becomes a 503 rather than a silent fallback to writing base64: falling
+    back would quietly reintroduce the row bloat this migration exists to remove, and the
+    operator would have no signal that it happened.
+    """
+    try:
+        stored, _ = storage.store_value(value, field=field)
+        return stored
+    except storage.StorageError as exc:
+        raise HTTPException(status_code=503,
+                            detail=f"Could not store the uploaded file: {exc}") from exc
+
+
+def _clean_proofs(proofs: list[str] | None, single: str | None = None,
+                  field: str = "merchant_proofs") -> list[str]:
+    """Validate uploaded proofs: at most 3 files, each a JPG/JPEG/PNG/PDF within the size limit.
+
+    Validation is unchanged; when object storage is enabled each accepted file is also uploaded
+    and the returned list holds references rather than inline base64.
+    """
     items = [p for p in (proofs or []) if p]
     if not items and single:
         items = [single]
@@ -100,12 +142,13 @@ def _clean_proofs(proofs: list[str] | None, single: str | None = None) -> list[s
         raise HTTPException(status_code=400, detail=PROOF_LIMIT_MSG)
     for p in items:
         validate_upload(p, allowed=IMAGE_PDF_TYPES, label="proof/slip file")
-    return items
+    return [_store(p, field=field) for p in items]
 
 
 def _validate_bank_image(img: str | None) -> str | None:
     """Validate the admin's uploaded bank-details image (JPG/JPEG/PNG/WEBP, size-limited)."""
-    return validate_upload(img, allowed=IMAGE_TYPES, label="bank-details image")
+    return _store(validate_upload(img, allowed=IMAGE_TYPES, label="bank-details image"),
+                  field="admin_bank_image")
 
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
@@ -564,11 +607,14 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "accountHolder": t.account_holder,
         "accountNumber": t.account_number,
         "ifsc": t.ifsc,
-        "merchantProof": t.merchant_proof if full else None,
-        "merchantProofs": (json.loads(t.merchant_proofs) if t.merchant_proofs else None) if full else None,
+        # Each of these may hold a legacy base64 data URL or a storage:// reference; resolve_value
+        # returns the former untouched and exchanges the latter for a short-lived presigned URL.
+        # Both are consumed identically by an <img src>, so no frontend change is required.
+        "merchantProof": storage.resolve_value(t.merchant_proof) if full else None,
+        "merchantProofs": _resolve_proofs(t.merchant_proofs) if full else None,
         "merchantRef": t.merchant_ref,
-        "adminProof": t.admin_proof if full else None,
-        "adminBankImage": t.admin_bank_image if full else None,   # heavy image — detail fetch only (deferred)
+        "adminProof": storage.resolve_value(t.admin_proof) if full else None,
+        "adminBankImage": storage.resolve_value(t.admin_bank_image) if full else None,  # heavy — detail fetch only (deferred)
         "hasAdminBankImage": bool(t.has_admin_bank_image),        # cheap IS NOT NULL flag — never loads the blob
         "adminRef": t.admin_ref,
         "adminBankDetails": t.admin_bank_details,
@@ -1704,7 +1750,9 @@ async def account_submit(
         tx.admin_bank_details = data.adminBankDetails
     tx.admin_upi_id = data.adminUpiId
     if data.adminProof:
-        tx.admin_proof = validate_upload(data.adminProof, allowed=IMAGE_TYPES, label="bank-details image")
+        tx.admin_proof = _store(
+            validate_upload(data.adminProof, allowed=IMAGE_TYPES, label="bank-details image"),
+            field="admin_proof")
     ref = data.adminRef
     # A sent UPI always belongs to a receiving account → credit that parent account so its
     # deposits (bank + UPI) roll up together. No QR is generated.
@@ -1798,8 +1846,10 @@ async def mark_done(
     if data and data.adminProof:
         # Settlement proof also accepts PDF; other payment receipts remain image-only.
         proof_allowed = IMAGE_PDF_TYPES if is_settlement else IMAGE_TYPES
-        tx.admin_proof = validate_upload(data.adminProof, allowed=proof_allowed,
-                                         label="settlement proof" if is_settlement else "payment receipt")
+        tx.admin_proof = _store(
+            validate_upload(data.adminProof, allowed=proof_allowed,
+                            label="settlement proof" if is_settlement else "payment receipt"),
+            field="admin_proof")
     if data and data.adminUtr:
         tx.admin_utr = data.adminUtr.strip()
     tx.status = TxStatus.DEPOSITED if is_deposit else TxStatus.COMPLETED
@@ -2094,7 +2144,9 @@ async def supervisor_settle_settlement(
         raise HTTPException(status_code=400, detail="UTR Number is required to complete a settlement.")
     if not data.proof:
         raise HTTPException(status_code=400, detail="Settlement proof (image or PDF) is required to complete a settlement.")
-    tx.admin_proof = validate_upload(data.proof, allowed=IMAGE_PDF_TYPES, label="settlement proof")
+    tx.admin_proof = _store(
+        validate_upload(data.proof, allowed=IMAGE_PDF_TYPES, label="settlement proof"),
+        field="admin_proof")
     tx.admin_utr = data.utr.strip()
     tx.status = TxStatus.COMPLETED
     tx.processed_by = reviewer.name

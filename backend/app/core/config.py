@@ -25,6 +25,18 @@ class Settings(BaseSettings):
     DB_PASSWORD: str = ""                # RDS master password (raw value, no escaping)
     AWS_REGION: str = "eu-north-1"
 
+    # ── Object storage for uploaded proof/bank images (see S3_IMAGE_MIGRATION.md) ──
+    # "db" keeps every upload as a base64 data URL in its column, exactly as before; "s3"
+    # uploads to S3_BUCKET and stores only a key. The default is deliberately "db" so that
+    # deploying this code changes NOTHING until an operator opts in with a bucket configured.
+    STORAGE_BACKEND: str = "db"          # "db" | "s3"
+    S3_BUCKET: str = ""                  # required when STORAGE_BACKEND="s3"
+    # Region of the bucket. Falls back to AWS_REGION, whose default (eu-north-1) does NOT match
+    # this deployment — production runs in ap-south-1 — so set this explicitly.
+    S3_REGION: str = ""
+    S3_PREFIX: str = "uploads"           # key namespace inside the bucket
+    S3_URL_TTL: int = 900                # presigned GET lifetime, seconds (15 min)
+
     # ── Connection-pool sizing (env-configurable so a stack can be tuned — e.g. when running
     # multiple uvicorn workers — without a code change). Defaults preserve the single-worker
     # values. IMPORTANT: each uvicorn worker gets its OWN pool, so keep
