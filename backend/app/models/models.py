@@ -4,7 +4,7 @@ from sqlalchemy import (
     String, Integer, Boolean, Float, DateTime, Date,
     ForeignKey, Enum as SAEnum, Text, UniqueConstraint
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, column_property
 import enum
 from app.db.session import Base
 
@@ -181,7 +181,9 @@ class Transaction(Base):
     admin_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)     # admin-uploaded bank-details image (data URL)
     admin_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # admin reference number
     admin_bank_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # admin manually-entered bank details
-    admin_bank_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # admin custom bank-details image (data URL) — overrides the auto card
+    # Another large base64 image — deferred so bulk/list/report/balance SELECTs never drag it
+    # (loaded explicitly on the detail view, like the proof columns above).
+    admin_bank_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)  # admin custom bank-details image (data URL) — overrides the auto card
     admin_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)   # admin UPI ID (when merchant chose UPI)
     admin_utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)       # agent's payment UTR (withdrawal/settlement payout)
     payout_mode: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)     # withdrawal: BANK / UPI / CASH / CRYPTO
@@ -216,6 +218,14 @@ class Transaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     merchant_user: Mapped["User"] = relationship("User", back_populates="transactions", foreign_keys=[merchant_id])
+
+
+# Lightweight "does this row have an admin bank image?" flag for list payloads — computed as a
+# cheap `admin_bank_image IS NOT NULL` in SQL (Postgres checks the null bitmap; it never detoasts
+# the large base64 value), so lists get the flag without transferring the deferred blob.
+Transaction.has_admin_bank_image = column_property(
+    Transaction.admin_bank_image.isnot(None), deferred=False
+)
 
 
 class AccountMaster(Base):
