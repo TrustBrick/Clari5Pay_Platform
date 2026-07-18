@@ -242,6 +242,12 @@ a real change to the DB backup/restore runbook.
 
 ---
 
+## Operating it
+
+This document covers the design and the reasoning. For running it — configuration, IAM, backup and
+restore, the prod→demo sync, migrating an environment, verification, monitoring and rollback — see
+**`OBJECT_STORAGE_RUNBOOK.md`**.
+
 ## Related
 
 - `backend/app/core/uploads.py` — the single write chokepoint

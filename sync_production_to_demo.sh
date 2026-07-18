@@ -19,9 +19,16 @@
 #   * The Demo restore runs ON the demo host against the demo RDS using DEMO's own credentials.
 #     The two phases never share DB credentials; Demo never connects to the prod DB.
 #   * Each host reads its OWN repo-root .env for DB connection details, so environment-specific
-#     config (.env, email/WhatsApp/SMS keys, domain, secrets, storage) is NEVER copied — only
-#     the application data (which, for this app, includes all uploaded files: they are stored as
-#     base64 data URLs inside the database, so there is no separate object storage to sync).
+#     config (.env, email/WhatsApp/SMS keys, domain, secrets, storage) is NEVER copied.
+#   * UPLOADED FILES — this depends on the storage backend, and the script checks before running:
+#       STORAGE_BACKEND=db  (historic default) — uploads are base64 data URLs INSIDE the database,
+#         so the dump carries them and there is no object storage to sync. Fully supported.
+#       STORAGE_BACKEND=s3  — the database holds only `storage://<key>` references; the bytes live
+#         in that environment's bucket. Cloning the database alone would give Demo references to
+#         objects in PRODUCTION's bucket, which Demo cannot read (broken images) — or, if the two
+#         were pointed at the same bucket, would expose production payment slips, bank details and
+#         KYC photos in Demo. The script REFUSES rather than produce either outcome. See
+#         check_storage_compat() below and S3_IMAGE_MIGRATION.md.
 #   * Sequences and reference numbers (DEP…/WIT…/SET…) come across inside the dump (pg_dump emits
 #     setval), so Demo continues naturally from Production's latest value. Nothing is regenerated.
 #
@@ -47,10 +54,16 @@ SSH_OPTS=(-T -o ConnectTimeout=25 -o StrictHostKeyChecking=accept-new)
 
 DRY_RUN=0
 ASSUME_YES=0
+OBJECTS_SYNCED=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --yes|-y)  ASSUME_YES=1 ;;
+    # Assert that the required objects have ALREADY been copied into Demo's own bucket (see
+    # check_storage_compat). Only meaningful when Production runs STORAGE_BACKEND=s3. This
+    # asserts a fact about the world; it does not copy anything, and it cannot make a shared
+    # prod/demo bucket safe — that combination is refused regardless.
+    --assume-objects-synced) OBJECTS_SYNCED=1 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown argument: $arg" >&2; exit 2 ;;
   esac
@@ -121,6 +134,83 @@ count_all() {  # count_all prod|demo
 
 sequences_of() {  # sequences_of prod|demo  ->  "seqname<TAB>last_value"
   run_query "$1" "SELECT sequencename, last_value FROM pg_sequences WHERE schemaname='public' ORDER BY 1"
+}
+
+# Read one setting from a host's OWN repo-root .env. Prints the value (empty if unset).
+# Never echoes anything else, so it is safe to capture.
+env_value_of() {   # env_value_of prod|demo KEY
+  local tag="$1" key="$2" k h
+  if [ "$tag" = prod ]; then k=$PROD_KEY h=$PROD_HOST; else k=$DEMO_KEY h=$DEMO_HOST; fi
+  ssh "${SSH_OPTS[@]}" -i "$k" "$h" \
+    "cd ${REMOTE_DIR} 2>/dev/null && grep -E '^${key}=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' " \
+    2>/dev/null || true
+}
+
+# Refuse to clone a database whose uploads live somewhere this script does not move.
+#
+# The dump carries whatever the columns hold. Under STORAGE_BACKEND=db that is the files
+# themselves, so a clone is complete. Under s3 the columns hold only `storage://<key>` and the
+# bytes are in Production's bucket — cloning the rows alone yields Demo rows pointing at objects
+# Demo has no permission to read: every proof image silently breaks. Pointing Demo at
+# Production's bucket to "fix" that is worse: it would serve real customers' payment slips, bank
+# details and KYC photos from the demo site, which anyone with a demo login can reach.
+#
+# So: allowed when Production is db-backed; refused when it is s3-backed, unless the operator
+# asserts the objects already exist in Demo's OWN bucket. A shared bucket is refused outright —
+# there is no flag for it, because there is no safe version of it.
+check_storage_compat() {
+  sec "PHASE 0/2 · Storage backend compatibility"
+  local prod_be prod_bucket demo_be demo_bucket
+  prod_be="$(env_value_of prod STORAGE_BACKEND)"; prod_be="${prod_be:-db}"
+  demo_be="$(env_value_of demo STORAGE_BACKEND)"; demo_be="${demo_be:-db}"
+  prod_bucket="$(env_value_of prod S3_BUCKET)"
+  demo_bucket="$(env_value_of demo S3_BUCKET)"
+  log "Production: STORAGE_BACKEND=${prod_be} S3_BUCKET=${prod_bucket:-(unset)}"
+  log "Demo      : STORAGE_BACKEND=${demo_be} S3_BUCKET=${demo_bucket:-(unset)}"
+
+  # Same bucket on both sides — refuse unconditionally, in either backend combination.
+  if [ -n "$prod_bucket" ] && [ "$prod_bucket" = "$demo_bucket" ]; then
+    die "Demo and Production are configured with the SAME bucket (${prod_bucket}).
+  Demo would serve real customers' payment slips, bank details and KYC photos.
+  Give Demo its own bucket before syncing. Refusing (Demo untouched)."
+  fi
+
+  if [ "$prod_be" != "s3" ]; then
+    log "Production stores uploads in the database — the dump carries them. Proceeding."
+    return 0
+  fi
+
+  if [ "$OBJECTS_SYNCED" = 1 ]; then
+    log "WARNING: --assume-objects-synced given. Proceeding on the operator's assertion that the"
+    log "         referenced objects already exist in Demo's bucket (${demo_bucket:-unset})."
+    log "         Any object that is in fact missing will render as a broken image in Demo."
+    return 0
+  fi
+
+  die "Production runs STORAGE_BACKEND=s3 — this script does not copy S3 objects.
+
+  Cloning the database alone would give Demo rows referencing objects in Production's
+  bucket (${prod_bucket:-unset}), which Demo cannot read. Every proof image would break.
+
+  Choose one, then re-run:
+
+    1. Copy the objects into DEMO'S OWN bucket first, then re-run with
+       --assume-objects-synced:
+
+         aws s3 sync s3://${prod_bucket:-PROD_BUCKET}/uploads/ \\
+                     s3://${demo_bucket:-DEMO_BUCKET}/uploads/
+
+       NOTE: those objects are real customer documents. Copying them into Demo puts
+       production PII on the demo site — the same exposure this sync already creates for
+       user records. Do it deliberately, or not at all.
+
+    2. Accept a Demo with broken images and re-run with --assume-objects-synced
+       (the reference columns clone; only the bytes are missing).
+
+    3. Don't sync. Seed Demo instead:
+         backend/seed_storage_migration_test.py
+
+  Refusing (Demo untouched)."
 }
 
 dump_production() {
@@ -241,6 +331,10 @@ main() {
   sec "Production → Demo sync  ($([ "$DRY_RUN" = 1 ] && echo DRY-RUN || echo FULL))  started $(date)"
   log "Prod: $PROD_HOST   Demo: $DEMO_HOST   Image: $PG_IMAGE"
   log "Workdir: $WORKDIR"
+
+  # Runs FIRST — before the dump and long before anything on Demo is touched — so an
+  # incompatible storage configuration costs nothing but an SSH round-trip.
+  check_storage_compat
 
   dump_production
 
