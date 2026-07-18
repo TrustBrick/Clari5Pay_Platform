@@ -120,14 +120,30 @@ def build_key(*, field: str, upload: DecodedUpload) -> str:
 @lru_cache(maxsize=1)
 def _client():
     """Cached boto3 S3 client. Credentials come from the environment/instance role — this module
-    never takes an access key as a parameter, so keys cannot leak in through a call site."""
+    never takes an access key as a parameter, so keys cannot leak in through a call site.
+
+    The endpoint is pinned to the bucket's REGIONAL host and signing forced to SigV4. Without
+    both, boto3 can sign for the configured region while addressing the global
+    ``<bucket>.s3.amazonaws.com`` host; S3 validates the signature against the host it was sent
+    to, the two disagree, and every presigned URL fails with ``SignatureDoesNotMatch``. The SDK's
+    own calls survive that because they follow S3's redirect internally — a presigned URL handed
+    to a browser cannot, so this breaks ONLY the read path, and only once a real bucket is in
+    play. It is invisible to a fake-client test suite.
+    """
     if not settings.S3_BUCKET:
         raise StorageError("STORAGE_BACKEND is 's3' but S3_BUCKET is not configured.")
     try:
         import boto3  # already a dependency (used for RDS IAM auth)
+        from botocore.config import Config
     except ImportError as exc:  # pragma: no cover - boto3 is pinned in requirements
         raise StorageError("boto3 is required for the 's3' storage backend.") from exc
-    return boto3.client("s3", region_name=settings.S3_REGION or settings.AWS_REGION)
+    region = settings.S3_REGION or settings.AWS_REGION
+    return boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=f"https://s3.{region}.amazonaws.com",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
 
 
 def object_exists(key: str) -> bool:

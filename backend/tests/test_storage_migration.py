@@ -163,6 +163,37 @@ def test_resolve_returns_presigned_url(s3):
     assert s3.sign_calls == 1
 
 
+def test_client_pins_the_regional_endpoint_and_sigv4(monkeypatch):
+    """Regression: presigned URLs must address the bucket's REGIONAL host.
+
+    boto3 will happily sign for the configured region while addressing the global
+    ``<bucket>.s3.amazonaws.com`` host. S3 validates the signature against the host it was sent
+    to, so the two disagree and EVERY presigned URL fails with SignatureDoesNotMatch. The SDK's
+    own calls survive it by following S3's redirect internally, so uploads look fine and only the
+    browser-facing read path breaks — which is why this reached a real bucket before being seen.
+    """
+    captured = {}
+
+    def fake_boto_client(service, **kw):
+        captured.update(service=service, **kw)
+        return FakeS3()
+
+    monkeypatch.setattr(storage.settings, "STORAGE_BACKEND", "s3", raising=False)
+    monkeypatch.setattr(storage.settings, "S3_BUCKET", "test-bucket", raising=False)
+    monkeypatch.setattr(storage.settings, "S3_REGION", "ap-south-1", raising=False)
+    storage._client.cache_clear()
+
+    import boto3
+    monkeypatch.setattr(boto3, "client", fake_boto_client)
+    storage._client()
+
+    assert captured["endpoint_url"] == "https://s3.ap-south-1.amazonaws.com", \
+        "endpoint must be the regional host, not the global one"
+    assert captured["region_name"] == "ap-south-1"
+    assert captured["config"].signature_version == "s3v4"
+    storage._client.cache_clear()
+
+
 def test_objects_are_private_by_default(s3):
     """No ACL is ever set — access is only ever granted by a presigned URL."""
     storage.store_value(PNG_DATA_URL, field="admin_proof")
