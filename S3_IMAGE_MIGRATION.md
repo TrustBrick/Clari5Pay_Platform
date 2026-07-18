@@ -3,7 +3,20 @@
 Moving the large base64 proof/bank images off `transactions` TEXT columns and into S3, keeping
 only an object key in the database.
 
-Status: **planned, not started.** Three decisions are open — see [Open questions](#open-questions).
+Status: **application side complete and committed (`78924382`); not enabled anywhere.**
+`STORAGE_BACKEND` defaults to `"db"`, so production and demo both still store base64 and behave
+exactly as before. What remains is infrastructure — see [Rollout sequence](#rollout-sequence).
+
+Environment state:
+
+| Environment | Code | Storage in use |
+|---|---|---|
+| Production | pre-migration build | base64 (with the deferral mitigation) |
+| Demo/UAT | `8220c94c` — does not yet include the migration | base64 |
+| `main` | `78924382` — migration present, inert | n/a |
+
+The demo **database** already carries an empty, unused `transaction_attachment` table, created
+while verifying `create_all`. It is what the next deploy would create anyway and nothing reads it.
 
 ---
 
@@ -153,8 +166,16 @@ Offline script: stream rows, upload each blob, swap the column to its key. Batch
 while the app serves traffic.
 
 ### 5 — Reclaim
-`VACUUM FULL transactions` (takes an ACCESS EXCLUSIVE lock — schedule it) or `pg_repack` to avoid the
-lock. Only after backfill verification. Expect ~162 MB to drop to a few hundred kB.
+Only after backfill verification, and **not** as part of the same change window.
+
+Run `VACUUM (ANALYZE) transactions` first. It takes no exclusive lock, so it is safe at any time:
+it marks the freed space reusable and refreshes the planner statistics. That is usually enough —
+the space stops growing and gets reused, even though it is not returned to the filesystem.
+
+Return the space to the operating system only when that is actually needed, and only in a planned
+maintenance window: `VACUUM FULL transactions` rewrites the table under an **ACCESS EXCLUSIVE**
+lock, blocking every read and write for the duration. `pg_repack` achieves the same without the
+long lock if a window is hard to schedule. Expect ~162 MB to drop to a few hundred kB.
 
 ### 6 — Agent columns
 Apply the same helper to `agent_transaction`. Runs *after* the agent module has shipped and been
@@ -162,6 +183,32 @@ migrated alongside the merchant columns — see [Scope](#scope--measured-on-prod
 for why this deliberately does not precede the agent deploy.
 
 ---
+
+## Rollout sequence
+
+The application side is complete and committed (`78924382`). It is inert: `STORAGE_BACKEND`
+defaults to `"db"`, so the code is deployed long before it is enabled.
+
+Demo/UAT is validated end to end **before production is touched at all** — including the
+irreversible `--clear-source` step, so that its behaviour is known rather than assumed:
+
+ 1. Create the bucket and IAM role (`ap-south-1`; instance role, not access keys).
+ 2. Deploy the new code to Demo/UAT, leaving `STORAGE_BACKEND=db`. Nothing changes yet.
+ 3. Configure `S3_BUCKET` and `S3_REGION` on Demo.
+ 4. Set `STORAGE_BACKEND=s3` on **Demo only**.
+ 5. Backfill with `--dry-run` — reports what would move, writes nothing.
+ 6. Backfill without `--clear-source` — uploads and verifies, leaving every source row intact.
+ 7. Verify on Demo: new uploads, downloads, transaction details, reports, exports, dashboards,
+    balances, audit logs — and that a legacy row and a migrated row both still render.
+ 8. Take an RDS snapshot.
+ 9. Backfill with `--clear-source` on Demo. This is the first irreversible step and the reason
+    it is exercised here first.
+10. Only after Demo is signed off, repeat 1–9 on Production.
+11. Reclaim space per Phase 5 — `VACUUM (ANALYZE)` now, `VACUUM FULL` in a maintenance window.
+
+Note the ordering of 4 and 6: enabling the flag routes NEW uploads to object storage immediately,
+while historical rows stay base64 until the backfill runs. The read path serves both, which is
+what makes that intermediate state safe to sit in for as long as verification takes.
 
 ## Risks
 
