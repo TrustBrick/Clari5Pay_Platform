@@ -14,7 +14,7 @@ Anything not verified is marked **[UNVERIFIED]** rather than inferred.
 |---|---|---|
 | 🔴 Critical | **0** | — |
 | 🟠 High | **2** | 1 (SEC-002) |
-| 🟡 Medium | **6** | 1 (SEC-001) |
+| 🟡 Medium | **7** | 1 (SEC-001) |
 | 🔵 Low | 4 | — |
 | ⬜ Withdrawn | 1 | — |
 
@@ -37,6 +37,7 @@ SEC-002's *revocability* is fixed, admin tokens still last ten years until the l
 | 2026-07-19 (r1) | Initial publication. SEC-001 rated Critical — assessed as a platform-wide MFA bypass. |
 | 2026-07-19 (r2) | **SEC-001 → Medium.** The setting it writes is vestigial and never consulted by the login flow, so the endpoint cannot disable authentication. Production was never single-factor. Added SEC-001b (the vestigial setting is itself a defect). |
 | 2026-07-19 (r3) | **Full re-verification pass.** Every remaining finding re-traced to code rather than inference. **SEC-002 confirmed and now the top finding** — no revocation exists anywhere. **SEC-006 withdrawn** — its claim that a sequence name derived from merchant config was false; all interpolated values are module constants. **SEC-005 bypass list corrected** — one asserted bypass removed as untraced. **SEC-014 added** for the Support Agent OTP exemption. |
+| 2026-07-19 (r4) | **SEC-002 and SEC-001 marked RESOLVED** (fixed, tested, awaiting deployment). **SEC-002b added** — self-service password-change revocation was implemented, verified by API test, then failed in the browser and was reverted; the root cause (revoking a live session races the app's background pollers, and the 401 interceptor then clears storage) is recorded so it is not re-attempted the same way. |
 
 **Verification standard applied in r3.** Every finding below has been traced to the code path that
 enforces (or fails to enforce) it. Reachability and impact are treated as separate questions
@@ -469,9 +470,81 @@ only because SEC-001 was overstated.
 | 11 — planned | SEC-013 CI with dependency and secret scanning | moderate |
 
 **Deferred improvements** (not open findings — deliberate scope decisions):
-per-device revocation via a `sid` claim; self-service password change revoking other sessions
-(needs the frontend to store the returned token); atomic SQL increment of `token_version`;
-periodic re-validation of long-lived WebSocket connections.
+per-device revocation via a `sid` claim; atomic SQL increment of `token_version`; periodic
+re-validation of long-lived WebSocket connections; and **self-service password change revoking
+other sessions — attempted and reverted, see SEC-002b below.**
+
+---
+
+## SEC-002b — Self-service password change does not sign out other devices
+
+**Severity: MEDIUM** · `users.py` (`change_password`, `update_profile`) · **attempted, reverted**
+
+Changing your own password leaves sessions on other devices working. Password *reset* and
+admin-initiated resets do revoke (see SEC-002); only the self-service path does not.
+
+This is a missed improvement rather than a regression — before `token_version` existed, nothing
+revoked on any password change. But it is the behaviour users expect: changing a password is how
+someone cuts off a person holding the old one.
+
+### Attempted 2026-07-19 in `b010b69c`, reverted in `869d9497`
+
+Both halves were implemented — backend stopped passing `revoke_tokens=False`, frontend
+(`api.ts`) persisted the replacement token the endpoint returns — and both were verified:
+
+* API test through real HTTPS passed cleanly: device A changed the password, device B got 401,
+  device A's replacement token got 200.
+* Frontend compiled; the merchant image built successfully.
+
+**It failed in the browser.** The tab that changed the password was logged out.
+
+### Root cause — a race, not a missing token
+
+The backend was correct throughout; it returned the replacement token as designed. The problem is
+that revoking a *live* session races the application's own background traffic:
+
+| Source | Interval |
+|---|---|
+| `App.tsx:155` presence heartbeat | 25 s |
+| `Header.tsx:69` notification poll | 20 s |
+| `SessionManager.tsx:61` | periodic |
+| `utils/sse.ts` | long-lived stream |
+
+The instant `token_version` increments, every one of those requests — in flight or next to fire —
+is holding a dead token. One of them returns 401, and the response interceptor
+(`api.ts`) does:
+
+```js
+if (err.response?.status === 401 && !isAuthEndpoint) {
+  localStorage.removeItem('clari5pay_token');   // deletes the NEW token too
+  window.location.href = '/';
+}
+```
+
+It clears storage — including the freshly-stored replacement — and redirects to login.
+
+### Why testing did not catch it
+
+The API test used curl: one request at a time, no pollers, no interceptor, no race. It verified
+the *contract* and proved nothing about the *application*. **A green API test is not evidence that
+a session-affecting change is safe in a browser** — that class of change needs a real client with
+its background traffic running.
+
+### What a real fix requires
+
+Not a two-line patch. One of:
+
+1. **Make the interceptor tolerant during re-auth** — on a 401, retry once with the currently
+   stored token before clearing the session. Touches shared request handling used by every call in
+   the app, so it needs its own testing.
+2. **Per-device revocation (`sid`)** — revoke every session *except* the current one, so the
+   caller's own token is never invalidated and no race exists. Cleaner, and it also delivers the
+   deferred `sid` item above.
+
+Option 2 is the better target: it removes the race by construction rather than papering over it.
+
+**Do not re-attempt this by simply removing `revoke_tokens=False`.** That is exactly what was
+tried and reverted.
 
 Items 1 and 2 together break the highest-impact chain in the report
 (**SEC-005 → SEC-003 → SEC-002**): stored XSS on a public page steals a `localStorage` token that
