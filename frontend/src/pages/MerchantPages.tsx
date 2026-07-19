@@ -495,7 +495,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   // Mandatory only where the picker is shown (demo build + an allowed assigner role) — never in
   // Production (module hidden) so the existing flow stays unblocked there.
   const [assign, setAssign] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
-  const mustAssign = IS_DEMO && ['DEO','DEPOSIT_OPERATOR'].includes(String(user.merchantRole||'').toUpperCase());
+  const showAssign = IS_DEMO && ['DEO','DEPOSIT_OPERATOR'].includes(String(user.merchantRole||'').toUpperCase());
   const isUpi = form.depositType === 'UPI';
   const isCash = form.depositType === 'CASH';
   const isCrypto = form.depositType === 'CRYPTO';
@@ -532,8 +532,8 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     if(isCash && !proofs.length){ showToast('Upload a proof / image of the cash deposit','error'); return; }
     if(isCrypto && (!details.walletAddress||!details.network||!details.txHash)){ showToast('Enter Wallet Address, Network and Transaction Hash','error'); return; }
     if(isCrypto && !proofs.length){ showToast('Upload a proof / screenshot of the transaction','error'); return; }
-    if(mustAssign && !assign.agentId){ showToast('Please select an Agent before submitting the request.','error'); return; }
-    if(mustAssign && !assign.accountId){ showToast('Please select an Agent Account before submitting the request.','error'); return; }
+    // Agent assignment is optional on a normal merchant deposit (the selector is labelled
+    // "optional"); a mandatory agent belongs to the Agent Management module, not here.
     setLoading(true);
     try {
       const created = await transactionAPI.createDeposit({
@@ -614,7 +614,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
       <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,marginBottom:16,cursor:'pointer' }}>
         <input type="checkbox" checked={riskAnalysis} onChange={e=>setRiskAnalysis(e.target.checked)}/> Perform Risk Analysis
       </label>
-      {mustAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
+      {showAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
     </div>
   );
@@ -652,7 +652,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   // Phase 4 (demo): the DEO assigns a Non-EPS agent + account before submitting for approval.
   // Mandatory only where the picker shows (demo + allowed role); never blocks Production.
   const [assign, setAssign] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
-  const mustAssign = IS_DEMO && ['DEO','WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole||'').toUpperCase());
+  const showAssign = IS_DEMO && ['DEO','WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole||'').toUpperCase());
   const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
@@ -718,8 +718,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(hasSaved && !destId){ showToast('Select a withdrawal destination','error'); return; }
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
-    if(mustAssign && !assign.agentId){ showToast('Please select an Agent before submitting the request.','error'); return; }
-    if(mustAssign && !assign.accountId){ showToast('Please select an Agent Account before submitting the request.','error'); return; }
+    // Agent assignment is optional on a normal merchant withdrawal — see the deposit path.
     setLoading(true);
     try {
       const payload: Record<string, unknown> = { amount: amountNum, memberId, memberName: memberName.trim(), payoutMode: mode, payoutDetails: details };
@@ -820,7 +819,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
         No proof needed now — after payment, the agent uploads the proof ({mode==='CRYPTO' ? 'Transaction Hash' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}), which you can then view.
       </div>
-      {mustAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
+      {showAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
       <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!amount||!memberId}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
@@ -840,7 +839,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   // Phase 4 (demo): the Supervisor assigns a Non-EPS agent + account when creating the settlement.
   // Mandatory only where the picker shows (demo + Supervisor); never blocks Production.
   const [assign, setAssign] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
-  const mustAssign = IS_DEMO && String(user.merchantRole||'').toUpperCase()==='SUPERVISOR';
+  const showAssign = IS_DEMO && String(user.merchantRole||'').toUpperCase()==='SUPERVISOR';
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
@@ -865,8 +864,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(!form.amount){ showToast('Enter an amount','error'); return; }
     if(form.memberId && !form.memberName.trim()){ showToast('Enter the Member Name for this Membership ID','error'); return; }
     if(amountNum > maxSettleable + 0.01){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
-    if(mustAssign && !assign.agentId){ showToast('Please select an Agent before submitting the request.','error'); return; }
-    if(mustAssign && !assign.accountId){ showToast('Please select an Agent Account before submitting the request.','error'); return; }
+    // Agent assignment is optional on a normal merchant settlement — see the deposit path.
     setLoading(true);
     try {
       const created = await transactionAPI.createSettlement({ amount: amountNum, memberId: form.memberId || undefined, memberName: form.memberName.trim() || undefined });
@@ -903,7 +901,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
         No proof needed — after the Admin approves, they enter the UTR number and upload the settlement proof, which you can then view.
       </div>
-      {mustAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
+      {showAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount}>{loading?'Submitting...':'Submit Settlement Request →'}</Btn>
     </div>
   );
