@@ -14,15 +14,25 @@ Anything not verified is marked **[UNVERIFIED]** rather than inferred.
 |---|---|
 | 🔴 Critical | **0** |
 | 🟠 High | 3 |
-| 🟡 Medium | **6** |
+| 🟡 Medium | **7** |
 | 🔵 Low | 4 |
+| ⬜ Withdrawn | 1 |
+
+**Most serious open finding: SEC-002** — Admin/Super Admin tokens are valid for ten years and,
+now verified, **cannot be revoked by any mechanism**.
 
 **Revision history**
 
 | Date | Change |
 |---|---|
-| 2026-07-19 (initial) | SEC-001 published as Critical — assessed as a platform-wide MFA bypass |
-| 2026-07-19 (revised) | **SEC-001 downgraded to Medium.** The setting it writes is vestigial and is not consulted by the login flow, so the endpoint cannot disable authentication. The original assessment was wrong; see the correction note in SEC-001. |
+| 2026-07-19 (r1) | Initial publication. SEC-001 rated Critical — assessed as a platform-wide MFA bypass. |
+| 2026-07-19 (r2) | **SEC-001 → Medium.** The setting it writes is vestigial and never consulted by the login flow, so the endpoint cannot disable authentication. Production was never single-factor. Added SEC-001b (the vestigial setting is itself a defect). |
+| 2026-07-19 (r3) | **Full re-verification pass.** Every remaining finding re-traced to code rather than inference. **SEC-002 confirmed and now the top finding** — no revocation exists anywhere. **SEC-006 withdrawn** — its claim that a sequence name derived from merchant config was false; all interpolated values are module constants. **SEC-005 bypass list corrected** — one asserted bypass removed as untraced. **SEC-014 added** for the Support Agent OTP exemption. |
+
+**Verification standard applied in r3.** Every finding below has been traced to the code path that
+enforces (or fails to enforce) it. Reachability and impact are treated as separate questions
+requiring separate evidence — the r1 error was verifying the former and assuming the latter. Where
+a claim could not be traced, it has been withdrawn rather than softened.
 
 The platform's security fundamentals are largely sound: parameterised queries throughout, bcrypt
 password hashing with a real complexity policy, Redis-backed rate limiting on authentication,
@@ -138,13 +148,52 @@ MFA is off when it is on, or trust a switch that does nothing.
 means what it says, or remove the setting, both endpoints, and the login-page hint. Do not leave it
 half-implemented.
 
-**Related, for explicit decision:** `SUPPORT_AGENT` logins bypass OTP entirely (`auth.py:217`).
-This is documented as deliberate — the support portal has no OTP screen — but it is an
-authentication exemption for a role with access to customer conversations, and deserves a
-conscious ruling rather than inheritance.
-
 **Note:** `GET /api/auth/otp-status` (`auth.py:239`) is also unauthenticated. That one is
 legitimate — the login page must know whether to show the OTP field — and discloses only a boolean.
+
+---
+
+## SEC-014 — Support Agents are exempt from OTP
+
+**Severity: MEDIUM** · `backend/app/api/routes/auth.py:217-233`
+
+```python
+if user.role == UserRole.SUPPORT_AGENT:
+    token = create_access_token({"sub": str(user.id)})
+    ...
+    return {"access_token": token, ...}     # returns before _issue_otp
+```
+
+Every other role reaches `return await _issue_otp(db, user, ip)` (`:236`). `SUPPORT_AGENT` returns
+a token directly from the credential check — **password only, no second factor**.
+
+**Is this intentional or a risk? Both — it is an intentional decision with unacknowledged risk.**
+
+*Intentional:* the code says so explicitly — *"Support agents use the separate support portal's
+direct-login flow (that portal has no OTP screen), so they remain exempt by design."* It is a
+deliberate consequence of the support portal being a separate application without an OTP screen,
+not an oversight.
+
+*Risk:* the justification is **implementation convenience, not a risk assessment**. Support agents
+can read customer support conversations, which in a payments context routinely contain transaction
+references, partial account details and personal information. The role is exempted because its UI
+lacks a screen — which is a reason to build the screen, not to weaken the control.
+
+Compounding factors, both verified elsewhere in this report:
+- Support tokens last 24h (better than admin's 10 years) but are still **unrevocable** (SEC-002)
+- They are stored in `localStorage` (SEC-003)
+
+**Recommendation:**
+1. **Record the exemption as an explicit, dated decision** with a named owner — not an inline code
+   comment. It currently survives only as a remark that a future refactor could silently drop or
+   widen.
+2. **Review it periodically** (suggest six-monthly, and on any change to support-agent
+   permissions). The correct question each time: *does this role still see little enough that
+   single-factor is acceptable?* As the support module gains capability, the answer drifts.
+3. **Build the OTP screen in the support portal** and remove the exemption. This is the durable
+   fix; the exemption exists only because that screen does not.
+4. If the exemption is kept, **compensate**: shorter token lifetime for this role, and IP or
+   device restrictions if support staff work from known locations.
 
 ---
 
@@ -157,16 +206,37 @@ legitimate — the login page must know whether to show the OTP field — and di
 Merchant and support tokens expire in 24 hours (`:10`). Admin and Super Admin tokens — the most
 privileged on the platform — last a decade.
 
-The code documents this as deliberate ("no inactivity/session timeout … they stay signed in until
-they explicitly log out"), and `user_sessions` supports revocation. But a leaked admin token from a
-stolen laptop, browser history, proxy log, or XSS remains valid essentially forever, and JWTs are
-stateless — possession is sufficient unless revocation is checked on every request.
+The code documents the lifetime as deliberate ("no inactivity/session timeout … they stay signed
+in until they explicitly log out").
 
-**[UNVERIFIED]** whether `user_sessions` revocation is enforced on each request or only at login.
-That determines whether this is High or Critical. **Worth confirming immediately.**
+**✅ NOW VERIFIED — there is no revocation of any kind.** The first publication left this open;
+it has since been traced end to end:
 
-**Recommendation:** reduce to days rather than years, with a refresh token; or enforce a
-server-side session check on every privileged request.
+1. **`get_current_user` never consults `user_sessions`** (`deps.py:12-33`). It decodes the JWT,
+   loads the user by id, and checks `user.active`. That is the entire check on every request.
+2. **Logout does not revoke.** `auth.py:275` states it plainly — *"Access tokens here are
+   stateless JWTs, so they are not server-side revoked — the client clears its own
+   token/cookies/storage."* Logout writes an audit row and ends the presence session; the token
+   keeps working.
+3. **No revocation mechanism exists.** A search for `jti`, denylist, blacklist, revoke or
+   token_version across `backend/app` returns only that one comment.
+
+**Consequence.** A leaked Admin or Super Admin token is valid for **ten years** and **cannot be
+revoked**. The only remedies are deactivating the user account (`user.active = False`, which the
+per-request check does catch) or rotating `SECRET_KEY`, which invalidates every session on the
+platform at once. There is no way to revoke one compromised token.
+
+**This is now the most serious finding in this review.** It is rated High rather than Critical
+because it requires prior token theft — it is not remotely exploitable on its own. But note the
+chain: **SEC-005** (stored XSS on a public page) → **SEC-003** (token readable from
+`localStorage`) → **SEC-002** (that token then works for a decade, unrevocably). Each link is
+individually modest; together they are not.
+
+**Recommendation, in priority order:**
+1. Enforce the existing `user_sessions` record on every request — the table already exists and is
+   populated, so this is a lookup in `get_current_user`, not new infrastructure.
+2. Reduce `ADMIN_TOKEN_EXPIRE_DAYS` from 3650 to days, with a refresh token for convenience.
+3. Ensure logout marks the session inactive so step 1 makes it effective.
 
 ## SEC-003 — JWT stored in `localStorage`
 
@@ -219,11 +289,17 @@ const sanitize = (html) => html
   .replace(/javascript:/gi, '');
 ```
 
-Denylist sanitisers are bypassable by construction. Concretely, this one misses:
+Denylist sanitisers are bypassable by construction. Two bypasses are verifiable directly from the
+patterns above:
 
-- **Unquoted handlers** — `<img src=x onerror=alert(1)>`; the patterns require quotes
-- **Non-space separators** — `<svg/onload=alert(1)>`; the patterns require a leading space
-- **Nested tags** — `<scr<script>ipt>` reassembles after the inner match is removed
+- **Unquoted handlers** — `<img src=x onerror=alert(1)>`. Both handler patterns require a quote
+  character (`"[^"]*"` / `'[^']*'`); an unquoted attribute value matches neither.
+- **Non-space separators** — `<svg/onload=alert(1)>`. Both patterns require a **leading space**
+  (` on\w+`); a `/` separator, which HTML accepts, matches neither.
+
+*(An earlier revision also claimed a nested-tag bypass, `<scr<script>ipt>`. That was asserted from
+familiarity rather than traced against these specific patterns, and has been removed. The two
+above are sufficient and are demonstrable from the regexes themselves.)*
 
 Blog content is rendered on the **public** site, so injected script would execute for every
 visitor.
@@ -234,25 +310,25 @@ into visitor-wide script execution, and the CSP's `unsafe-inline` does not block
 
 **Recommendation:** replace with DOMPurify. Two lines, and correct by allowlist.
 
-## SEC-006 — Raw SQL built with f-strings
+## ~~SEC-006 — Raw SQL built with f-strings~~ — WITHDRAWN, not a finding
 
-**Files:** `transactions.py:204`, `demo_admin.py:63,65`, `migrate.py:212,262,265`
+**Withdrawn on re-verification.** The first revision listed this as Medium and stated that
+`transactions.py:204` "deserves attention because `seq` is derived from merchant configuration".
+**That was incorrect.** Every interpolated value traces to a module-level constant:
 
-```python
-n = (await db.execute(text(f"SELECT nextval('{seq}')"))).scalar_one()
-await db.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
-```
+| Site | Interpolated value | Source |
+|---|---|---|
+| `transactions.py:204` | `seq` | `_REF_SEQUENCES[kind]` — a 3-entry constant dict (`:192`). `kind` is a literal `"DEP"`/`"WIT"`/`"SET"` at all three call sites (`:1553,1635,1700`). |
+| `demo_admin.py:63,65` | `tables`, `seq` | `_RESET_TABLES` / `_RESET_SEQUENCES` constants. Additionally gated by `settings.is_demo` (403 in production) and a `confirm == "RESET"` body check. |
+| `migrate.py:212,262,265` | column/sequence names | Constant DDL lists, executed at startup only. |
 
-**Not currently exploitable.** In every case the interpolated value derives from internal
-constants or a merchant's configured prefix, not from request input — and PostgreSQL cannot
-parameterise identifiers or sequence names anyway.
+The merchant's configured code *is* used at `transactions.py:205`, but only to build a Python
+string for the reference prefix — **it never reaches SQL**. There is no path from request input to
+any of these statements.
 
-The risk is future drift: this is the pattern that becomes an injection the moment someone passes
-user input into `seq` or `tables`. `transactions.py:204` deserves attention because `seq` is
-derived from merchant configuration, and `users.pay_in`/`pay_out`/`settlement` are
-`String(8)` with **no character-set constraint**.
-
-**Recommendation:** validate against a strict allowlist regex (`^[a-z_]+$`) before interpolation.
+Retained in the report as a withdrawn entry rather than deleted, so the correction is visible to
+anyone who read the earlier revision. Recorded as a **style note, not a risk**: constants in
+f-string SQL are safe today, and PostgreSQL cannot parameterise identifiers regardless.
 
 ## SEC-007 — No CSRF protection
 
@@ -352,15 +428,20 @@ only because SEC-001 was overstated.
 
 | Priority | Finding | Effort |
 |---|---|---|
-| **1 — this week** | **SEC-002** verify `user_sessions` revocation is enforced per request. Determines whether a 10-year admin token is revocable at all. | investigation |
-| 2 — this week | SEC-004 alert on rate-limiter failure; fail closed on login | small |
-| 3 — this week | SEC-005 replace the regex sanitiser with DOMPurify | small |
+| **1 — this week** | **SEC-002** enforce `user_sessions` in `get_current_user`; reduce `ADMIN_TOKEN_EXPIRE_DAYS`. Verified: a leaked admin token is currently valid 10 years and unrevocable. | small–moderate |
+| 2 — this week | SEC-005 replace the regex sanitiser with DOMPurify (breaks the XSS→token-theft chain) | small |
+| 3 — this week | SEC-004 alert on rate-limiter failure; fail closed on login | small |
 | 4 — normal cycle | **SEC-001 deploy `bf925456`** (fixed, tested, awaiting release) | done |
-| 5 — this month | SEC-001b wire up or remove the vestigial OTP setting; rule on the SUPPORT_AGENT exemption | small |
-| 6 — this month | SEC-009 constrain `merchant_role`; SEC-006 allowlist SQL identifiers | small |
-| 7 — planned | SEC-003 + SEC-007 move to httpOnly cookies with CSRF | significant |
-| 8 — planned | SEC-008 column encryption for Aadhaar/bank data | significant |
-| 9 — planned | SEC-013 CI with dependency and secret scanning | moderate |
+| 5 — this month | SEC-001b wire up or remove the vestigial OTP setting | small |
+| 6 — this month | SEC-014 record and schedule review of the Support Agent exemption; plan the support-portal OTP screen | small |
+| 7 — this month | SEC-009 constrain `merchant_role` to an enum | small |
+| 8 — planned | SEC-003 + SEC-007 move to httpOnly cookies with CSRF | significant |
+| 9 — planned | SEC-008 column encryption for Aadhaar/bank data | significant |
+| 10 — planned | SEC-013 CI with dependency and secret scanning | moderate |
+
+Items 1 and 2 together break the highest-impact chain in the report
+(**SEC-005 → SEC-003 → SEC-002**): stored XSS on a public page steals a `localStorage` token that
+then works, unrevocably, for a decade.
 
 ---
 
@@ -372,9 +453,12 @@ CSP and rate-limit configuration; password policy; IAM policy documents.
 **Verified against live production (non-mutating):** SEC-001 reachability (HTTP 422, no state
 change); `SECRET_KEY` is not the default; S3 permissions including delete-denied.
 
-**[UNVERIFIED]:** whether `user_sessions` revocation is checked per-request (SEC-002 — the single
-most important open question); applicable regulatory regime (SEC-008); dependency CVE status, since
-no scanning exists; runtime frontend behaviour.
+**[UNVERIFIED], after r3:** applicable regulatory regime (SEC-008 — a business/legal question, not
+answerable from code); dependency CVE status, since no scanning exists; runtime frontend
+behaviour; the origin of the two orphan database tables noted in `ARCHITECTURE.md`.
+
+*(SEC-002's revocation question, previously listed here as the most important open item, was
+resolved in r3: there is no revocation. See SEC-002.)*
 
 **Not performed:** penetration testing, authenticated session testing, fuzzing, or dependency CVE
 analysis. This is a code and configuration review. A review of this kind cannot prove the absence
