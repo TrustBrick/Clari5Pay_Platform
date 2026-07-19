@@ -4,7 +4,7 @@
 **Method:** source inspection plus non-mutating verification against live production.
 Anything not verified is marked **[UNVERIFIED]** rather than inferred.
 
-> ### 🔴 One CRITICAL finding requires action today — see SEC-001.
+> ### ⚠️ Correction issued 2026-07-19 — SEC-001 was downgraded Critical → Medium. See §SEC-001.
 
 ---
 
@@ -12,25 +12,53 @@ Anything not verified is marked **[UNVERIFIED]** rather than inferred.
 
 | Severity | Count |
 |---|---|
-| 🔴 Critical | **1** |
+| 🔴 Critical | **0** |
 | 🟠 High | 3 |
-| 🟡 Medium | 5 |
+| 🟡 Medium | **6** |
 | 🔵 Low | 4 |
+
+**Revision history**
+
+| Date | Change |
+|---|---|
+| 2026-07-19 (initial) | SEC-001 published as Critical — assessed as a platform-wide MFA bypass |
+| 2026-07-19 (revised) | **SEC-001 downgraded to Medium.** The setting it writes is vestigial and is not consulted by the login flow, so the endpoint cannot disable authentication. The original assessment was wrong; see the correction note in SEC-001. |
 
 The platform's security fundamentals are largely sound: parameterised queries throughout, bcrypt
 password hashing with a real complexity policy, Redis-backed rate limiting on authentication,
-least-privilege IAM, and a strict CSP. The critical finding is a single unauthenticated endpoint
-that disables multi-factor authentication platform-wide.
+least-privilege IAM, and a strict CSP. No finding in this review permits authentication bypass,
+privilege escalation, or unauthenticated access to customer data.
 
 ---
 
-# 🔴 CRITICAL
-
-## SEC-001 — Unauthenticated endpoint disables login OTP platform-wide
+# 🟡 SEC-001 — Unauthenticated write to the OTP configuration setting
 
 **File:** `backend/app/api/routes/auth.py:245`
 **Endpoint:** `POST /api/auth/otp-config`
-**Status: CONFIRMED reachable on production, unauthenticated.**
+**Severity: MEDIUM** (revised down from Critical — see correction below)
+**Status:** reachable unauthenticated on production, confirmed; **fixed** in `bf925456`.
+
+> ### ⚠️ Correction — this was first published as CRITICAL. That was wrong.
+>
+> The original assessment stated that this endpoint disables multi-factor authentication
+> platform-wide, and that production was consequently running single-factor. **Both claims were
+> incorrect.**
+>
+> `_otp_enabled` is referenced in exactly four places: its getter (`auth.py:47`), its setter
+> (`:52`), the `/otp-status` GET (`:242`) and this endpoint (`:263`). **It is never consulted by
+> the login flow.** `auth.py:214` states it directly — *"OTP is mandatory for every successful
+> login … there is no toggle to disable it"* — and `:236` unconditionally issues an OTP after a
+> valid credential check.
+>
+> The setting is **vestigial**. Writing `enabled: false` changes only what `/otp-status` reports,
+> which drives a login-page display hint. It does not weaken authentication. This was confirmed
+> empirically: production has `otp_enabled = 'false'` and OTP rows were still being issued the
+> same day (most recent 2026-07-19 08:24).
+>
+> **Root cause of the error:** the endpoint was classified from its name, docstring and
+> reachability without tracing the setting's consumers. Reachability was verified rigorously; the
+> *impact* was assumed. The correct method is to follow a setting to its enforcement point before
+> assigning severity — an unauthenticated write is only as severe as what the value controls.
 
 ```python
 @router.post("/otp-config")
@@ -52,13 +80,21 @@ reached the validation layer without encountering any authentication gate. Becau
 (`schemas.py:78`) has no default, validation fails before the handler executes, so **no state was
 changed**. The endpoint was never invoked with a valid payload.
 
-**Impact.** Anyone on the internet can send `{"enabled": false}` and disable the login OTP step for
-**every user on the platform**, including Super Admin. Authentication then reduces to username +
-password. Combined with any credential leak, phishing, or reuse, this is a direct path to account
-takeover on a live payments system holding bank account numbers and KYC documents.
+**Actual impact (revised).** Anyone on the internet can write the `otp_enabled` row in
+`app_settings` and generate audit entries. Because nothing enforces that value, this does **not**
+weaken authentication. What it does permit:
 
-The change is persisted to `app_settings` (`auth.py:52`), so it survives restarts. It *is* written
-to the audit log — meaning the attack is detectable after the fact, but not prevented.
+- **Misleading UI state** — `/otp-status` will report OTP as disabled while it is in fact enforced,
+  so the login page can tell users something untrue about the platform's security posture.
+- **Unauthenticated write to a configuration table** by an anonymous caller.
+- **Audit-log noise** — an attacker can generate unlimited `OTP_CONFIG` rows with no rate limit,
+  diluting a table used for forensics.
+- **Latent escalation** — if anyone later wires the setting into the login flow (the natural
+  reading of its name), this silently becomes the Critical issue it was first assessed as. That
+  possibility is the main reason to fix it rather than delete it.
+
+The change is persisted to `app_settings` (`auth.py:52`), so it survives restarts, and it *is*
+written to the audit log — detectable after the fact, but not prevented.
 
 **Recommended fix** — add the guard already used by every comparable endpoint:
 
@@ -72,11 +108,40 @@ async def otp_config(
 ):
 ```
 
-Super Admin is the appropriate level: this is a platform-wide security control. The docstring
-("testing aid") suggests it was added for convenience during development and never gated.
+**Applied in `bf925456`**, together with `actor=actor` on `record_audit`: while the endpoint was
+unauthenticated there was no caller identity to record, so all 28 pre-fix production rows are
+attributed to `"system"` and are traceable only by IP.
 
-**Also check:** whether OTP is currently enabled in production. If `app_settings` shows it
-disabled, determine whether that was intentional.
+Regression tests: `backend/tests/test_auth_otp_config.py`. Validated against the *vulnerable* code
+as well as the fixed code — **6 of 7 fail without the guard, all 7 pass with it** — so they detect
+the defect rather than passing vacuously.
+
+**Production audit review.** 28 `OTP_CONFIG` events, all between 2026-06-25 and 2026-06-27, none
+since. All attributed to `"system"` (no caller identity existed). Seven source IPs: one range
+matching the operating team, several Sri Lankan ranges consistent with the merchant base, and one
+Cloudflare IP where the real client address was not resolved. Rapid on/off toggling across a
+two-day window is consistent with the "testing aid" purpose. **Assessment: internal testing, not
+attack — but the audit trail cannot prove it**, which is precisely the gap the `actor` fix closes.
+
+---
+
+## SEC-001b — The OTP setting is vestigial (new finding, arising from the correction)
+
+**Severity: MEDIUM** · `auth.py:47,52,242,263`
+
+`otp_enabled` is written and read but never enforced. `/otp-status` currently returns `false` on
+production while OTP is unconditionally required at login. A security control that *appears*
+configurable but is not is worse than either a working toggle or no toggle: operators may believe
+MFA is off when it is on, or trust a switch that does nothing.
+
+**Recommendation:** either wire `_otp_enabled` into the login flow (`auth.py:236`) so the setting
+means what it says, or remove the setting, both endpoints, and the login-page hint. Do not leave it
+half-implemented.
+
+**Related, for explicit decision:** `SUPPORT_AGENT` logins bypass OTP entirely (`auth.py:217`).
+This is documented as deliberate — the support portal has no OTP screen — but it is an
+authentication exemption for a role with access to customer conversations, and deserves a
+conscious ruling rather than inheritance.
 
 **Note:** `GET /api/auth/otp-status` (`auth.py:239`) is also unauthenticated. That one is
 legitimate — the login page must know whether to show the OTP field — and discloses only a boolean.
@@ -282,14 +347,17 @@ decoded cap; Caddy imposes a 12 MB body cap as an outer backstop.
 
 # Recommended order
 
+Re-ordered after the SEC-001 correction. **SEC-002 is now the most urgent item** — it was second
+only because SEC-001 was overstated.
+
 | Priority | Finding | Effort |
 |---|---|---|
-| **1 — today** | SEC-001 add `get_current_super_admin` | one line |
-| **2 — today** | Confirm whether OTP is currently enabled in production | minutes |
-| 3 — this week | SEC-002 verify session revocation is enforced per-request | investigation |
-| 4 — this week | SEC-004 alert on rate-limiter failure; fail closed on login | small |
-| 5 — this week | SEC-005 replace sanitiser with DOMPurify | small |
-| 6 — this month | SEC-009 constrain `merchant_role`; SEC-006 allowlist identifiers | small |
+| **1 — this week** | **SEC-002** verify `user_sessions` revocation is enforced per request. Determines whether a 10-year admin token is revocable at all. | investigation |
+| 2 — this week | SEC-004 alert on rate-limiter failure; fail closed on login | small |
+| 3 — this week | SEC-005 replace the regex sanitiser with DOMPurify | small |
+| 4 — normal cycle | **SEC-001 deploy `bf925456`** (fixed, tested, awaiting release) | done |
+| 5 — this month | SEC-001b wire up or remove the vestigial OTP setting; rule on the SUPPORT_AGENT exemption | small |
+| 6 — this month | SEC-009 constrain `merchant_role`; SEC-006 allowlist SQL identifiers | small |
 | 7 — planned | SEC-003 + SEC-007 move to httpOnly cookies with CSRF | significant |
 | 8 — planned | SEC-008 column encryption for Aadhaar/bank data | significant |
 | 9 — planned | SEC-013 CI with dependency and secret scanning | moderate |
@@ -311,3 +379,11 @@ no scanning exists; runtime frontend behaviour.
 **Not performed:** penetration testing, authenticated session testing, fuzzing, or dependency CVE
 analysis. This is a code and configuration review. A review of this kind cannot prove the absence
 of vulnerabilities — only the presence of the ones it found.
+
+**Method note, added with the SEC-001 correction.** The initial publication of this report rated
+SEC-001 Critical on the strength of the endpoint's name, docstring and confirmed reachability. The
+reachability was verified rigorously; the *impact* was not — the setting's consumers were never
+traced, and it turned out nothing consumed it. Reachability and impact are separate questions and
+require separate evidence. **For every future finding in this review series: follow the value to
+its enforcement point before assigning severity.** An unauthenticated write is only as severe as
+what the written value controls.
