@@ -648,6 +648,18 @@ def _t(t: Transaction, full: bool = True) -> dict:
     }
 
 
+# The heavy proof/slip image columns (merchant_proof/merchant_proofs/admin_proof/admin_bank_image)
+# are deferred on the model, so bulk/list/report SELECTs never drag them. Every mutation endpoint
+# below commits and then serializes the row back with _t(full=True), which reads those 4 columns —
+# but async SQLAlchemy can't lazy-load a deferred column on attribute access (it raises
+# MissingGreenlet). So after the normal refresh we explicitly load them, mirroring the detail-view
+# read path (see get_transaction_detail). Use this instead of a bare db.refresh(tx) anywhere the
+# refreshed tx is passed to _t() with full=True.
+async def _refresh_with_images(db: AsyncSession, tx: Transaction) -> None:
+    await db.refresh(tx)
+    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_bank_image"])
+
+
 # ─── Server-side search & date/time filtering (shared by every list endpoint) ───
 # `search` matches the reference number OR the Membership ID; `ref` and `member_id`
 # match each field independently. All are case-insensitive partial matches (an exact
@@ -1579,7 +1591,7 @@ async def create_deposit(
     else:
         await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)
         await record_audit(db, "DEPOSIT_REQUESTED", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=str(tx.amount))
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1646,7 +1658,7 @@ async def create_withdrawal(
     await tgn.notify(db, tx, "MANAGER", "withdrawal_request")
     await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount}), assigned to Manager", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1706,7 +1718,7 @@ async def create_settlement(
     await tgn.notify(db, tx, "ADMIN", "settlement_request")
     await log_event(db, "SETTLEMENT_REQUESTED", f"{tx.merchant_name} submitted settlement {tx.ref} ({tx.amount}) to Admin", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="settlement", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1781,7 +1793,7 @@ async def account_submit(
     await tgn.notify(db, tx, "USER", "account_submitted")
     await log_event(db, "ACCOUNT_SUBMITTED", f"{tx.ref}: account details sent to {tx.merchant_name}", actor=actor)
     await record_audit(db, "ACCOUNT_SUBMITTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="ACCOUNT_SUBMITTED")
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1819,7 +1831,7 @@ async def submit_slip(
     await log_event(db, "PENDING_APPROVAL", f"{tx.ref}: slip submitted by {tx.merchant_name}, assigned to Supervisor", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type=tx.type.value,
                        entity_id=tx.ref, new="SUPERVISOR_REVIEW", ip=_client_ip(request))
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1878,7 +1890,7 @@ async def mark_done(
     await log_event(db, "TRANSACTION_COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
     await record_audit(db, "ADMIN_APPROVED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
                        new=tx.status.value, ip=_client_ip(request))
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1903,7 +1915,7 @@ async def recheck_payment(
     db.add(Notification(user_id=tx.merchant_id, message=f"{tx.ref}: re-upload payment proof — {reason}", icon="↻"))
     await log_event(db, "RECHECK", f"{tx.ref}: re-upload requested by {actor.name} — {reason}", actor=actor)
     await record_audit(db, "RECHECK", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, reason=reason)
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1928,7 +1940,7 @@ async def flag_high_risk(
     ))
     await log_event(db, "HIGH_RISK", f"{tx.ref} (member {tx.member_id}) flagged high risk by {actor.name} — {reason}", actor=actor)
     await record_audit(db, "HIGH_RISK", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="HIGH_RISK", reason=reason)
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1954,7 +1966,7 @@ async def cancel_transaction(
     await log_event(db, "CANCELLED", f"{tx.ref} cancelled by {tx.merchant_name} — reason: {reason}", actor=current_user)
     await record_audit(db, "CANCELLED", actor=current_user, entity_type=tx.type.value, entity_id=tx.ref,
                        new="CANCELLED", reason=reason)
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -1975,7 +1987,7 @@ async def regenerate_qr(
     await db.flush()
     await log_event(db, "QR_REGENERATED", f"{tx.ref}: QR code regenerated by {tx.merchant_name}", actor=current_user)
     await record_audit(db, "QR_REGENERATED", actor=current_user, entity_type=tx.type.value, entity_id=tx.ref)
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -2092,7 +2104,7 @@ async def _reviewer_action(
                     f"{tx.ref}: {action.lower()} by {cfg['label']} {reviewer.name} — {remark}", actor=reviewer)
     await record_audit(db, f"{role}_{action}", actor=reviewer, entity_type=tx.type.value,
                        entity_id=tx.ref, new=tx.status.value, reason=remark, ip=_client_ip(request))
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -2163,7 +2175,7 @@ async def supervisor_settle_settlement(
     await log_event(db, "SUPERVISOR_APPROVED", f"{tx.ref}: settlement completed by Supervisor {reviewer.name} — {remark}", actor=reviewer)
     await record_audit(db, "SUPERVISOR_APPROVED", actor=reviewer, entity_type=tx.type.value,
                        entity_id=tx.ref, new="COMPLETED", reason=remark, ip=_client_ip(request))
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
@@ -2251,7 +2263,7 @@ async def reject_transaction(
     await log_event(db, "ADMIN_REJECTED", f"{tx.ref} rejected by {actor.name} — reason: {tx.reject_reason}", actor=actor)
     await record_audit(db, "ADMIN_REJECTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
                        new="REJECTED", reason=tx.reject_reason, ip=_client_ip(request))
-    await db.refresh(tx)
+    await _refresh_with_images(db, tx)
     return _t(tx)
 
 
