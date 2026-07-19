@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.models.models import User, LoginOtp, UserRole, AppSetting, Notification
 from app.core.security import verify_password, create_access_token, decode_token
 from app.core.passwords import assert_password_allowed, set_password
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, get_current_super_admin
 from app.core.email import send_otp_email, mask_email
 from app.core.ratelimit import rate_limit
 
@@ -247,12 +247,23 @@ async def otp_config(
     data: OtpConfigRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_super_admin),
 ):
-    """Toggle login OTP on/off (testing aid)."""
+    """Toggle login OTP on/off — SUPER ADMIN ONLY.
+
+    This switches off the second authentication factor for EVERY user on the platform, so it is
+    restricted to the highest role. It was originally written unguarded as a testing aid
+    (f87b3239, 2026-06-18) and was reachable unauthenticated from the internet until 2026-07-19;
+    see SECURITY_REVIEW.md SEC-001. Do not remove this dependency.
+
+    `actor` is passed to record_audit so the audit row names who made the change. While the
+    endpoint was unauthenticated there was no caller identity to record, so all prior OTP_CONFIG
+    rows are attributed to "system" and can only be traced by IP.
+    """
     await _set_otp_enabled(db, data.enabled)
     state = "enabled" if data.enabled else "disabled"
     await log_event(db, "OTP_CONFIG", f"Login OTP {state}")
-    await record_audit(db, "OTP_CONFIG", new=state, ip=_client_ip(request))
+    await record_audit(db, "OTP_CONFIG", actor=actor, new=state, ip=_client_ip(request))
     return {"enabled": data.enabled}
 
 
