@@ -2,7 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.core.security import decode_token
+from app.core.security import decode_token, token_version_matches
 from app.db.session import get_db
 from app.models.models import User, UserRole
 
@@ -28,6 +28,13 @@ async def get_current_user(
     result = await db.execute(select(User).where(User.id == int(user_id)))
     user = result.scalar_one_or_none()
     if user is None or not user.active:
+        raise credentials_exception
+    # Revocation check (SEC-002). The token asserts the token_version it was minted with;
+    # incrementing that column on the user invalidates every token issued before. A token with
+    # no `ver` claim reads as 0 and still matches a default row, so sessions that predate this
+    # feature keep working. NOTE: the support WebSocket (support.py) authenticates on its own
+    # code path and performs the same check — both must stay in step.
+    if not token_version_matches(payload, user):
         raise credentials_exception
     return user
 

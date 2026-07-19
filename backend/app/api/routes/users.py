@@ -14,6 +14,9 @@ from app.schemas.schemas import (
     ChangePasswordRequest, ProfileUpdateRequest, ReasonRequest, AdminResetPasswordRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
+# Re-issuing a session token after a self-service password change. auth.py does not import this
+# module, so the dependency is one-way.
+from app.api.routes.auth import _issue_session_token
 
 
 def _ip(request: Request) -> str | None:
@@ -318,10 +321,13 @@ async def change_password(
     if not verify_password(data.current_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     await assert_password_allowed(db, current_user, data.new_password)
+    # Revokes every OTHER session (set_password bumps token_version), then hands this caller a
+    # fresh token so changing your own password does not log you out of the tab you did it in.
     await set_password(db, current_user, data.new_password)
     await log_event(db, "PASSWORD_CHANGED", f"{current_user.name} changed their password", actor=current_user)
     await record_audit(db, "PASSWORD_CHANGED", actor=current_user, entity_type="user", entity_id=current_user.id)
-    return {"message": "Password updated successfully"}
+    return {"message": "Password updated successfully",
+            "access_token": _issue_session_token(current_user), "token_type": "bearer"}
 
 
 @router.patch("/me")
@@ -372,4 +378,12 @@ async def update_profile(
 
     await db.flush()
     await db.refresh(current_user)
-    return _u(current_user)
+    out = _u(current_user)
+    if data.new_password:
+        # A password change here revoked this caller's own token too (set_password bumps
+        # token_version), so return a fresh one. Additive field — clients that ignore it simply
+        # keep using a token that is now stale, which is the pre-existing behaviour of being
+        # logged out, not a regression introduced here.
+        out["access_token"] = _issue_session_token(current_user)
+        out["token_type"] = "bearer"
+    return out

@@ -7,7 +7,9 @@ from sqlalchemy import select, update
 from app.db.session import get_db
 from app.core.config import settings
 from app.models.models import User, LoginOtp, UserRole, AppSetting, Notification
-from app.core.security import verify_password, create_access_token, decode_token
+from app.core.security import (
+    verify_password, create_access_token, decode_token, TOKEN_VERSION_CLAIM,
+)
 from app.core.passwords import assert_password_allowed, set_password
 from app.core.deps import get_current_user, get_current_super_admin
 from app.core.email import send_otp_email, mask_email
@@ -39,9 +41,17 @@ NO_TIMEOUT_ROLES = (UserRole.ADMIN, UserRole.SUPER_ADMIN)
 def _issue_session_token(user: User) -> str:
     """Access token for a fully-authenticated session, with a role-based lifetime.
     Admin / Super Admin get an effectively non-expiring token; everyone else keeps the
-    configured timeout. JWT authenticity and permission checks are unchanged."""
+    configured timeout. JWT authenticity and permission checks are unchanged.
+
+    The `ver` claim carries the user's token_version so the token can later be revoked by
+    incrementing that column — see security.token_version_matches and SEC-002. EVERY path that
+    mints a session token must go through here; the support direct-login path below is the one
+    that historically did not.
+    """
     expires = timedelta(days=settings.ADMIN_TOKEN_EXPIRE_DAYS) if user.role in NO_TIMEOUT_ROLES else None
-    return create_access_token({"sub": str(user.id)}, expires)
+    return create_access_token(
+        {"sub": str(user.id), TOKEN_VERSION_CLAIM: int(user.token_version or 0)}, expires
+    )
 
 
 async def _otp_enabled(db: AsyncSession) -> bool:
@@ -215,7 +225,11 @@ async def login(
     # no toggle to disable it. Support agents use the separate support portal's direct-login
     # flow (that portal has no OTP screen), so they remain exempt by design.
     if user.role == UserRole.SUPPORT_AGENT:
-        token = create_access_token({"sub": str(user.id)})
+        # Routed through _issue_session_token so this path picks up the `ver` claim too. It
+        # previously minted its own token, which would have left every support session
+        # unrevocable. Lifetime is unchanged: SUPPORT_AGENT is not in NO_TIMEOUT_ROLES, so this
+        # still yields the configured ACCESS_TOKEN_EXPIRE_MINUTES.
+        token = _issue_session_token(user)
         # A fresh login starts Available; the member can flip to Busy from the portal.
         user.support_availability = "AVAILABLE"
         user.support_availability_at = datetime.utcnow()
@@ -240,6 +254,32 @@ async def login(
 async def otp_status(db: AsyncSession = Depends(get_db)):
     """Public: whether login OTP is currently enabled (drives the login-page toggle)."""
     return {"enabled": await _otp_enabled(db)}
+
+
+@router.post("/logout-all")
+async def logout_all(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Sign out of every device, for real.
+
+    Unlike /logout — which is a client-side courtesy, since a JWT stays valid until it expires —
+    this increments token_version, so every access token previously issued to this user stops
+    validating on the next request, on both the HTTP and WebSocket paths. This is the platform's
+    genuine "revoke my sessions" control; use it after a suspected compromise.
+
+    Returns a fresh token so the caller stays signed in on THIS device; every other device is
+    signed out.
+    """
+    current_user.token_version = int(current_user.token_version or 0) + 1
+    await db.flush()
+    await presence.end_session(db, current_user)
+    await log_event(db, "LOGOUT_ALL", f"{current_user.name} signed out of all devices", actor=current_user)
+    await record_audit(db, "LOGOUT_ALL", actor=current_user, entity_type="user",
+                       entity_id=current_user.id, ip=_client_ip(request))
+    await presence.start_session(db, current_user, _client_ip(request), request.headers.get("user-agent"))
+    return {"status": "ok", "access_token": _issue_session_token(current_user), "token_type": "bearer"}
 
 
 @router.post("/otp-config")
