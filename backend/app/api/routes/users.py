@@ -321,9 +321,14 @@ async def change_password(
     if not verify_password(data.current_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     await assert_password_allowed(db, current_user, data.new_password)
-    # Revokes every OTHER session (set_password bumps token_version), then hands this caller a
-    # fresh token so changing your own password does not log you out of the tab you did it in.
-    await set_password(db, current_user, data.new_password)
+    # revoke_tokens=False: the frontend does not read the access_token from this response
+    # (api.ts changePassword discards it), so revoking here would invalidate the caller's own
+    # token and log them out on their next request — a UX regression, not a security gain, since
+    # they have just proved knowledge of the current password.
+    # A fresh token IS returned so a client that starts consuming it gets one; enabling
+    # revocation here is a follow-up requiring a coordinated frontend change. Reset and
+    # admin-initiated changes DO revoke — those are the compromise-recovery paths.
+    await set_password(db, current_user, data.new_password, revoke_tokens=False)
     await log_event(db, "PASSWORD_CHANGED", f"{current_user.name} changed their password", actor=current_user)
     await record_audit(db, "PASSWORD_CHANGED", actor=current_user, entity_type="user", entity_id=current_user.id)
     return {"message": "Password updated successfully",
@@ -344,7 +349,9 @@ async def update_profile(
         ):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
         await assert_password_allowed(db, current_user, data.new_password)
-        await set_password(db, current_user, data.new_password)
+        # revoke_tokens=False for the same reason as /change-password above: api.ts updateProfile
+        # discards the response's access_token, so revoking would log the caller out.
+        await set_password(db, current_user, data.new_password, revoke_tokens=False)
         await log_event(db, "PASSWORD_CHANGED", f"{current_user.name} changed their password", actor=current_user)
         await record_audit(db, "PASSWORD_CHANGED", actor=current_user, entity_type="user", entity_id=current_user.id)
 
