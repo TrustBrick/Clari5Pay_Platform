@@ -10,16 +10,25 @@ Anything not verified is marked **[UNVERIFIED]** rather than inferred.
 
 ## Summary
 
-| Severity | Count |
-|---|---|
-| 🔴 Critical | **0** |
-| 🟠 High | 3 |
-| 🟡 Medium | **7** |
-| 🔵 Low | 4 |
-| ⬜ Withdrawn | 1 |
+| Severity | Open | Resolved |
+|---|---|---|
+| 🔴 Critical | **0** | — |
+| 🟠 High | **2** | 1 (SEC-002) |
+| 🟡 Medium | **6** | 1 (SEC-001) |
+| 🔵 Low | 4 | — |
+| ⬜ Withdrawn | 1 | — |
 
-**Most serious open finding: SEC-002** — Admin/Super Admin tokens are valid for ten years and,
-now verified, **cannot be revoked by any mechanism**.
+**Resolved, awaiting deployment**
+
+| Finding | Fix | Commits |
+|---|---|---|
+| ✅ **SEC-002** — tokens unrevocable | `token_version` claim checked on both auth paths | `f99d5dfe`, `70bc06aa` |
+| ✅ **SEC-001** — unauthenticated OTP-config write | restricted to Super Admin | `bf925456` |
+
+**Most serious open finding: SEC-005** — the blog HTML sanitiser is a bypassable regex denylist
+rendering to the public site. With SEC-002 resolved, breaking the XSS link is now the highest-value
+remaining work: it is the entry point of the **SEC-005 → SEC-003 → SEC-002** chain, and while
+SEC-002's *revocability* is fixed, admin tokens still last ten years until the lifetime is reduced.
 
 **Revision history**
 
@@ -199,7 +208,26 @@ Compounding factors, both verified elsewhere in this report:
 
 # 🟠 HIGH
 
-## SEC-002 — Admin and Super Admin tokens are valid for 10 years
+## ✅ SEC-002 — Admin and Super Admin tokens are valid for 10 years — **RESOLVED**
+
+> **Resolved in `f99d5dfe` + `70bc06aa` (2026-07-19). Awaiting deployment.**
+>
+> Access tokens are now revocable. Every session token carries the user's `token_version` as a
+> `ver` claim; both authentication paths — `get_current_user` and the support WebSocket — reject a
+> mismatch, so incrementing the column invalidates every token previously issued to that user.
+> Password reset and admin-initiated resets increment it, and `POST /api/auth/logout-all` provides
+> an explicit "sign out everywhere". Cost is zero additional queries (measured).
+>
+> Design rationale: `AUTH_SESSION_ARCHITECTURE.md`. Compatibility analysis:
+> `TOKEN_VERSION_COMPATIBILITY.md`. Deployment package: `SEC002_DEPLOYMENT.md`.
+>
+> **Two limitations remain, tracked as follow-ups rather than open findings:**
+> 1. **Grandfathering** — tokens issued before the deploy stay valid until that user's version is
+>    first incremented, so an already-stolen token is not retroactively killed. A scheduled
+>    `UPDATE users SET token_version = token_version + 1` closes this, at the cost of one forced
+>    logout.
+> 2. **Lifetime unchanged** — `ADMIN_TOKEN_EXPIRE_DAYS` is still 3650. Revocability now exists;
+>    reducing the duration is a separate, announced change.
 
 **File:** `backend/app/core/config.py:14` — `ADMIN_TOKEN_EXPIRE_DAYS: int = 3650`
 
@@ -428,16 +456,22 @@ only because SEC-001 was overstated.
 
 | Priority | Finding | Effort |
 |---|---|---|
-| **1 — this week** | **SEC-002** enforce `user_sessions` in `get_current_user`; reduce `ADMIN_TOKEN_EXPIRE_DAYS`. Verified: a leaked admin token is currently valid 10 years and unrevocable. | small–moderate |
-| 2 — this week | SEC-005 replace the regex sanitiser with DOMPurify (breaks the XSS→token-theft chain) | small |
-| 3 — this week | SEC-004 alert on rate-limiter failure; fail closed on login | small |
-| 4 — normal cycle | **SEC-001 deploy `bf925456`** (fixed, tested, awaiting release) | done |
-| 5 — this month | SEC-001b wire up or remove the vestigial OTP setting | small |
-| 6 — this month | SEC-014 record and schedule review of the Support Agent exemption; plan the support-portal OTP screen | small |
-| 7 — this month | SEC-009 constrain `merchant_role` to an enum | small |
-| 8 — planned | SEC-003 + SEC-007 move to httpOnly cookies with CSRF | significant |
-| 9 — planned | SEC-008 column encryption for Aadhaar/bank data | significant |
-| 10 — planned | SEC-013 CI with dependency and secret scanning | moderate |
+| **1 — next deploy** | **Deploy `bf925456`, `f99d5dfe`, `70bc06aa`** (SEC-001 + SEC-002, all fixed and tested) | done, awaiting release |
+| **2 — after deploy** | **SEC-002 follow-up:** scheduled `token_version` bump to retire grandfathered tokens — this is what fully closes it | small, needs a window |
+| 3 — this week | **SEC-005** replace the regex sanitiser with DOMPurify — now the top open finding | small |
+| 4 — this week | SEC-004 alert on rate-limiter failure; fail closed on login | small |
+| 5 — this month | **SEC-002 follow-up:** reduce `ADMIN_TOKEN_EXPIRE_DAYS` 3650 → 7–30, announced | small |
+| 6 — this month | SEC-001b wire up or remove the vestigial OTP setting | small |
+| 7 — this month | SEC-014 record and schedule review of the Support Agent exemption | small |
+| 8 — this month | SEC-009 constrain `merchant_role` to an enum | small |
+| 9 — planned | SEC-003 + SEC-007 move to httpOnly cookies with CSRF | significant |
+| 10 — planned | SEC-008 column encryption for Aadhaar/bank data | significant |
+| 11 — planned | SEC-013 CI with dependency and secret scanning | moderate |
+
+**Deferred improvements** (not open findings — deliberate scope decisions):
+per-device revocation via a `sid` claim; self-service password change revoking other sessions
+(needs the frontend to store the returned token); atomic SQL increment of `token_version`;
+periodic re-validation of long-lived WebSocket connections.
 
 Items 1 and 2 together break the highest-impact chain in the report
 (**SEC-005 → SEC-003 → SEC-002**): stored XSS on a public page steals a `localStorage` token that
