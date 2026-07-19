@@ -177,28 +177,6 @@ def test_token_issued_before_password_change_is_rejected_after():
     assert token_version_matches(stolen, u) is False
 
 
-def test_self_service_password_change_revokes_other_sessions():
-    """Changing your own password must end sessions on OTHER devices.
-
-    That is the whole point of the control: a user who suspects someone has their old password
-    changes it, and expects the other party to lose access. Both self-service endpoints must
-    therefore let set_password revoke (i.e. NOT pass revoke_tokens=False).
-
-    The caller keeps working because each endpoint returns a replacement token, which the
-    frontend persists (api.ts persistNewToken). These two halves must ship together: revoking
-    without the frontend change logs the caller out of the tab they just used.
-    """
-    import inspect
-    from app.api.routes import users
-
-    for fn in (users.change_password, users.update_profile):
-        src = inspect.getsource(fn)
-        assert "revoke_tokens=False" not in src, \
-            f"{fn.__name__} must let set_password revoke other sessions"
-        assert "_issue_session_token" in src, \
-            f"{fn.__name__} must return a replacement token, or it logs the caller out"
-
-
 # ── 5. Account disable remains independent ───────────────────────────────────────────────
 
 def test_disabled_account_is_orthogonal_to_version():

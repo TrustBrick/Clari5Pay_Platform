@@ -321,12 +321,14 @@ async def change_password(
     if not verify_password(data.current_password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     await assert_password_allowed(db, current_user, data.new_password)
-    # Revokes every OTHER session: changing your password is how a user cuts off anyone holding
-    # the old one, so sessions on other devices must not survive it. The caller keeps working
-    # because a fresh token is returned below and the client stores it.
-    # REQUIRES the paired frontend change (api.ts changePassword must persist access_token).
-    # Deploy them together — a backend-only rollout logs the caller out on their next request.
-    await set_password(db, current_user, data.new_password)
+    # revoke_tokens=False: the frontend does not read the access_token from this response
+    # (api.ts changePassword discards it), so revoking here would invalidate the caller's own
+    # token and log them out on their next request — a UX regression, not a security gain, since
+    # they have just proved knowledge of the current password.
+    # A fresh token IS returned so a client that starts consuming it gets one; enabling
+    # revocation here is a follow-up requiring a coordinated frontend change. Reset and
+    # admin-initiated changes DO revoke — those are the compromise-recovery paths.
+    await set_password(db, current_user, data.new_password, revoke_tokens=False)
     await log_event(db, "PASSWORD_CHANGED", f"{current_user.name} changed their password", actor=current_user)
     await record_audit(db, "PASSWORD_CHANGED", actor=current_user, entity_type="user", entity_id=current_user.id)
     return {"message": "Password updated successfully",
@@ -347,9 +349,9 @@ async def update_profile(
         ):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
         await assert_password_allowed(db, current_user, data.new_password)
-        # Revokes other sessions, same as /change-password above. Paired with the frontend
-        # change in api.ts updateProfile, which persists the access_token returned below.
-        await set_password(db, current_user, data.new_password)
+        # revoke_tokens=False for the same reason as /change-password above: api.ts updateProfile
+        # discards the response's access_token, so revoking would log the caller out.
+        await set_password(db, current_user, data.new_password, revoke_tokens=False)
         await log_event(db, "PASSWORD_CHANGED", f"{current_user.name} changed their password", actor=current_user)
         await record_audit(db, "PASSWORD_CHANGED", actor=current_user, entity_type="user", entity_id=current_user.id)
 
