@@ -8,9 +8,8 @@ import TxTable from '../components/TxTable';
 import { TxExportButton } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
 import { IS_DEMO } from '../utils/portal';
-import { AgentAssignmentPanel, AgentAssignmentSelect, emptyAgentAssignSelection } from './AgentPages';
-import type { AgentAssignSelection } from './AgentPages';
-import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI, agentAssignmentAPI } from '../services/api';
+import { AgentAssignmentPanel } from './AgentPages';
+import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI } from '../services/api';
 import type { TxQuery } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -491,11 +490,6 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   // Cash / Crypto member-supplied details + proof (no bank account on these types).
   const [details, setDetails] = useState<Record<string,string>>({ network:'TRC20' });
   const [proofs, setProofs] = useState<string[]>([]);
-  // Phase 4 (demo): the DEO assigns a Non-EPS agent + account as part of the deposit request.
-  // Mandatory only where the picker is shown (demo build + an allowed assigner role) — never in
-  // Production (module hidden) so the existing flow stays unblocked there.
-  const [assign, setAssign] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
-  const showAssign = IS_DEMO && ['DEO','DEPOSIT_OPERATOR'].includes(String(user.merchantRole||'').toUpperCase());
   const isUpi = form.depositType === 'UPI';
   const isCash = form.depositType === 'CASH';
   const isCrypto = form.depositType === 'CRYPTO';
@@ -546,14 +540,6 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         ...(isCash ? { depositDetails: { village: details.village, city: details.city, mobile: details.mobile }, proofs } : {}),
         ...(isCrypto ? { depositDetails: { walletAddress: details.walletAddress, network: details.network, txHash: details.txHash }, proofs } : {}),
       });
-      // Phase 4 (demo): assign the chosen Non-EPS agent + account. Create and assign are two
-      // separate operations (the create endpoint is deliberately left untouched). In the rare
-      // event assignment fails after the request is created, the request is NOT rolled back —
-      // see the "known limitation" note in agent_assignment.py.
-      if (IS_DEMO && assign.agentId && assign.accountId && created?.ref) {
-        try { await agentAssignmentAPI.assign(created.ref, { agentId:Number(assign.agentId), agentAccountId:Number(assign.accountId), paymentMethod:assign.accountType }); }
-        catch (err:any) { showToast(err?.response?.data?.detail || 'Deposit created, but agent assignment failed — please ask an administrator to assign an agent.','error'); }
-      }
       fireConfetti();
       showToast('Deposit request submitted — awaiting agent review');
       onSubmitted?.();
@@ -614,7 +600,6 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
       <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,marginBottom:16,cursor:'pointer' }}>
         <input type="checkbox" checked={riskAnalysis} onChange={e=>setRiskAnalysis(e.target.checked)}/> Perform Risk Analysis
       </label>
-      {showAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
     </div>
   );
@@ -649,10 +634,6 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [loading, setLoading] = useState(false);
   const [savedBanks, setSavedBanks] = useState<MerchantBankAccount[]>([]);
   const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
-  // Phase 4 (demo): the DEO assigns a Non-EPS agent + account before submitting for approval.
-  // Mandatory only where the picker shows (demo + allowed role); never blocks Production.
-  const [assign, setAssign] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
-  const showAssign = IS_DEMO && ['DEO','WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole||'').toUpperCase());
   const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
@@ -724,12 +705,6 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       const payload: Record<string, unknown> = { amount: amountNum, memberId, memberName: memberName.trim(), payoutMode: mode, payoutDetails: details };
       if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
       const created = await transactionAPI.createWithdrawal(payload);
-      // Phase 4 (demo): assign the chosen Non-EPS agent + account. Two separate operations by
-      // design (create endpoint untouched) — see the "known limitation" note in agent_assignment.py.
-      if (IS_DEMO && assign.agentId && assign.accountId && created?.ref) {
-        try { await agentAssignmentAPI.assign(created.ref, { agentId:Number(assign.agentId), agentAccountId:Number(assign.accountId), paymentMethod:assign.accountType }); }
-        catch (err:any) { showToast(err?.response?.data?.detail || 'Withdrawal created, but agent assignment failed — please ask an administrator to assign an agent.','error'); }
-      }
       fireConfetti();
       showToast('Withdrawal request submitted');
       onSubmitted?.();
@@ -819,7 +794,6 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
         No proof needed now — after payment, the agent uploads the proof ({mode==='CRYPTO' ? 'Transaction Hash' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}), which you can then view.
       </div>
-      {showAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
       <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!amount||!memberId}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
@@ -836,10 +810,6 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [maxSettleable, setMaxSettleable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
-  // Phase 4 (demo): the Supervisor assigns a Non-EPS agent + account when creating the settlement.
-  // Mandatory only where the picker shows (demo + Supervisor); never blocks Production.
-  const [assign, setAssign] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
-  const showAssign = IS_DEMO && String(user.merchantRole||'').toUpperCase()==='SUPERVISOR';
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
@@ -868,12 +838,6 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     setLoading(true);
     try {
       const created = await transactionAPI.createSettlement({ amount: amountNum, memberId: form.memberId || undefined, memberName: form.memberName.trim() || undefined });
-      // Phase 4 (demo): assign the chosen Non-EPS agent + account. Two separate operations by
-      // design (create endpoint untouched) — see the "known limitation" note in agent_assignment.py.
-      if (IS_DEMO && assign.agentId && assign.accountId && created?.ref) {
-        try { await agentAssignmentAPI.assign(created.ref, { agentId:Number(assign.agentId), agentAccountId:Number(assign.accountId), paymentMethod:assign.accountType }); }
-        catch (err:any) { showToast(err?.response?.data?.detail || 'Settlement created, but agent assignment failed — please ask an administrator to assign an agent.','error'); }
-      }
       fireConfetti();
       showToast('Settlement request submitted');
       onSubmitted?.();
@@ -901,7 +865,6 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
         No proof needed — after the Admin approves, they enter the UTR number and upload the settlement proof, which you can then view.
       </div>
-      {showAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
       <Btn size="lg" full onClick={submit} disabled={loading||!form.amount}>{loading?'Submitting...':'Submit Settlement Request →'}</Btn>
     </div>
   );
