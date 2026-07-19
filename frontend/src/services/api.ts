@@ -17,6 +17,20 @@ export const setAuthToken = (token: string | null) => {
 const _storedToken = localStorage.getItem('clari5pay_token');
 if (_storedToken) api.defaults.headers.common.Authorization = `Bearer ${_storedToken}`;
 
+/** Adopt a replacement token returned mid-session (currently: password change).
+ *
+ * The server revokes a user's existing tokens when their password changes, and hands back a
+ * fresh one so the calling tab survives. Storing it keeps this device signed in while other
+ * devices are signed out. Ignoring the value would sign the caller out of their own session on
+ * the next request — so this is not optional bookkeeping, it is what makes revocation usable.
+ * No-op when the response carries no token, so it is safe to call unconditionally.
+ */
+const persistNewToken = (token?: string | null) => {
+  if (!token) return;
+  localStorage.setItem('clari5pay_token', token);
+  setAuthToken(token);
+};
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('clari5pay_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -451,10 +465,17 @@ export const userAPI = {
   },
   changePassword: async (data: { current_password: string; new_password: string }) => {
     const res = await api.post('/api/users/change-password', data);
+    // Changing the password revokes every session for this user, including this one. The
+    // response carries a replacement token — persist it so the current tab stays signed in
+    // while other devices are signed out. Dropping it here logs the user out of the tab they
+    // just changed their password in.
+    persistNewToken(res.data?.access_token);
     return res.data;
   },
   updateProfile: async (data: { email?: string; phone?: string; new_password?: string; current_password?: string; avatar?: string; whatsappEnabled?: boolean }) => {
     const res = await api.patch<User>('/api/users/me', data);
+    // Only present when this call changed the password (see changePassword above).
+    persistNewToken((res.data as unknown as { access_token?: string })?.access_token);
     return res.data;
   },
 };
