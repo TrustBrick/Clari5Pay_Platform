@@ -35,15 +35,28 @@ async def assert_password_allowed(db: AsyncSession, user: User, new_password: st
             )
 
 
-async def set_password(db: AsyncSession, user: User, new_password: str) -> None:
+async def set_password(db: AsyncSession, user: User, new_password: str,
+                       *, revoke_tokens: bool = True) -> None:
     """Record the outgoing password in history, set the new hash, and trim history to the limit.
 
     Call ``assert_password_allowed`` first to validate.
+
+    ``revoke_tokens`` (default True) bumps ``user.token_version``, invalidating every access token
+    previously issued to this user. This matters most on the RESET path: a password reset is what
+    someone does after suspecting compromise, and without revocation an attacker holding a stolen
+    token keeps access straight through it — at the exact moment the user believes they have shut
+    the attacker out. See SECURITY_REVIEW.md SEC-002.
+
+    Revocation lives here, rather than at each call site, so a future caller cannot forget it.
+    Pass ``revoke_tokens=False`` only where the caller re-issues a token immediately (a user
+    changing their own password should not be logged out by doing so).
     """
     # Keep the password being replaced so it counts toward the no-reuse window.
     if user.hashed_password:
         db.add(PasswordHistory(user_id=user.id, hashed_password=user.hashed_password))
     user.hashed_password = get_password_hash(new_password)
+    if revoke_tokens:
+        user.token_version = int(user.token_version or 0) + 1
     await db.flush()
 
     # Trim to the most recent PASSWORD_HISTORY_LIMIT entries.

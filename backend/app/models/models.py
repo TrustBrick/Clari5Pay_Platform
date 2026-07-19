@@ -110,6 +110,15 @@ class User(Base):
     # Telegram chat id (set once the user starts the notification bot) — enables Telegram delivery.
     telegram_chat_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
+    # Session-token generation. Every issued access token carries this value as a `ver` claim;
+    # authentication rejects a token whose `ver` no longer matches. Incrementing it therefore
+    # invalidates EVERY token previously issued to this user — the platform's only way to revoke
+    # a JWT, which is otherwise valid until it expires (Admin/Super Admin: 10 years).
+    # See SECURITY_REVIEW.md SEC-002 and AUTH_SESSION_ARCHITECTURE.md.
+    # A token minted before this column existed has no `ver` claim and is read as 0, so the
+    # default of 0 keeps every pre-existing session working.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+
     # ── Support member fields (a SUPPORT_AGENT enriched via the Support Management module) ──
     # Unique auto Support ID (e.g. SUP000001). Only members onboarded through the module have one.
     support_code: Mapped[Optional[str]] = mapped_column(String(16), index=True, nullable=True)

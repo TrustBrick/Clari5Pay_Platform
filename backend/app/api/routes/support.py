@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db, AsyncSessionLocal
 from app.models.models import SupportMessage, SupportSender, User, UserRole, SupportConversation
-from app.core.security import decode_token
+from app.core.security import decode_token, token_version_matches
 from app.core.deps import get_current_user
 from app.schemas.schemas import SupportMessageCreate
 from app.api.routes.transactions import compute_balance
@@ -174,7 +174,12 @@ async def support_ws(websocket: WebSocket, token: str):
             await db.execute(select(User).where(User.id == int(payload["sub"])))
         ).scalar_one_or_none()
 
-    if not user or not user.active or user.role not in (UserRole.MERCHANT, UserRole.SUPPORT_AGENT):
+    # Same revocation check as get_current_user (SEC-002). This endpoint authenticates on its own
+    # code path rather than through the dependency, so without this a revoked token would be
+    # refused by every REST call yet still open a chat socket. Closes with 4403 like the other
+    # authorisation failures, so the client's existing handling applies unchanged.
+    if not user or not user.active or not token_version_matches(payload, user) \
+            or user.role not in (UserRole.MERCHANT, UserRole.SUPPORT_AGENT):
         await websocket.close(code=4403)
         return
 

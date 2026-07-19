@@ -31,6 +31,9 @@ _NEW_COLUMNS = [
     ("users", "support_availability", "VARCHAR(16)"),
     ("users", "support_availability_at", "TIMESTAMP"),
     ("users", "support_archived", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    # Token revocation generation — see User.token_version. DEFAULT 0 is what makes the rollout
+    # backward compatible: existing tokens carry no `ver` claim, are read as 0, and keep working.
+    ("users", "token_version", "INTEGER DEFAULT 0 NOT NULL"),
     ("transactions", "merchant_ref", "VARCHAR(64)"),
     ("transactions", "admin_bank_details", "TEXT"),
     ("transactions", "admin_bank_image", "TEXT"),

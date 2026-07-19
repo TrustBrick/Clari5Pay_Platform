@@ -48,3 +48,33 @@ def decode_token(token: str) -> Optional[dict]:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     except JWTError:
         return None
+
+
+# ── Token revocation (SEC-002) ────────────────────────────────────────────────────────────
+# A session token carries the user's `token_version` as a `ver` claim. Authentication compares
+# the claim against the live column and rejects a mismatch, so incrementing the column revokes
+# every token previously issued to that user. Without this a JWT is valid until it expires —
+# ten years for Admin and Super Admin — and cannot be withdrawn.
+#
+# `token_claim_version` is the ONE place that decides how a token's version is read, so the two
+# independent authentication paths (get_current_user and the support WebSocket) cannot drift
+# apart. A missing claim reads as 0, which is what keeps tokens minted before this feature valid.
+
+TOKEN_VERSION_CLAIM = "ver"
+
+
+def token_claim_version(payload: dict | None) -> int:
+    """Version a token asserts. Absent (pre-feature token) or malformed → 0."""
+    try:
+        return int((payload or {}).get(TOKEN_VERSION_CLAIM, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def token_version_matches(payload: dict | None, user) -> bool:
+    """True when the token may still be used for `user`.
+
+    Deliberately tolerant of a NULL column: a row that predates the migration reads as 0 and
+    matches a token with no claim, so an incomplete migration cannot lock anyone out.
+    """
+    return token_claim_version(payload) == int(getattr(user, "token_version", 0) or 0)
