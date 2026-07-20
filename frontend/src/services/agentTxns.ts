@@ -18,12 +18,15 @@ export type AgentTxnStatus =
   | 'SLIP_SUBMITTED' | 'SUPERVISOR_APPROVED' | 'MANAGER_REVIEW' | 'MANAGER_APPROVED'
   | 'DEPOSITED' | 'COMPLETED' | 'REJECTED' | 'PENDING' | 'APPROVED'
   | 'SUPERVISOR_REVIEW'
+  // A Cash deposit split among members by a DEO: the parent container, non-crediting and final.
+  | 'DISTRIBUTED'
   // Settlement chain: the offline payment workflow. SETTLED is the completed state.
   | 'SETTLEMENT_REQUESTED' | 'SETTLEMENT_ACCEPTED' | 'PROOF_UPLOADED' | 'SETTLED';
 
 /** Statuses that mean the money actually moved — the completed-only basis (mirrors the server). */
 export const AGENT_COMPLETED_STATUSES: AgentTxnStatus[] = ['APPROVED', 'DEPOSITED', 'COMPLETED', 'SETTLED'];
-export const AGENT_FINAL_STATUSES: AgentTxnStatus[] = [...AGENT_COMPLETED_STATUSES, 'REJECTED'];
+// DISTRIBUTED is final (immutable) but NOT completed — the container moves no money; its children do.
+export const AGENT_FINAL_STATUSES: AgentTxnStatus[] = [...AGENT_COMPLETED_STATUSES, 'REJECTED', 'DISTRIBUTED'];
 
 /** A payout account saved against a Membership ID in the isolated agent register. */
 export interface AgentMemberAccount {
@@ -240,6 +243,16 @@ export interface AgentManageBody {
   approverUserId?: number | null;
 }
 
+/** One member row in a Cash Deposit distribution. */
+export interface AgentDistributeMember {
+  membershipId: string;
+  membershipName?: string | null;
+  amount: number;
+}
+export interface AgentDistributeBody { members: AgentDistributeMember[] }
+/** The distributed parent container + the auto-completed child deposits it created. */
+export interface AgentDistributeResult { parent: AgentTxnRow; children: AgentTxnRow[] }
+
 export interface AgentTxnAuditRow {
   id: number; action: string; oldAmount: number | null; newAmount: number | null;
   note: string | null; approverName: string | null; actor: string | null; role: string | null;
@@ -314,6 +327,9 @@ export const agentTxnsAPI = {
   createSettlement: async (body: AgentWithdrawalBody) => (await api.post<AgentTxnRow>('/api/agent-txns/settlement', body)).data,
   list: async (params?: AgentTxnQuery) => (await api.get<AgentTxnRow[]>('/api/agent-txns', { params })).data,
   manage: async (id: number, body: AgentManageBody) => (await api.patch<AgentTxnRow>(`/api/agent-txns/${id}/manage`, body)).data,
+  /** Split an initialised Cash Deposit among members — parent becomes a container, children credit. */
+  distribute: async (id: number, body: AgentDistributeBody) =>
+    (await api.post<AgentDistributeResult>(`/api/agent-txns/${id}/distribute`, body)).data,
 
   // ── Deposit chain (mirrors the merchant deposit workflow) ──
   /** Active AGENT accounts for one agent — the only source the Account Submission step may use. */

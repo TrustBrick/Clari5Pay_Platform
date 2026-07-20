@@ -78,6 +78,11 @@ ST_COMPLETED = "COMPLETED"
 ST_REJECTED = "REJECTED"
 ST_PENDING = "PENDING"
 ST_APPROVED = "APPROVED"
+# A Cash deposit that a DEO has split among several members becomes a non-crediting CONTAINER: it
+# never updates any member balance itself; its auto-completed child deposits credit the members.
+# Final (immutable, and NOT in COMPLETED_STATUSES so it moves no money on its own). Fits the
+# existing VARCHAR(24) status column — no schema change.
+ST_DISTRIBUTED = "DISTRIBUTED"
 # ── Settlement chain ──────────────────────────────────────────────────────────
 # Settlement Requested → Settlement Accepted → Proof Uploaded → Settled, with Rejected reachable
 # from either of the first two. The payment itself happens OFFLINE (cash / bank transfer / crypto);
@@ -104,7 +109,10 @@ DEPOSIT_OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR")
 # reports or the ledger.
 COMPLETED_STATUSES = {ST_APPROVED, ST_DEPOSITED, ST_COMPLETED, ST_SETTLED}
 REJECTED_STATUSES = {ST_REJECTED}
-FINAL_STATUSES = COMPLETED_STATUSES | REJECTED_STATUSES
+# A distributed parent is FINAL (may no longer be managed/decided) but is deliberately NOT in
+# COMPLETED_STATUSES, so it never contributes to any member balance or money figure — only its
+# child deposits do.
+FINAL_STATUSES = COMPLETED_STATUSES | REJECTED_STATUSES | {ST_DISTRIBUTED}
 
 # How the money moves. CASH is the only method Manage Transaction may edit.
 TXN_METHODS = {"CASH", "UPI", "BANK", "IMPS", "NEFT", "RTGS", "CRYPTO"}
@@ -1661,6 +1669,12 @@ async def txn_audit(txn_id: int, db: AsyncSession = Depends(get_db),
 # amount cannot be restated after the fact, so Manage is refused here and hidden in the UI.
 MANAGEABLE_METHOD = "CASH"
 
+# Deposit Distribution (DEO): a Cash Deposit may be split among several members once its token has
+# been INITIALISED (submitted) and before it is finalised — i.e. any pre-DEPOSITED state after the
+# token/account step. In all of these the parent has NOT yet credited its own member, so turning it
+# into a non-crediting container loses no money and double-credits no one.
+DISTRIBUTABLE_STATUSES = {ST_TOKEN_SUBMITTED, ST_SLIP_SUBMITTED, ST_SUPERVISOR_APPROVED}
+
 # The in-flight order of each chain, and where its approval gate sits. An amount change sends the
 # transaction BACK to its gate — never forward — so a deposit still awaiting account submission or
 # a slip is not jumped past those steps into an approval it has not earned.
@@ -1774,6 +1788,127 @@ async def manage_txn(txn_id: int, body: AgentManage, db: AsyncSession = Depends(
     return _row(t)
 
 
+# ── Deposit Distribution (DEO — Cash Deposit split among multiple members) ───────
+class _DistMember(BaseModel):
+    membershipId: str
+    membershipName: str | None = None
+    amount: float
+
+
+class AgentDistribute(BaseModel):
+    members: list[_DistMember]
+
+
+async def _prior_member_name(db: AsyncSession, business: str, membership_id: str) -> str | None:
+    """Latest known name for a membership from the isolated agent ledger (same auto-fill rule the
+    create forms use). Agent memberships have no master record, so there is no status to validate."""
+    return (await db.execute(
+        select(AgentTransaction.membership_name).where(
+            AgentTransaction.merchant_business == business,
+            AgentTransaction.membership_id == membership_id,
+            AgentTransaction.membership_name.is_not(None),
+        ).order_by(AgentTransaction.id.desc())
+    )).scalars().first()
+
+
+@router.post("/{txn_id}/distribute")
+async def distribute_deposit(txn_id: int, body: AgentDistribute, db: AsyncSession = Depends(get_db),
+                             user: User = Depends(get_current_agent_operator)):
+    """Split ONE initialised Cash Deposit among several members. The original becomes a non-crediting
+    CONTAINER (DISTRIBUTED); each member gets an auto-completed child deposit (DEPOSITED) that credits
+    only that member. Σ children must equal the parent amount. Commission reuses the agent's own
+    pay-in fee (_leg_rate) — no merchant-fee coupling. Everything stays in the isolated agent ledger.
+    """
+    _require(user, MANAGE_ROLES, "distribute Agent Cash Deposits")
+    business = _business(user)
+    t = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.id == txn_id, AgentTransaction.merchant_business == business))).scalar_one_or_none()
+    if t is None:
+        raise HTTPException(status_code=404, detail="Agent transaction not found.")
+    # CASH DEPOSIT only, and only in the post-token / pre-finalised window (enforced here, not just
+    # hidden in the UI).
+    if t.txn_type != "DEPOSIT" or str(t.txn_method or "").upper() != MANAGEABLE_METHOD:
+        raise HTTPException(status_code=400, detail="Only Cash Deposit transactions can be distributed.")
+    if t.status not in DISTRIBUTABLE_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail="This deposit can be distributed only after its token has been initialised and before it is finalised.",
+        )
+
+    members = body.members or []
+    if not members:
+        raise HTTPException(status_code=400, detail="Add at least one member to distribute to.")
+    cleaned: list[tuple[str, str | None, float]] = []
+    for m in members:
+        mid = (m.membershipId or "").strip().upper()
+        if not mid:
+            raise HTTPException(status_code=400, detail="Every distribution row needs a Member ID.")
+        amt = round(m.amount or 0.0, 2)
+        if amt <= 0:
+            raise HTTPException(status_code=400, detail=f"Enter a valid deposit amount for member {mid}.")
+        cleaned.append((mid, (m.membershipName or "").strip() or None, amt))
+
+    original = round(t.amount or 0.0, 2)
+    total = round(sum(a for _, _, a in cleaned), 2)
+    if total - original > 0.01:
+        raise HTTPException(status_code=400, detail="Total distributed amount cannot exceed the original deposit amount.")
+    if abs(total - original) > 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Total distributed (₹{total:,.2f}) must equal the original deposit amount (₹{original:,.2f}).",
+        )
+
+    agent = await _get_agent(db, business, t.agent_master_id)
+    now = datetime.utcnow()
+    children: list[AgentTransaction] = []
+    for i, (mid, name, amt) in enumerate(cleaned, start=1):
+        if not name:
+            name = await _prior_member_name(db, business, mid)
+        # Member's Available Balance BEFORE this credit (completed-only; earlier children in this same
+        # run are already flushed, so a member appearing twice sees the running balance).
+        before = round((await _member_balance(db, business, mid)).get("available", 0.0), 2)
+        child = AgentTransaction(
+            reference_number=f"{t.reference_number}-{i:02d}",
+            transaction_code=f"{t.transaction_code}-{i:02d}",
+            txn_type="DEPOSIT", merchant_business=business,
+            agent_master_id=agent.id, agent_code=agent.agent_id, agent_name=agent.full_name,
+            agent_country=agent.country, agent_state=agent.state, agent_location=agent.location,
+            agent_category=agent.category,
+            membership_id=mid, membership_name=name, membership_type=t.membership_type,
+            amount=amt, txn_method="CASH", token_details=t.token_details,
+            instructions=t.instructions, notes=f"Distributed from {t.reference_number}",
+            # Auto-completed on save: the parent's token was already initialised, so each child is
+            # created DEPOSITED and credits its member immediately (no re-approval chain).
+            status=ST_DEPOSITED, completed_at=now,
+            linked_deposit_id=t.id,          # child → parent link for reporting / reconciliation
+            created_by=user.username, created_by_id=user.id,
+            approved_by=user.username, approved_by_id=user.id, approved_at=now,
+        )
+        db.add(child)
+        await db.flush()                     # assign child.id for the audit FK + running balance
+        await _log(db, child, "CREATED", user, new_amount=amt,
+                   note=f"Child deposit of {t.reference_number} — Membership {mid}")
+        await _log(db, child, "DEPOSITED", user, new_amount=amt,
+                   note=_completion_note(child, agent, user, before))
+        children.append(child)
+
+    # Turn the original into a non-crediting container. It is now FINAL (immutable) and excluded from
+    # every money figure, while its children carry the credits.
+    t.status = ST_DISTRIBUTED
+    t.updated_by = user.username
+    t.updated_by_id = user.id
+    t.updated_at = now
+    refs = ", ".join(c.reference_number for c in children)
+    await _log(db, t, "DISTRIBUTED", user, old_amount=original, new_amount=total,
+               note=(f"Cash deposit distributed across {len(children)} member(s): {refs}. "
+                     f"Parent is a non-crediting container."))
+    await db.commit()
+    await db.refresh(t)
+    for c in children:
+        await db.refresh(c)
+    return {"parent": _row(t), "children": [_row(c) for c in children]}
+
+
 async def _decide(db: AsyncSession, user: User, txn_id: int, approve: bool) -> dict:
     _require(user, APPROVE_ROLES, "approve or reject Agent Transactions")
     business = _business(user)
@@ -1815,6 +1950,11 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
     business = _business(user)
     txns = (await db.execute(select(AgentTransaction).where(
         AgentTransaction.merchant_business == business).order_by(AgentTransaction.id.desc()))).scalars().all()
+    # A distributed cash deposit is a reconciliation CONTAINER, not a real member transaction — its
+    # child deposits already represent the full amount. Exclude containers from every KPI/count/trend
+    # so they neither inflate the deposit count nor double-count the amount. They stay visible in All
+    # Transactions and Reports for parent→child traceability.
+    txns = [t for t in txns if t.status != ST_DISTRIBUTED]
     _agents = (await db.execute(
         select(AgentMaster).where(AgentMaster.merchant_business == business))).scalars().all()
     # One fee table per leg — an agent can charge a different rate on each.

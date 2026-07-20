@@ -56,6 +56,8 @@ const STATUS_STYLE: Record<string, { c: string; bg: string; label: string }> = {
   MANAGER_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Manager Review' },
   DEPOSITED: { c: T.success, bg: T.successBg, label: 'Deposited' },
   COMPLETED: { c: T.success, bg: T.successBg, label: 'Completed' },
+  // A Cash deposit that was split among members — a non-crediting container; its children carry the money.
+  DISTRIBUTED: { c: '#0891b2', bg: '#0891b218', label: 'Distributed' },
   APPROVED: { c: T.success, bg: T.successBg, label: 'Approved' },
   PENDING: { c: T.warning, bg: T.warningBg, label: 'Pending' },
   REJECTED: { c: T.danger, bg: T.dangerBg, label: 'Rejected' },
@@ -83,7 +85,7 @@ const STATUS_FILTER_OPTIONS = [
   'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'SUPERVISOR_APPROVED',
   'MANAGER_REVIEW', 'MANAGER_APPROVED',
   'SETTLEMENT_REQUESTED', 'SETTLEMENT_ACCEPTED', 'PROOF_UPLOADED', 'SETTLED',
-  'DEPOSITED', 'COMPLETED', 'REJECTED', 'PENDING', 'APPROVED',
+  'DEPOSITED', 'DISTRIBUTED', 'COMPLETED', 'REJECTED', 'PENDING', 'APPROVED',
 ].map(v => ({ value: v, label: STATUS_STYLE[v]?.label || v }));
 
 const METHOD_LABEL: Record<string, string> = {
@@ -1055,6 +1057,145 @@ export const AgentWithdrawalRequestPage: React.FC<{
   );
 };
 
+// ─── Deposit Distribution — split ONE initialised Cash deposit among members (DEO) ─────────────
+// Applies ONLY to a Cash DEPOSIT whose token has been initialised (submitted) and which is not yet
+// finalised. The parent becomes a non-crediting container; each member row becomes an auto-completed
+// child deposit that credits that member. Commission / Net Credit reuse the agent's OWN pay-in fee
+// (fetched once via the existing commission endpoint — no fee logic is duplicated here). Save is
+// blocked until the distributed total exactly equals the original amount (Remaining ₹0.00).
+const DISTRIBUTABLE_STATUSES = ['TOKEN_SUBMITTED', 'SLIP_SUBMITTED', 'SUPERVISOR_APPROVED'];
+const canDistribute = (t: AgentTxnRow) =>
+  t.type === 'DEPOSIT' && String(t.txnMethod || '').toUpperCase() === 'CASH'
+  && DISTRIBUTABLE_STATUSES.includes(t.status);
+
+type DistRow = { memberId: string; memberName: string; locked: boolean; amount: string };
+
+const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = ({ txn, onDone }) => {
+  const { showToast } = useToast();
+  const [feePct, setFeePct] = useState(0);         // the agent's pay-in fee %, from the existing engine
+  const [rows, setRows] = useState<DistRow[]>([{ memberId: '', memberName: '', locked: false, amount: '' }]);
+  const [busy, setBusy] = useState(false);
+
+  // Reuse the existing per-transaction commission engine to get the agent's deposit fee % — the same
+  // rate every child (same agent, same leg) is charged. Never recompute the fee here.
+  useEffect(() => {
+    agentTxnsAPI.txnCommission(txn.id).then(c => setFeePct(c.commissionPct || 0)).catch(() => {});
+  }, [txn.id]);
+
+  const original = txn.amount;
+  const amt = (s: string) => Number(parseIndianAmount(s)) || 0;
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const commissionOf = (a: number) => Math.round(a * feePct) / 100;   // a × feePct%  → 2dp
+  const distributed = round2(rows.reduce((s, r) => s + amt(r.amount), 0));
+  const remaining = round2(original - distributed);
+  const totalCommission = round2(rows.reduce((s, r) => s + commissionOf(amt(r.amount)), 0));
+  const totalNet = round2(distributed - totalCommission);
+
+  const setRow = (i: number, patch: Partial<DistRow>) => setRows(rs => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const addRow = () => setRows(rs => [...rs, { memberId: '', memberName: '', locked: false, amount: '' }]);
+  const removeRow = (i: number) => setRows(rs => (rs.length > 1 ? rs.filter((_, j) => j !== i) : rs));
+
+  // Auto-fetch the member name once an ID is entered — the same rule the create forms use. Agent
+  // memberships have no master record, so only the name/balance is fetched; there is no active/closed
+  // status to validate against.
+  const fetchName = (i: number, id: string) => {
+    if (id.length < 3) { setRow(i, { locked: false }); return; }
+    agentTxnsAPI.member(id).then(r => {
+      setRows(rs => rs.map((row, j) => (j === i && row.memberId === id
+        ? { ...row, memberName: r.membershipName || row.memberName, locked: !!r.membershipName } : row)));
+    }).catch(() => {});
+  };
+
+  const valid = rows.length > 0 && rows.every(r => r.memberId.trim() && amt(r.amount) > 0)
+    && distributed > 0 && Math.abs(remaining) < 0.01;
+
+  const save = async () => {
+    if (rows.some(r => !r.memberId.trim())) { showToast('Every distribution row needs a Member ID.', 'error'); return; }
+    if (rows.some(r => amt(r.amount) <= 0)) { showToast('Enter a valid deposit amount for every member.', 'error'); return; }
+    if (distributed - original > 0.01) { showToast('Total distributed amount cannot exceed the original deposit amount.', 'error'); return; }
+    if (Math.abs(remaining) > 0.01) { showToast(`Remaining balance must be ₹0.00 to submit — ₹${fmt(remaining)} left.`, 'error'); return; }
+    setBusy(true);
+    try {
+      const res = await agentTxnsAPI.distribute(txn.id, {
+        members: rows.map(r => ({ membershipId: r.memberId.trim(), membershipName: r.memberName.trim() || undefined, amount: amt(r.amount) })),
+      });
+      showToast(`Distributed ${txn.referenceNumber} across ${res.children.length} member(s).`, 'success');
+      onDone();
+    } catch (e) { showToast(agentTxnError(e, 'Failed to distribute the deposit.'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  const stat = (label: string, value: React.ReactNode, color: string) => (
+    <div style={{ flex: '1 1 140px' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color }}>{value}</div>
+    </div>
+  );
+  const remainingColor = remaining < -0.01 ? T.danger : remaining > 0.01 ? T.warning : T.success;
+
+  return (
+    <div style={{ marginTop: 4, marginBottom: 18, padding: 16, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+      <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 800, color: T.textMain }}>Deposit Distribution</p>
+      <p style={{ margin: '0 0 14px', fontSize: 11.5, color: T.textMuted }}>
+        Split this cash deposit among multiple members — each is credited individually. The total distributed must equal the original deposit amount.
+      </p>
+
+      {/* Live summary — Original / Distributed / Remaining */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', padding: 12, borderRadius: 8, background: T.surface, border: `1px solid ${T.border}`, marginBottom: 14 }}>
+        {stat('Original Deposit', fmt(original), T.textMain)}
+        {stat('Distributed', fmt(distributed), T.blue)}
+        {stat('Remaining', fmt(remaining), remainingColor)}
+      </div>
+
+      {remaining < -0.01 && (
+        <div style={{ padding: '9px 12px', borderRadius: 8, background: T.dangerBg, color: T.danger, fontSize: 11.5, fontWeight: 600, marginBottom: 12 }}>
+          Total distributed amount cannot exceed the original deposit amount.
+        </div>
+      )}
+
+      <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+          <thead><tr style={{ background: T.surface }}>{['Member ID', 'Member Name', 'Deposit Amount', 'Commission', 'Net Credit', ''].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const a = amt(r.amount); const com = commissionOf(a); const net = round2(a - com);
+              return (
+                <tr key={i} style={{ background: T.canvas }}>
+                  <td style={tdS}><Input value={r.memberId} onChange={e => { const v = normalizeMemberId(e.target.value); setRow(i, { memberId: v }); fetchName(i, v); }} placeholder="Member ID" style={{ marginBottom: 0 }} /></td>
+                  <td style={tdS}><Input value={r.memberName} onChange={e => setRow(i, { memberName: e.target.value })} placeholder="Auto / manual" readOnly={r.locked} style={{ marginBottom: 0 }} /></td>
+                  <td style={tdS}><Input value={r.amount} onChange={e => setRow(i, { amount: formatIndianAmountInput(e.target.value) })} inputMode="decimal" placeholder="0" style={{ marginBottom: 0 }} /></td>
+                  <td style={{ ...tdS, color: T.warning, fontWeight: 700, whiteSpace: 'nowrap' }}>{a > 0 ? fmt(com) : '—'}</td>
+                  <td style={{ ...tdS, fontWeight: 700, whiteSpace: 'nowrap' }}>{a > 0 ? fmt(net) : '—'}</td>
+                  <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => removeRow(i)} disabled={rows.length <= 1 || busy}>Remove</Btn></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <Btn size="sm" variant="secondary" onClick={addRow} disabled={busy || remaining <= 0.01}>+ Add Member</Btn>
+        {remaining <= 0.01 && remaining >= -0.01 && <span style={{ marginLeft: 10, fontSize: 11.5, color: T.success, fontWeight: 600 }}>Fully distributed</span>}
+      </div>
+
+      {/* Summary card — totals, live */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', padding: 12, borderRadius: 8, background: T.surface, border: `1px solid ${T.border}`, marginTop: 14 }}>
+        {stat('Original Deposit', fmt(original), T.textMain)}
+        {stat('Total Distributed', fmt(distributed), T.blue)}
+        {stat('Total Commission', fmt(totalCommission), T.warning)}
+        {stat('Total Net Credit', fmt(totalNet), T.success)}
+        {stat('Remaining', fmt(remaining), remainingColor)}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <Btn variant="success" onClick={save} disabled={busy || !valid}>{busy ? 'Saving…' : 'Save Distribution'}</Btn>
+        <span style={{ marginLeft: 10, fontSize: 11.5, color: T.textMuted }}>Creates one completed child deposit per member, each linked to {txn.referenceNumber}.</span>
+      </div>
+    </div>
+  );
+};
+
 // ─── Manage Transaction — correct the amount of a PENDING agent transaction ─────
 // A Manager already holds approval authority, so forwarding to another approver is meaningless for
 // them — they act on the transaction directly (Update Amount / Approve / Reject / Close). Every
@@ -1157,6 +1298,12 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
           </>}
           <Btn variant="secondary" onClick={onClose} disabled={busy}>Close</Btn>
         </div>
+
+        {/* Deposit Distribution — Cash Deposit only, once the token is initialised and before it is
+            finalised. Splits the deposit into per-member child credits (parent → container). */}
+        {canDistribute(current) && (
+          <DistributionSection txn={current} onDone={() => { onRefresh(); onClose(); }} />
+        )}
 
       <h3 style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Audit History</h3>
         <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10 }}>
