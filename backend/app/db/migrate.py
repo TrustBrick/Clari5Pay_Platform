@@ -61,6 +61,9 @@ _NEW_COLUMNS = [
     ("transactions", "manager_name", "VARCHAR(128)"),
     ("transactions", "manager_action_at", "TIMESTAMP"),
     ("transactions", "admin_action_at", "TIMESTAMP"),
+    # Merchant-chosen Authorized Approver ("Send To Approval" — demo only; NULL on Production).
+    ("transactions", "approver_user_id", "INTEGER"),
+    ("transactions", "approver_name", "VARCHAR(128)"),
     # Permanent creator snapshot (Merchant Username + Role at creation time).
     ("transactions", "creator_username", "VARCHAR(64)"),
     ("transactions", "creator_role", "VARCHAR(32)"),

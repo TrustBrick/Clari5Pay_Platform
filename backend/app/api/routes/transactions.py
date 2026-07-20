@@ -21,6 +21,7 @@ from app.services import tg_notify as tgn
 from app.core.cache import cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
+from app.core.config import settings
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -39,6 +40,21 @@ def _ist_now() -> datetime:
 def _require_amount(amount: float) -> None:
     if amount is None or amount < 1:
         raise HTTPException(status_code=400, detail="Amount must be greater than 0.")
+
+
+async def _resolve_merchant_approver(db: AsyncSession, merchant: User, approver_user_id: int | None):
+    """Validate the "Send To Approval" Authorized Approver (demo): must be a Supervisor or Manager
+    of the caller's OWN business. Returns (user_id, username). Mirrors the Agent module's
+    _resolve_approver — the request still flows through the same review queue; this only records
+    who the operator addressed it to."""
+    if approver_user_id is None:
+        return None, None
+    u = (await db.execute(select(User).where(User.id == approver_user_id))).scalar_one_or_none()
+    ok = (u and u.role == UserRole.MERCHANT and u.name == merchant.name
+          and str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER"))
+    if not ok:
+        raise HTTPException(status_code=400, detail="Authorized Approver must be a Supervisor or Manager of your business.")
+    return u.id, u.username
 
 
 async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, ifsc, branch, bank, member_id=None) -> None:
@@ -642,6 +658,9 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "managerName": t.manager_name,
         "managerActionAt": (t.manager_action_at.isoformat() + "Z") if t.manager_action_at else None,
         "adminActionAt": (t.admin_action_at.isoformat() + "Z") if t.admin_action_at else None,
+        # "Send To Approval" (demo): the Authorized Approver the operator addressed this to (NULL in prod).
+        "approverUserId": t.approver_user_id,
+        "approverName": t.approver_name,
         # Agent Management (demo): which Non-EPS agent a request is routed through (NULL in prod).
         "assignedAgentId": t.assigned_agent_id,
         "remarksHistory": (json.loads(t.remarks_history) if t.remarks_history else []),
@@ -1515,6 +1534,25 @@ async def admin_reports(
     return _build_report_payload(txns, bal, rates_by_business, business_by_mid, operator_by_mid)
 
 
+@router.get("/approvers")
+async def list_approvers(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Authorized Approvers for the demo "Send To Approval" selector on the merchant
+    Deposit/Withdrawal forms — every Supervisor and Manager of the caller's own business.
+    Demo-only (404 on Production, where the section is not shown)."""
+    if not settings.is_demo:
+        raise HTTPException(status_code=404, detail="Not found")
+    rows = (await db.execute(
+        select(User).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
+    )).scalars().all()
+    return [
+        {"id": u.id, "name": u.username, "role": str(u.merchant_role or "").upper()}
+        for u in rows if str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER")
+    ]
+
+
 @router.post("/deposit")
 async def create_deposit(
     data: DepositCreate,
@@ -1560,6 +1598,10 @@ async def create_deposit(
         notes=data.notes,
         risk_analysis=data.riskAnalysis,
     )
+    # "Send To Approval" (demo only): record the chosen Authorized Approver on the row. The deposit
+    # still enters the same Supervisor review queue; this only captures who it was addressed to.
+    if settings.is_demo:
+        tx.approver_user_id, tx.approver_name = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "DEP", current_user.pay_in)
@@ -1591,6 +1633,8 @@ async def create_deposit(
     else:
         await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)
         await record_audit(db, "DEPOSIT_REQUESTED", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=str(tx.amount))
+    if tx.approver_name:
+        await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=tx.approver_name)
     await _refresh_with_images(db, tx)
     return _t(tx)
 
@@ -1642,6 +1686,10 @@ async def create_withdrawal(
         creator_username=current_user.username,
         creator_role=current_user.merchant_role,
     )
+    # "Send To Approval" (demo only): record the chosen Authorized Approver on the row. The
+    # withdrawal still enters the same Manager review queue; this only captures who it was addressed to.
+    if settings.is_demo:
+        tx.approver_user_id, tx.approver_name = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "WIT", current_user.pay_out)
@@ -1658,6 +1706,8 @@ async def create_withdrawal(
     await tgn.notify(db, tx, "MANAGER", "withdrawal_request")
     await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount}), assigned to Manager", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
+    if tx.approver_name:
+        await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=tx.approver_name, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
     return _t(tx)
 

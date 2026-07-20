@@ -212,6 +212,11 @@ class Transaction(Base):
     manager_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     manager_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     admin_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Merchant-chosen Authorized Approver ("Send To Approval" — demo only; mirrors AgentTransaction).
+    # The request is routed to the same Supervisor (deposit) / Manager (withdrawal) review queue as
+    # before; these columns just record WHO the operator addressed it to. NULL on Production.
+    approver_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    approver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 

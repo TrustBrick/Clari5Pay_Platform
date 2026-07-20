@@ -477,6 +477,25 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
   );
 };
 
+// "Send To Approval" — demo only. Identical card/copy/validation to the Agent Deposit/Withdrawal
+// screens (see AgentTxnPages.tsx): every request is addressed to a chosen Supervisor/Manager
+// approver before it enters the same review queue it always has.
+type ApproverOption = { id: number; name: string; role: string };
+const SendToApprovalCard: React.FC<{
+  noun: string; approvers: ApproverOption[]; value: string; onChange: (v: string) => void;
+}> = ({ noun, approvers, value, onChange }) => (
+  <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+    <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
+    <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
+      Every Merchant {noun} Request goes to an approver — choose who reviews this request.
+    </p>
+    <div style={{ maxWidth: 360 }}>
+      <Sel label="Authorized Approver" value={value} onChange={e => onChange(e.target.value)} required
+        options={[{ value: '', label: '— Select approver —' }, ...approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+    </div>
+  </div>
+);
+
 // ─── Deposit form (used inside the Request modal) ──────────────────────────────
 export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ user, onSubmitted }) => {
   const { showToast } = useToast();
@@ -490,6 +509,10 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   // Cash / Crypto member-supplied details + proof (no bank account on these types).
   const [details, setDetails] = useState<Record<string,string>>({ network:'TRC20' });
   const [proofs, setProofs] = useState<string[]>([]);
+  // "Send To Approval" (demo only): chosen Authorized Approver + the business's Supervisors/Managers.
+  const [approverId, setApproverId] = useState('');
+  const [approvers, setApprovers] = useState<ApproverOption[]>([]);
+  useEffect(() => { if (IS_DEMO) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
   const isUpi = form.depositType === 'UPI';
   const isCash = form.depositType === 'CASH';
   const isCrypto = form.depositType === 'CRYPTO';
@@ -526,12 +549,15 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     if(isCash && !proofs.length){ showToast('Upload a proof / image of the cash deposit','error'); return; }
     if(isCrypto && (!details.walletAddress||!details.network||!details.txHash)){ showToast('Enter Wallet Address, Network and Transaction Hash','error'); return; }
     if(isCrypto && !proofs.length){ showToast('Upload a proof / screenshot of the transaction','error'); return; }
+    // "Send To Approval" (demo only): an Authorized Approver is mandatory, mirroring the Agent module.
+    if(IS_DEMO && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
     // Agent assignment is optional on a normal merchant deposit (the selector is labelled
     // "optional"); a mandatory agent belongs to the Agent Management module, not here.
     setLoading(true);
     try {
       const created = await transactionAPI.createDeposit({
         ...form, amount: parseFloat(parseIndianAmount(form.amount)), riskAnalysis,
+        ...(IS_DEMO && approverId ? { sentForApproval: true, approverUserId: Number(approverId) } : {}),
         ...(isBankLike ? {
           accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
           saveBankAccount: saveNew,
@@ -600,7 +626,8 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
       <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,marginBottom:16,cursor:'pointer' }}>
         <input type="checkbox" checked={riskAnalysis} onChange={e=>setRiskAnalysis(e.target.checked)}/> Perform Risk Analysis
       </label>
-      <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
+      {IS_DEMO && <SendToApprovalCard noun="Deposit" approvers={approvers} value={approverId} onChange={setApproverId} />}
+      <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName} style={IS_DEMO?{ marginTop:16 }:undefined}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
     </div>
   );
 };
@@ -635,6 +662,10 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [savedBanks, setSavedBanks] = useState<MerchantBankAccount[]>([]);
   const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
   const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
+  // "Send To Approval" (demo only): chosen Authorized Approver + the business's Supervisors/Managers.
+  const [approverId, setApproverId] = useState('');
+  const [approvers, setApprovers] = useState<ApproverOption[]>([]);
+  useEffect(() => { if (IS_DEMO) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
@@ -699,11 +730,14 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(hasSaved && !destId){ showToast('Select a withdrawal destination','error'); return; }
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
+    // "Send To Approval" (demo only): an Authorized Approver is mandatory, mirroring the Agent module.
+    if(IS_DEMO && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
     // Agent assignment is optional on a normal merchant withdrawal — see the deposit path.
     setLoading(true);
     try {
       const payload: Record<string, unknown> = { amount: amountNum, memberId, memberName: memberName.trim(), payoutMode: mode, payoutDetails: details };
       if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
+      if (IS_DEMO && approverId) { payload.sentForApproval = true; payload.approverUserId = Number(approverId); }
       const created = await transactionAPI.createWithdrawal(payload);
       fireConfetti();
       showToast('Withdrawal request submitted');
@@ -794,7 +828,8 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
         No proof needed now — after payment, the agent uploads the proof ({mode==='CRYPTO' ? 'Transaction Hash' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}), which you can then view.
       </div>
-      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!amount||!memberId}>
+      {IS_DEMO && <SendToApprovalCard noun="Withdrawal" approvers={approvers} value={approverId} onChange={setApproverId} />}
+      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff', ...(IS_DEMO?{ marginTop:16 }:{}) }} onClick={submit} disabled={loading||!amount||!memberId}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
     </div>

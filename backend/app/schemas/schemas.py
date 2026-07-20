@@ -172,6 +172,10 @@ class DepositCreate(BaseModel):
     notes: Optional[str] = None
     riskAnalysis: bool = False
     saveBankAccount: bool = False
+    # "Send To Approval" (demo only): the chosen Authorized Approver (a Supervisor/Manager of the
+    # merchant's own business). Ignored on Production, where the section is not shown.
+    sentForApproval: bool = False
+    approverUserId: Optional[int] = None
 
 
 class WithdrawalCreate(BaseModel):
@@ -191,6 +195,10 @@ class WithdrawalCreate(BaseModel):
     utr: Optional[str] = None
     notes: Optional[str] = None
     saveBankAccount: bool = False
+    # "Send To Approval" (demo only): the chosen Authorized Approver (a Supervisor/Manager of the
+    # merchant's own business). Ignored on Production, where the section is not shown.
+    sentForApproval: bool = False
+    approverUserId: Optional[int] = None
 
 
 class SettlementCreate(BaseModel):
