@@ -1095,6 +1095,19 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
   const addRow = () => setRows(rs => [...rs, { memberId: '', memberName: '', locked: false, amount: '' }]);
   const removeRow = (i: number) => setRows(rs => (rs.length > 1 ? rs.filter((_, j) => j !== i) : rs));
 
+  // When a member row is added, bring it into view and focus its Member ID — otherwise the new blank
+  // row appears above the summary and it looks like "+ Add Member" did nothing.
+  const wrapRef = React.useRef<HTMLDivElement>(null);
+  const prevLen = React.useRef(rows.length);
+  useEffect(() => {
+    if (rows.length > prevLen.current) {
+      const inp = wrapRef.current?.querySelector('tbody tr:last-child input') as HTMLInputElement | null;
+      inp?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      inp?.focus();
+    }
+    prevLen.current = rows.length;
+  }, [rows.length]);
+
   // Auto-fetch the member name once an ID is entered — the same rule the create forms use. Agent
   // memberships have no master record, so only the name/balance is fetched; there is no active/closed
   // status to validate against.
@@ -1132,6 +1145,15 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
     </div>
   );
   const remainingColor = remaining < -0.01 ? T.danger : remaining > 0.01 ? T.warning : T.success;
+  // Tell the operator exactly why Save is disabled (or that it is ready), so the gated button is
+  // never a mystery.
+  const missingRow = rows.some(r => !r.memberId.trim() || amt(r.amount) <= 0);
+  const saveHint = busy ? 'Saving…'
+    : missingRow ? 'Fill in every member’s ID and amount to continue.'
+    : remaining > 0.01 ? `${fmt(remaining)} still to allocate before you can save.`
+    : remaining < -0.01 ? `Over the deposit by ${fmt(-remaining)} — reduce the amounts.`
+    : `Ready — creates one completed child deposit per member, each linked to ${txn.referenceNumber}.`;
+  const saveHintColor = missingRow || remaining > 0.01 ? T.warning : remaining < -0.01 ? T.danger : T.success;
 
   return (
     <div style={{ marginTop: 4, marginBottom: 18, padding: 16, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
@@ -1153,7 +1175,7 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
         </div>
       )}
 
-      <div style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10 }}>
+      <div ref={wrapRef} style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
           <thead><tr style={{ background: T.surface }}>{['Member ID', 'Member Name', 'Deposit Amount', 'Commission', 'Net Credit', ''].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
           <tbody>
@@ -1163,7 +1185,15 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
                 <tr key={i} style={{ background: T.canvas }}>
                   <td style={tdS}><Input value={r.memberId} onChange={e => { const v = normalizeMemberId(e.target.value); setRow(i, { memberId: v }); fetchName(i, v); }} placeholder="Member ID" style={{ marginBottom: 0 }} /></td>
                   <td style={tdS}><Input value={r.memberName} onChange={e => setRow(i, { memberName: e.target.value })} placeholder="Auto / manual" readOnly={r.locked} style={{ marginBottom: 0 }} /></td>
-                  <td style={tdS}><Input value={r.amount} onChange={e => setRow(i, { amount: formatIndianAmountInput(e.target.value) })} inputMode="decimal" placeholder="0" style={{ marginBottom: 0 }} /></td>
+                  <td style={tdS}>
+                    <Input value={r.amount} onChange={e => setRow(i, { amount: formatIndianAmountInput(e.target.value) })} inputMode="decimal" placeholder="0" style={{ marginBottom: 0 }} />
+                    {remaining > 0.01 && (
+                      <button type="button" onClick={() => setRow(i, { amount: formatIndianAmountInput(String(round2(a + remaining))) })}
+                        style={{ marginTop: 4, background: 'none', border: 'none', padding: 0, color: T.blue, fontSize: 10.5, fontWeight: 700, cursor: 'pointer' }}>
+                        + Fill remaining ({fmt(remaining)})
+                      </button>
+                    )}
+                  </td>
                   <td style={{ ...tdS, color: T.warning, fontWeight: 700, whiteSpace: 'nowrap' }}>{a > 0 ? fmt(com) : '—'}</td>
                   <td style={{ ...tdS, fontWeight: 700, whiteSpace: 'nowrap' }}>{a > 0 ? fmt(net) : '—'}</td>
                   <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => removeRow(i)} disabled={rows.length <= 1 || busy}>Remove</Btn></td>
@@ -1188,9 +1218,9 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
         {stat('Remaining', fmt(remaining), remainingColor)}
       </div>
 
-      <div style={{ marginTop: 14 }}>
+      <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <Btn variant="success" onClick={save} disabled={busy || !valid}>{busy ? 'Saving…' : 'Save Distribution'}</Btn>
-        <span style={{ marginLeft: 10, fontSize: 11.5, color: T.textMuted }}>Creates one completed child deposit per member, each linked to {txn.referenceNumber}.</span>
+        <span style={{ fontSize: 11.5, color: saveHintColor }}>{saveHint}</span>
       </div>
     </div>
   );
