@@ -604,6 +604,9 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const [mobileCode, setMobileCode] = useState('+91');
   const [notes, setNotes] = useState('');
   const [instructions, setInstructions] = useState('');
+  // Approval is mandatory on an Agent Deposit — the operator must always route it to an approver,
+  // mirroring the Agent Withdrawal Request.
+  const [approverId, setApproverId] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AgentTxnRow | null>(null);
 
@@ -634,6 +637,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
     setSenderIfsc(''); setSenderBankName(''); setSenderBranch(''); senderIfscFill.reset();
     setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91'); setNotes(''); setInstructions('');
+    setApproverId('');
   };
 
   const submit = async () => {
@@ -648,6 +652,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       showToast('Enter the Sending Account holder and number.', 'error'); return;
     }
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
+    if (!approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setBusy(true); setResult(null);
     const body: AgentDepositBody = {
       agentMasterId: agent.id, membershipId: membershipId.trim(),
@@ -655,7 +660,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       amount: amt, country: country || undefined, state: state || undefined,
       location: location || undefined, mobile: mobile || undefined,
       mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
-      instructions: instructions || undefined, sentForApproval: false,
+      instructions: instructions || undefined, sentForApproval: true,
+      approverUserId: Number(approverId),
       // No deposit collects Token Details / Note Number at creation: Cash captures the token and
       // Crypto the wallet at Submit Account, and a Bank Transfer never has one — the operator
       // supplies the agent's bank account and the player pays into it.
@@ -666,7 +672,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       senderIfsc: senderIfsc.trim() || undefined,
       senderBankName: senderBankName.trim() || undefined,
       senderBranch: senderBranch.trim() || undefined,
-      // Approval routing follows the business workflow automatically — no manual approver.
+      // Send To Approval — the operator picks the approver, exactly like the Agent Withdrawal
+      // Request; the backend stores it and follows the same approval workflow.
     };
     try {
       const row = await agentTxnsAPI.createDeposit(body);
@@ -764,6 +771,19 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
           <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes <span style={{ color: T.textLight, fontWeight: 600 }}>({notes.length}/100)</span></label>
           <textarea value={notes} maxLength={100} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Up to 100 characters"
             style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
+        </div>
+
+        {/* Send To Approval — mandatory, identical to the Agent Withdrawal Request: every Agent
+            Deposit goes to a Supervisor/Manager approver chosen here. */}
+        <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+          <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
+          <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
+            Every Agent Deposit Request goes to an approver — choose who reviews this request.
+          </p>
+          <div style={{ maxWidth: 360 }}>
+            <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
+              options={[{ value: '', label: '— Select approver —' }, ...fd.approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+          </div>
         </div>
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
