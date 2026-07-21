@@ -700,6 +700,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [details, setDetails] = useState<Record<string,string>>({});
   const [available, setAvailable] = useState(0);
   const [maxWithdrawable, setMaxWithdrawable] = useState(0);
+  const [summaryLoaded, setSummaryLoaded] = useState(false);  // balance known → safe to validate against it
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
   const [savedBanks, setSavedBanks] = useState<MerchantBankAccount[]>([]);
@@ -722,7 +723,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     else { setDestId(`bank-${row.id}`); setMode('BANK'); setDetails({ accountHolder: row.accountHolder || '', accountNumber: row.accountNumber || '', ifsc: row.ifsc || '', bank: row.bankName || '', branch: row.branch || '' }); }
   };
 
-  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); }).catch(()=>{}); }, []);
+  useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); setSummaryLoaded(true); }).catch(()=>{}); }, []);
 
   // Auto-fill Member Name from the latest record for this Membership ID; lock it when the
   // membership already exists, otherwise allow manual entry for a new member.
@@ -772,10 +773,20 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const chosenSaved = savedDests.find(d => d.id === destId);
   const fields = MODE_FIELDS[mode];
   const amountNum = parseFloat(parseIndianAmount(amount));
+  // Inline amount validation — recomputed on every render, so it reacts immediately as the
+  // operator types, and is re-checked in submit() before the request goes out. The withdrawable
+  // cap is `maxWithdrawable` (balance net of fees), which is also what the server enforces, so we
+  // never let the client submit an amount the backend would reject. null = no error / valid.
+  const amountErr: string | null = !amount
+    ? null
+    : (isNaN(amountNum) || amountNum <= 0)
+      ? 'Enter a valid amount greater than 0.'
+      : (summaryLoaded && amountNum > maxWithdrawable + 0.01)
+        ? `Insufficient balance. Maximum withdrawable amount is ${fmt(maxWithdrawable)}.`
+        : null;
   const submit = async () => {
     if(!amount||!memberId||!memberName.trim()){ showToast('Enter amount, Membership ID and Member Name','error'); return; }
-    if(amountNum < 1){ showToast('Amount must be greater than 0.','error'); return; }
-    if(amountNum > maxWithdrawable + 0.01){ showToast('Insufficient Balance','error'); return; }
+    if(amountErr){ showToast(amountErr,'error'); return; }
     if(hasSaved && !destId){ showToast('Select a withdrawal destination','error'); return; }
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
@@ -819,7 +830,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         </p>
       </div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Input label="Amount (INR)" type="text" inputMode="decimal" value={amount} onChange={e=>setAmount(formatIndianAmountInput(e.target.value))} placeholder="Min 1" required/>
+        <Input label="Amount (INR)" type="text" inputMode="decimal" value={amount} onChange={e=>setAmount(formatIndianAmountInput(e.target.value))} placeholder="Min 1" required error={amountErr || undefined}/>
         <Input label="Membership ID" value={memberId} onChange={e=>setMemberId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="Alphanumeric (A-Z, 0-9)" required/>
         <Input label="Member Name" value={memberName} onChange={e=>setMemberName(e.target.value)} placeholder="Full name" required readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined}/>
       </div>
@@ -886,7 +897,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       </div>
       {mustAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
       {SEND_TO_APPROVAL_ENABLED && <SendToApprovalCard noun="Withdrawal" approvers={approvers} value={approverId} onChange={setApproverId} />}
-      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff', ...(SEND_TO_APPROVAL_ENABLED?{ marginTop:16 }:{}) }} onClick={submit} disabled={loading||!amount||!memberId}>
+      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff', ...(SEND_TO_APPROVAL_ENABLED?{ marginTop:16 }:{}) }} onClick={submit} disabled={loading||!amount||!memberId||!!amountErr}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
     </div>
