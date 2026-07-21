@@ -7,7 +7,7 @@ import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
 import { TxExportButton } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
-import { IS_DEMO } from '../utils/portal';
+import { IS_DEMO, SEND_TO_APPROVAL_ENABLED } from '../utils/portal';
 import { AgentAssignmentPanel } from './AgentPages';
 import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI } from '../services/api';
 import type { TxQuery } from '../services/api';
@@ -220,7 +220,7 @@ export const MerchantSlipModal: React.FC<{
   // Approver who should review this deposit — revealed here rather than on the create form.
   const [approverId, setApproverId] = useState('');
   const [approvers, setApprovers] = useState<ApproverOption[]>([]);
-  useEffect(() => { if (IS_DEMO) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
+  useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
   const [imgs, setImgs] = useState<{ adminProof?: string | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
   useEffect(() => {
@@ -248,7 +248,7 @@ export const MerchantSlipModal: React.FC<{
 
   // Both the UTR number and at least one payment proof are mandatory when submitting a slip; in demo
   // the Authorized Approver (revealed after the proof uploads) is required too.
-  const canSubmit = proofs.length > 0 && !!ref.trim() && (!IS_DEMO || !!approverId);
+  const canSubmit = proofs.length > 0 && !!ref.trim() && (!SEND_TO_APPROVAL_ENABLED || !!approverId);
   // Slip submission applies to deposits awaiting the merchant's payment proof, or those a
   // Supervisor returned for resubmission (the Data Operator re-uploads the correct slip).
   const canSubmitSlip = tx.type.startsWith('DEPOSIT') && (tx.status === 'ACCOUNT_SUBMITTED' || tx.status === 'RESUBMITTED');
@@ -257,11 +257,11 @@ export const MerchantSlipModal: React.FC<{
   const submit = async () => {
     if (!ref.trim()) { showToast('Enter the UTR number', 'error'); return; }
     if (!proofs.length) { showToast('Upload the payment proof', 'error'); return; }
-    if (IS_DEMO && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
+    if (SEND_TO_APPROVAL_ENABLED && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setLoading(true);
     try {
       await transactionAPI.submitSlip(tx.id, { merchantProofs: proofs, merchantRef: ref.trim() || undefined,
-        ...(IS_DEMO && approverId ? { approverUserId: Number(approverId) } : {}) });
+        ...(SEND_TO_APPROVAL_ENABLED && approverId ? { approverUserId: Number(approverId) } : {}) });
       fireConfetti();
       showToast('Payment proof submitted');
       onSubmitted?.();
@@ -364,7 +364,7 @@ export const MerchantSlipModal: React.FC<{
           <MultiProofUpload values={proofs} onChange={setProofs} label="Upload Slip (up to 3)" required />
           {/* Send To Approval — revealed only after the slip proof uploads; the merchant chooses who
               reviews this deposit, then it routes to that approver (Supervisor review). Demo only. */}
-          {IS_DEMO && proofs.length > 0 && (
+          {SEND_TO_APPROVAL_ENABLED && proofs.length > 0 && (
             <SendToApprovalCard noun="Deposit" approvers={approvers} value={approverId} onChange={setApproverId}
               className="animate-slide-up"
               subtitle={<>Proof uploaded successfully. Please choose the Authorized Approver who should review this request.</>} />
@@ -530,7 +530,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   // "Send To Approval" (demo only): chosen Authorized Approver + the business's Supervisors/Managers.
   const [approverId, setApproverId] = useState('');
   const [approvers, setApprovers] = useState<ApproverOption[]>([]);
-  useEffect(() => { if (IS_DEMO) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
+  useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
   const isUpi = form.depositType === 'UPI';
   const isCash = form.depositType === 'CASH';
   const isCrypto = form.depositType === 'CRYPTO';
@@ -539,7 +539,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   // is uploaded here, so the approver is revealed once that proof uploads. UPI/bank deposits carry no
   // proof on this form: their approver is chosen later, at the Pay & Submit Proof step (MerchantSlipModal).
   const proofGated = isCash || isCrypto;
-  const showApproval = IS_DEMO && proofGated && proofs.length > 0;
+  const showApproval = SEND_TO_APPROVAL_ENABLED && proofGated && proofs.length > 0;
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
   const setDetail = (k: string, v: string) => setDetails(d => ({ ...d, [k]: v }));
   // Membership IDs are uppercase letters + digits only (auto-converted, lowercase blocked).
@@ -692,7 +692,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   // "Send To Approval" (demo only): chosen Authorized Approver + the business's Supervisors/Managers.
   const [approverId, setApproverId] = useState('');
   const [approvers, setApprovers] = useState<ApproverOption[]>([]);
-  useEffect(() => { if (IS_DEMO) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
+  useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
@@ -768,13 +768,13 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
     // "Send To Approval" (demo only): an Authorized Approver is mandatory, mirroring the Agent module.
-    if(IS_DEMO && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
+    if(SEND_TO_APPROVAL_ENABLED && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
     // Agent assignment is optional on a normal merchant withdrawal — see the deposit path.
     setLoading(true);
     try {
       const payload: Record<string, unknown> = { amount: amountNum, memberId, memberName: memberName.trim(), payoutMode: mode, payoutDetails: details };
       if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
-      if (IS_DEMO && approverId) { payload.sentForApproval = true; payload.approverUserId = Number(approverId); }
+      if (SEND_TO_APPROVAL_ENABLED && approverId) { payload.sentForApproval = true; payload.approverUserId = Number(approverId); }
       const created = await transactionAPI.createWithdrawal(payload);
       fireConfetti();
       showToast('Withdrawal request submitted');
@@ -865,8 +865,8 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
         No proof needed now — after payment, the agent uploads the proof ({mode==='CRYPTO' ? 'Transaction Hash' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}), which you can then view.
       </div>
-      {IS_DEMO && <SendToApprovalCard noun="Withdrawal" approvers={approvers} value={approverId} onChange={setApproverId} />}
-      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff', ...(IS_DEMO?{ marginTop:16 }:{}) }} onClick={submit} disabled={loading||!amount||!memberId||!!amountErr}>
+      {SEND_TO_APPROVAL_ENABLED && <SendToApprovalCard noun="Withdrawal" approvers={approvers} value={approverId} onChange={setApproverId} />}
+      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff', ...(SEND_TO_APPROVAL_ENABLED?{ marginTop:16 }:{}) }} onClick={submit} disabled={loading||!amount||!memberId||!!amountErr}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
     </div>
@@ -1516,7 +1516,7 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
   // addressed to me appears here whatever my role or its type — a Manager sees a deposit chosen for
   // them, a Supervisor a withdrawal. The classic role-partitioned queue still applies on Production,
   // to unassigned requests, and to the Settlement page (kind set).
-  const unifiedDemo = IS_DEMO && !kind;
+  const unifiedDemo = SEND_TO_APPROVAL_ENABLED && !kind;
   const heading = kind === 'SETTLEMENT' ? 'Settlement Approvals'
     : unifiedDemo ? 'Approvals'
     : rolePrefix === 'WITHDRAWAL' ? 'Withdrawal Approvals' : 'Deposit Approvals';

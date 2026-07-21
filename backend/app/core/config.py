@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # [DEMO] email subject prefix, and is echoed on /health for deploy verification. ──
     ENVIRONMENT: str = "production"
 
+    # Merchant "Send To Approval" (Authorized Approver) — now GA on Production as well as Demo.
+    # Kill-switch: set SEND_TO_APPROVAL_ENABLED=false in the env to turn the merchant feature off
+    # without a code change. Does NOT affect the Agent module (separately demo-gated).
+    SEND_TO_APPROVAL_ENABLED: bool = True
+
     # ── Login / password-reset OTP ──
     OTP_EXPIRE_MINUTES: int = 15
     # SMTP — when SMTP_HOST is set, OTPs are emailed for real (production).

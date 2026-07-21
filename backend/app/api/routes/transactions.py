@@ -1562,10 +1562,10 @@ async def list_approvers(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Authorized Approvers for the demo "Send To Approval" selector on the merchant
-    Deposit/Withdrawal forms — every Supervisor and Manager of the caller's own business.
-    Demo-only (404 on Production, where the section is not shown)."""
-    if not settings.is_demo:
+    """Authorized Approvers for the "Send To Approval" selector on the merchant Deposit/Withdrawal
+    forms — every Supervisor and Manager of the caller's own business. GA on Demo + Production;
+    404 only when the feature is switched off (SEND_TO_APPROVAL_ENABLED=false)."""
+    if not settings.SEND_TO_APPROVAL_ENABLED:
         raise HTTPException(status_code=404, detail="Not found")
     rows = (await db.execute(
         select(User).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
@@ -1621,9 +1621,9 @@ async def create_deposit(
         notes=data.notes,
         risk_analysis=data.riskAnalysis,
     )
-    # "Send To Approval" (demo only): record the chosen Authorized Approver on the row. The deposit
-    # still enters the same Supervisor review queue; this only captures who it was addressed to.
-    if settings.is_demo:
+    # "Send To Approval": record the chosen Authorized Approver on the row (GA on Demo + Prod). The
+    # deposit still enters the same review queue; this captures who it was addressed to (and routes to them).
+    if settings.SEND_TO_APPROVAL_ENABLED:
         tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     db.add(tx)
     await db.flush()
@@ -1709,9 +1709,9 @@ async def create_withdrawal(
         creator_username=current_user.username,
         creator_role=current_user.merchant_role,
     )
-    # "Send To Approval" (demo only): record the chosen Authorized Approver on the row. The
-    # withdrawal still enters the same Manager review queue; this only captures who it was addressed to.
-    if settings.is_demo:
+    # "Send To Approval": record the chosen Authorized Approver on the row (GA on Demo + Prod). The
+    # withdrawal still enters the same review queue; this captures who it was addressed to (and routes to them).
+    if settings.SEND_TO_APPROVAL_ENABLED:
         tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     db.add(tx)
     await db.flush()
@@ -1893,9 +1893,9 @@ async def submit_slip(
         tx.merchant_proof = _proofs[0]
         tx.merchant_proofs = json.dumps(_proofs)
     tx.merchant_ref = data.merchantRef
-    # "Send To Approval" (demo only): the merchant chose an Authorized Approver at this slip step.
-    # Record who the deposit is addressed to; the Supervisor review queue routing is unchanged.
-    if settings.is_demo and data.approverUserId is not None:
+    # "Send To Approval": the merchant chose an Authorized Approver at this slip step (GA on Demo +
+    # Prod). Record who the deposit is addressed to; the request then routes to that approver.
+    if settings.SEND_TO_APPROVAL_ENABLED and data.approverUserId is not None:
         tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     # Slip submitted → pending approval, auto-assigned to the Supervisor review queue.
     tx.status = TxStatus.SUPERVISOR_REVIEW
