@@ -768,7 +768,10 @@ class AgentReviewAction(BaseModel):
 class AgentPaymentDetails(BaseModel):
     """Method-specific execution details the CREATING operator submits AFTER approval, which
     completes the withdrawal: CASH → tokenDetails; CRYPTO → walletAddress (+ optional txHash);
-    BANK → slipImage + utr (reference); UPI → utr + slipImage (screenshot)."""
+    BANK → slipImage + utr (reference); UPI → utr + slipImage (screenshot). The Unique Note
+    Number (mandatory on every withdrawal, exactly as at the original request) is captured here
+    too, since the approve-first create step no longer collects it."""
+    noteNumber: str | None = None
     tokenDetails: str | None = None
     walletAddress: str | None = None
     txHash: str | None = None
@@ -1460,6 +1463,17 @@ async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSes
     # Balance BEFORE this leg completes (still in-flight here, so excluded), for the audit line.
     _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
     _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
+    # Unique Note Number — mandatory on EVERY withdrawal method, exactly as it was at the original
+    # request; the approve-first create no longer collects it, so it is captured here. Same
+    # uniqueness rule as elsewhere (excluding this transaction's own row).
+    note = (body.noteNumber or "").strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="Unique Note Number is required.")
+    clash = (await db.execute(select(AgentTransaction.id).where(
+        AgentTransaction.note_number == note, AgentTransaction.id != t.id))).scalars().first()
+    if clash:
+        raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
+    t.note_number = note
     # Method-specific execution details — mandatory ones enforced per Withdrawal Type.
     if method in TOKEN_METHODS:                        # CASH → Token Number
         if not (body.tokenDetails or "").strip():

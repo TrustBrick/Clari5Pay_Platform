@@ -2859,6 +2859,7 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
   const isCash = isTokenMethod(row.txnMethod);       // CASH → Token Number
   const isCryptoM = isWalletMethod(row.txnMethod);   // CRYPTO → Wallet Address (+ optional Tx Hash)
   const isBank = method === 'BANK';                  // BANK → Slip + Reference; else UPI-style → UTR + Screenshot
+  const [note, setNote] = useState('');              // Unique Note Number — mandatory for every method
   const [token, setToken] = useState('');
   const [wallet, setWallet] = useState('');
   const [txHash, setTxHash] = useState('');
@@ -2874,14 +2875,18 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
     catch { showToast('Could not read the file.', 'error'); }
   };
 
-  const ready = isCash ? !!token.trim() : isCryptoM ? !!wallet.trim() : (!!slip && !!utr.trim());
+  // The Unique Note Number is mandatory for every method, on top of the method-specific fields.
+  const ready = !!note.trim() && (isCash ? !!token.trim() : isCryptoM ? !!wallet.trim() : (!!slip && !!utr.trim()));
   const submit = async () => {
     if (!ready) { showToast('Fill the required payment details.', 'error'); return; }
     setBusy(true);
     try {
-      const body = isCash ? { tokenDetails: token.trim() }
-        : isCryptoM ? { walletAddress: wallet.trim(), ...(txHash.trim() ? { txHash: txHash.trim() } : {}) }
-        : { slipImage: slip, utr: utr.trim() };
+      const body = {
+        noteNumber: note.trim(),
+        ...(isCash ? { tokenDetails: token.trim() }
+          : isCryptoM ? { walletAddress: wallet.trim(), ...(txHash.trim() ? { txHash: txHash.trim() } : {}) }
+          : { slipImage: slip, utr: utr.trim() }),
+      };
       await agentTxnsAPI.payout(row.id, body);
       showToast(`${row.referenceNumber} completed.`, 'success');
       onDone(); onClose();
@@ -2898,6 +2903,11 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
         <DField k="Amount" v={fmt(row.amount)} />
         <DField k="Membership" v={row.membershipId} />
       </div>
+      {/* Unique Note Number — mandatory for every method, placed directly above the payment-specific
+          fields. Reuses the same field, formatting (normalizeNoteNumber) and uniqueness rule as the
+          original request / deposit token step. */}
+      <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required
+        placeholder="As provided by the customer" hint="Uppercase letters and numbers only; must be unique" />
       {isCash && <Input label="Token Number" value={token} onChange={e => setToken(e.target.value)} required placeholder="Token number handed to the member" />}
       {isCryptoM && (<>
         <Input label="Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="The wallet paid out to" />

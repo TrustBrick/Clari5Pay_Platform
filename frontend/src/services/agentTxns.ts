@@ -359,7 +359,7 @@ export const agentTxnsAPI = {
   managerReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
   /** Submit Payment Details (creator, after approval) — method-specific, completes the withdrawal. */
-  payout: async (id: number, body: { tokenDetails?: string; walletAddress?: string; txHash?: string; slipImage?: string; utr?: string }) =>
+  payout: async (id: number, body: { noteNumber?: string; tokenDetails?: string; walletAddress?: string; txHash?: string; slipImage?: string; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
   // ── Settlement chain: Requested → Accepted → Proof Uploaded → Settled (payment is offline) ──
   settlementAccept: async (id: number, remark: string) =>
