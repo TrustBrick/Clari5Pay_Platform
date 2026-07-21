@@ -52,8 +52,10 @@ const STATUS_STYLE: Record<string, { c: string; bg: string; label: string }> = {
   ACCOUNT_SUBMITTED: { c: T.info, bg: T.infoBg, label: 'Account Submitted' },
   SLIP_SUBMITTED: { c: T.blue, bg: `${T.blue}18`, label: 'Slip Submitted' },
   SUPERVISOR_APPROVED: { c: '#7c3aed', bg: '#7c3aed18', label: 'Approved by Supervisor' },
-  MANAGER_APPROVED: { c: '#7c3aed', bg: '#7c3aed18', label: 'Approved by Manager' },
-  MANAGER_REVIEW: { c: '#7c3aed', bg: '#7c3aed18', label: 'Manager Review' },
+  // Withdrawal approve-first flow: MANAGER_REVIEW = created & awaiting the chosen approver;
+  // MANAGER_APPROVED = approved, awaiting the operator's payment details.
+  MANAGER_APPROVED: { c: '#7c3aed', bg: '#7c3aed18', label: 'Approved' },
+  MANAGER_REVIEW: { c: T.warning, bg: T.warningBg, label: 'Waiting for Approval' },
   DEPOSITED: { c: T.success, bg: T.successBg, label: 'Deposited' },
   COMPLETED: { c: T.success, bg: T.successBg, label: 'Completed' },
   // A Cash deposit that was split among members — a non-crediting container; its children carry the money.
@@ -862,6 +864,13 @@ export const AgentWithdrawalRequestPage: React.FC<{
     : (autoAgent && String(autoAgent.agentMasterId) === agentId
         ? { code: autoAgent.agentCode || '', name: autoAgent.agentName || '', country: autoAgent.country || '', state: autoAgent.state || '', location: autoAgent.location || '', category: autoAgent.category || '' }
         : undefined);
+  // Maximum Withdrawable Amount = the member's balance net of the agent's withdrawal commission,
+  // using the SAME fee the server charges (required = amount × (1 + rate)); so max = balance ÷ (1 + rate).
+  const wdFee = fdAgent?.withdrawalFee ?? 0;
+  const maxWithdrawable = memberBalance != null ? memberBalance / (1 + wdFee / 100) : null;
+  const overMax = !isSettlement && maxWithdrawable != null && Number(parseIndianAmount(amount)) > maxWithdrawable + 0.01;
+  const mdLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' };
+  const mdVal: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' };
   const reset = () => {
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
@@ -876,6 +885,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
     if (!agentId) { showToast('Select an Agent ID.', 'error'); return; }
     const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast(`Enter a valid ${isSettlement ? 'Settlement' : 'Transaction'} Amount.`, 'error'); return; }
+    if (!isSettlement && maxWithdrawable != null && amt > maxWithdrawable + 0.01) {
+      showToast("Requested amount exceeds the member's maximum withdrawable balance after commission.", 'error'); return;
+    }
     if (notes.length > 100) { showToast(`${isSettlement ? 'Remarks' : 'Notes'} must be 100 characters or fewer.`, 'error'); return; }
     if (!isSettlement && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
@@ -886,16 +898,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
         String(disp.category).toUpperCase() !== categoryForMethod(txnMethod)) {
       showToast('The selected Agent does not belong to the chosen Transaction Type.', 'error'); return;
     }
-    // Token / wallet capture is a Withdrawal concern — a settlement is paid offline.
-    if (!isSettlement) {
-      if (isWalletMethod(txnMethod)) {
-        if (!walletAddress.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
-        if (!isValidWallet(walletAddress)) { showToast('Enter a valid crypto wallet address.', 'error'); return; }
-      } else {
-        if (!tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
-        if (!noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
-      }
-    }
+    // Token / Wallet / Slip are NO LONGER captured here — they are the post-approval Payment Details
+    // step. The create form only records the request; approval comes first.
     setBusy(true); setResult(null);
     const body: AgentWithdrawalBody = isSettlement ? {
       // Settlement: agent, method, amount and remarks only. No membership, no contact details,
@@ -911,9 +915,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
       instructions: instructions || undefined, sentForApproval: true,
       approverUserId: Number(approverId),
       txnMethod,
-      ...(isWalletMethod(txnMethod)
-        ? { walletAddress: walletAddress.trim() }
-        : { tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim() }),
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
     };
     try {
@@ -991,6 +992,27 @@ export const AgentWithdrawalRequestPage: React.FC<{
             hint={!isSettlement && memberBalance != null ? `Member Available Balance: ₹${fmt(memberBalance)}` : undefined} />
         </div>
 
+        {/* Member Details — the member's balance net of the agent's withdrawal commission, so the
+            operator sees the Maximum Withdrawable Amount without calculating it. Shown once the
+            membership is looked up (balance known) and an agent is selected (commission known). */}
+        {!isSettlement && memberBalance != null && (
+          <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+            <p style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Member Details</p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: '10px 18px' }}>
+              {disp?.name && <div><div style={mdLabel}>Name</div><div style={mdVal}>{disp.name}</div></div>}
+              <div><div style={mdLabel}>Current Balance</div><div style={mdVal}>₹{fmt(memberBalance)}</div></div>
+              <div><div style={mdLabel}>Withdrawal Commission</div><div style={mdVal}>{wdFee}%</div></div>
+              <div style={{ padding: '2px 10px', borderRadius: 8, background: T.successBg }}>
+                <div style={mdLabel}>Maximum Withdrawable Amount</div>
+                <div style={{ ...mdVal, color: T.success, fontWeight: 800 }}>₹{fmt(maxWithdrawable || 0)}</div>
+              </div>
+            </div>
+            {overMax && <p style={{ margin: '10px 0 0', fontSize: 12, color: T.danger, fontWeight: 600 }}>
+              Requested amount exceeds the member's maximum withdrawable balance after commission.
+            </p>}
+          </div>
+        )}
+
         {/* Country / State / Location / Mobile / Token / Note / Instructions describe the member
             and how the operator contacts them — all Deposit/Withdrawal concerns. A Settlement is
             an offline merchant↔agent payment with no member contact step, so none of it applies. */}
@@ -1000,18 +1022,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
           <Input label="Location" value={location} onChange={e => setLocation(e.target.value)} />
           <PhoneField code={mobileCode} onCode={setMobileCode} value={mobile} onValue={setMobile}
             codeOptions={DIAL_OPTIONS} style={{ marginBottom: 16 }} />
-          {/* Withdrawal: Cash keeps Token Details + Note; Crypto replaces them with a Wallet Address.
-              Bank/UPI keep token/note as today. */}
-          {isWalletMethod(txnMethod) ? (
-            <Input label="Crypto Wallet Address" value={walletAddress} onChange={e => setWalletAddress(e.target.value)}
-              required placeholder="The wallet to pay out to"
-              hint={walletAddress.trim() && !isValidWallet(walletAddress) ? 'Not a valid wallet address format' : 'Confirmed by the Manager — enter carefully'} />
-          ) : (<>
-            <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)}
-              required placeholder="As provided by the customer" />
-            <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(e.target.value)}
-              required placeholder="As provided by the customer" hint="Must be unique" />
-          </>)}
+          {/* Token Number / Wallet Address / Payment Slip are captured in the post-approval
+              Submit Payment Details step, not here — approval comes first. */}
           <Sel label="Instructions" value={instructions} onChange={e => setInstructions(e.target.value)}
             options={[{ value: '', label: '— None —' }, ...fd.instructions.map(i => ({ value: i, label: instrLabel(i) }))]} />
         </div>}
@@ -1036,7 +1048,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
         </div>}
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
-          <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : `Submit Agent ${NOUN}`}</Btn>
+          <Btn onClick={submit} disabled={busy || overMax}>{busy ? 'Submitting…' : `Submit Agent ${NOUN}`}</Btn>
           <Btn variant="secondary" onClick={reset} disabled={busy}>Clear</Btn>
         </div>
       </Card>
@@ -1909,14 +1921,13 @@ const AgentTxnManagementPage: React.FC<{
                     {isDeposit && canOperate && x.status === requestedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setAcctRow(x)}>{isTokenMethod(x.txnMethod) ? 'Submit Token' : 'Submit Account'}</Btn>}
                     {isDeposit && canOperate && x.status === submittedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setSlipRow(x)}>{isTokenMethod(x.txnMethod) ? 'Upload Token' : 'Pay / Upload Slip'}</Btn>}
                     {isDeposit && canOperate && x.status === 'SUPERVISOR_APPROVED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
-                    {/* Withdrawal — BANK/UPI: created ready to pay (ACCOUNT_SUBMITTED), the Manager
-                        reviews the slip afterwards. CASH/CRYPTO: authorised first, so the operator
-                        confirms only once the Manager has approved (MANAGER_APPROVED). Settlement:
-                        no gate at all, created at SLIP_SUBMITTED. */}
-                    {!isDeposit && txnType !== 'SETTLEMENT' && canPayout && x.status === (
-                      isSpecialMethod(x.txnMethod) ? 'MANAGER_APPROVED' : 'ACCOUNT_SUBMITTED')
-                      && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>
-                        {isSpecialMethod(x.txnMethod) ? 'Confirm & Complete' : 'Pay / Upload Slip'}</Btn>}
+                    {/* Withdrawal (approve-first): every method is created at MANAGER_REVIEW
+                        (Waiting for Approval); once the chosen approver approves (MANAGER_APPROVED),
+                        the CREATING operator submits the method-specific payment details, which
+                        completes it. Only the creator sees this action. */}
+                    {!isDeposit && txnType !== 'SETTLEMENT' && canPayout && x.status === 'MANAGER_APPROVED'
+                      && x.createdBy === user.username
+                      && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>Submit Payment Details</Btn>}
                     {/* Settlement chain — Requested → Accepted → Proof Uploaded → Settled. The
                         payment happens offline between merchant and agent; these actions only
                         record the workflow and the proof. Reject is available until the payment
@@ -1955,7 +1966,7 @@ const AgentTxnManagementPage: React.FC<{
       {acctRow && <SubmitAccountModal row={acctRow} onClose={() => setAcctRow(null)} onDone={load} />}
       {slipRow && <UploadSlipModal row={slipRow} onClose={() => setSlipRow(null)} onDone={load} />}
       {depositRow && <MarkDepositModal row={depositRow} onClose={() => setDepositRow(null)} onDone={load} />}
-      {payoutRow && <UploadSlipModal row={payoutRow} mode="payout" onClose={() => setPayoutRow(null)} onDone={load} />}
+      {payoutRow && <PaymentDetailsModal row={payoutRow} onClose={() => setPayoutRow(null)} onDone={load} />}
       {acceptRow && <SettlementDecisionModal row={acceptRow} action="accept" onClose={() => setAcceptRow(null)} onDone={load} />}
       {rejectRow && <SettlementDecisionModal row={rejectRow} action="reject" onClose={() => setRejectRow(null)} onDone={load} />}
       {proofRow && <SettlementProofModal row={proofRow} onClose={() => setProofRow(null)} onDone={load} />}
@@ -2839,6 +2850,76 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
   );
 };
 
+/** Submit Payment Details — the CREATING operator, after approval, enters the method-specific
+ *  execution details (Token Number / Wallet Address + Tx Hash / Slip + Reference / UTR + Screenshot),
+ *  which completes the withdrawal. */
+const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const method = String(row.txnMethod || '').toUpperCase();
+  const isCash = isTokenMethod(row.txnMethod);       // CASH → Token Number
+  const isCryptoM = isWalletMethod(row.txnMethod);   // CRYPTO → Wallet Address (+ optional Tx Hash)
+  const isBank = method === 'BANK';                  // BANK → Slip + Reference; else UPI-style → UTR + Screenshot
+  const [token, setToken] = useState('');
+  const [wallet, setWallet] = useState('');
+  const [txHash, setTxHash] = useState('');
+  const [utr, setUtr] = useState('');
+  const [slip, setSlip] = useState('');
+  const [slipName, setSlipName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
+    try { setSlip(await fileToDataUrl(f)); setSlipName(f.name); }
+    catch { showToast('Could not read the file.', 'error'); }
+  };
+
+  const ready = isCash ? !!token.trim() : isCryptoM ? !!wallet.trim() : (!!slip && !!utr.trim());
+  const submit = async () => {
+    if (!ready) { showToast('Fill the required payment details.', 'error'); return; }
+    setBusy(true);
+    try {
+      const body = isCash ? { tokenDetails: token.trim() }
+        : isCryptoM ? { walletAddress: wallet.trim(), ...(txHash.trim() ? { txHash: txHash.trim() } : {}) }
+        : { slipImage: slip, utr: utr.trim() };
+      await agentTxnsAPI.payout(row.id, body);
+      showToast(`${row.referenceNumber} completed.`, 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Failed to submit payment details.'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title={`Submit Payment Details — ${row.referenceNumber}`} onClose={onClose}>
+      <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
+        Approved by {row.approverName || row.managerName || 'the approver'}. Enter the {methodLabel(row.txnMethod)} payment details to complete this withdrawal.
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        <DField k="Amount" v={fmt(row.amount)} />
+        <DField k="Membership" v={row.membershipId} />
+      </div>
+      {isCash && <Input label="Token Number" value={token} onChange={e => setToken(e.target.value)} required placeholder="Token number handed to the member" />}
+      {isCryptoM && (<>
+        <Input label="Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="The wallet paid out to" />
+        <Input label="Transaction Hash (optional)" value={txHash} onChange={e => setTxHash(e.target.value)} placeholder="On-chain transaction hash" />
+      </>)}
+      {!isCash && !isCryptoM && (<>
+        <Input label={isBank ? 'Reference Number' : 'UTR Number'} value={utr} onChange={e => setUtr(e.target.value)} required
+          placeholder={isBank ? 'Bank payment reference' : 'UPI UTR / payment reference'} />
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, margin: '2px 0 6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {isBank ? 'Payment Slip' : 'Payment Screenshot'} <span style={{ color: T.danger }}>*</span>
+        </label>
+        <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
+        {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
+      </>)}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
+        <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+        <Btn variant="success" onClick={submit} disabled={busy || !ready}>{busy ? 'Completing…' : 'Complete Withdrawal'}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
 /** Pay / Upload Slip — evidences the payment and sends the deposit to Supervisor review. */
 const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout'; onClose: () => void; onDone: () => void }> = ({ row, mode = 'deposit', onClose, onDone }) => {
   const { showToast } = useToast();
@@ -3132,21 +3213,26 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [reviewRow, setReviewRow] = useState<AgentTxnRow | null>(null);
-  // A Supervisor reviews Deposits, a Manager reviews Withdrawals — the merchant review split.
-  const isManager = String(user.merchantRole || '').toUpperCase() === 'MANAGER';
-  // A withdrawal waits at its gate under a method-dependent name: cash/crypto are authorised before
-  // the operator confirms them (TOKEN_SUBMITTED / WALLET_SUBMITTED), bank/UPI are paid first and
-  // arrive at MANAGER_REVIEW. The list endpoint takes a comma-separated status for exactly this.
-  const queue = isManager
-    ? { status: 'TOKEN_SUBMITTED,WALLET_SUBMITTED,MANAGER_REVIEW', txn_type: 'WITHDRAWAL', noun: 'Withdrawals' }
-    : { status: 'SLIP_SUBMITTED', txn_type: 'DEPOSIT', noun: 'Deposits' };
+  // Deposits are reviewed by Supervisors (slip gate). Withdrawals are now routed to ONE chosen
+  // approver (Manager OR Supervisor), so each reviewer sees only the withdrawals assigned to them.
+  const role = String(user.merchantRole || '').toUpperCase();
+  const isSupervisor = role === 'SUPERVISOR';
+  const canReviewWithdrawals = role === 'MANAGER' || role === 'SUPERVISOR';
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setRows(await agentTxnsAPI.list({ status: queue.status, txn_type: queue.txn_type })); }
-    catch { showToast('Failed to load approvals.', 'error'); }
+    try {
+      const wds = canReviewWithdrawals
+        ? (await agentTxnsAPI.list({ status: 'MANAGER_REVIEW', txn_type: 'WITHDRAWAL' }))
+            .filter(x => x.approverName === user.username)   // sole approver: only mine
+        : [];
+      const deps = isSupervisor
+        ? await agentTxnsAPI.list({ status: 'SLIP_SUBMITTED', txn_type: 'DEPOSIT' })
+        : [];
+      setRows([...wds, ...deps]);
+    } catch { showToast('Failed to load approvals.', 'error'); }
     finally { setLoading(false); }
-  }, [showToast, queue.status, queue.txn_type]);
+  }, [showToast, user.username, isSupervisor, canReviewWithdrawals]);
 
   useEffect(() => { load(); }, [load]);
   usePoll(() => { if (!reviewRow) load(); });
@@ -3156,8 +3242,7 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
       <div style={{ marginBottom: 16 }}>
         <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Approvals</h1>
         <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>
-          Agent {queue.noun} awaiting your approval. {isManager ? 'The operator has paid and uploaded the slip; review it and' : 'Approving sends them back to the Data Operator to'}
-          {isManager ? ' complete — approving finishes the withdrawal.' : ' mark as Deposited.'}
+          Agent requests awaiting your approval. Approving a withdrawal authorises it — the operator then submits the payment details to complete it; approving a deposit sends it on to be marked Deposited.
         </p>
       </div>
 

@@ -168,6 +168,8 @@ export interface AgentOverview {
 export interface AgentFormAgent {
   id: number; agentId: string; name: string; country: string; state: string;
   location: string; category: string; transactionCode: string; currency: string;
+  /** Withdrawal commission % (pay_out_fee) — drives the Withdrawal form's Maximum Withdrawable Amount. */
+  withdrawalFee?: number;
 }
 export interface AgentApprover { id: number; name: string; role: string }
 export interface AgentFormData {
@@ -356,7 +358,8 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/approve`, { remark })).data,
   managerReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
-  payout: async (id: number, body: { slipImage?: string; utr?: string }) =>
+  /** Submit Payment Details (creator, after approval) — method-specific, completes the withdrawal. */
+  payout: async (id: number, body: { tokenDetails?: string; walletAddress?: string; txHash?: string; slipImage?: string; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
   // ── Settlement chain: Requested → Accepted → Proof Uploaded → Settled (payment is offline) ──
   settlementAccept: async (id: number, remark: string) =>

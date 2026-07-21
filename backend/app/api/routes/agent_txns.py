@@ -204,6 +204,15 @@ def _require(user: User, roles: tuple[str, ...], what: str) -> None:
         raise HTTPException(status_code=403, detail=f"Your role cannot {what}.")
 
 
+def _require_sole_approver(user: User, t: AgentTransaction) -> None:
+    """The chosen Authorized Approver is the SOLE reviewer of a withdrawal: only the specific
+    Manager/Supervisor the operator selected on the request may approve or reject it."""
+    if not agent_role_in(user, ("MANAGER", "SUPERVISOR")):
+        raise HTTPException(status_code=403, detail="Only a Manager or Supervisor can review Agent Withdrawals.")
+    if t.approver_user_id and user.id != t.approver_user_id:
+        raise HTTPException(status_code=403, detail="Only the selected Authorized Approver can review this request.")
+
+
 def _ist_parts(dt: datetime | None):
     """(iso_utc, ist_date, ist_time) for a stored (naive-UTC) timestamp."""
     if not dt:
@@ -756,6 +765,17 @@ class AgentReviewAction(BaseModel):
     remark: str
 
 
+class AgentPaymentDetails(BaseModel):
+    """Method-specific execution details the CREATING operator submits AFTER approval, which
+    completes the withdrawal: CASH → tokenDetails; CRYPTO → walletAddress (+ optional txHash);
+    BANK → slipImage + utr (reference); UPI → utr + slipImage (screenshot)."""
+    tokenDetails: str | None = None
+    walletAddress: str | None = None
+    txHash: str | None = None
+    slipImage: str | None = None       # data URL
+    utr: str | None = None
+
+
 class AgentMarkDeposit(BaseModel):
     """Mark Deposit is a confirmation, not an upload: the slip and UTR were captured at the
     Pay / Upload Slip step and are only displayed for review. Kept as an empty body so the
@@ -926,9 +946,12 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         # needs no approval at all and is created ready for the Supervisor to pay.
         # CASH/CRYPTO withdrawals are authorised BEFORE the operator confirms them, so they open
         # at the Manager gate; BANK/UPI withdrawals are unchanged (operator pays, Manager last).
+        # A WITHDRAWAL now always enters approval FIRST: every method is created at MANAGER_REVIEW
+        # ("Waiting for Approval"). The chosen approver approves/rejects, then the creating operator
+        # submits the method-specific payment details (which completes it). Payment capture no longer
+        # happens at creation.
         status=(_requested_status(method) if txn_type == "DEPOSIT"
-                else (_submitted_status(method) if method in SPECIAL_METHODS else ST_ACCOUNT_SUBMITTED)
-                if txn_type == "WITHDRAWAL"
+                else ST_MANAGER_REVIEW if txn_type == "WITHDRAWAL"
                 else ST_SETTLEMENT_REQUESTED if txn_type == "SETTLEMENT" else ST_PENDING),
         # Payout account (withdrawals) — where the money is sent.
         payout_account_id=(payout.id if payout is not None else None),
@@ -971,6 +994,9 @@ async def form_data(db: AsyncSession = Depends(get_db), user: User = Depends(get
             "id": a.id, "agentId": a.agent_id, "name": a.full_name, "country": a.country,
             "state": a.state, "location": a.location, "category": a.category,
             "transactionCode": a.transaction_code, "currency": a.currency,
+            # Withdrawal commission % (pay_out_fee) — lets the Withdrawal form show the member's
+            # Maximum Withdrawable Amount after commission, using the same fee the server charges.
+            "withdrawalFee": a.pay_out_fee or 0,
         } for a in agents],
         "approvers": [{"id": u.id, "name": u.username, "role": str(u.merchant_role or "").upper()}
                       for u in approvers if str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER")],
@@ -1372,37 +1398,26 @@ async def agent_profile(agent_master_id: int, db: AsyncSession = Depends(get_db)
 @router.post("/{txn_id}/manager/approve")
 async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                           user: User = Depends(get_current_agent_operator)):
-    """Manager approves a withdrawal.
+    """The chosen Authorized Approver (Manager or Supervisor) approves a withdrawal.
 
-    BANK/UPI: the operator has already paid and uploaded the slip, so approval COMPLETES it
-    (unchanged). CASH/CRYPTO: approval authorises the payout, and the transaction returns to the
-    operator to confirm the token / wallet — there is no slip on those methods.
+    Approval is the business authorisation only — it does NOT move money. Every method goes
+    MANAGER_REVIEW ("Waiting for Approval") → MANAGER_APPROVED ("Approved"); the creating operator
+    then submits the method-specific payment details, which completes it.
     """
-    _require(user, ("MANAGER",), "approve Agent Withdrawals")
     remark = (body.remark or "").strip()
     if not remark:
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
     t = await _load_own(db, _business(user), txn_id)
     _require_withdrawal(t)
-    _require_status(t, _withdrawal_gate(t.txn_method), "Manager review")
-    special = str(t.txn_method or "").upper() in SPECIAL_METHODS
-    # Balance BEFORE completion (BANK/UPI completes here); captured while still in-flight.
-    _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
-    _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
-    t.status = ST_MANAGER_APPROVED if special else ST_COMPLETED
+    _require_sole_approver(user, t)
+    _require_status(t, ST_MANAGER_REVIEW, "approval")
+    t.status = ST_MANAGER_APPROVED
     t.manager_name = user.username
     t.manager_action_at = datetime.utcnow()
-    # A BANK/UPI withdrawal completes at this gate; a CASH/CRYPTO one is only authorised here and
-    # completes later at payout, so it must NOT be stamped yet.
-    if not special:
-        t.completed_at = t.manager_action_at
-
     t.review_remark = remark
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    # BANK/UPI completes now → full balance/commission audit line; CASH/CRYPTO only authorised here.
     await _log(db, t, "MANAGER_APPROVED", user, new_amount=t.amount,
-               note=(f"{remark} — awaiting operator confirmation" if special
-                     else f"{remark} · {_completion_note(t, _agent, user, _before)}"))
+               note=f"{remark} — approved; awaiting payment details from the operator")
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -1411,14 +1426,14 @@ async def manager_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession
 @router.post("/{txn_id}/manager/reject")
 async def manager_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                          user: User = Depends(get_current_agent_operator)):
-    """Manager rejects a withdrawal → REJECTED."""
-    _require(user, ("MANAGER",), "reject Agent Withdrawals")
+    """The chosen Authorized Approver (Manager or Supervisor) rejects a withdrawal → REJECTED."""
     remark = (body.remark or "").strip()
     if not remark:
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
     t = await _load_own(db, _business(user), txn_id)
     _require_withdrawal(t)
-    _require_status(t, _withdrawal_gate(t.txn_method), "Manager review")
+    _require_sole_approver(user, t)
+    _require_status(t, ST_MANAGER_REVIEW, "rejection")
     t.status = ST_REJECTED
     t.manager_name = user.username
     t.manager_action_at = datetime.utcnow()
@@ -1431,69 +1446,59 @@ async def manager_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession 
 
 
 @router.post("/{txn_id}/payout")
-async def payout_withdrawal(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Depends(get_db),
+async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_agent_operator)):
-    """Data Operator pays the member and uploads the slip → COMPLETED.
-
-    The merchant workflow's Admin payout step, performed here by the Data Operator.
-    """
+    """Submit Payment Details — the CREATING operator, AFTER approval, submits the method-specific
+    execution details, which completes the withdrawal (→ COMPLETED; the member's balance is deducted
+    then, and the completion is audited). Managers/Supervisors do not perform this step."""
     t = await _load_own(db, _business(user), txn_id)
-    # Settlements no longer complete here: they follow their own chain (Requested → Accepted →
-    # Proof Uploaded → Settled) via /settlement/*, so that a settlement can only ever be completed
-    # with proof of the offline payment attached. Rejected explicitly rather than silently ignored.
     if t.txn_type == "SETTLEMENT":
         raise HTTPException(
             status_code=400,
             detail="Agent Settlements are completed through the settlement workflow (accept, upload proof, settle).",
         )
-    if t.txn_type == "WITHDRAWAL":
-        _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
-    else:
-        raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals and Settlements only.")
+    if t.txn_type != "WITHDRAWAL":
+        raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals only.")
+    _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
+    # Only the operator who CREATED the request may submit its payment details.
+    if t.created_by_id and user.id != t.created_by_id:
+        raise HTTPException(status_code=403,
+                            detail="Only the operator who created this withdrawal can submit its payment details.")
+    # Payment details are submitted only AFTER the chosen approver has approved the request.
+    _require_status(t, ST_MANAGER_APPROVED, "payment details")
     method = str(t.txn_method or "").upper()
-    # CASH/CRYPTO withdrawals reach this step AFTER Manager approval — the operator confirms the
-    # token / wallet rather than paying over a rail. Every other method pays here, before the gate.
-    confirm_only = t.txn_type == "WITHDRAWAL" and method in SPECIAL_METHODS
-    # A CASH withdrawal hands physical money over, so the operator must evidence it: the Cash
-    # Payment Proof is mandatory even though there is no rail, no slip and no UTR. Crypto confirms
-    # against the wallet address alone and is unchanged.
-    cash_confirm = confirm_only and method in TOKEN_METHODS
-    # CASH/CRYPTO confirm AFTER the Manager gate (MANAGER_APPROVED); BANK/UPI pay before it, from
-    # the state they were created in. Only withdrawals reach this endpoint (settlements are
-    # rejected above and follow their own chain).
-    _require_status(t, ST_MANAGER_APPROVED if confirm_only else ST_ACCOUNT_SUBMITTED,
-                    "confirmation" if confirm_only else "payment")
     # Balance BEFORE this leg completes (still in-flight here, so excluded), for the audit line.
     _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
     _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
-    if cash_confirm:
+    # Method-specific execution details — mandatory ones enforced per Withdrawal Type.
+    if method in TOKEN_METHODS:                        # CASH → Token Number
+        if not (body.tokenDetails or "").strip():
+            raise HTTPException(status_code=400, detail="Token Number is required.")
+        t.token_details = body.tokenDetails.strip()
+    elif method in WALLET_METHODS:                     # CRYPTO → Wallet Address (+ optional Tx Hash)
+        if not (body.walletAddress or "").strip():
+            raise HTTPException(status_code=400, detail="Wallet Address is required.")
+        t.wallet_address = body.walletAddress.strip()
+        if (body.txHash or "").strip():
+            t.deposit_utr = body.txHash.strip()
+    else:                                              # BANK → Slip + Reference; UPI → UTR + Screenshot
         if not body.slipImage:
-            raise HTTPException(status_code=400, detail="Cash Payment Proof is required.")
-        t.slip_image = body.slipImage      # stored on the transaction; shown wherever it is viewed
-    elif not confirm_only:
-        if not body.slipImage:
-            raise HTTPException(status_code=400, detail="Payment slip image is required.")
+            raise HTTPException(status_code=400,
+                                detail=("Payment slip image is required." if method == "BANK"
+                                        else "Payment screenshot is required."))
         if not (body.utr or "").strip():
-            raise HTTPException(status_code=400, detail="UTR Number is required.")
+            raise HTTPException(status_code=400,
+                                detail=("Reference Number is required." if method == "BANK"
+                                        else "UTR Number is required."))
         t.slip_image = body.slipImage
+        t.deposit_utr = body.utr.strip()
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
-    if body.utr is not None and (body.utr or '').strip():
-        t.deposit_utr = body.utr.strip()          # UTR of the payment, shown wherever the txn is viewed
-    # CASH/CRYPTO withdrawal: already approved, so confirming completes it. BANK/UPI withdrawal:
-    # paid now, so it goes to the Manager.
-    t.status = ST_COMPLETED if confirm_only else ST_MANAGER_REVIEW
+    t.status = ST_COMPLETED
+    t.completed_at = t.slip_submitted_at
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    # This leg completes here for a cash/crypto withdrawal (confirm) and for a settlement; a BANK/UPI
-    # withdrawal only reaches MANAGER_REVIEW and completes later at manager/approve.
-    _done = t.status == ST_COMPLETED
-    if _done:
-        t.completed_at = t.updated_at
-    await _log(db, t,
-               "COMPLETED" if confirm_only else "SLIP_SUBMITTED",
-               user, new_amount=t.amount,
-               note=(_completion_note(t, _agent, user, _before) if _done
-                     else f"Paid by {user.username} — awaiting Manager approval"))
+    await _log(db, t, "COMPLETED", user, new_amount=t.amount,
+               note=_completion_note(t, _agent, user, _before))
     await db.commit()
     await db.refresh(t)
     return _row(t)
