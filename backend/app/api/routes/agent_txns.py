@@ -830,29 +830,19 @@ def _validate_common(body: _Base, txn_type: str) -> None:
     if body.txnMethod and body.txnMethod.upper() not in TXN_METHODS:
         raise HTTPException(status_code=400, detail="Invalid Transaction Type.")
     method = (body.txnMethod or "").upper()
-    # Token Details / Unique Note Number are entered by the operator (never generated) — but WHEN
-    # depends on the method:
-    #   • CASH/CRYPTO deposit  → captured later, at Submit Account (token image / wallet).
-    #   • CRYPTO withdrawal    → a Wallet Address replaces them entirely.
-    #   • everything else      → at creation, as today (BANK/UPI are untouched).
-    # A DEPOSIT never asks for Token Details / Note Number at creation:
-    #   • CASH/CRYPTO  → captured later, at Submit Account (token image / wallet).
-    #   • BANK         → never; the agent's bank account is supplied at Submit Account and the
-    #                    player pays into it, exactly as the merchant bank deposit works.
-    # A SETTLEMENT captures neither: it is an offline merchant<->agent payment, evidenced by the
-    # proof uploaded later in its own chain, not by a customer-supplied token or note.
-    deposit_defers = txn_type in ("DEPOSIT", "SETTLEMENT")
-    crypto_withdrawal = txn_type == "WITHDRAWAL" and method in WALLET_METHODS
-    if crypto_withdrawal:
-        if not (body.walletAddress or "").strip():
-            raise HTTPException(status_code=400, detail="Crypto Wallet Address is required.")
-        if not _valid_wallet(body.walletAddress):
-            raise HTTPException(status_code=400, detail="Enter a valid crypto wallet address.")
-    elif not deposit_defers:
-        if not (body.tokenDetails or "").strip():
-            raise HTTPException(status_code=400, detail="Token Details are required.")
-        if not (body.noteNumber or "").strip():
-            raise HTTPException(status_code=400, detail="Unique Note Number is required.")
+    # No method-specific payment detail (Token / Note / Wallet / slip) is captured at CREATE for
+    # ANY transaction type — the create step only records the request. Which detail is collected,
+    # and when, depends on the method but always happens LATER:
+    #   • DEPOSIT     → CASH: Token + Note, CRYPTO: Wallet, BANK/UPI: an agent account — all at
+    #                   the Submit Account step.
+    #   • WITHDRAWAL  → approve-first: after the chosen approver approves, the creating operator
+    #                   submits the method-specific Payment Details (CASH → Token, CRYPTO → Wallet,
+    #                   BANK → payment slip + reference, UPI → UTR + screenshot).
+    #   • SETTLEMENT  → an offline merchant<->agent payment; proof is uploaded in its own chain.
+    # Requiring a Token / Note / Wallet here was a leftover from the pre-approval design and wrongly
+    # rejected a Bank Transfer (or UPI/Cash) withdrawal at creation for missing "Token Details".
+    # Tokens belong to CASH and a wallet to CRYPTO — never to a bank transfer — and none of them
+    # exist yet at creation, so the create step enforces none of them.
     if txn_type == "SETTLEMENT" and method and method not in SETTLEMENT_METHODS:
         raise HTTPException(status_code=400, detail="Settlement method must be Cash, Bank Transfer or Crypto.")
     # A deposit names the Sending Account it comes FROM (same rule the merchant form applies). A
