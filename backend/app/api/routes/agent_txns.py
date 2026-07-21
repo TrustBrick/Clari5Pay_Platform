@@ -205,10 +205,11 @@ def _require(user: User, roles: tuple[str, ...], what: str) -> None:
 
 
 def _require_sole_approver(user: User, t: AgentTransaction) -> None:
-    """The chosen Authorized Approver is the SOLE reviewer of a withdrawal: only the specific
-    Manager/Supervisor the operator selected on the request may approve or reject it."""
+    """The chosen Authorized Approver is the SOLE reviewer of a request (deposit or withdrawal):
+    only the specific Manager/Supervisor the operator selected on it may approve or reject — routing
+    is by the selected user, not by role. Every other Manager/Supervisor is denied (403)."""
     if not agent_role_in(user, ("MANAGER", "SUPERVISOR")):
-        raise HTTPException(status_code=403, detail="Only a Manager or Supervisor can review Agent Withdrawals.")
+        raise HTTPException(status_code=403, detail="Only a Manager or Supervisor can review Agent requests.")
     if t.approver_user_id and user.id != t.approver_user_id:
         raise HTTPException(status_code=403, detail="Only the selected Authorized Approver can review this request.")
 
@@ -1239,13 +1240,14 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
 @router.post("/{txn_id}/supervisor/approve")
 async def supervisor_approve(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                              user: User = Depends(get_current_agent_operator)):
-    """Supervisor approves a deposit under review → SUPERVISOR_APPROVED (awaiting Mark Deposit)."""
-    _require(user, ("SUPERVISOR",), "approve Agent Deposits")
+    """The chosen Authorized Approver approves a deposit under review → SUPERVISOR_APPROVED
+    (awaiting Mark Deposit). Only the specific approver selected on the request may act (403 otherwise)."""
     remark = (body.remark or "").strip()
     if not remark:
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
     t = await _load_own(db, _business(user), txn_id)
     _require_deposit(t)
+    _require_sole_approver(user, t)
     _require_status(t, ST_SLIP_SUBMITTED, "Supervisor review")
     t.status = ST_SUPERVISOR_APPROVED
     t.supervisor_name = user.username
@@ -1261,13 +1263,14 @@ async def supervisor_approve(txn_id: int, body: AgentReviewAction, db: AsyncSess
 @router.post("/{txn_id}/supervisor/reject")
 async def supervisor_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_agent_operator)):
-    """Supervisor rejects a deposit under review → REJECTED."""
-    _require(user, ("SUPERVISOR",), "reject Agent Deposits")
+    """The chosen Authorized Approver rejects a deposit under review → REJECTED. Only the specific
+    approver selected on the request may act (403 otherwise)."""
     remark = (body.remark or "").strip()
     if not remark:
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
     t = await _load_own(db, _business(user), txn_id)
     _require_deposit(t)
+    _require_sole_approver(user, t)
     _require_status(t, ST_SLIP_SUBMITTED, "Supervisor review")
     t.status = ST_REJECTED
     t.supervisor_name = user.username

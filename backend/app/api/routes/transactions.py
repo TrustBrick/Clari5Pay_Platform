@@ -561,6 +561,27 @@ async def _notify_business_role(db: AsyncSession, tx: Transaction, role: str,
             db.add(Notification(user_id=u.id, message=message, icon=icon))
 
 
+async def _notify_approver_or_role(db: AsyncSession, tx: Transaction, role: str,
+                                   message: str, icon: str = "🔔") -> None:
+    """"Send To Approval" routing (demo): when the operator addressed the request to a specific
+    Authorized Approver, notify ONLY that user; otherwise fall back to the whole business review-role
+    queue. `approver_user_id` is only ever set on the demo stack, so Production keeps the broad
+    role-based notification unchanged."""
+    if tx.approver_user_id:
+        db.add(Notification(user_id=tx.approver_user_id, message=message, icon=icon))
+    else:
+        await _notify_business_role(db, tx, role, message, icon)
+
+
+def _require_sole_merchant_approver(reviewer: User, tx: Transaction) -> None:
+    """When a request was addressed to a specific Authorized Approver ("Send To Approval", demo),
+    ONLY that user may review it — every other Manager/Supervisor in the business is denied (403).
+    No approver set (Production) → unchanged same-business role review."""
+    if tx.approver_user_id and reviewer.id != tx.approver_user_id:
+        raise HTTPException(status_code=403,
+                            detail="Only the selected Authorized Approver can review this request.")
+
+
 def _client_ip(request: Request | None) -> str | None:
     """Best-effort client IP (honours a single X-Forwarded-For hop behind the proxy)."""
     if request is None:
@@ -1700,7 +1721,8 @@ async def create_withdrawal(
     elif _wd_mode == "UPI":
         await _save_member_upi(db, current_user, data.memberId, (data.payoutDetails or {}).get("upiId"))
     await db.flush()
-    await _notify_business_role(db, tx, "MANAGER", f"Withdrawal {tx.ref} from {tx.merchant_name} — awaiting your review", "↑")
+    # Route to the chosen Authorized Approver only (demo) — else the whole Manager queue (prod).
+    await _notify_approver_or_role(db, tx, "MANAGER", f"Withdrawal {tx.ref} from {tx.merchant_name} — awaiting your review", "↑")
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
     # Telegram (demo, next-step only): a new withdrawal request → notify the Manager.
     await tgn.notify(db, tx, "MANAGER", "withdrawal_request")
@@ -1876,13 +1898,9 @@ async def submit_slip(
     # Slip submitted → pending approval, auto-assigned to the Supervisor review queue.
     tx.status = TxStatus.SUPERVISOR_REVIEW
     await db.flush()
-    # Notify the business's Supervisors that a deposit is awaiting their review.
-    await _notify_business_role(db, tx, "SUPERVISOR",
-                                f"{tx.ref}: deposit slip submitted by {tx.merchant_name} — awaiting your review", "🧾")
-    # Notify the chosen Authorized Approver directly (their dashboard updates via this notification).
-    if tx.approver_user_id:
-        db.add(Notification(user_id=tx.approver_user_id,
-                            message=f"{tx.ref}: {tx.merchant_name} sent you a deposit to review", icon="🧾"))
+    # Notify the chosen Authorized Approver only (demo), else the whole Supervisor review queue (prod).
+    await _notify_approver_or_role(db, tx, "SUPERVISOR",
+                                   f"{tx.ref}: deposit slip submitted by {tx.merchant_name} — awaiting your review", "🧾")
     await notify_tx(db, tx, f"{tx.ref}: payment slip submitted by {tx.merchant_name}", "🧾")
     # Telegram (demo, next-step only): slip submitted → notify the Supervisor review queue.
     await tgn.notify(db, tx, "SUPERVISOR", "slip_submitted")
@@ -2091,6 +2109,9 @@ async def _reviewer_action(
     remark = remark[:1000]
     cfg = _REVIEW_CONFIG[role]
     tx = await _get_business_tx(tx_id, db, reviewer)
+    # "Send To Approval" (demo): if addressed to a specific Authorized Approver, only that user
+    # may act — no-op in Production, where approver_user_id is always NULL.
+    _require_sole_merchant_approver(reviewer, tx)
     if not tx.type.value.startswith(cfg["prefixes"]):
         raise HTTPException(status_code=400, detail=f"{cfg['label']} review applies to {cfg['kind']} only.")
     if tx.status != cfg["review_status"]:

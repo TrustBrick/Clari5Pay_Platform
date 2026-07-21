@@ -1515,9 +1515,14 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
   const [active, setActive] = useState<Transaction | null>(null);
 
   // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard)
-  // and to this page's request type so each queue shows only its own kind of request.
+  // and to this page's request type so each queue shows only its own kind of request. On demo,
+  // "Send To Approval" addresses a request to one Authorized Approver — so a request carrying an
+  // approver appears only in that user's queue (the backend also enforces this with a 403). Requests
+  // with no approver (all of Production) stay visible to the whole review role, unchanged.
   const reload = () => transactionAPI.getAllOverseer()
-    .then(rows => setTxns(rows.filter(t => t.status === queueStatus && t.merchant === user.name && t.type.startsWith(filterPrefix))))
+    .then(rows => setTxns(rows.filter(t =>
+      t.status === queueStatus && t.merchant === user.name && t.type.startsWith(filterPrefix)
+      && (!t.approverUserId || t.approverUserId === user.id))))
     .catch(() => setTxns([]));
   useEffect(() => { reload().finally(() => setLoading(false)); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => { if (!active) reload(); });

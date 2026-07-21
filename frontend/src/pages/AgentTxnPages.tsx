@@ -3223,26 +3223,31 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [reviewRow, setReviewRow] = useState<AgentTxnRow | null>(null);
-  // Deposits are reviewed by Supervisors (slip gate). Withdrawals are now routed to ONE chosen
-  // approver (Manager OR Supervisor), so each reviewer sees only the withdrawals assigned to them.
+  // Every request (deposit or withdrawal) is addressed to ONE chosen Authorized Approver (Manager
+  // OR Supervisor), so each reviewer sees only the requests assigned to them — routing is by the
+  // selected user, not by role. The backend also enforces this with a 403 on the review actions.
   const role = String(user.merchantRole || '').toUpperCase();
   const isSupervisor = role === 'SUPERVISOR';
-  const canReviewWithdrawals = role === 'MANAGER' || role === 'SUPERVISOR';
+  const canReview = role === 'MANAGER' || role === 'SUPERVISOR';
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const wds = canReviewWithdrawals
-        ? (await agentTxnsAPI.list({ status: 'MANAGER_REVIEW', txn_type: 'WITHDRAWAL' }))
-            .filter(x => x.approverName === user.username)   // sole approver: only mine
-        : [];
-      const deps = isSupervisor
-        ? await agentTxnsAPI.list({ status: 'SLIP_SUBMITTED', txn_type: 'DEPOSIT' })
-        : [];
-      setRows([...wds, ...deps]);
+      const [wds, deps] = canReview
+        ? await Promise.all([
+            agentTxnsAPI.list({ status: 'MANAGER_REVIEW', txn_type: 'WITHDRAWAL' }),
+            agentTxnsAPI.list({ status: 'SLIP_SUBMITTED', txn_type: 'DEPOSIT' }),
+          ])
+        : [[], []];
+      // Withdrawals always carry a chosen approver → strict match: only mine.
+      const myWds = wds.filter(x => x.approverName === user.username);
+      // Deposits carry an approver when one was chosen at the slip step → strict match; a deposit
+      // with no approver falls back to the whole Supervisor review queue so it is never stranded.
+      const myDeps = deps.filter(x => x.approverName ? x.approverName === user.username : isSupervisor);
+      setRows([...myWds, ...myDeps]);
     } catch { showToast('Failed to load approvals.', 'error'); }
     finally { setLoading(false); }
-  }, [showToast, user.username, isSupervisor, canReviewWithdrawals]);
+  }, [showToast, user.username, canReview, isSupervisor]);
 
   useEffect(() => { load(); }, [load]);
   usePoll(() => { if (!reviewRow) load(); });
