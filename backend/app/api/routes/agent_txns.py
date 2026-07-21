@@ -391,6 +391,8 @@ def _row(t: AgentTransaction) -> dict:
         "depositedDate": _ist_parts(t.deposited_at)[1],
         "depositedTime": _ist_parts(t.deposited_at)[2],
         "depositUtr": t.deposit_utr, "depositProof": t.deposit_proof,
+        # Creation-time proof that gated the Send To Approval reveal.
+        "requestProof": t.request_proof,
         "sentForApproval": t.sent_for_approval,
         "approverName": t.approver_name,
         "approvedBy": t.approved_by, "approvedDate": a_date, "approvedTime": a_time, "approvedAt": a_iso,
@@ -713,6 +715,9 @@ class _Base(BaseModel):
     instructions: str | None = None
     sentForApproval: bool = False
     approverUserId: int | None = None
+    # Creation-time proof/slip image (data URL) uploaded on the request form; it gates the
+    # "Send To Approval" reveal client-side. Optional server-side (the frontend enforces it).
+    requestProof: str | None = None
     # ── Transaction type + Sending Account (mirrors the merchant Deposit Request) ──
     # Supplied by the customer/agent and typed in by the Data Operator — NOT generated. Mandatory
     # on a Deposit; a Withdrawal/Settlement has no customer-supplied token, so those keep their
@@ -935,6 +940,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         payout_bank_name=(payout.bank_name if payout else None),
         payout_branch=(payout.branch if payout else None),
         payout_upi_id=(payout.upi_id if payout else None),
+        request_proof=((body.requestProof or "").strip() or None),
         sent_for_approval=bool(body.sentForApproval),
         approver_user_id=approver_id, approver_name=approver_name,
         linked_deposit_id=linked_deposit_id,

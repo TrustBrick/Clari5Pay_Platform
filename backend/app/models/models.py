@@ -912,6 +912,11 @@ class AgentTransaction(Base):
     deposit_utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     deposit_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Creation-time proof/slip image (data URL) uploaded on the request form BEFORE the operator
+    # sends it to an approver — it gates the "Send To Approval" reveal. Distinct from account_proof/
+    # slip_image, which are captured at the later Submit-Account / Pay-Slip steps.
+    request_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     sent_for_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     approver_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)     # chosen Authorized Approver
     approver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

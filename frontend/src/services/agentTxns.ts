@@ -123,6 +123,8 @@ export interface AgentTxnRow {
   depositedTime?: string | null;
   depositUtr?: string | null;
   depositProof?: string | null;
+  /** Creation-time proof/slip image uploaded on the request form; gates the Send To Approval reveal. */
+  requestProof?: string | null;
   sentForApproval: boolean;
   approverName?: string | null;
   approvedBy?: string | null;
@@ -208,6 +210,8 @@ export interface AgentDepositBody {
   instructions?: string;
   sentForApproval: boolean;
   approverUserId?: number | null;
+  // Creation-time proof/slip image (data URL) uploaded on the request form; gates Send To Approval.
+  requestProof?: string;
   // Supplied by the customer/agent and typed in by the operator — mandatory on a Deposit.
   tokenDetails?: string;
   noteNumber?: string;

@@ -574,6 +574,35 @@ const ReadField: React.FC<{ label: string; value?: string | null; placeholder?: 
   <Input label={label} value={value || ''} onChange={() => {}} placeholder={placeholder} readOnly />
 );
 
+// Creation-time proof upload — the merchant/operator uploads the required proof/slip/image before
+// the request is sent for approval. The "Send To Approval" card is revealed only once this succeeds
+// (see the Deposit/Withdrawal forms). Single image/PDF, mirroring the module's slip-upload modals.
+const RequestProofField: React.FC<{ value: string; onChange: (v: string) => void }> = ({ value, onChange }) => {
+  const { showToast } = useToast();
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    try { onChange(await fileToDataUrl(f)); } catch { showToast('Could not read that file.', 'error'); }
+  };
+  return (
+    <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+      <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Upload Proof</p>
+      <p style={{ margin: '0 0 10px', fontSize: 11.5, color: T.textMuted }}>
+        Upload the required proof / slip / image. The approval step appears once the upload succeeds.
+      </p>
+      {!value && <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ fontSize: 13 }} />}
+      {value && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: T.success }}>✔ Proof uploaded successfully</span>
+          <button type="button" onClick={() => onChange('')}
+            style={{ border: 'none', background: 'none', color: T.danger, fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: 0 }}>Remove</button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── Agent Deposit Request form ────────────────────────────────────────────────
 // `embedded` renders the bare form (no page heading / isolation note) for use inside the Agent
 // Deposit Management modal; `onSubmitted` closes that modal and refreshes its list on success.
@@ -609,6 +638,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   // Approval is mandatory on an Agent Deposit — the operator must always route it to an approver,
   // mirroring the Agent Withdrawal Request.
   const [approverId, setApproverId] = useState('');
+  // Creation-time proof — the Send To Approval card is revealed only after this uploads successfully.
+  const [requestProof, setRequestProof] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AgentTxnRow | null>(null);
 
@@ -639,7 +670,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
     setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
     setSenderIfsc(''); setSenderBankName(''); setSenderBranch(''); senderIfscFill.reset();
     setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91'); setNotes(''); setInstructions('');
-    setApproverId('');
+    setApproverId(''); setRequestProof('');
   };
 
   const submit = async () => {
@@ -654,6 +685,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       showToast('Enter the Sending Account holder and number.', 'error'); return;
     }
     if (notes.length > 100) { showToast('Notes must be 100 characters or fewer.', 'error'); return; }
+    if (!requestProof) { showToast('Upload the required proof / image.', 'error'); return; }
     if (!approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setBusy(true); setResult(null);
     const body: AgentDepositBody = {
@@ -664,6 +696,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
       mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: true,
       approverUserId: Number(approverId),
+      requestProof: requestProof || undefined,
       // No deposit collects Token Details / Note Number at creation: Cash captures the token and
       // Crypto the wallet at Submit Account, and a Bank Transfer never has one — the operator
       // supplies the agent's bank account and the player pays into it.
@@ -775,18 +808,21 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
             style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
         </div>
 
-        {/* Send To Approval — mandatory, identical to the Agent Withdrawal Request: every Agent
-            Deposit goes to a Supervisor/Manager approver chosen here. */}
-        <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        {/* Upload Proof → Send To Approval: the operator uploads the required proof/image first;
+            the approval card is revealed (mandatory approver) only once the upload succeeds. */}
+        <RequestProofField value={requestProof} onChange={setRequestProof} />
+
+        {requestProof && (
+        <div className="animate-slide-up" style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
           <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
           <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
-            Every Agent Deposit Request goes to an approver — choose who reviews this request.
+            Your proof has been uploaded successfully. Please select the Authorized Approver before submitting your request.
           </p>
           <div style={{ maxWidth: 360 }}>
             <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
               options={[{ value: '', label: '— Select approver —' }, ...fd.approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
           </div>
-        </div>
+        </div>)}
 
         <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
           <Btn onClick={submit} disabled={busy}>{busy ? 'Submitting…' : 'Submit Agent Deposit'}</Btn>
@@ -836,6 +872,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
   // approver, so this is fixed on rather than a choice.
   const sendApproval = true;
   const [approverId, setApproverId] = useState('');
+  // Creation-time proof — the Send To Approval card is revealed only after this uploads successfully
+  // (withdrawals only; a settlement is approval-free and keeps no proof step here).
+  const [requestProof, setRequestProof] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AgentTxnRow | null>(null);
 
@@ -878,7 +917,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const reset = () => {
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
-    setNotes(''); setInstructions(''); setApproverId('');
+    setNotes(''); setInstructions(''); setApproverId(''); setRequestProof('');
     setTxnMethod(''); setMemberBalance(null);
     setTokenDetails(''); setNoteNumber('');
   };
@@ -890,6 +929,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
     const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast(`Enter a valid ${isSettlement ? 'Settlement' : 'Transaction'} Amount.`, 'error'); return; }
     if (notes.length > 100) { showToast(`${isSettlement ? 'Remarks' : 'Notes'} must be 100 characters or fewer.`, 'error'); return; }
+    if (!isSettlement && !requestProof) { showToast('Upload the required proof / image.', 'error'); return; }
     if (!isSettlement && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
     if (!agentId) { showToast('Select an Assigned Agent.', 'error'); return; }
@@ -923,6 +963,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
       mobileCode: mobile ? mobileCode : undefined, notes: notes || undefined,
       instructions: instructions || undefined, sentForApproval: true,
       approverUserId: Number(approverId),
+      requestProof: requestProof || undefined,
       txnMethod,
       ...(isWalletMethod(txnMethod)
         ? { walletAddress: walletAddress.trim() }
@@ -1035,12 +1076,15 @@ export const AgentWithdrawalRequestPage: React.FC<{
             style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
         </div>
 
-        {/* A Settlement has no approver: the Supervisor raises it and drives the whole chain
-            (accept → upload proof → settle). */}
-        {!isSettlement && <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        {/* Upload Proof → Send To Approval (withdrawals only): the approval card is revealed once the
+            required proof/image uploads. A Settlement has no approver — the Supervisor raises it and
+            drives the whole chain (accept → upload proof → settle) — so it keeps no proof step here. */}
+        {!isSettlement && <RequestProofField value={requestProof} onChange={setRequestProof} />}
+
+        {!isSettlement && requestProof && <div className="animate-slide-up" style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
           <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
           <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
-            Every Agent Withdrawal goes to an approver — choose who reviews this one.
+            Your proof has been uploaded successfully. Please select the Authorized Approver before submitting your request.
           </p>
           <div style={{ maxWidth: 360 }}>
             <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
@@ -1588,6 +1632,7 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ? (row.type === 'WITHDRAWAL' ? 'Cash Payment Proof' : 'Token Image')
     : 'Uploaded Slip';
   const images: Array<[string, string]> = [
+    ...(row.requestProof ? [['Request Proof', row.requestProof] as [string, string]] : []),
     ...(row.accountProof ? [[proofLabel, row.accountProof] as [string, string]] : []),
     ...(row.slipImage ? [[slipLabel, row.slipImage] as [string, string]] : []),
     ...(row.depositProof ? [['Deposit Proof', row.depositProof] as [string, string]] : []),
