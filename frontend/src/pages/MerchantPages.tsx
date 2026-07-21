@@ -311,7 +311,7 @@ export const MerchantSlipModal: React.FC<{
         <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>{adminLabel}</p>
         <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
           <SlipRow k="Amount" v={fmt(tx.amount)} />
-          <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" />} />
+          <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" approverRole={tx.approverRole} />} />
           {tx.adminUtr && <SlipRow k="UTR Number" v={tx.adminUtr} />}
           {/* Receiving account the merchant pays into — UPI ID (copyable) and/or bank details. */}
           {tx.adminUpiId && (
@@ -1005,7 +1005,7 @@ const ManagementPage: React.FC<{
                   <tr key={g.key} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>setOpenMember(g.key)}>
                     <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{memberLabel(g.key, g.items[0]?.member)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.items.length}</td>
-                    <td style={{ padding:'11px 14px' }}><Badge status={g.items[0].status} type={g.items[0].type} viewerRole="MERCHANT"/></td>
+                    <td style={{ padding:'11px 14px' }}><Badge status={g.items[0].status} type={g.items[0].type} viewerRole="MERCHANT" approverRole={g.items[0].approverRole}/></td>
                     <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.items.reduce((a,t)=>a+t.amount,0))}</td>
                     <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={(e?:any)=>{ e?.stopPropagation?.(); setOpenMember(g.key); }}>View History</Btn></td>
                   </tr>
@@ -1093,7 +1093,7 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
       <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
         <SlipRow k="Member" v={memberLabel(d.memberId, d.member) || '—'} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
-        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} />} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} />} />
         <SlipRow k="Reference" v={d.ref} />
       </div>
       <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 12 }}>
@@ -1275,7 +1275,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
       <DetailSection title="Transaction Information">
         <SlipRow k="Reference Number" v={d.ref} />
         <SlipRow k="Type" v={typeLabel(d.type)} />
-        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} viewerRole={viewerRole} />} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} viewerRole={viewerRole} approverRole={d.approverRole} />} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
         <SlipRow k="Payment Method" v={paymentMethod} />
         {d.riskLevel && <SlipRow k="Risk Level" v={d.riskLevel} />}
@@ -1449,7 +1449,7 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
         <SlipRow k="Member" v={memberLabel(d.memberId, d.member) || '—'} />
         <SlipRow k="Type" v={typeLabel(d.type)} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
-        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} />} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} />} />
         <SlipRow k="Reference" v={d.ref} />
         {d.merchantRef && <SlipRow k="Payment / UTR Reference" v={d.merchantRef} />}
         {d.depositType && <SlipRow k="Payment Method" v={depositTypeLabel(d.depositType)} />}
@@ -1574,7 +1574,7 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
                     <td style={{ padding: '11px 14px', color: T.textMuted }}>{memberLabel(t.memberId, t.member) || '—'}</td>
                     <td style={{ padding: '11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding: '11px 14px', fontWeight: 800, color: T.textMain, whiteSpace: 'nowrap' }}>{fmt(t.amount)}</td>
-                    <td style={{ padding: '11px 14px' }}><Badge status={t.status} type={t.type} /></td>
+                    <td style={{ padding: '11px 14px' }}><Badge status={t.status} type={t.type} approverRole={t.approverRole} /></td>
                     <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{t.date} {t.time}</td>
                     <td style={{ padding: '11px 14px' }}><Btn size="sm" onClick={() => setActive(t)}>Review</Btn></td>
                   </tr>
@@ -1638,7 +1638,7 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
                     <td style={{ padding:'11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800 }}>{fmt(t.amount)}</td>
                     <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600 }}>{memberLabel(t.memberId, t.member)}</td>
-                    <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT"/></td>
+                    <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT" approverRole={t.approverRole}/></td>
                     <td style={{ padding:'11px 14px' }}>
                       <Btn size="sm" variant="danger" disabled={busy===t.id} onClick={()=>setTarget(t)}>{busy===t.id?'Cancelling...':'⊘ Cancel'}</Btn>
                     </td>

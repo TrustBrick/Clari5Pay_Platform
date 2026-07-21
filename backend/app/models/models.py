@@ -217,6 +217,9 @@ class Transaction(Base):
     # before; these columns just record WHO the operator addressed it to. NULL on Production.
     approver_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     approver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # The chosen approver's role (SUPERVISOR / MANAGER) — lets the review status DISPLAY as the
+    # selected person's role (e.g. a deposit sent to a Manager reads "Manager Review"). NULL on Prod.
+    approver_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 

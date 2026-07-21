@@ -44,17 +44,18 @@ def _require_amount(amount: float) -> None:
 
 async def _resolve_merchant_approver(db: AsyncSession, merchant: User, approver_user_id: int | None):
     """Validate the "Send To Approval" Authorized Approver (demo): must be a Supervisor or Manager
-    of the caller's OWN business. Returns (user_id, username). Mirrors the Agent module's
-    _resolve_approver — the request still flows through the same review queue; this only records
-    who the operator addressed it to."""
+    of the caller's OWN business. Returns (user_id, username, role). Mirrors the Agent module's
+    _resolve_approver — the request still flows through the same review queue; this records who the
+    operator addressed it to, plus their role so the review status can DISPLAY as that role."""
     if approver_user_id is None:
-        return None, None
+        return None, None, None
     u = (await db.execute(select(User).where(User.id == approver_user_id))).scalar_one_or_none()
+    role = str(u.merchant_role or "").upper() if u else ""
     ok = (u and u.role == UserRole.MERCHANT and u.name == merchant.name
-          and str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER"))
+          and role in ("SUPERVISOR", "MANAGER"))
     if not ok:
         raise HTTPException(status_code=400, detail="Authorized Approver must be a Supervisor or Manager of your business.")
-    return u.id, u.username
+    return u.id, u.username, role
 
 
 async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, ifsc, branch, bank, member_id=None) -> None:
@@ -682,6 +683,7 @@ def _t(t: Transaction, full: bool = True) -> dict:
         # "Send To Approval" (demo): the Authorized Approver the operator addressed this to (NULL in prod).
         "approverUserId": t.approver_user_id,
         "approverName": t.approver_name,
+        "approverRole": t.approver_role,
         # Agent Management (demo): which Non-EPS agent a request is routed through (NULL in prod).
         "assignedAgentId": t.assigned_agent_id,
         "remarksHistory": (json.loads(t.remarks_history) if t.remarks_history else []),
@@ -1622,7 +1624,7 @@ async def create_deposit(
     # "Send To Approval" (demo only): record the chosen Authorized Approver on the row. The deposit
     # still enters the same Supervisor review queue; this only captures who it was addressed to.
     if settings.is_demo:
-        tx.approver_user_id, tx.approver_name = await _resolve_merchant_approver(db, current_user, data.approverUserId)
+        tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "DEP", current_user.pay_in)
@@ -1710,7 +1712,7 @@ async def create_withdrawal(
     # "Send To Approval" (demo only): record the chosen Authorized Approver on the row. The
     # withdrawal still enters the same Manager review queue; this only captures who it was addressed to.
     if settings.is_demo:
-        tx.approver_user_id, tx.approver_name = await _resolve_merchant_approver(db, current_user, data.approverUserId)
+        tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "WIT", current_user.pay_out)
@@ -1894,7 +1896,7 @@ async def submit_slip(
     # "Send To Approval" (demo only): the merchant chose an Authorized Approver at this slip step.
     # Record who the deposit is addressed to; the Supervisor review queue routing is unchanged.
     if settings.is_demo and data.approverUserId is not None:
-        tx.approver_user_id, tx.approver_name = await _resolve_merchant_approver(db, current_user, data.approverUserId)
+        tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     # Slip submitted → pending approval, auto-assigned to the Supervisor review queue.
     tx.status = TxStatus.SUPERVISOR_REVIEW
     await db.flush()

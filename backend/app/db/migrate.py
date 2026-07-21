@@ -64,6 +64,7 @@ _NEW_COLUMNS = [
     # Merchant-chosen Authorized Approver ("Send To Approval" — demo only; NULL on Production).
     ("transactions", "approver_user_id", "INTEGER"),
     ("transactions", "approver_name", "VARCHAR(128)"),
+    ("transactions", "approver_role", "VARCHAR(32)"),
     # Permanent creator snapshot (Merchant Username + Role at creation time).
     ("transactions", "creator_username", "VARCHAR(64)"),
     ("transactions", "creator_role", "VARCHAR(32)"),

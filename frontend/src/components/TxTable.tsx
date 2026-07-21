@@ -102,7 +102,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
               <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(t.amount)}</td>
               <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{t.date} <span style={{ fontSize:10 }}>{t.time}</span></td>
               <td style={{ padding:'11px 14px' }}>
-                <Badge status={t.status} type={t.type} viewerRole={viewerRole}/>
+                <Badge status={t.status} type={t.type} viewerRole={viewerRole} approverRole={t.approverRole}/>
                 {t.highRisk && (
                   <span style={{ display:'inline-flex',alignItems:'center',gap:3,marginLeft:6,padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,background:'#fdecea',color:'#b71c1c',whiteSpace:'nowrap',letterSpacing:'0.04em' }}><Icon name="warning" size={11} weight="fill" /> HIGH RISK</span>
                 )}
