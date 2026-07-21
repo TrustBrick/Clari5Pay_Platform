@@ -191,7 +191,7 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/account-submit`, data);
     return res.data;
   },
-  submitSlip: async (id: string, data: { merchantProof?: string; merchantProofs?: string[]; merchantRef?: string }) => {
+  submitSlip: async (id: string, data: { merchantProof?: string; merchantProofs?: string[]; merchantRef?: string; approverUserId?: number }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/slip`, data);
     return res.data;
   },

@@ -216,6 +216,11 @@ export const MerchantSlipModal: React.FC<{
   const [proofs, setProofs] = useState<string[]>([]);
   const [ref, setRef] = useState('');
   const [loading, setLoading] = useState(false);
+  // "Send To Approval" (demo): once the slip proof uploads, the merchant chooses the Authorized
+  // Approver who should review this deposit — revealed here rather than on the create form.
+  const [approverId, setApproverId] = useState('');
+  const [approvers, setApprovers] = useState<ApproverOption[]>([]);
+  useEffect(() => { if (IS_DEMO) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
   const [imgs, setImgs] = useState<{ adminProof?: string | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
   useEffect(() => {
@@ -241,8 +246,9 @@ export const MerchantSlipModal: React.FC<{
     await copy(detailsText, 'All details');
   };
 
-  // Both the UTR number and at least one payment proof are mandatory when submitting a slip.
-  const canSubmit = proofs.length > 0 && !!ref.trim();
+  // Both the UTR number and at least one payment proof are mandatory when submitting a slip; in demo
+  // the Authorized Approver (revealed after the proof uploads) is required too.
+  const canSubmit = proofs.length > 0 && !!ref.trim() && (!IS_DEMO || !!approverId);
   // Slip submission applies to deposits awaiting the merchant's payment proof, or those a
   // Supervisor returned for resubmission (the Data Operator re-uploads the correct slip).
   const canSubmitSlip = tx.type.startsWith('DEPOSIT') && (tx.status === 'ACCOUNT_SUBMITTED' || tx.status === 'RESUBMITTED');
@@ -251,9 +257,11 @@ export const MerchantSlipModal: React.FC<{
   const submit = async () => {
     if (!ref.trim()) { showToast('Enter the UTR number', 'error'); return; }
     if (!proofs.length) { showToast('Upload the payment proof', 'error'); return; }
+    if (IS_DEMO && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.submitSlip(tx.id, { merchantProofs: proofs, merchantRef: ref.trim() || undefined });
+      await transactionAPI.submitSlip(tx.id, { merchantProofs: proofs, merchantRef: ref.trim() || undefined,
+        ...(IS_DEMO && approverId ? { approverUserId: Number(approverId) } : {}) });
       fireConfetti();
       showToast('Payment proof submitted');
       onSubmitted?.();
@@ -354,6 +362,13 @@ export const MerchantSlipModal: React.FC<{
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Submit Your Payment Proof</p>
           <Input label="UTR Number" value={ref} onChange={e=>setRef(e.target.value)} placeholder="Bank UTR / payment reference" required />
           <MultiProofUpload values={proofs} onChange={setProofs} label="Upload Slip (up to 3)" required />
+          {/* Send To Approval — revealed only after the slip proof uploads; the merchant chooses who
+              reviews this deposit, then it routes to that approver (Supervisor review). Demo only. */}
+          {IS_DEMO && proofs.length > 0 && (
+            <SendToApprovalCard noun="Deposit" approvers={approvers} value={approverId} onChange={setApproverId}
+              className="animate-slide-up"
+              subtitle={<>Proof uploaded successfully. Please choose the Authorized Approver who should review this request.</>} />
+          )}
           <p style={{ fontSize:11,color:canSubmit?T.success:T.textMuted,margin:'0 0 14px',fontWeight:600 }}>{helper}</p>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={submit} disabled={loading||!canSubmit}>{loading?'Submitting...':'Submit Proof'}</Btn>
@@ -520,6 +535,11 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const isCash = form.depositType === 'CASH';
   const isCrypto = form.depositType === 'CRYPTO';
   const isBankLike = !isCash && !isCrypto;   // UPI / BANK / IMPS / NEFT / RTGS collect a bank account
+  // "Send To Approval" appears on THIS form only for CASH/CRYPTO — the one deposit type whose proof
+  // is uploaded here, so the approver is revealed once that proof uploads. UPI/bank deposits carry no
+  // proof on this form: their approver is chosen later, at the Pay & Submit Proof step (MerchantSlipModal).
+  const proofGated = isCash || isCrypto;
+  const showApproval = IS_DEMO && proofGated && proofs.length > 0;
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
   const setDetail = (k: string, v: string) => setDetails(d => ({ ...d, [k]: v }));
   // Membership IDs are uppercase letters + digits only (auto-converted, lowercase blocked).
@@ -552,15 +572,16 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     if(isCash && !proofs.length){ showToast('Upload a proof / image of the cash deposit','error'); return; }
     if(isCrypto && (!details.walletAddress||!details.network||!details.txHash)){ showToast('Enter Wallet Address, Network and Transaction Hash','error'); return; }
     if(isCrypto && !proofs.length){ showToast('Upload a proof / screenshot of the transaction','error'); return; }
-    // "Send To Approval" (demo only): an Authorized Approver is mandatory, mirroring the Agent module.
-    if(IS_DEMO && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
+    // "Send To Approval" (demo only): mandatory for CASH/CRYPTO (approver chosen here, after the
+    // proof). UPI/bank deposits choose their approver later at the Pay & Submit Proof step.
+    if(showApproval && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
     // Agent assignment is optional on a normal merchant deposit (the selector is labelled
     // "optional"); a mandatory agent belongs to the Agent Management module, not here.
     setLoading(true);
     try {
       const created = await transactionAPI.createDeposit({
         ...form, amount: parseFloat(parseIndianAmount(form.amount)), riskAnalysis,
-        ...(IS_DEMO && approverId ? { sentForApproval: true, approverUserId: Number(approverId) } : {}),
+        ...(showApproval && approverId ? { sentForApproval: true, approverUserId: Number(approverId) } : {}),
         ...(isBankLike ? {
           accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
           saveBankAccount: saveNew,
@@ -578,12 +599,6 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
       setLoading(false);
     }
   };
-
-  // "Send To Approval" (demo): CASH/CRYPTO deposits require a proof at creation, so the section is
-  // revealed only AFTER the proof uploads successfully (proofs populated). UPI/bank deposits have no
-  // creation-time proof, so it shows immediately, unchanged. (Withdrawals are unaffected.)
-  const proofGated = isCash || isCrypto;
-  const showApproval = IS_DEMO && (!proofGated || proofs.length > 0);
 
   return (
     <div>

@@ -1869,18 +1869,29 @@ async def submit_slip(
         tx.merchant_proof = _proofs[0]
         tx.merchant_proofs = json.dumps(_proofs)
     tx.merchant_ref = data.merchantRef
+    # "Send To Approval" (demo only): the merchant chose an Authorized Approver at this slip step.
+    # Record who the deposit is addressed to; the Supervisor review queue routing is unchanged.
+    if settings.is_demo and data.approverUserId is not None:
+        tx.approver_user_id, tx.approver_name = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     # Slip submitted → pending approval, auto-assigned to the Supervisor review queue.
     tx.status = TxStatus.SUPERVISOR_REVIEW
     await db.flush()
     # Notify the business's Supervisors that a deposit is awaiting their review.
     await _notify_business_role(db, tx, "SUPERVISOR",
                                 f"{tx.ref}: deposit slip submitted by {tx.merchant_name} — awaiting your review", "🧾")
+    # Notify the chosen Authorized Approver directly (their dashboard updates via this notification).
+    if tx.approver_user_id:
+        db.add(Notification(user_id=tx.approver_user_id,
+                            message=f"{tx.ref}: {tx.merchant_name} sent you a deposit to review", icon="🧾"))
     await notify_tx(db, tx, f"{tx.ref}: payment slip submitted by {tx.merchant_name}", "🧾")
     # Telegram (demo, next-step only): slip submitted → notify the Supervisor review queue.
     await tgn.notify(db, tx, "SUPERVISOR", "slip_submitted")
     await log_event(db, "PENDING_APPROVAL", f"{tx.ref}: slip submitted by {tx.merchant_name}, assigned to Supervisor", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type=tx.type.value,
                        entity_id=tx.ref, new="SUPERVISOR_REVIEW", ip=_client_ip(request))
+    if tx.approver_name:
+        await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type=tx.type.value,
+                           entity_id=tx.ref, new=tx.approver_name, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
     return _t(tx)
 

@@ -221,6 +221,9 @@ class SlipRequest(BaseModel):
     merchantProof: Optional[str] = None
     merchantProofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
     merchantRef: Optional[str] = None
+    # "Send To Approval" (demo only): the Authorized Approver chosen at this slip step for UPI/bank
+    # deposits, once the proof has uploaded. Ignored on Production.
+    approverUserId: Optional[int] = None
 
 
 class CompleteRequest(BaseModel):
