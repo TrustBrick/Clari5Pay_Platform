@@ -1401,7 +1401,7 @@ const REMARK_LABELS: Record<string, { title: string; confirm: string; label: str
   resubmit: { title: 'Return for Resubmission', confirm: 'Resubmit', label: 'Resubmission Remarks' },
 };
 
-const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () => void; onDone: () => void }> = ({ tx, isManager, onClose, onDone }) => {
+const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () => void }> = ({ tx, onClose, onDone }) => {
   const { showToast } = useToast();
   const [d, setD] = useState<Transaction>(tx);
   const [action, setAction] = useState<'approve' | 'reject' | 'resubmit' | null>(null);
@@ -1417,8 +1417,12 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
     if (!action) return;
     setBusy(true);
     try {
-      if (isManager) await transactionAPI.managerReview(tx.id, action, remark);
-      else await transactionAPI.supervisorReview(tx.id, action, remark);
+      // Route by the request TYPE, not the reviewer's role — a deposit always uses the deposit
+      // (supervisor) gate, a withdrawal the withdrawal (manager) gate — so the selected approver can
+      // act whatever their role. On Production a reviewer only ever sees their own role's type, so
+      // this is identical to the previous role-based routing there.
+      if (isDeposit) await transactionAPI.supervisorReview(tx.id, action, remark);
+      else await transactionAPI.managerReview(tx.id, action, remark);
       showToast(action === 'approve' ? 'Approved — forwarded to Admin' : action === 'reject' ? 'Request rejected' : 'Returned for resubmission');
       onDone();
     } catch (e: any) {
@@ -1506,23 +1510,36 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
 // Management page passes kind="SETTLEMENT" to show settlement requests on their own page.
 export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT' }> = ({ user, kind }) => {
   const isManager = String(user.merchantRole || '').toUpperCase() === 'MANAGER';
-  const queueStatus = isManager ? 'MANAGER_REVIEW' : 'SUPERVISOR_REVIEW';
-  const filterPrefix = kind || (isManager ? 'WITHDRAWAL' : 'DEPOSIT');
-  const heading = filterPrefix === 'SETTLEMENT' ? 'Settlement Approvals'
-    : filterPrefix === 'WITHDRAWAL' ? 'Withdrawal Approvals' : 'Deposit Approvals';
+  const roleStatus = isManager ? 'MANAGER_REVIEW' : 'SUPERVISOR_REVIEW';
+  const rolePrefix = kind || (isManager ? 'WITHDRAWAL' : 'DEPOSIT');
+  // Demo "Send To Approval" makes the main Approvals page a single per-user queue: a request
+  // addressed to me appears here whatever my role or its type — a Manager sees a deposit chosen for
+  // them, a Supervisor a withdrawal. The classic role-partitioned queue still applies on Production,
+  // to unassigned requests, and to the Settlement page (kind set).
+  const unifiedDemo = IS_DEMO && !kind;
+  const heading = kind === 'SETTLEMENT' ? 'Settlement Approvals'
+    : unifiedDemo ? 'Approvals'
+    : rolePrefix === 'WITHDRAWAL' ? 'Withdrawal Approvals' : 'Deposit Approvals';
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [active, setActive] = useState<Transaction | null>(null);
 
-  // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard)
-  // and to this page's request type so each queue shows only its own kind of request. On demo,
-  // "Send To Approval" addresses a request to one Authorized Approver — so a request carrying an
-  // approver appears only in that user's queue (the backend also enforces this with a 403). Requests
-  // with no approver (all of Production) stay visible to the whole review role, unchanged.
+  // A request sits at its review gate when a deposit is at SUPERVISOR_REVIEW or a withdrawal at
+  // MANAGER_REVIEW — the status the backend expects the assigned reviewer to act on.
+  const atReviewGate = (t: Transaction) =>
+    (t.type.startsWith('DEPOSIT') && t.status === 'SUPERVISOR_REVIEW') ||
+    (t.type.startsWith('WITHDRAWAL') && t.status === 'MANAGER_REVIEW');
+
+  // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard).
+  const mine = (t: Transaction) => {
+    if (t.merchant !== user.name) return false;
+    // Demo: a request addressed to me — regardless of my role or its type (backend also 403s others).
+    if (unifiedDemo && t.approverUserId) return t.approverUserId === user.id && atReviewGate(t);
+    // Production / Settlement / unassigned: classic role-partitioned queue, unchanged.
+    return t.status === roleStatus && t.type.startsWith(rolePrefix) && !t.approverUserId;
+  };
   const reload = () => transactionAPI.getAllOverseer()
-    .then(rows => setTxns(rows.filter(t =>
-      t.status === queueStatus && t.merchant === user.name && t.type.startsWith(filterPrefix)
-      && (!t.approverUserId || t.approverUserId === user.id))))
+    .then(rows => setTxns(rows.filter(mine)))
     .catch(() => setTxns([]));
   useEffect(() => { reload().finally(() => setLoading(false)); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => { if (!active) reload(); });
@@ -1567,7 +1584,7 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
           </div>
         )}
       </Card>
-      {active && <ReviewModal tx={active} isManager={isManager} onClose={() => setActive(null)} onDone={() => { setActive(null); reload(); }} />}
+      {active && <ReviewModal tx={active} onClose={() => setActive(null)} onDone={() => { setActive(null); reload(); }} />}
     </div>
   );
 };

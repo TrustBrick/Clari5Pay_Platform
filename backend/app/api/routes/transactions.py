@@ -2109,9 +2109,16 @@ async def _reviewer_action(
     remark = remark[:1000]
     cfg = _REVIEW_CONFIG[role]
     tx = await _get_business_tx(tx_id, db, reviewer)
-    # "Send To Approval" (demo): if addressed to a specific Authorized Approver, only that user
-    # may act — no-op in Production, where approver_user_id is always NULL.
-    _require_sole_merchant_approver(reviewer, tx)
+    # Who may act on this review gate:
+    #  • "Send To Approval" (demo): a request addressed to a specific Authorized Approver may be
+    #    acted on ONLY by that user — whatever their role. So a Manager can approve a deposit they
+    #    were selected for, a Supervisor a withdrawal; every other reviewer is denied (403).
+    #  • No approver (Production / unassigned): the classic role gate — deposits need a Supervisor,
+    #    withdrawals a Manager (the endpoint's `role` names the required role). Unchanged for prod.
+    if tx.approver_user_id:
+        _require_sole_merchant_approver(reviewer, tx)
+    elif str(reviewer.merchant_role or "").upper() != role:
+        raise HTTPException(status_code=403, detail=f"{cfg['label']} access required")
     if not tx.type.value.startswith(cfg["prefixes"]):
         raise HTTPException(status_code=400, detail=f"{cfg['label']} review applies to {cfg['kind']} only.")
     if tx.status != cfg["review_status"]:
@@ -2193,21 +2200,21 @@ async def _reviewer_action(
 @router.post("/{tx_id}/supervisor/approve")
 async def supervisor_approve(tx_id: str, data: RemarkRequest, request: Request,
                              db: AsyncSession = Depends(get_db),
-                             reviewer: User = Depends(get_current_supervisor)):
+                             reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "approve", data.remark)
 
 
 @router.post("/{tx_id}/supervisor/reject")
 async def supervisor_reject(tx_id: str, data: RemarkRequest, request: Request,
                             db: AsyncSession = Depends(get_db),
-                            reviewer: User = Depends(get_current_supervisor)):
+                            reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "reject", data.remark)
 
 
 @router.post("/{tx_id}/supervisor/resubmit")
 async def supervisor_resubmit(tx_id: str, data: RemarkRequest, request: Request,
                               db: AsyncSession = Depends(get_db),
-                              reviewer: User = Depends(get_current_supervisor)):
+                              reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "resubmit", data.remark)
 
 
@@ -2264,21 +2271,21 @@ async def supervisor_settle_settlement(
 @router.post("/{tx_id}/manager/approve")
 async def manager_approve(tx_id: str, data: RemarkRequest, request: Request,
                           db: AsyncSession = Depends(get_db),
-                          reviewer: User = Depends(get_current_manager)):
+                          reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "approve", data.remark)
 
 
 @router.post("/{tx_id}/manager/reject")
 async def manager_reject(tx_id: str, data: RemarkRequest, request: Request,
                          db: AsyncSession = Depends(get_db),
-                         reviewer: User = Depends(get_current_manager)):
+                         reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "reject", data.remark)
 
 
 @router.post("/{tx_id}/manager/resubmit")
 async def manager_resubmit(tx_id: str, data: RemarkRequest, request: Request,
                            db: AsyncSession = Depends(get_db),
-                           reviewer: User = Depends(get_current_manager)):
+                           reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "resubmit", data.remark)
 
 
