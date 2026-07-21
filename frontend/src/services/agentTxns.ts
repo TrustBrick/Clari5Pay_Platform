@@ -123,8 +123,6 @@ export interface AgentTxnRow {
   depositedTime?: string | null;
   depositUtr?: string | null;
   depositProof?: string | null;
-  /** Creation-time proof/slip image uploaded on the request form; gates the Send To Approval reveal. */
-  requestProof?: string | null;
   sentForApproval: boolean;
   approverName?: string | null;
   approvedBy?: string | null;
@@ -210,8 +208,6 @@ export interface AgentDepositBody {
   instructions?: string;
   sentForApproval: boolean;
   approverUserId?: number | null;
-  // Creation-time proof/slip image (data URL) uploaded on the request form; gates Send To Approval.
-  requestProof?: string;
   // Supplied by the customer/agent and typed in by the operator — mandatory on a Deposit.
   tokenDetails?: string;
   noteNumber?: string;
@@ -341,8 +337,9 @@ export const agentTxnsAPI = {
     (await api.get<AgentAccountOption[]>(`/api/agent-txns/agent-accounts/${agentMasterId}`)).data,
   accountSubmit: async (id: number, body: { agentAccountId?: number; tokenDetails?: string; noteNumber?: string; walletAddress?: string; accountProof?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/account-submit`, body)).data,
-  /** Both are mandatory — the UTR is the only payment reference (no Reference Number). */
-  submitSlip: async (id: number, body: { slipImage?: string; utr?: string }) =>
+  /** Both are mandatory — the UTR is the only payment reference (no Reference Number).
+   *  `approverUserId` is the "Send To Approval" Authorized Approver, now chosen at this step. */
+  submitSlip: async (id: number, body: { slipImage?: string; utr?: string; approverUserId?: number }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/slip`, body)).data,
   supervisorApprove: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/approve`, { remark })).data,
