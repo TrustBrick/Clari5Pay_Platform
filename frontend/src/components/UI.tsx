@@ -145,19 +145,20 @@ export const Btn: React.FC<{
 export const Input: React.FC<{
   label?: string; type?: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   placeholder?: string; required?: boolean; hint?: string; icon?: string; style?: CSSProperties; list?: string;
-  readOnly?: boolean; onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
+  readOnly?: boolean; onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void; error?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
-}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list, inputMode, readOnly, onBlur }) => (
+}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list, inputMode, readOnly, onBlur, error }) => (
   <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <div style={{ position:'relative' }}>
       {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',display:'flex',alignItems:'center',fontSize:16,color:T.textMuted }}>{isIconName(icon) ? <Icon name={icon} size={16} color={T.textMuted} /> : icon}</span>}
-      <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode} readOnly={readOnly}
-        style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:readOnly?T.canvas:T.surface,cursor:readOnly?'not-allowed':'text',outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
-        onFocus={e=>{ if(readOnly) return; e.target.style.borderColor=T.blue;e.target.style.boxShadow=`0 0 0 3px ${T.blue}18`;}}
-        onBlur={e=>{e.target.style.borderColor=T.border;e.target.style.boxShadow='none';onBlur?.(e);}}/>
+      <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode} readOnly={readOnly} aria-invalid={error?true:undefined}
+        style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',borderWidth:1.5,borderStyle:'solid',borderColor:error?T.danger:T.border,borderRadius:10,fontSize:14,color:T.textMain,background:readOnly?T.canvas:T.surface,cursor:readOnly?'not-allowed':'text',outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
+        onFocus={e=>{ if(readOnly) return; e.target.style.borderColor=error?T.danger:T.blue;e.target.style.boxShadow=`0 0 0 3px ${error?T.danger:T.blue}18`;}}
+        onBlur={e=>{e.target.style.borderColor=error?T.danger:T.border;e.target.style.boxShadow='none';onBlur?.(e);}}/>
     </div>
-    {hint && <p style={{ fontSize:11,color:T.textMuted,marginTop:4 }}>{hint}</p>}
+    {error ? <p style={{ fontSize:11,color:T.danger,marginTop:4,fontWeight:600 }}>{error}</p>
+     : hint && <p style={{ fontSize:11,color:T.textMuted,marginTop:4 }}>{hint}</p>}
   </div>
 );
 
