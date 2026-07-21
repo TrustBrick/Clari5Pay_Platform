@@ -483,11 +483,14 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
 type ApproverOption = { id: number; name: string; role: string };
 const SendToApprovalCard: React.FC<{
   noun: string; approvers: ApproverOption[]; value: string; onChange: (v: string) => void;
-}> = ({ noun, approvers, value, onChange }) => (
-  <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+  // Optional overrides: `subtitle` swaps the default helper copy (used by the proof-gated reveal);
+  // `className` carries the house slide-up animation when the card appears after a proof upload.
+  subtitle?: React.ReactNode; className?: string;
+}> = ({ noun, approvers, value, onChange, subtitle, className }) => (
+  <div className={className} style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
     <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
     <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
-      Every Merchant {noun} Request goes to an approver — choose who reviews this request.
+      {subtitle ?? <>Every Merchant {noun} Request goes to an approver — choose who reviews this request.</>}
     </p>
     <div style={{ maxWidth: 360 }}>
       <Sel label="Authorized Approver" value={value} onChange={e => onChange(e.target.value)} required
@@ -576,6 +579,12 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     }
   };
 
+  // "Send To Approval" (demo): CASH/CRYPTO deposits require a proof at creation, so the section is
+  // revealed only AFTER the proof uploads successfully (proofs populated). UPI/bank deposits have no
+  // creation-time proof, so it shows immediately, unchanged. (Withdrawals are unaffected.)
+  const proofGated = isCash || isCrypto;
+  const showApproval = IS_DEMO && (!proofGated || proofs.length > 0);
+
   return (
     <div>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
@@ -626,8 +635,10 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
       <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,marginBottom:16,cursor:'pointer' }}>
         <input type="checkbox" checked={riskAnalysis} onChange={e=>setRiskAnalysis(e.target.checked)}/> Perform Risk Analysis
       </label>
-      {IS_DEMO && <SendToApprovalCard noun="Deposit" approvers={approvers} value={approverId} onChange={setApproverId} />}
-      <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName} style={IS_DEMO?{ marginTop:16 }:undefined}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
+      {showApproval && <SendToApprovalCard noun="Deposit" approvers={approvers} value={approverId} onChange={setApproverId}
+        className={proofGated ? 'animate-slide-up' : undefined}
+        subtitle={proofGated ? <>Your proof has been uploaded successfully. Please select the Authorized Approver before submitting your request.</> : undefined} />}
+      <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName} style={showApproval?{ marginTop:16 }:undefined}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
     </div>
   );
 };
