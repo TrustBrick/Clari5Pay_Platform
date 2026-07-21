@@ -67,9 +67,17 @@ const MERCHANT_WITHDRAWAL_VIEW: Record<string, string> = {
   SLIP_SUBMITTED: 'PENDING',         // same, for rows approved before the status change (and legacy)
 };
 
-// The status to render for a viewer. Only a withdrawal seen from the Merchant Portal is remapped
-// (see MERCHANT_WITHDRAWAL_VIEW); everything else renders its real status.
-export const displayStatus = (status: string, type?: string, viewerRole?: string): string => {
+// The status to render for a viewer. Two display-only remaps, in order:
+//  1. "Send To Approval": a request in a review gate reads as the CHOSEN approver's role — a deposit
+//     sent to a Manager shows "Manager Review", a withdrawal sent to a Supervisor "Supervisor Review"
+//     — so the label matches who must act, not the fixed deposit/supervisor·withdrawal/manager gate.
+//     The stored status and the workflow are unchanged; this is presentation only.
+//  2. A withdrawal seen from the Merchant Portal collapses its internal steps (MERCHANT_WITHDRAWAL_VIEW).
+export const displayStatus = (status: string, type?: string, viewerRole?: string, approverRole?: string | null): string => {
+  const appr = String(approverRole || '').toUpperCase();
+  if (appr && (status === 'SUPERVISOR_REVIEW' || status === 'MANAGER_REVIEW')) {
+    return appr === 'MANAGER' ? 'MANAGER_REVIEW' : 'SUPERVISOR_REVIEW';
+  }
   if (viewerRole !== 'MERCHANT' || !type || !type.startsWith('WITHDRAWAL')) return status;
   return MERCHANT_WITHDRAWAL_VIEW[status] || status;
 };

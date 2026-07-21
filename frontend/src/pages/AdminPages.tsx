@@ -221,7 +221,7 @@ const RequestModal: React.FC<{
           <Row k="Receiver" v={tx.merchant} />
           <Row k="Type" v={typeLabel(tx.type)} />
           <Row k="Amount" v={fmt(tx.amount)} />
-          <Row k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="ADMIN" />} />
+          <Row k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="ADMIN" approverRole={tx.approverRole} />} />
           {(tx.memberId || tx.member) && <Row k="Membership - Member" v={memberLabel(tx.memberId, tx.member)} />}
           {/* Request Details — merchant + member context the Admin verifies before acting.
               Shown for both Deposits and Withdrawals so the two request types carry the same
@@ -802,7 +802,7 @@ export const MerchantAnalyticsPage: React.FC = () => {
                     <td style={{ padding: '9px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700 }}>{fmt(t.amount)}</td>
                     <td style={{ padding: '9px 14px', textAlign: 'right', color: T.danger }}>{fmt(feeOf(t))}</td>
-                    <td style={{ padding: '9px 14px' }}><Badge status={t.status} type={t.type} viewerRole="ADMIN" /></td>
+                    <td style={{ padding: '9px 14px' }}><Badge status={t.status} type={t.type} viewerRole="ADMIN" approverRole={t.approverRole} /></td>
                     <td style={{ padding: '9px 14px', whiteSpace: 'nowrap', color: T.textMuted }}>{t.date} {t.time}</td>
                   </tr>
                 ))}

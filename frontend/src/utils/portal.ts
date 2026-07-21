@@ -8,6 +8,11 @@ export const PORTAL: Portal = ((import.meta.env.VITE_PORTAL as Portal) || 'app')
 // and the SA-only Demo Tools page; a Production build (unset) never sees either.
 export const IS_DEMO = import.meta.env.VITE_APP_ENV === 'demo';
 
+// Merchant "Send To Approval" (Authorized Approver) — now GA on Production as well as Demo, so it
+// is NOT tied to IS_DEMO. To turn the merchant feature off, set this to false (and the backend
+// SEND_TO_APPROVAL_ENABLED). The Agent module's approval stays IS_DEMO-gated, separately.
+export const SEND_TO_APPROVAL_ENABLED = true;
+
 // The single role each role-portal admits (undefined = no restriction, e.g. the chooser).
 export const PORTAL_ROLE: Partial<Record<Portal, string>> = {
   merchant: 'MERCHANT',

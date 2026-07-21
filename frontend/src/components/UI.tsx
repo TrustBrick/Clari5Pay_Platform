@@ -67,10 +67,11 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
 // ─── Badge ───────────────────────────────────────────────────────────────────
 // Statuses that are still "in flight" → their dot gently pulses to signal processing.
 const INFLIGHT_STATUSES = new Set(['PENDING','ADMIN_APPROVED','ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED','PENDING_APPROVAL','SUPERVISOR_REVIEW','MANAGER_REVIEW','RESUBMITTED']);
-export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: string }> = ({ status, type, viewerRole }) => {
+export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: string; approverRole?: string | null }> = ({ status, type, viewerRole, approverRole }) => {
   // The colour, the pulse and the label all follow the status this viewer is shown, so a
-  // withdrawal the Merchant Portal renders as "Pending" also carries the Pending styling.
-  const shown = displayStatus(status, type, viewerRole) as TxStatus;
+  // withdrawal the Merchant Portal renders as "Pending" also carries the Pending styling. A request
+  // sent to a specific approver reads as that person's role (see displayStatus).
+  const shown = displayStatus(status, type, viewerRole, approverRole) as TxStatus;
   const s = statusStyle(shown);
   return (
     <span style={{ display:'inline-flex',alignItems:'center',gap:4,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:'nowrap' }}>

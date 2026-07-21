@@ -21,6 +21,7 @@ from app.services import tg_notify as tgn
 from app.core.cache import cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
+from app.core.config import settings
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -39,6 +40,22 @@ def _ist_now() -> datetime:
 def _require_amount(amount: float) -> None:
     if amount is None or amount < 1:
         raise HTTPException(status_code=400, detail="Amount must be greater than 0.")
+
+
+async def _resolve_merchant_approver(db: AsyncSession, merchant: User, approver_user_id: int | None):
+    """Validate the "Send To Approval" Authorized Approver (demo): must be a Supervisor or Manager
+    of the caller's OWN business. Returns (user_id, username, role). Mirrors the Agent module's
+    _resolve_approver — the request still flows through the same review queue; this records who the
+    operator addressed it to, plus their role so the review status can DISPLAY as that role."""
+    if approver_user_id is None:
+        return None, None, None
+    u = (await db.execute(select(User).where(User.id == approver_user_id))).scalar_one_or_none()
+    role = str(u.merchant_role or "").upper() if u else ""
+    ok = (u and u.role == UserRole.MERCHANT and u.name == merchant.name
+          and role in ("SUPERVISOR", "MANAGER"))
+    if not ok:
+        raise HTTPException(status_code=400, detail="Authorized Approver must be a Supervisor or Manager of your business.")
+    return u.id, u.username, role
 
 
 async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, ifsc, branch, bank, member_id=None) -> None:
@@ -545,6 +562,27 @@ async def _notify_business_role(db: AsyncSession, tx: Transaction, role: str,
             db.add(Notification(user_id=u.id, message=message, icon=icon))
 
 
+async def _notify_approver_or_role(db: AsyncSession, tx: Transaction, role: str,
+                                   message: str, icon: str = "🔔") -> None:
+    """"Send To Approval" routing (demo): when the operator addressed the request to a specific
+    Authorized Approver, notify ONLY that user; otherwise fall back to the whole business review-role
+    queue. `approver_user_id` is only ever set on the demo stack, so Production keeps the broad
+    role-based notification unchanged."""
+    if tx.approver_user_id:
+        db.add(Notification(user_id=tx.approver_user_id, message=message, icon=icon))
+    else:
+        await _notify_business_role(db, tx, role, message, icon)
+
+
+def _require_sole_merchant_approver(reviewer: User, tx: Transaction) -> None:
+    """When a request was addressed to a specific Authorized Approver ("Send To Approval", demo),
+    ONLY that user may review it — every other Manager/Supervisor in the business is denied (403).
+    No approver set (Production) → unchanged same-business role review."""
+    if tx.approver_user_id and reviewer.id != tx.approver_user_id:
+        raise HTTPException(status_code=403,
+                            detail="Only the selected Authorized Approver can review this request.")
+
+
 def _client_ip(request: Request | None) -> str | None:
     """Best-effort client IP (honours a single X-Forwarded-For hop behind the proxy)."""
     if request is None:
@@ -642,6 +680,10 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "managerName": t.manager_name,
         "managerActionAt": (t.manager_action_at.isoformat() + "Z") if t.manager_action_at else None,
         "adminActionAt": (t.admin_action_at.isoformat() + "Z") if t.admin_action_at else None,
+        # "Send To Approval" (demo): the Authorized Approver the operator addressed this to (NULL in prod).
+        "approverUserId": t.approver_user_id,
+        "approverName": t.approver_name,
+        "approverRole": t.approver_role,
         # Agent Management (demo): which Non-EPS agent a request is routed through (NULL in prod).
         "assignedAgentId": t.assigned_agent_id,
         "remarksHistory": (json.loads(t.remarks_history) if t.remarks_history else []),
@@ -1515,6 +1557,25 @@ async def admin_reports(
     return _build_report_payload(txns, bal, rates_by_business, business_by_mid, operator_by_mid)
 
 
+@router.get("/approvers")
+async def list_approvers(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Authorized Approvers for the "Send To Approval" selector on the merchant Deposit/Withdrawal
+    forms — every Supervisor and Manager of the caller's own business. GA on Demo + Production;
+    404 only when the feature is switched off (SEND_TO_APPROVAL_ENABLED=false)."""
+    if not settings.SEND_TO_APPROVAL_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+    rows = (await db.execute(
+        select(User).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
+    )).scalars().all()
+    return [
+        {"id": u.id, "name": u.username, "role": str(u.merchant_role or "").upper()}
+        for u in rows if str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER")
+    ]
+
+
 @router.post("/deposit")
 async def create_deposit(
     data: DepositCreate,
@@ -1560,6 +1621,10 @@ async def create_deposit(
         notes=data.notes,
         risk_analysis=data.riskAnalysis,
     )
+    # "Send To Approval": record the chosen Authorized Approver on the row (GA on Demo + Prod). The
+    # deposit still enters the same review queue; this captures who it was addressed to (and routes to them).
+    if settings.SEND_TO_APPROVAL_ENABLED:
+        tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "DEP", current_user.pay_in)
@@ -1591,6 +1656,8 @@ async def create_deposit(
     else:
         await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)
         await record_audit(db, "DEPOSIT_REQUESTED", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=str(tx.amount))
+    if tx.approver_name:
+        await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=tx.approver_name)
     await _refresh_with_images(db, tx)
     return _t(tx)
 
@@ -1642,6 +1709,10 @@ async def create_withdrawal(
         creator_username=current_user.username,
         creator_role=current_user.merchant_role,
     )
+    # "Send To Approval": record the chosen Authorized Approver on the row (GA on Demo + Prod). The
+    # withdrawal still enters the same review queue; this captures who it was addressed to (and routes to them).
+    if settings.SEND_TO_APPROVAL_ENABLED:
+        tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "WIT", current_user.pay_out)
@@ -1652,12 +1723,15 @@ async def create_withdrawal(
     elif _wd_mode == "UPI":
         await _save_member_upi(db, current_user, data.memberId, (data.payoutDetails or {}).get("upiId"))
     await db.flush()
-    await _notify_business_role(db, tx, "MANAGER", f"Withdrawal {tx.ref} from {tx.merchant_name} — awaiting your review", "↑")
+    # Route to the chosen Authorized Approver only (demo) — else the whole Manager queue (prod).
+    await _notify_approver_or_role(db, tx, "MANAGER", f"Withdrawal {tx.ref} from {tx.merchant_name} — awaiting your review", "↑")
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
     # Telegram (demo, next-step only): a new withdrawal request → notify the Manager.
     await tgn.notify(db, tx, "MANAGER", "withdrawal_request")
     await log_event(db, "WITHDRAWAL_REQUESTED", f"{tx.merchant_name} requested withdrawal {tx.ref} ({tx.amount}), assigned to Manager", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
+    if tx.approver_name:
+        await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=tx.approver_name, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
     return _t(tx)
 
@@ -1819,18 +1893,25 @@ async def submit_slip(
         tx.merchant_proof = _proofs[0]
         tx.merchant_proofs = json.dumps(_proofs)
     tx.merchant_ref = data.merchantRef
+    # "Send To Approval": the merchant chose an Authorized Approver at this slip step (GA on Demo +
+    # Prod). Record who the deposit is addressed to; the request then routes to that approver.
+    if settings.SEND_TO_APPROVAL_ENABLED and data.approverUserId is not None:
+        tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
     # Slip submitted → pending approval, auto-assigned to the Supervisor review queue.
     tx.status = TxStatus.SUPERVISOR_REVIEW
     await db.flush()
-    # Notify the business's Supervisors that a deposit is awaiting their review.
-    await _notify_business_role(db, tx, "SUPERVISOR",
-                                f"{tx.ref}: deposit slip submitted by {tx.merchant_name} — awaiting your review", "🧾")
+    # Notify the chosen Authorized Approver only (demo), else the whole Supervisor review queue (prod).
+    await _notify_approver_or_role(db, tx, "SUPERVISOR",
+                                   f"{tx.ref}: deposit slip submitted by {tx.merchant_name} — awaiting your review", "🧾")
     await notify_tx(db, tx, f"{tx.ref}: payment slip submitted by {tx.merchant_name}", "🧾")
     # Telegram (demo, next-step only): slip submitted → notify the Supervisor review queue.
     await tgn.notify(db, tx, "SUPERVISOR", "slip_submitted")
     await log_event(db, "PENDING_APPROVAL", f"{tx.ref}: slip submitted by {tx.merchant_name}, assigned to Supervisor", actor=current_user)
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type=tx.type.value,
                        entity_id=tx.ref, new="SUPERVISOR_REVIEW", ip=_client_ip(request))
+    if tx.approver_name:
+        await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type=tx.type.value,
+                           entity_id=tx.ref, new=tx.approver_name, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
     return _t(tx)
 
@@ -2030,6 +2111,16 @@ async def _reviewer_action(
     remark = remark[:1000]
     cfg = _REVIEW_CONFIG[role]
     tx = await _get_business_tx(tx_id, db, reviewer)
+    # Who may act on this review gate:
+    #  • "Send To Approval" (demo): a request addressed to a specific Authorized Approver may be
+    #    acted on ONLY by that user — whatever their role. So a Manager can approve a deposit they
+    #    were selected for, a Supervisor a withdrawal; every other reviewer is denied (403).
+    #  • No approver (Production / unassigned): the classic role gate — deposits need a Supervisor,
+    #    withdrawals a Manager (the endpoint's `role` names the required role). Unchanged for prod.
+    if tx.approver_user_id:
+        _require_sole_merchant_approver(reviewer, tx)
+    elif str(reviewer.merchant_role or "").upper() != role:
+        raise HTTPException(status_code=403, detail=f"{cfg['label']} access required")
     if not tx.type.value.startswith(cfg["prefixes"]):
         raise HTTPException(status_code=400, detail=f"{cfg['label']} review applies to {cfg['kind']} only.")
     if tx.status != cfg["review_status"]:
@@ -2111,21 +2202,21 @@ async def _reviewer_action(
 @router.post("/{tx_id}/supervisor/approve")
 async def supervisor_approve(tx_id: str, data: RemarkRequest, request: Request,
                              db: AsyncSession = Depends(get_db),
-                             reviewer: User = Depends(get_current_supervisor)):
+                             reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "approve", data.remark)
 
 
 @router.post("/{tx_id}/supervisor/reject")
 async def supervisor_reject(tx_id: str, data: RemarkRequest, request: Request,
                             db: AsyncSession = Depends(get_db),
-                            reviewer: User = Depends(get_current_supervisor)):
+                            reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "reject", data.remark)
 
 
 @router.post("/{tx_id}/supervisor/resubmit")
 async def supervisor_resubmit(tx_id: str, data: RemarkRequest, request: Request,
                               db: AsyncSession = Depends(get_db),
-                              reviewer: User = Depends(get_current_supervisor)):
+                              reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "resubmit", data.remark)
 
 
@@ -2182,21 +2273,21 @@ async def supervisor_settle_settlement(
 @router.post("/{tx_id}/manager/approve")
 async def manager_approve(tx_id: str, data: RemarkRequest, request: Request,
                           db: AsyncSession = Depends(get_db),
-                          reviewer: User = Depends(get_current_manager)):
+                          reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "approve", data.remark)
 
 
 @router.post("/{tx_id}/manager/reject")
 async def manager_reject(tx_id: str, data: RemarkRequest, request: Request,
                          db: AsyncSession = Depends(get_db),
-                         reviewer: User = Depends(get_current_manager)):
+                         reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "reject", data.remark)
 
 
 @router.post("/{tx_id}/manager/resubmit")
 async def manager_resubmit(tx_id: str, data: RemarkRequest, request: Request,
                            db: AsyncSession = Depends(get_db),
-                           reviewer: User = Depends(get_current_manager)):
+                           reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "resubmit", data.remark)
 
 

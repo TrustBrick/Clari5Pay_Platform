@@ -7,7 +7,7 @@ import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
 import { TxExportButton } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
-import { IS_DEMO } from '../utils/portal';
+import { IS_DEMO, SEND_TO_APPROVAL_ENABLED } from '../utils/portal';
 import { AgentAssignmentPanel, AgentAssignmentSelect, emptyAgentAssignSelection } from './AgentPages';
 import type { AgentAssignSelection } from './AgentPages';
 import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI, agentAssignmentAPI } from '../services/api';
@@ -217,6 +217,11 @@ export const MerchantSlipModal: React.FC<{
   const [proofs, setProofs] = useState<string[]>([]);
   const [ref, setRef] = useState('');
   const [loading, setLoading] = useState(false);
+  // "Send To Approval" (demo): once the slip proof uploads, the merchant chooses the Authorized
+  // Approver who should review this deposit — revealed here rather than on the create form.
+  const [approverId, setApproverId] = useState('');
+  const [approvers, setApprovers] = useState<ApproverOption[]>([]);
+  useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
   const [imgs, setImgs] = useState<{ adminProof?: string | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
   useEffect(() => {
@@ -242,8 +247,9 @@ export const MerchantSlipModal: React.FC<{
     await copy(detailsText, 'All details');
   };
 
-  // Both the UTR number and at least one payment proof are mandatory when submitting a slip.
-  const canSubmit = proofs.length > 0 && !!ref.trim();
+  // Both the UTR number and at least one payment proof are mandatory when submitting a slip; in demo
+  // the Authorized Approver (revealed after the proof uploads) is required too.
+  const canSubmit = proofs.length > 0 && !!ref.trim() && (!SEND_TO_APPROVAL_ENABLED || !!approverId);
   // Slip submission applies to deposits awaiting the merchant's payment proof, or those a
   // Supervisor returned for resubmission (the Data Operator re-uploads the correct slip).
   const canSubmitSlip = tx.type.startsWith('DEPOSIT') && (tx.status === 'ACCOUNT_SUBMITTED' || tx.status === 'RESUBMITTED');
@@ -252,9 +258,11 @@ export const MerchantSlipModal: React.FC<{
   const submit = async () => {
     if (!ref.trim()) { showToast('Enter the UTR number', 'error'); return; }
     if (!proofs.length) { showToast('Upload the payment proof', 'error'); return; }
+    if (SEND_TO_APPROVAL_ENABLED && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.submitSlip(tx.id, { merchantProofs: proofs, merchantRef: ref.trim() || undefined });
+      await transactionAPI.submitSlip(tx.id, { merchantProofs: proofs, merchantRef: ref.trim() || undefined,
+        ...(SEND_TO_APPROVAL_ENABLED && approverId ? { approverUserId: Number(approverId) } : {}) });
       fireConfetti();
       showToast('Payment proof submitted');
       onSubmitted?.();
@@ -304,7 +312,7 @@ export const MerchantSlipModal: React.FC<{
         <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>{adminLabel}</p>
         <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
           <SlipRow k="Amount" v={fmt(tx.amount)} />
-          <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" />} />
+          <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" approverRole={tx.approverRole} />} />
           {tx.adminUtr && <SlipRow k="UTR Number" v={tx.adminUtr} />}
           {/* Receiving account the merchant pays into — UPI ID (copyable) and/or bank details. */}
           {tx.adminUpiId && (
@@ -355,6 +363,13 @@ export const MerchantSlipModal: React.FC<{
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Submit Your Payment Proof</p>
           <Input label="UTR Number" value={ref} onChange={e=>setRef(e.target.value)} placeholder="Bank UTR / payment reference" required />
           <MultiProofUpload values={proofs} onChange={setProofs} label="Upload Slip (up to 3)" required />
+          {/* Send To Approval — revealed only after the slip proof uploads; the merchant chooses who
+              reviews this deposit, then it routes to that approver (Supervisor review). Demo only. */}
+          {SEND_TO_APPROVAL_ENABLED && proofs.length > 0 && (
+            <SendToApprovalCard noun="Deposit" approvers={approvers} value={approverId} onChange={setApproverId}
+              className="animate-slide-up"
+              subtitle={<>Proof uploaded successfully. Please choose the Authorized Approver who should review this request.</>} />
+          )}
           <p style={{ fontSize:11,color:canSubmit?T.success:T.textMuted,margin:'0 0 14px',fontWeight:600 }}>{helper}</p>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={submit} disabled={loading||!canSubmit}>{loading?'Submitting...':'Submit Proof'}</Btn>
@@ -478,6 +493,28 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
   );
 };
 
+// "Send To Approval" — demo only. Identical card/copy/validation to the Agent Deposit/Withdrawal
+// screens (see AgentTxnPages.tsx): every request is addressed to a chosen Supervisor/Manager
+// approver before it enters the same review queue it always has.
+type ApproverOption = { id: number; name: string; role: string };
+const SendToApprovalCard: React.FC<{
+  noun: string; approvers: ApproverOption[]; value: string; onChange: (v: string) => void;
+  // Optional overrides: `subtitle` swaps the default helper copy (used by the proof-gated reveal);
+  // `className` carries the house slide-up animation when the card appears after a proof upload.
+  subtitle?: React.ReactNode; className?: string;
+}> = ({ noun, approvers, value, onChange, subtitle, className }) => (
+  <div className={className} style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+    <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
+    <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
+      {subtitle ?? <>Every Merchant {noun} Request goes to an approver — choose who reviews this request.</>}
+    </p>
+    <div style={{ maxWidth: 360 }}>
+      <Sel label="Authorized Approver" value={value} onChange={e => onChange(e.target.value)} required
+        options={[{ value: '', label: '— Select approver —' }, ...approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+    </div>
+  </div>
+);
+
 // ─── Deposit form (used inside the Request modal) ──────────────────────────────
 export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ user, onSubmitted }) => {
   const { showToast } = useToast();
@@ -496,10 +533,19 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   // Production (module hidden) so the existing flow stays unblocked there.
   const [assign, setAssign] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
   const mustAssign = IS_DEMO && ['DEO','DEPOSIT_OPERATOR'].includes(String(user.merchantRole||'').toUpperCase());
+  // "Send To Approval": chosen Authorized Approver + the business's Supervisors/Managers.
+  const [approverId, setApproverId] = useState('');
+  const [approvers, setApprovers] = useState<ApproverOption[]>([]);
+  useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
   const isUpi = form.depositType === 'UPI';
   const isCash = form.depositType === 'CASH';
   const isCrypto = form.depositType === 'CRYPTO';
   const isBankLike = !isCash && !isCrypto;   // UPI / BANK / IMPS / NEFT / RTGS collect a bank account
+  // "Send To Approval" appears on THIS form only for CASH/CRYPTO — the one deposit type whose proof
+  // is uploaded here, so the approver is revealed once that proof uploads. UPI/bank deposits carry no
+  // proof on this form: their approver is chosen later, at the Pay & Submit Proof step (MerchantSlipModal).
+  const proofGated = isCash || isCrypto;
+  const showApproval = SEND_TO_APPROVAL_ENABLED && proofGated && proofs.length > 0;
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
   const setDetail = (k: string, v: string) => setDetails(d => ({ ...d, [k]: v }));
   // Membership IDs are uppercase letters + digits only (auto-converted, lowercase blocked).
@@ -534,10 +580,14 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     if(isCrypto && !proofs.length){ showToast('Upload a proof / screenshot of the transaction','error'); return; }
     if(mustAssign && !assign.agentId){ showToast('Please select an Agent before submitting the request.','error'); return; }
     if(mustAssign && !assign.accountId){ showToast('Please select an Agent Account before submitting the request.','error'); return; }
+    // "Send To Approval": mandatory for CASH/CRYPTO (approver chosen here, after the proof).
+    // UPI/bank deposits choose their approver later at the Pay & Submit Proof step.
+    if(showApproval && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
     setLoading(true);
     try {
       const created = await transactionAPI.createDeposit({
         ...form, amount: parseFloat(parseIndianAmount(form.amount)), riskAnalysis,
+        ...(showApproval && approverId ? { sentForApproval: true, approverUserId: Number(approverId) } : {}),
         ...(isBankLike ? {
           accountHolder:bank.accountHolder, accountNumber:bank.accountNumber, ifsc:bank.ifsc, branch:bank.branch, bankName:bank.bankName,
           saveBankAccount: saveNew,
@@ -615,7 +665,10 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         <input type="checkbox" checked={riskAnalysis} onChange={e=>setRiskAnalysis(e.target.checked)}/> Perform Risk Analysis
       </label>
       {mustAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
-      <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
+      {showApproval && <SendToApprovalCard noun="Deposit" approvers={approvers} value={approverId} onChange={setApproverId}
+        className={proofGated ? 'animate-slide-up' : undefined}
+        subtitle={proofGated ? <>Your proof has been uploaded successfully. Please select the Authorized Approver before submitting your request.</> : undefined} />}
+      <Btn size="lg" full onClick={submit} disabled={loading||!form.amount||!form.memberName} style={showApproval?{ marginTop:16 }:undefined}>{loading?'Submitting...':'Submit Deposit Request →'}</Btn>
     </div>
   );
 };
@@ -654,6 +707,10 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [assign, setAssign] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
   const mustAssign = IS_DEMO && ['DEO','WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole||'').toUpperCase());
   const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
+  // "Send To Approval" (demo only): chosen Authorized Approver + the business's Supervisors/Managers.
+  const [approverId, setApproverId] = useState('');
+  const [approvers, setApprovers] = useState<ApproverOption[]>([]);
+  useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
@@ -720,10 +777,13 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
     if(mustAssign && !assign.agentId){ showToast('Please select an Agent before submitting the request.','error'); return; }
     if(mustAssign && !assign.accountId){ showToast('Please select an Agent Account before submitting the request.','error'); return; }
+    // "Send To Approval": an Authorized Approver is mandatory, mirroring the Agent module.
+    if(SEND_TO_APPROVAL_ENABLED && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
     setLoading(true);
     try {
       const payload: Record<string, unknown> = { amount: amountNum, memberId, memberName: memberName.trim(), payoutMode: mode, payoutDetails: details };
       if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
+      if (SEND_TO_APPROVAL_ENABLED && approverId) { payload.sentForApproval = true; payload.approverUserId = Number(approverId); }
       const created = await transactionAPI.createWithdrawal(payload);
       // Phase 4 (demo): assign the chosen Non-EPS agent + account. Two separate operations by
       // design (create endpoint untouched) — see the "known limitation" note in agent_assignment.py.
@@ -821,7 +881,8 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         No proof needed now — after payment, the agent uploads the proof ({mode==='CRYPTO' ? 'Transaction Hash' : mode==='CASH' ? 'a proof image' : 'UTR number + transaction slip'}), which you can then view.
       </div>
       {mustAssign && <AgentAssignmentSelect value={assign} onChange={setAssign} />}
-      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff' }} onClick={submit} disabled={loading||!amount||!memberId}>
+      {SEND_TO_APPROVAL_ENABLED && <SendToApprovalCard noun="Withdrawal" approvers={approvers} value={approverId} onChange={setApproverId} />}
+      <Btn size="lg" full variant="danger" style={{ background:T.danger,color:'#fff', ...(SEND_TO_APPROVAL_ENABLED?{ marginTop:16 }:{}) }} onClick={submit} disabled={loading||!amount||!memberId}>
         {loading?'Submitting...':'Submit Withdrawal Request →'}
       </Btn>
     </div>
@@ -972,7 +1033,7 @@ const ManagementPage: React.FC<{
                   <tr key={g.key} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>setOpenMember(g.key)}>
                     <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{memberLabel(g.key, g.items[0]?.member)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.items.length}</td>
-                    <td style={{ padding:'11px 14px' }}><Badge status={g.items[0].status} type={g.items[0].type} viewerRole="MERCHANT"/></td>
+                    <td style={{ padding:'11px 14px' }}><Badge status={g.items[0].status} type={g.items[0].type} viewerRole="MERCHANT" approverRole={g.items[0].approverRole}/></td>
                     <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.items.reduce((a,t)=>a+t.amount,0))}</td>
                     <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={(e?:any)=>{ e?.stopPropagation?.(); setOpenMember(g.key); }}>View History</Btn></td>
                   </tr>
@@ -1060,7 +1121,7 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
       <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
         <SlipRow k="Member" v={memberLabel(d.memberId, d.member) || '—'} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
-        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} />} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} />} />
         <SlipRow k="Reference" v={d.ref} />
       </div>
       <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 12 }}>
@@ -1236,7 +1297,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
       <DetailSection title="Transaction Information">
         <SlipRow k="Reference Number" v={d.ref} />
         <SlipRow k="Type" v={typeLabel(d.type)} />
-        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} viewerRole={viewerRole} />} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} viewerRole={viewerRole} approverRole={d.approverRole} />} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
         <SlipRow k="Payment Method" v={paymentMethod} />
         {d.riskLevel && <SlipRow k="Risk Level" v={d.riskLevel} />}
@@ -1357,7 +1418,7 @@ const REMARK_LABELS: Record<string, { title: string; confirm: string; label: str
   resubmit: { title: 'Return for Resubmission', confirm: 'Resubmit', label: 'Resubmission Remarks' },
 };
 
-const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () => void; onDone: () => void }> = ({ tx, isManager, onClose, onDone }) => {
+const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () => void }> = ({ tx, onClose, onDone }) => {
   const { showToast } = useToast();
   const [d, setD] = useState<Transaction>(tx);
   const [action, setAction] = useState<'approve' | 'reject' | 'resubmit' | null>(null);
@@ -1373,8 +1434,12 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
     if (!action) return;
     setBusy(true);
     try {
-      if (isManager) await transactionAPI.managerReview(tx.id, action, remark);
-      else await transactionAPI.supervisorReview(tx.id, action, remark);
+      // Route by the request TYPE, not the reviewer's role — a deposit always uses the deposit
+      // (supervisor) gate, a withdrawal the withdrawal (manager) gate — so the selected approver can
+      // act whatever their role. On Production a reviewer only ever sees their own role's type, so
+      // this is identical to the previous role-based routing there.
+      if (isDeposit) await transactionAPI.supervisorReview(tx.id, action, remark);
+      else await transactionAPI.managerReview(tx.id, action, remark);
       showToast(action === 'approve' ? 'Approved — forwarded to Admin' : action === 'reject' ? 'Request rejected' : 'Returned for resubmission');
       onDone();
     } catch (e: any) {
@@ -1401,7 +1466,7 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
         <SlipRow k="Member" v={memberLabel(d.memberId, d.member) || '—'} />
         <SlipRow k="Type" v={typeLabel(d.type)} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
-        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} />} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} />} />
         <SlipRow k="Reference" v={d.ref} />
         {d.merchantRef && <SlipRow k="Payment / UTR Reference" v={d.merchantRef} />}
         {d.depositType && <SlipRow k="Payment Method" v={depositTypeLabel(d.depositType)} />}
@@ -1462,18 +1527,36 @@ const ReviewModal: React.FC<{ tx: Transaction; isManager: boolean; onClose: () =
 // Management page passes kind="SETTLEMENT" to show settlement requests on their own page.
 export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT' }> = ({ user, kind }) => {
   const isManager = String(user.merchantRole || '').toUpperCase() === 'MANAGER';
-  const queueStatus = isManager ? 'MANAGER_REVIEW' : 'SUPERVISOR_REVIEW';
-  const filterPrefix = kind || (isManager ? 'WITHDRAWAL' : 'DEPOSIT');
-  const heading = filterPrefix === 'SETTLEMENT' ? 'Settlement Approvals'
-    : filterPrefix === 'WITHDRAWAL' ? 'Withdrawal Approvals' : 'Deposit Approvals';
+  const roleStatus = isManager ? 'MANAGER_REVIEW' : 'SUPERVISOR_REVIEW';
+  const rolePrefix = kind || (isManager ? 'WITHDRAWAL' : 'DEPOSIT');
+  // Demo "Send To Approval" makes the main Approvals page a single per-user queue: a request
+  // addressed to me appears here whatever my role or its type — a Manager sees a deposit chosen for
+  // them, a Supervisor a withdrawal. The classic role-partitioned queue still applies on Production,
+  // to unassigned requests, and to the Settlement page (kind set).
+  const unifiedDemo = SEND_TO_APPROVAL_ENABLED && !kind;
+  const heading = kind === 'SETTLEMENT' ? 'Settlement Approvals'
+    : unifiedDemo ? 'Approvals'
+    : rolePrefix === 'WITHDRAWAL' ? 'Withdrawal Approvals' : 'Deposit Approvals';
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [active, setActive] = useState<Transaction | null>(null);
 
-  // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard)
-  // and to this page's request type so each queue shows only its own kind of request.
+  // A request sits at its review gate when a deposit is at SUPERVISOR_REVIEW or a withdrawal at
+  // MANAGER_REVIEW — the status the backend expects the assigned reviewer to act on.
+  const atReviewGate = (t: Transaction) =>
+    (t.type.startsWith('DEPOSIT') && t.status === 'SUPERVISOR_REVIEW') ||
+    (t.type.startsWith('WITHDRAWAL') && t.status === 'MANAGER_REVIEW');
+
+  // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard).
+  const mine = (t: Transaction) => {
+    if (t.merchant !== user.name) return false;
+    // Demo: a request addressed to me — regardless of my role or its type (backend also 403s others).
+    if (unifiedDemo && t.approverUserId) return t.approverUserId === user.id && atReviewGate(t);
+    // Production / Settlement / unassigned: classic role-partitioned queue, unchanged.
+    return t.status === roleStatus && t.type.startsWith(rolePrefix) && !t.approverUserId;
+  };
   const reload = () => transactionAPI.getAllOverseer()
-    .then(rows => setTxns(rows.filter(t => t.status === queueStatus && t.merchant === user.name && t.type.startsWith(filterPrefix))))
+    .then(rows => setTxns(rows.filter(mine)))
     .catch(() => setTxns([]));
   useEffect(() => { reload().finally(() => setLoading(false)); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => { if (!active) reload(); });
@@ -1508,7 +1591,7 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
                     <td style={{ padding: '11px 14px', color: T.textMuted }}>{memberLabel(t.memberId, t.member) || '—'}</td>
                     <td style={{ padding: '11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding: '11px 14px', fontWeight: 800, color: T.textMain, whiteSpace: 'nowrap' }}>{fmt(t.amount)}</td>
-                    <td style={{ padding: '11px 14px' }}><Badge status={t.status} type={t.type} /></td>
+                    <td style={{ padding: '11px 14px' }}><Badge status={t.status} type={t.type} approverRole={t.approverRole} /></td>
                     <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{t.date} {t.time}</td>
                     <td style={{ padding: '11px 14px' }}><Btn size="sm" onClick={() => setActive(t)}>Review</Btn></td>
                   </tr>
@@ -1518,7 +1601,7 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
           </div>
         )}
       </Card>
-      {active && <ReviewModal tx={active} isManager={isManager} onClose={() => setActive(null)} onDone={() => { setActive(null); reload(); }} />}
+      {active && <ReviewModal tx={active} onClose={() => setActive(null)} onDone={() => { setActive(null); reload(); }} />}
     </div>
   );
 };
@@ -1572,7 +1655,7 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
                     <td style={{ padding:'11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800 }}>{fmt(t.amount)}</td>
                     <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600 }}>{memberLabel(t.memberId, t.member)}</td>
-                    <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT"/></td>
+                    <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT" approverRole={t.approverRole}/></td>
                     <td style={{ padding:'11px 14px' }}>
                       <Btn size="sm" variant="danger" disabled={busy===t.id} onClick={()=>setTarget(t)}>{busy===t.id?'Cancelling...':'⊘ Cancel'}</Btn>
                     </td>

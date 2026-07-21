@@ -93,6 +93,14 @@ async def _recipients(db: AsyncSession, tx: Transaction, target: str) -> list[Us
             select(User).where(User.role == UserRole.ADMIN, User.active == True)  # noqa: E712
         )).scalars().all())
     if target in ("SUPERVISOR", "MANAGER", "DEO"):
+        # "Send To Approval" (demo): a review request addressed to a specific Authorized Approver
+        # goes to that one user only — never the whole role queue. approver_user_id is NULL in
+        # Production, so the broad role-based routing below is unchanged there.
+        approver_id = getattr(tx, "approver_user_id", None)
+        if approver_id and target in ("SUPERVISOR", "MANAGER"):
+            u = (await db.execute(select(User).where(
+                User.id == approver_id, User.active == True))).scalar_one_or_none()  # noqa: E712
+            return [u] if u else []
         merch = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
         if not merch:
             return []

@@ -152,6 +152,10 @@ export interface Transaction {
   managerName?: string | null;
   managerActionAt?: string | null;
   adminActionAt?: string | null;
+  // "Send To Approval" (demo): the Authorized Approver the operator addressed this to (NULL in prod).
+  approverUserId?: number | null;
+  approverName?: string | null;
+  approverRole?: string | null;   // SUPERVISOR / MANAGER — makes the review status display as the chosen role.
   // Resolved actual usernames of the approval-stage actors (display-only; from get_transaction_detail).
   supervisorUsername?: string | null;
   managerUsername?: string | null;
