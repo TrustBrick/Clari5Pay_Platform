@@ -859,19 +859,29 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [autoAgent, setAutoAgent] = useState<AgentMemberLookup['latestDeposit']>(null);
   // The member's registered bank/UPI accounts (isolated agent register), fetched with the membership
   // lookup. A Bank Transfer withdrawal pays OUT to the member's own account, so a registered one on
-  // file auto-fills the Payout Account fields below. Not used for Cash/Crypto or Settlement.
+  // populate the Withdrawal Destination picker below (mirrors the Normal Merchant Withdrawal). Not
+  // used for Cash/Crypto or Settlement.
   const [savedAccounts, setSavedAccounts] = useState<AgentMemberAccount[]>([]);
+  const [payoutDestId, setPayoutDestId] = useState('');   // '' none · 'OTHER' manual · 'acct-<id>' saved
   const [payoutHolder, setPayoutHolder] = useState('');
   const [payoutNumber, setPayoutNumber] = useState('');
   const [payoutIfsc, setPayoutIfsc] = useState('');
   const [payoutBank, setPayoutBank] = useState('');
   const [payoutBranch, setPayoutBranch] = useState('');
   const [payoutUpi, setPayoutUpi] = useState('');
-  const [payoutAutoFilled, setPayoutAutoFilled] = useState(false);
-  // Editing any payout field means it is no longer purely the registered account — drop the badge.
-  const payoutIfscFill = useIfscAutoFill(payoutIfsc, (v) => { setPayoutIfsc(v); setPayoutAutoFilled(false); }, (bank, branch) => {
+  const payoutIfscFill = useIfscAutoFill(payoutIfsc, setPayoutIfsc, (bank, branch) => {
     setPayoutBank(bank); setPayoutBranch(branch);
   });
+  const clearPayoutFields = () => {
+    setPayoutHolder(''); setPayoutNumber(''); setPayoutIfsc(''); setPayoutBank(''); setPayoutBranch(''); setPayoutUpi('');
+  };
+  // Select a saved destination → drive the payout fields from it (same as the merchant applyDest).
+  const applyPayoutDest = (a: AgentMemberAccount) => {
+    setPayoutDestId(`acct-${a.id}`);
+    setPayoutHolder(a.accountHolder || ''); setPayoutNumber(a.accountNumber || '');
+    setPayoutIfsc(a.ifsc || ''); setPayoutBank(a.bankName || ''); setPayoutBranch(a.branch || '');
+    setPayoutUpi(a.upiId || '');
+  };
   const [txnMethod, setTxnMethod] = useState('');
   // Supplied by the customer/agent and typed in by the operator — never generated.
   const [tokenDetails, setTokenDetails] = useState('');
@@ -946,23 +956,25 @@ export const AgentWithdrawalRequestPage: React.FC<{
   // accounts load or the Transaction Type changes.
   useEffect(() => {
     if (isSettlement || categoryForMethod(txnMethod) !== 'BANK_TRANSFER') {
-      setPayoutHolder(''); setPayoutNumber(''); setPayoutIfsc('');
-      setPayoutBank(''); setPayoutBranch(''); setPayoutUpi(''); setPayoutAutoFilled(false);
-      return;
+      setPayoutDestId(''); clearPayoutFields(); return;
     }
-    const acct = pickMemberAccount(savedAccounts, txnMethod);
-    if (!acct) { setPayoutAutoFilled(false); return; }
-    if (txnMethod === 'UPI') {
-      setPayoutUpi(acct.upiId || '');
-    } else {
-      setPayoutHolder(acct.accountHolder || '');
-      setPayoutNumber(acct.accountNumber || '');
-      setPayoutIfsc(acct.ifsc || '');
-      setPayoutBank(acct.bankName || '');
-      setPayoutBranch(acct.branch || '');
-    }
-    setPayoutAutoFilled(true);
+    const dests = txnMethod === 'UPI'
+      ? savedAccounts.filter(a => a.upiId)
+      : savedAccounts.filter(a => a.accountNumber);
+    // Exactly one saved destination → auto-select it; otherwise let the operator choose (merchant parity).
+    if (dests.length === 1) applyPayoutDest(dests[0]);
+    else { setPayoutDestId(''); clearPayoutFields(); }
   }, [savedAccounts, txnMethod, isSettlement]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Saved destinations for the chosen Bank Transfer method, as radio options (mirrors the merchant
+  // Withdrawal Destination list): UPI method → the member's UPI ids, bank methods → their accounts.
+  const payoutIsBankCat = !isSettlement && categoryForMethod(txnMethod) === 'BANK_TRANSFER';
+  const payoutDests = !payoutIsBankCat ? [] : (txnMethod === 'UPI'
+    ? savedAccounts.filter(a => a.upiId).map(a => ({ id: `acct-${a.id}`, kind: 'UPI' as const, label: `UPI · ${a.upiId}${a.isDefault ? '  ★ default' : ''}`, row: a }))
+    : savedAccounts.filter(a => a.accountNumber).map(a => ({ id: `acct-${a.id}`, kind: 'BANK' as const, label: `Bank · ${a.bankName || 'Account'} ····${(a.accountNumber || '').slice(-4)}`, row: a })));
+  const hasPayoutSaved = payoutDests.length > 0;
+  const payoutUsingOther = payoutDestId === 'OTHER' || !hasPayoutSaved;
+  const chosenPayout = payoutDests.find(d => d.id === payoutDestId);
 
   const reset = () => {
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
@@ -970,8 +982,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
     setNotes(''); setInstructions(''); setApproverId('');
     setTxnMethod(''); setMemberBalance(null);
     setTokenDetails(''); setNoteNumber('');
-    setSavedAccounts([]); setPayoutHolder(''); setPayoutNumber(''); setPayoutIfsc('');
-    setPayoutBank(''); setPayoutBranch(''); setPayoutUpi(''); setPayoutAutoFilled(false); payoutIfscFill.reset();
+    setSavedAccounts([]); setPayoutDestId(''); clearPayoutFields(); payoutIfscFill.reset();
   };
 
   const submit = async () => {
@@ -992,6 +1003,17 @@ export const AgentWithdrawalRequestPage: React.FC<{
     if (disp?.category && categoryForMethod(txnMethod) &&
         String(disp.category).toUpperCase() !== categoryForMethod(txnMethod)) {
       showToast('The selected Agent does not belong to the chosen Transaction Type.', 'error'); return;
+    }
+    // Bank Transfer withdrawal: a destination must be chosen (a saved one, or Other + details) —
+    // exactly like the merchant Withdrawal Destination step. Cash/Crypto have no payout account.
+    if (payoutIsBankCat) {
+      if (hasPayoutSaved && !payoutDestId) { showToast('Select a withdrawal destination.', 'error'); return; }
+      if (payoutUsingOther) {
+        if (txnMethod === 'UPI' && !payoutUpi.trim()) { showToast('Enter the payout UPI ID.', 'error'); return; }
+        if (txnMethod !== 'UPI' && (!payoutHolder.trim() || !payoutNumber.trim())) {
+          showToast('Enter the account holder and account number.', 'error'); return;
+        }
+      }
     }
     // Token / Wallet / Slip are NO LONGER captured here — they are the post-approval Payment Details
     // step. The create form only records the request; approval comes first.
@@ -1119,29 +1141,62 @@ export const AgentWithdrawalRequestPage: React.FC<{
           </div>
         )}
 
-        {/* Payout Account — where a Bank Transfer withdrawal is SENT. It is the member's own
-            registered account, auto-fetched from the isolated agent register when on file. Only the
-            Bank Transfer category (BANK/IMPS/NEFT/RTGS/UPI); Cash/Crypto pay out with no account. */}
-        {!isSettlement && categoryForMethod(txnMethod) === 'BANK_TRANSFER' && (
+        {/* Withdrawal Destination — the member's registered payout accounts (isolated agent register),
+            shown exactly like the Normal Merchant Withdrawal: pick a saved account, or Other / new
+            method to enter one. Bank Transfer category only (BANK/IMPS/NEFT/RTGS/UPI); Cash/Crypto pay
+            out with no account, and a Settlement has no member. */}
+        {payoutIsBankCat && (
           <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-              <p style={{ margin: 0, fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Payout Account Details</p>
-              {payoutAutoFilled && <span style={{ fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>✓ Auto-fetched from member's registered account</span>}
-            </div>
-            {memberBalance != null && !looking && !payoutAutoFilled && savedAccounts.length === 0 && (
-              <p style={{ margin: '0 0 10px', fontSize: 11.5, color: T.textMuted }}>No bank details are configured for this member — enter them manually.</p>
-            )}
-            {txnMethod === 'UPI' ? (
-              <Input label="Payout UPI ID" value={payoutUpi} onChange={e => { setPayoutUpi(e.target.value); setPayoutAutoFilled(false); }}
-                placeholder="e.g. satish@ybl" hint="The UPI the withdrawal is paid to" style={{ marginBottom: 0 }} />
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
-                <Input label="Account Holder" value={payoutHolder} onChange={e => { setPayoutHolder(e.target.value); setPayoutAutoFilled(false); }} />
-                <Input label="Account Number" value={payoutNumber} onChange={e => { setPayoutNumber(e.target.value); setPayoutAutoFilled(false); }} />
-                <IfscField label="IFSC Code" value={payoutIfsc} ifsc={payoutIfscFill} />
-                <Input label="Bank Name" value={payoutBank} onChange={e => { setPayoutBank(e.target.value); setPayoutAutoFilled(false); }} readOnly={payoutIfscFill.locked} />
-                <Input label="Branch" value={payoutBranch} onChange={e => { setPayoutBranch(e.target.value); setPayoutAutoFilled(false); }} readOnly={payoutIfscFill.locked} />
+            <p style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Withdrawal Destination</p>
+
+            {hasPayoutSaved && (
+              <div style={{ marginBottom: (chosenPayout || payoutUsingOther) ? 12 : 0 }}>
+                {payoutDests.map(d => (
+                  <label key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', border: `1.5px solid ${payoutDestId === d.id ? T.blue : T.border}`, borderRadius: 10, marginBottom: 8, cursor: 'pointer', fontSize: 13, color: T.textMain, fontWeight: 600 }}>
+                    <input type="radio" name="agent-wd-dest" checked={payoutDestId === d.id} onChange={() => applyPayoutDest(d.row)} />
+                    {d.label}
+                  </label>
+                ))}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', border: `1.5px solid ${payoutDestId === 'OTHER' ? T.blue : T.border}`, borderRadius: 10, cursor: 'pointer', fontSize: 13, color: T.textMain, fontWeight: 600 }}>
+                  <input type="radio" name="agent-wd-dest" checked={payoutDestId === 'OTHER'} onChange={() => { setPayoutDestId('OTHER'); clearPayoutFields(); }} />
+                  Other / new method
+                </label>
               </div>
+            )}
+
+            {!hasPayoutSaved && memberBalance != null && !looking && (
+              <p style={{ margin: '0 0 10px', fontSize: 11.5, color: T.textMuted }}>No registered bank accounts found for this member.</p>
+            )}
+
+            {/* Read-only summary of the chosen saved destination (mirrors the merchant summary card). */}
+            {chosenPayout && (
+              <div style={{ background: T.surface, borderRadius: 10, padding: 12, fontSize: 12, marginBottom: payoutUsingOther ? 12 : 0, border: `1px solid ${T.border}` }}>
+                {chosenPayout.kind === 'UPI'
+                  ? <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span style={{ color: T.textMuted }}>UPI ID</span><b>{payoutUpi}</b></div>
+                  : <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span style={{ color: T.textMuted }}>Account Holder</span><b>{payoutHolder}</b></div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span style={{ color: T.textMuted }}>Account Number</span><b>{payoutNumber}</b></div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span style={{ color: T.textMuted }}>IFSC</span><b>{payoutIfsc}</b></div>
+                      {payoutBank && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span style={{ color: T.textMuted }}>Bank</span><b>{payoutBank}</b></div>}
+                      {payoutBranch && <div style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}><span style={{ color: T.textMuted }}>Branch</span><b>{payoutBranch}</b></div>}
+                    </>}
+              </div>
+            )}
+
+            {/* Other / new method (or a member with no saved accounts) → manual entry. */}
+            {payoutUsingOther && (
+              txnMethod === 'UPI' ? (
+                <Input label="Payout UPI ID" value={payoutUpi} onChange={e => setPayoutUpi(e.target.value)}
+                  placeholder="e.g. satish@ybl" hint="The UPI the withdrawal is paid to" style={{ marginBottom: 0 }} />
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
+                  <Input label="Account Holder" value={payoutHolder} onChange={e => setPayoutHolder(e.target.value)} />
+                  <Input label="Account Number" value={payoutNumber} onChange={e => setPayoutNumber(e.target.value)} />
+                  <IfscField label="IFSC Code" value={payoutIfsc} ifsc={payoutIfscFill} />
+                  <Input label="Bank Name" value={payoutBank} onChange={e => setPayoutBank(e.target.value)} readOnly={payoutIfscFill.locked} />
+                  <Input label="Branch" value={payoutBranch} onChange={e => setPayoutBranch(e.target.value)} readOnly={payoutIfscFill.locked} />
+                </div>
+              )
             )}
           </div>
         )}
