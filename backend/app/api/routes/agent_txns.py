@@ -305,6 +305,37 @@ async def _resolve_payout_account(db: AsyncSession, user: User, body: "AgentWith
     return row
 
 
+async def _register_member_account(db: AsyncSession, business: str, user: User, membership_id: str,
+                                   member_name: str | None, *, account_holder: str | None = None,
+                                   account_number: str | None = None, ifsc: str | None = None,
+                                   bank_name: str | None = None, branch: str | None = None,
+                                   upi_id: str | None = None) -> AgentMemberBankAccount | None:
+    """Register a member's bank/UPI account in the isolated agent register, de-duped on the identifying
+    field (account number, or UPI). Returns the existing or newly-added row, or None when there is
+    nothing identifying to save. This is the SAME save a withdrawal payout account gets — so a Bank
+    Transfer DEPOSIT records the member's Sending Account for later auto-fill, exactly like a payout.
+    Cash/Crypto carry no account and no-op here."""
+    number = (account_number or "").strip() or None
+    upi = (upi_id or "").strip() or None
+    if not number and not upi:
+        return None
+    existing = await _saved_member_accounts(db, business, membership_id)
+    for row in existing:                 # de-dupe on the identifying field
+        if (number and row.account_number == number) or (upi and row.upi_id and row.upi_id.lower() == upi.lower()):
+            return row
+    row = AgentMemberBankAccount(
+        merchant_business=business, membership_id=membership_id, member_name=member_name,
+        account_holder=(account_holder or None), account_number=number,
+        ifsc=(ifsc or None), bank_name=(bank_name or None),
+        branch=(branch or None), upi_id=upi,
+        is_default=not existing,         # the first account on file becomes the default
+        created_by=user.username,
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
 def _account_detail(a: AgentAccount) -> str:
     """Human-readable payment details for a submitted AGENT account, by type. Stored on the
     transaction so the payer sees exactly what was sent, even if the account changes later."""
@@ -908,6 +939,17 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
             ).order_by(AgentTransaction.id.desc())
         )).scalars().first()
         membership_name = prior or None
+
+    # A Bank Transfer DEPOSIT registers the member's Sending Account (the account the money comes FROM
+    # is the member's own), so their bank details auto-fill on the next deposit/withdrawal — the same
+    # registration a withdrawal payout account gets. De-duped; Cash/Crypto carry no account and no-op.
+    if txn_type == "DEPOSIT":
+        await _register_member_account(
+            db, business, user, body.membershipId.strip(), membership_name,
+            account_holder=body.senderAccountHolder, account_number=body.senderAccountNumber,
+            ifsc=body.senderIfsc, bank_name=body.senderBankName, branch=body.senderBranch,
+            upi_id=body.senderUpiId,
+        )
 
     t = AgentTransaction(
         reference_number=ref, transaction_code=txn_code, txn_type=txn_type,
