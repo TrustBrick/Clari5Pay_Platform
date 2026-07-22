@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
@@ -10,8 +10,8 @@ import TxSearchFilters from '../components/TxSearchFilters';
 import { IS_DEMO, SEND_TO_APPROVAL_ENABLED } from '../utils/portal';
 import { AgentAssignmentPanel } from './AgentPages';
 import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI } from '../services/api';
-import type { TxQuery } from '../services/api';
-import { usePoll } from '../utils/usePoll';
+import type { TxQuery, MemberGroup } from '../services/api';
+import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { lookupIfsc, isValidIfsc, bankBadge, BANK_NAMES } from '../utils/ifsc';
@@ -951,29 +951,55 @@ const ManagementPage: React.FC<{
   noun: string;
   FormComp: React.FC<{ user: User; onSubmitted?: () => void }>;
 }> = ({ user, title, prefix, requestLabel, noun, FormComp }) => {
-  const [txns, setTxns] = useState<Transaction[]>([]);
+  // ── Server-side member groups (grouping / counts / totals computed in the DB) ──
+  const [groups, setGroups] = useState<MemberGroup[]>([]);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 400);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [openMember, setOpenMember] = useState<string | null>(null);
+  const [openMember, setOpenMember] = useState<MemberGroup | null>(null);
   const [slipTx, setSlipTx] = useState<Transaction | null>(null);
   const [detailTx, setDetailTx] = useState<Transaction | null>(null);
 
-  const reload = () => transactionAPI.getMine().then(setTxns).catch(()=>setTxns([]));
-  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
-  usePoll(() => { if (!showForm && !slipTx && !detailTx) reload(); });
+  // ── Drill-down: one member's own transactions, also server-paginated ──
+  const [memberTxns, setMemberTxns] = useState<Transaction[]>([]);
+  const [memberTotal, setMemberTotal] = useState(0);
+  const [memberTotalPages, setMemberTotalPages] = useState(1);
+  const [memberPage, setMemberPage] = useState(1);
+  const [memberPageSize, setMemberPageSize] = useState(10);
+  const [memberLoading, setMemberLoading] = useState(false);
 
-  const mine = txns.filter(t => t.type.startsWith(prefix));
+  const loadGroups = () => {
+    setLoading(true);
+    return transactionAPI.memberGroups({ type: prefix, search: debouncedSearch, page, page_size: pageSize })
+      .then(r => { setGroups(r.items); setTotal(r.total); setTotalPages(r.totalPages); })
+      .catch(() => { setGroups([]); setTotal(0); setTotalPages(1); })
+      .finally(() => setLoading(false));
+  };
+  // Refetch when the page / page size / debounced search changes.
+  useEffect(() => { loadGroups(); }, [prefix, debouncedSearch, page, pageSize]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // A new search term or page size returns to page 1.
+  useEffect(() => { setPage(1); }, [debouncedSearch, pageSize]);
+  usePoll(() => { if (!showForm && !slipTx && !detailTx && !openMember) loadGroups(); });
 
-  // Group by Membership ID, most requests first.
-  const groups = Object.values(
-    mine.reduce((acc, t) => {
-      const key = t.memberId || t.member || 'Unassigned';
-      (acc[key] ||= { key, items: [] as Transaction[] }).items.push(t);
-      return acc;
-    }, {} as Record<string, { key: string; items: Transaction[] }>)
-  ).sort((a, b) => b.items.length - a.items.length);
+  const loadMemberTxns = () => {
+    if (!openMember) return Promise.resolve();
+    setMemberLoading(true);
+    return transactionAPI.memberTransactions({ type: prefix, member: openMember.membershipId, page: memberPage, page_size: memberPageSize })
+      .then(r => { setMemberTxns(r.items); setMemberTotal(r.total); setMemberTotalPages(r.totalPages); })
+      .catch(() => { setMemberTxns([]); setMemberTotal(0); setMemberTotalPages(1); })
+      .finally(() => setMemberLoading(false));
+  };
+  useEffect(() => { if (openMember) loadMemberTxns(); }, [openMember, memberPage, memberPageSize]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  const active = openMember ? groups.find(g => g.key === openMember) : null;
+  const openGroup = (g: MemberGroup) => { setMemberPage(1); setMemberTxns([]); setOpenMember(g); };
+  const active = openMember;
+  // Refresh after a mutation: reload the member list and, if a drill-down is open, its page too.
+  const refreshAll = () => { loadGroups(); if (openMember) loadMemberTxns(); };
 
   return (
     <div>
@@ -986,8 +1012,11 @@ const ManagementPage: React.FC<{
       </div>
 
       <Card>
-        <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
-          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Members ({groups.length})</h3>
+        <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap' }}>
+          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Members ({total})</h3>
+          <div style={{ width:260,maxWidth:'100%' }}>
+            <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search Membership ID or member…" icon="search" style={{ marginBottom:0 }}/>
+          </div>
         </div>
         {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : (
           <div style={{ overflowX:'auto' }}>
@@ -1002,44 +1031,46 @@ const ManagementPage: React.FC<{
               <tbody>
                 {groups.length === 0 && <tr><td colSpan={5} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No {noun.toLowerCase()} requests yet</td></tr>}
                 {groups.map((g,i)=>(
-                  <tr key={g.key} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>setOpenMember(g.key)}>
-                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{memberLabel(g.key, g.items[0]?.member)}</td>
-                    <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.items.length}</td>
-                    <td style={{ padding:'11px 14px' }}><Badge status={g.items[0].status} type={g.items[0].type} viewerRole="MERCHANT" approverRole={g.items[0].approverRole}/></td>
-                    <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.items.reduce((a,t)=>a+t.amount,0))}</td>
-                    <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={(e?:any)=>{ e?.stopPropagation?.(); setOpenMember(g.key); }}>View History</Btn></td>
+                  <tr key={g.membershipId} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>openGroup(g)}>
+                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{memberLabel(g.membershipId, g.memberName)}</td>
+                    <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.requests}</td>
+                    <td style={{ padding:'11px 14px' }}>{g.latestStatus ? <Badge status={g.latestStatus as Transaction['status']} type={g.latestType || undefined} viewerRole="MERCHANT"/> : '—'}</td>
+                    <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.totalAmount)}</td>
+                    <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={(e?:any)=>{ e?.stopPropagation?.(); openGroup(g); }}>View History</Btn></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading} onPage={setPage} onPageSize={setPageSize}/>
       </Card>
 
       {showForm && (
         <Modal title={requestLabel} onClose={()=>setShowForm(false)} wide>
-          <FormComp user={user} onSubmitted={()=>{ setShowForm(false); reload(); }}/>
+          <FormComp user={user} onSubmitted={()=>{ setShowForm(false); loadGroups(); }}/>
         </Modal>
       )}
 
       {active && (
-        <Modal title={`Member ${active.key} — ${noun} History`} onClose={()=>setOpenMember(null)} xl>
+        <Modal title={`Member ${active.membershipId} — ${noun} History`} onClose={()=>setOpenMember(null)} xl>
           <div style={{ display:'flex',gap:14,marginBottom:14,flexWrap:'wrap' }}>
             <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 16px' }}>
               <p style={{ margin:0,fontSize:10,color:T.textMuted,fontWeight:700,textTransform:'uppercase' }}>Total {noun} Requests</p>
-              <p style={{ margin:0,fontSize:22,fontWeight:800,color:T.blue }}>{active.items.length}</p>
+              <p style={{ margin:0,fontSize:22,fontWeight:800,color:T.blue }}>{active.requests}</p>
             </div>
             <div style={{ background:T.successBg,borderRadius:10,padding:'10px 16px' }}>
               <p style={{ margin:0,fontSize:10,color:T.textMuted,fontWeight:700,textTransform:'uppercase' }}>Total Amount</p>
-              <p style={{ margin:0,fontSize:22,fontWeight:800,color:T.success }}>{fmt(active.items.reduce((a,t)=>a+t.amount,0))}</p>
+              <p style={{ margin:0,fontSize:22,fontWeight:800,color:T.success }}>{fmt(active.totalAmount)}</p>
             </div>
           </div>
-          <TxTable txns={active.items} actionMode="merchant" viewerRole="MERCHANT" onAction={(t, action)=> action==='slip' ? setSlipTx(t) : setDetailTx(t)}/>
+          <TxTable txns={memberTxns} loading={memberLoading} actionMode="merchant" viewerRole="MERCHANT" onAction={(t, action)=> action==='slip' ? setSlipTx(t) : setDetailTx(t)}/>
+          <Pager page={memberPage} pageSize={memberPageSize} total={memberTotal} totalPages={memberTotalPages} loading={memberLoading} onPage={setMemberPage} onPageSize={setMemberPageSize}/>
         </Modal>
       )}
 
       {slipTx && (
-        <MerchantSlipModal tx={slipTx} onClose={()=>setSlipTx(null)} onSubmitted={()=>{ setSlipTx(null); reload(); }}/>
+        <MerchantSlipModal tx={slipTx} onClose={()=>setSlipTx(null)} onSubmitted={()=>{ setSlipTx(null); refreshAll(); }}/>
       )}
       {detailTx && (
         <TransactionDetailsModal tx={detailTx} viewerRole="MERCHANT" onClose={()=>setDetailTx(null)} />

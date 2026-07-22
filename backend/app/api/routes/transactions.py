@@ -3,7 +3,7 @@ from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, case, func, text
+from sqlalchemy import select, or_, and_, case, func, text, literal
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster
 from app.core.deps import (
@@ -989,6 +989,170 @@ async def get_my_transactions_paged(
         date_from=date_from, date_to=date_to, datetime_from=datetime_from,
         datetime_to=datetime_to, status=status, type=type,
         amount_min=amount_min, amount_max=amount_max,
+    )
+    return await _paged_response(db, stmt, (Transaction.created_at.desc(),), page, page_size)
+
+
+# ─── Merchant member-grouped aggregation (server-side) ───────────────────────────
+# The Merchant Deposit/Withdrawal/Settlement pages don't render a flat list — they group
+# the merchant's transactions by Membership ID and show per-member aggregates (request
+# count, total amount, latest status). Paginating a flat list would corrupt those totals,
+# so grouping + counts + sums are computed in Postgres here and the page shows one page of
+# MEMBER GROUPS (default 10). The per-member drill-down uses /mine/member-transactions.
+def _member_group_key():
+    """The same grouping key the UI used client-side: Membership ID, else member name,
+    else the literal 'Unassigned' — computed in SQL so grouping happens in the database."""
+    return func.coalesce(
+        func.nullif(Transaction.member_id, ""),
+        func.nullif(Transaction.member_name, ""),
+        literal("Unassigned"),
+    )
+
+
+@router.get("/mine/members")
+async def get_my_member_groups(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    type: str | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    datetime_from: datetime | None = None,
+    datetime_to: datetime | None = None,
+    page: int = 1,
+    page_size: int = 10,
+):
+    """Paginated member groups for the Merchant management pages. `type` (DEPOSIT /
+    WITHDRAWAL / SETTLEMENT prefix) scopes the primary count/total/latest to that type
+    exactly as each per-type page does today; the deposit/withdrawal/settlement breakdown
+    counts are always returned across all of the member's transactions. All grouping,
+    counting and summing run in the database — never in the browser."""
+    if current_user.role != UserRole.MERCHANT:
+        raise HTTPException(status_code=403, detail="Merchant only")
+
+    grp = _member_group_key()
+    active = _resolve_types(type)  # None when type is absent / ALL
+    dep = _resolve_types("DEPOSIT")
+    wd = _resolve_types("WITHDRAWAL")
+    st = _resolve_types("SETTLEMENT")
+
+    # Active-type-scoped aggregates (drive the current per-type UI: "Total {noun} Requests"
+    # + "Total Amount"). When no type is given they span every type (unified view).
+    if active is not None:
+        active_cond = Transaction.type.in_(active)
+        requests_col = func.count().filter(active_cond)
+        amount_col = func.coalesce(func.sum(Transaction.amount).filter(active_cond), 0.0)
+    else:
+        active_cond = None
+        requests_col = func.count()
+        amount_col = func.coalesce(func.sum(Transaction.amount), 0.0)
+
+    base = select(
+        grp.label("mid"),
+        func.max(Transaction.member_name).label("member_name"),
+        func.count().filter(Transaction.type.in_(dep)).label("deposit_requests"),
+        func.count().filter(Transaction.type.in_(wd)).label("withdrawal_requests"),
+        func.count().filter(Transaction.type.in_(st)).label("settlement_requests"),
+        requests_col.label("requests"),
+        amount_col.label("total_amount"),
+    ).where(Transaction.merchant_id == current_user.id)
+    base = _apply_tx_filters(base, None, date_from, date_to, datetime_from, datetime_to)
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        base = base.where(or_(
+            Transaction.member_id.ilike(like),
+            Transaction.member_name.ilike(like),
+            Transaction.ref.ilike(like),
+        ))
+    grouped = base.group_by(grp)
+    if active_cond is not None:
+        grouped = grouped.having(func.count().filter(active_cond) > 0)
+
+    page_size = _clamp_page_size(page_size)
+    page = page if page and page >= 1 else 1
+    total = int((await db.execute(
+        select(func.count()).select_from(grouped.subquery())
+    )).scalar() or 0)
+
+    # Order matches today's UI: most requests first (stable tiebreak on the member key).
+    rows = (await db.execute(
+        grouped.order_by(requests_col.desc(), grp.asc())
+        .offset((page - 1) * page_size).limit(page_size)
+    )).all()
+
+    # Latest transaction per member (within the active type) — one batched DISTINCT ON,
+    # no N+1. Supplies each group's latest status / type / date shown in the UI.
+    mids = [r.mid for r in rows]
+    latest: dict[str, dict] = {}
+    if mids:
+        lstmt = select(
+            grp.label("mid"), Transaction.status, Transaction.type,
+            Transaction.tx_date, Transaction.tx_time, Transaction.created_at,
+        ).where(Transaction.merchant_id == current_user.id, grp.in_(mids))
+        if active_cond is not None:
+            lstmt = lstmt.where(active_cond)
+        lstmt = lstmt.distinct(grp).order_by(grp, Transaction.created_at.desc())
+        for lr in (await db.execute(lstmt)).all():
+            latest[lr.mid] = {
+                "status": lr.status, "type": lr.type,
+                "date": str(lr.tx_date), "time": lr.tx_time,
+                "createdAt": (lr.created_at.isoformat() + "Z") if lr.created_at else None,
+            }
+
+    items = []
+    for r in rows:
+        lt = latest.get(r.mid, {})
+        items.append({
+            "membershipId": r.mid,
+            "memberName": r.member_name,
+            "depositRequests": int(r.deposit_requests or 0),
+            "withdrawalRequests": int(r.withdrawal_requests or 0),
+            "settlementRequests": int(r.settlement_requests or 0),
+            "requests": int(r.requests or 0),
+            "totalAmount": float(r.total_amount or 0.0),
+            "latestStatus": lt.get("status"),
+            "latestType": lt.get("type"),
+            "latestDate": lt.get("date"),
+            "latestTime": lt.get("time"),
+            "latestCreatedAt": lt.get("createdAt"),
+        })
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "totalPages": (total + page_size - 1) // page_size if page_size else 0,
+    }
+
+
+@router.get("/mine/member-transactions")
+async def get_my_member_transactions(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    member: str = "",
+    type: str | None = None,
+    search: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    datetime_from: datetime | None = None,
+    datetime_to: datetime | None = None,
+    page: int = 1,
+    page_size: int = 10,
+):
+    """Paginated drill-down: one member group's own transactions (exact match on the same
+    grouping key used by /mine/members), newest first. `type` scopes to the active page."""
+    if current_user.role != UserRole.MERCHANT:
+        raise HTTPException(status_code=403, detail="Merchant only")
+    grp = _member_group_key()
+    stmt = select(Transaction).where(
+        Transaction.merchant_id == current_user.id, grp == member,
+    )
+    active = _resolve_types(type)
+    if active is not None:
+        stmt = stmt.where(Transaction.type.in_(active))
+    stmt = _apply_paged_filters(
+        stmt, search=search, date_from=date_from, date_to=date_to,
+        datetime_from=datetime_from, datetime_to=datetime_to,
     )
     return await _paged_response(db, stmt, (Transaction.created_at.desc(),), page, page_size)
 

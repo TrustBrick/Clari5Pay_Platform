@@ -184,6 +184,38 @@ export const Sel: React.FC<{
   </div>
 );
 
+// ─── Pager ───────────────────────────────────────────────────────────────────
+// Shared server-side pagination control for every paginated listing (Merchant / Agent /
+// Admin / Super Admin). Page size is restricted to 10/25/50/100 (matches the backend clamp).
+// Purely presentational: the parent owns page/pageSize state and refetches on change.
+export const PAGE_SIZES = [10, 25, 50, 100];
+export const Pager: React.FC<{
+  page: number; pageSize: number; total: number; totalPages: number;
+  onPage: (p: number) => void; onPageSize: (n: number) => void; loading?: boolean;
+}> = ({ page, pageSize, total, totalPages, onPage, onPageSize, loading }) => {
+  if (!total) return null;
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+  const pages = Math.max(totalPages, 1);
+  return (
+    <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'12px 16px',flexWrap:'wrap',borderTop:`1px solid ${T.border}` }}>
+      <div style={{ display:'flex',alignItems:'center',gap:8,fontSize:12,color:T.textMuted }}>
+        <span>Rows per page</span>
+        <select value={pageSize} onChange={e=>onPageSize(Number(e.target.value))}
+          style={{ padding:'5px 26px 5px 10px',border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:12,color:T.textMain,background:T.surface,outline:'none',appearance:'none',backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%236b7280' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E")`,backgroundRepeat:'no-repeat',backgroundPosition:'right 8px center',cursor:'pointer',fontFamily:'inherit' }}>
+          {PAGE_SIZES.map(n=><option key={n} value={n}>{n}</option>)}
+        </select>
+        <span style={{ fontWeight:600 }}>{from}–{to} of {total}</span>
+      </div>
+      <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+        <Btn size="sm" variant="ghost" disabled={loading || page<=1} onClick={()=>onPage(page-1)}>Prev</Btn>
+        <span style={{ fontSize:12,color:T.textMuted,minWidth:96,textAlign:'center' }}>Page {page} of {pages}</span>
+        <Btn size="sm" variant="ghost" disabled={loading || page>=pages} onClick={()=>onPage(page+1)}>Next</Btn>
+      </div>
+    </div>
+  );
+};
+
 // ─── MiniBar Chart ───────────────────────────────────────────────────────────
 export const MiniBar: React.FC<{ data: ChartDataPoint[] }> = ({ data }) => {
   const max = Math.max(1, ...data.flatMap(d=>[d.deposit,d.withdrawal]));
