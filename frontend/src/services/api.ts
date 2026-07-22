@@ -147,6 +147,8 @@ export interface ActivitySignal {
   /** Count of in-flight (awaiting-action) requests in the caller's own scope. */
   pending: number;
   maxId: number;
+  /** Rows visible to the caller. Handy for a row-count badge without fetching a table. */
+  total: number;
 }
 
 export interface Paged<T> {
