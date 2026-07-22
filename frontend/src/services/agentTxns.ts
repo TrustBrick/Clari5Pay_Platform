@@ -1,7 +1,7 @@
 // Isolated Agent Transaction subsystem — client for /api/agent-txns.
 // This module NEVER calls any merchant Deposit/Withdrawal/Settlement/Treasury/Risk/Account/
 // Transaction-History endpoint. Every figure it returns comes only from the agent ledger.
-import api from './api';
+import api, { type Paged } from './api';
 
 /**
  * Agent deposit workflow — the same labels/order as the merchant deposit workflow, except the
@@ -265,6 +265,17 @@ export interface AgentTxnQuery {
   status?: string; txn_type?: string; search?: string; date?: string; date_from?: string; date_to?: string;
 }
 
+/** AgentTxnQuery + server-side paging. Every filter is applied in Postgres, never in the browser. */
+export interface AgentTxnPagedQuery extends AgentTxnQuery {
+  /** Payment method (CASH / BANK_TRANSFER / UPI / CRYPTO) — filtered in SQL, not in the browser. */
+  txn_method?: string;
+  /** Comma-separated statuses to EXCLUDE, e.g. the final ones for an in-flight worklist. */
+  status_not?: string;
+  /** Field-scoped partial matches, for screens that search these independently. */
+  ref?: string; agent_code?: string; membership_id?: string;
+  page?: number; page_size?: number;
+}
+
 export interface AgentMemberSummary {
   found: boolean;
   membershipId?: string;
@@ -328,6 +339,13 @@ export const agentTxnsAPI = {
   /** Settlement — Supervisor-only and approval-free; created ready for them to pay. */
   createSettlement: async (body: AgentWithdrawalBody) => (await api.post<AgentTxnRow>('/api/agent-txns/settlement', body)).data,
   list: async (params?: AgentTxnQuery) => (await api.get<AgentTxnRow[]>('/api/agent-txns', { params })).data,
+  /**
+   * Server-side paginated + filtered feed. Same ordering (newest first), same search fields and
+   * the same commission enrichment as `list`, but only one page crosses the wire and the count
+   * comes from Postgres. Prefer this for any listing screen.
+   */
+  listPaged: async (params?: AgentTxnPagedQuery) =>
+    (await api.get<Paged<AgentTxnRow>>('/api/agent-txns/paged', { params })).data,
   manage: async (id: number, body: AgentManageBody) => (await api.patch<AgentTxnRow>(`/api/agent-txns/${id}/manage`, body)).data,
   /** Split an initialised Cash Deposit among members — parent becomes a container, children credit. */
   distribute: async (id: number, body: AgentDistributeBody) =>

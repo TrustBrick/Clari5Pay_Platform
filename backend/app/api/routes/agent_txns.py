@@ -1716,7 +1716,10 @@ def _ist_day_bounds(day_str: str):
 
 
 @router.get("/paged")
-async def list_txns_paged(status: str | None = None, txn_type: str | None = None,
+async def list_txns_paged(status: str | None = None, status_not: str | None = None,
+                          txn_type: str | None = None, txn_method: str | None = None,
+                          ref: str | None = None, agent_code: str | None = None,
+                          membership_id: str | None = None,
                           search: str | None = None, date: str | None = None,
                           date_from: str | None = None, date_to: str | None = None,
                           page: int = 1, page_size: int = 10,
@@ -1732,8 +1735,26 @@ async def list_txns_paged(status: str | None = None, txn_type: str | None = None
         wanted = [s.strip().upper() for s in status.split(",") if s.strip()]
         if wanted:
             stmt = stmt.where(AgentTransaction.status.in_(wanted))
+    # Exclusion list (comma-separated), so a worklist can ask for "everything still in flight"
+    # without having to enumerate — and stay correct when a new status is added.
+    if status_not:
+        unwanted = [s.strip().upper() for s in status_not.split(",") if s.strip()]
+        if unwanted:
+            stmt = stmt.where(AgentTransaction.status.notin_(unwanted))
     if txn_type:
         stmt = stmt.where(AgentTransaction.txn_type == txn_type.strip().upper())
+    # Payment method (Cash / Bank Transfer / UPI / Crypto). The All-Transactions screen used to
+    # refine this in the browser, which is only correct while it holds the whole table.
+    if txn_method:
+        stmt = stmt.where(AgentTransaction.txn_method == txn_method.strip().upper())
+    # Field-scoped partial matches — the Manage Transaction worklist searches these three
+    # independently, which a single combined `search` term cannot express.
+    if ref and ref.strip():
+        stmt = stmt.where(func.lower(AgentTransaction.reference_number).like(f"%{ref.strip().lower()}%"))
+    if agent_code and agent_code.strip():
+        stmt = stmt.where(func.lower(AgentTransaction.agent_code).like(f"%{agent_code.strip().lower()}%"))
+    if membership_id and membership_id.strip():
+        stmt = stmt.where(func.lower(AgentTransaction.membership_id).like(f"%{membership_id.strip().lower()}%"))
     if search and search.strip():
         like = f"%{search.strip().lower()}%"
         stmt = stmt.where(or_(

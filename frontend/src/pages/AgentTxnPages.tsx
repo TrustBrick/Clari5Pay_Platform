@@ -2,9 +2,9 @@ import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
 import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl } from '../utils/helpers';
-import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect } from '../components/UI';
+import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect, Pager } from '../components/UI';
 import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
-import { usePoll } from '../utils/usePoll';
+import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { Icon } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
@@ -22,8 +22,10 @@ import {
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
   type AgentWithdrawalBody, type AgentMemberLookup, type AgentMemberSummary, type AgentTxnRow,
   type AgentPerformance, type AgentProfile, type AgentTxnCommission,
-  type AgentTxnAuditRow, type AgentTxnQuery, type AgentAccountOption, type AgentMemberAccount,
+  type AgentTxnAuditRow, type AgentTxnQuery, type AgentTxnPagedQuery,
+  type AgentAccountOption, type AgentMemberAccount,
 } from '../services/agentTxns';
+import type { Paged } from '../services/api';
 
 // ─── Isolated Agent Transaction subsystem — Merchant operator workflow ─────────
 // Every figure and record on these pages comes ONLY from /api/agent-txns (the isolated agent
@@ -1559,27 +1561,39 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
   const [dateF, setDateF] = useState('');
   const [fromF, setFromF] = useState('');
   const [toF, setToF] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
 
   useEffect(() => { agentTxnsAPI.formData().then(setFd).catch(() => {}); }, []);
 
-  const search = useCallback(async () => {
+  // Every predicate this worklist used to apply in the browser — CASH-only, "not finalised", and
+  // the three field-scoped searches — is now a SQL WHERE clause, so one page is a correct page of
+  // the whole ledger rather than of whatever happened to be loaded.
+  const search = useCallback(async (opts?: { page?: number; pageSize?: number }) => {
+    const p = opts?.page ?? page;
+    const ps = opts?.pageSize ?? pageSize;
     setLoading(true);
     try {
-      const q: AgentTxnQuery = {};
+      const q: AgentTxnPagedQuery = {
+        txn_method: 'CASH',
+        status_not: AGENT_FINAL_STATUSES.join(','),
+        page: p, page_size: ps,
+      };
+      if (ref.trim()) q.ref = ref.trim();
+      if (agentIdF.trim()) q.agent_code = agentIdF.trim();
+      if (memberF.trim()) q.membership_id = memberF.trim();
       if (dateF) q.date = dateF; else { if (fromF) q.date_from = fromF; if (toF) q.date_to = toF; }
-      let data = await agentTxnsAPI.list(q);
-      // Manage is CASH-only, and a finalised transaction can no longer be edited.
-      data = data.filter(x => x.txnMethod === 'CASH' && !AGENT_FINAL_STATUSES.includes(x.status));
-      const r = ref.trim().toLowerCase(), ag = agentIdF.trim().toLowerCase(), mem = memberF.trim().toLowerCase();
-      if (r) data = data.filter(x => (x.referenceNumber || '').toLowerCase().includes(r));
-      if (ag) data = data.filter(x => (x.agentCode || '').toLowerCase().includes(ag));
-      if (mem) data = data.filter(x => (x.membershipId || '').toLowerCase().includes(mem));
-      setRows(data);
+      const res = await agentTxnsAPI.listPaged(q);
+      setRows(res.items);
+      setTotal(res.total);
+      setTotalPages(Math.max(1, res.totalPages));
     } catch { showToast('Failed to load transactions.', 'error'); }
     finally { setLoading(false); }
-  }, [ref, agentIdF, memberF, dateF, fromF, toF, showToast]);
+  }, [ref, agentIdF, memberF, dateF, fromF, toF, page, pageSize, showToast]);
 
-  useEffect(() => { search(); /* initial load */ }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { search(); }, [page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const clearFilters = () => { setRef(''); setAgentIdF(''); setMemberF(''); setDateF(''); setFromF(''); setToF(''); };
 
@@ -1600,9 +1614,9 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
           <Input label="To Date" type="date" value={toF} onChange={e => setToF(e.target.value)} style={{ marginBottom: 0 }} />
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-          <Btn size="sm" onClick={search} disabled={loading}>{loading ? 'Searching…' : 'Search'}</Btn>
+          <Btn size="sm" onClick={() => { setPage(1); search({ page: 1 }); }} disabled={loading}>{loading ? 'Searching…' : 'Search'}</Btn>
           <Btn size="sm" variant="ghost" onClick={() => { clearFilters(); }}>Clear</Btn>
-          <span style={{ fontSize: 12, color: T.textMuted, alignSelf: 'center' }}>{rows.length} manageable (Cash)</span>
+          <span style={{ fontSize: 12, color: T.textMuted, alignSelf: 'center' }}>{total} manageable (Cash)</span>
         </div>
       </Card>
 
@@ -1626,9 +1640,11 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
             </tbody>
           </table>
         </div>
+        <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading}
+          onPage={setPage} onPageSize={n => { setPageSize(n); setPage(1); }} />
       </Card>
 
-      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} role={role} onClose={() => setManageRow(null)} onRefresh={search} />}
+      {manageRow && <ManageModal row={manageRow} fd={fd} canApprove={canApprove} role={role} onClose={() => setManageRow(null)} onRefresh={() => search()} />}
     </div>
   );
 };
@@ -1983,6 +1999,22 @@ const SettlementSettleModal: React.FC<{ row: AgentTxnRow; onClose: () => void; o
 // button opens the existing Agent Request form (reused, embedded), not a new form.
 const PAGE_SIZE = 10;
 
+/**
+ * Walk a paginated endpoint to completion. Used ONLY by the CSV/XLSX exports, which must still
+ * cover the whole filtered result set now that the tables themselves fetch a single page. Reads
+ * the largest allowed page (100) and stops on the server's own totalPages, so it never spins.
+ */
+const fetchAllPages = async <T,>(fetchPage: (page: number) => Promise<Paged<T>>): Promise<T[]> => {
+  const first = await fetchPage(1);
+  const out = [...first.items];
+  for (let p = 2; p <= first.totalPages; p++) {
+    const next = await fetchPage(p);
+    if (!next.items.length) break;
+    out.push(...next.items);
+  }
+  return out;
+};
+
 const AgentTxnManagementPage: React.FC<{
   user: User;
   txnType: 'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT';
@@ -2022,6 +2054,11 @@ const AgentTxnManagementPage: React.FC<{
   const [fromF, setFromF] = useState('');
   const [toF, setToF] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  // Typing searches on its own after a pause; the Search button still works for an explicit run.
+  const debouncedSearch = useDebouncedValue(search, 400);
 
   useEffect(() => { agentTxnsAPI.formData().then(setFd).catch(() => {}); }, []);
 
@@ -2029,23 +2066,39 @@ const AgentTxnManagementPage: React.FC<{
   // `loading`, so letting the 20s poll (and every window-focus / tab-visibility refetch) drive it
   // made the button flip to "Searching…" and back on its own — the flicker. Only a real,
   // user-initiated search now moves that state.
-  const load = useCallback(async (opts?: { background?: boolean }) => {
+  // Only ONE page of rows is fetched; search / status / date filtering and the row count all run
+  // in Postgres, so the browser never holds the full ledger.
+  const load = useCallback(async (opts?: { background?: boolean; page?: number; pageSize?: number }) => {
     const background = opts?.background === true;
+    const p = opts?.page ?? page;
+    const ps = opts?.pageSize ?? pageSize;
     if (!background) setLoading(true);
     try {
-      const q: AgentTxnQuery = { txn_type: txnType };
+      const q: AgentTxnPagedQuery = { txn_type: txnType, page: p, page_size: ps };
       if (status) q.status = status;
-      if (search.trim()) q.search = search.trim();
+      if (debouncedSearch.trim()) q.search = debouncedSearch.trim();
       if (dateF) q.date = dateF; else { if (fromF) q.date_from = fromF; if (toF) q.date_to = toF; }
-      setRows(await agentTxnsAPI.list(q));
+      const res = await agentTxnsAPI.listPaged(q);
+      setRows(res.items);
+      setTotal(res.total);
+      setTotalPages(Math.max(1, res.totalPages));
+      // A page can fall past the end after a filter change or a deletion — step back onto the last one.
+      if (res.items.length === 0 && res.total > 0 && p > res.totalPages) setPage(Math.max(1, res.totalPages));
     } catch { if (!background) showToast(`Failed to load Agent ${noun} requests.`, 'error'); }
     finally { if (!background) setLoading(false); }
-  }, [txnType, status, search, dateF, fromF, toF, noun, showToast]);
+  }, [txnType, status, debouncedSearch, dateF, fromF, toF, page, pageSize, noun, showToast]);
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  usePoll(() => { if (!showForm && !detailRow) load({ background: true }); });
+  // Refetch when the page, page size, or any server-side filter changes — and only then. The
+  // table is never reloaded on a timer.
+  useEffect(() => { load(); }, [page, pageSize, status, debouncedSearch, dateF, fromF, toF]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Filter changes always return to page 1, otherwise page 3 of the old result set is requested.
+  useEffect(() => { setPage(1); }, [status, debouncedSearch, dateF, fromF, toF]);
+  // NOTE: the 20s background poll that used to re-fetch this table on a timer is deliberately
+  // gone — a transaction table is now re-read only on an explicit refresh, a page/size change,
+  // a filter change, or after a mutation. Use the Search button to pull in other operators' new
+  // requests.
 
-  const runSearch = () => { setPage(1); load(); };
+  const runSearch = () => { setPage(1); load({ page: 1 }); };
   const clearFilters = () => { setSearch(''); setStatus(''); setDateF(''); setFromF(''); setToF(''); setPage(1); };
 
   // Agent Category comes from Agent Master (the /form-data agent list), never from the transaction.
@@ -2054,9 +2107,8 @@ const AgentTxnManagementPage: React.FC<{
   const categoryOf = (x: AgentTxnRow) =>
     fd?.agents.find(a => a.id === x.agentMasterId)?.category || x.agentCategory || '—';
 
-  const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pageRows = rows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  // `rows` IS the current page as returned by the server — no client-side slicing.
+  const pageRows = rows;
 
   return (
     <div>
@@ -2080,7 +2132,7 @@ const AgentTxnManagementPage: React.FC<{
         <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center' }}>
           <Btn size="sm" onClick={runSearch} disabled={loading}>{loading ? 'Searching…' : 'Search'}</Btn>
           <Btn size="sm" variant="ghost" onClick={clearFilters}>Clear</Btn>
-          <span style={{ fontSize: 12, color: T.textMuted, marginLeft: 'auto' }}>{rows.length} {noun.toLowerCase()}{rows.length === 1 ? '' : 's'}</span>
+          <span style={{ fontSize: 12, color: T.textMuted, marginLeft: 'auto' }}>{total} {noun.toLowerCase()}{total === 1 ? '' : 's'}</span>
         </div>
       </Card>
 
@@ -2136,13 +2188,8 @@ const AgentTxnManagementPage: React.FC<{
             </tbody>
           </table>
         </div>
-        {totalPages > 1 && (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, padding: '12px 16px', borderTop: `1px solid ${T.border}` }}>
-            <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</Btn>
-            <span style={{ fontSize: 12, color: T.textMuted }}>Page {safePage} of {totalPages}</span>
-            <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</Btn>
-          </div>
-        )}
+        <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading}
+          onPage={setPage} onPageSize={n => { setPageSize(n); setPage(1); }} />
       </Card>
 
       {showForm && (
@@ -2214,9 +2261,30 @@ interface AgentRFilters {
   minA: string; maxA: string; exactA: string;
   datePreset: string; from: string; to: string;
 }
+// Reports open on the last 30 days rather than the whole ledger — the range is pushed down to the
+// server, so a multi-year table is never pulled just to render the first screen. Users can widen
+// it (including back to "All Time") from the date filter at any time.
 const AGENT_EMPTY_FILTERS: AgentRFilters = {
   ref: '', membershipId: '', memberName: '', agentId: '', agentName: '', agentCategory: '',
-  type: '', status: '', approvedBy: '', minA: '', maxA: '', exactA: '', datePreset: 'all', from: '', to: '',
+  type: '', status: '', approvedBy: '', minA: '', maxA: '', exactA: '', datePreset: '30d', from: '', to: '',
+};
+
+/**
+ * Date preset → server-side `date_from`/`date_to` (IST calendar days) so the fetch itself is
+ * bounded. Deliberately a SUPERSET of the client-side window (`periodBoundsA`) — sub-day presets
+ * such as "30m"/"1h"/"24h" round out to whole days — so the exact filtering, the footer totals
+ * and the exports keep working off the same rows they always did, just fewer of them.
+ */
+const serverRangeA = (preset: string, from: string, to: string): { date_from?: string; date_to?: string } => {
+  switch (preset) {
+    case 'today': case '30m': case '1h': return { date_from: istDateStr(0) };
+    case 'yesterday': return { date_from: istDateStr(-1), date_to: istDateStr(-1) };
+    case '24h': return { date_from: istDateStr(-1) };
+    case '7d': return { date_from: istDateStr(-7) };
+    case '30d': return { date_from: istDateStr(-30) };
+    case 'custom': return { ...(from ? { date_from: from } : {}), ...(to ? { date_to: to } : {}) };
+    default: return {};   // 'all' — unbounded, by explicit user choice
+  }
 };
 
 const AGENT_CATEGORIES = [
@@ -2409,20 +2477,26 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
     agentTxnsAPI.overview().then(setOv).catch(() => showToast('Failed to load financial summary.', 'error'));
   }, [showToast]);
 
-  // The whole (business-scoped) agent ledger is pulled once and filtered client-side — the same
-  // pattern the Merchant/Admin Reports use, so filters, totals and exports always agree.
-  const loadRows = useCallback(async (opts?: { background?: boolean }) => {
+  // The ledger slice for the SELECTED DATE RANGE is pulled and filtered client-side — the same
+  // pattern the Merchant/Admin Reports use, so filters, totals and exports always agree. Only the
+  // date window is pushed to the server (default: last 30 days), which is what keeps this page
+  // from dragging years of rows across the wire; everything else still filters in the browser so
+  // the report maths is untouched.
+  const loadRows = useCallback(async (opts?: { background?: boolean; filters?: AgentRFilters }) => {
     const background = opts?.background === true;
+    const src = opts?.filters ?? f;
     if (!background) setLoading(true);
     try {
-      const q: AgentTxnQuery = {};
+      const q: AgentTxnQuery = serverRangeA(src.datePreset, src.from, src.to);
       setRows(await agentTxnsAPI.list(q));
     } catch { if (!background) showToast('Failed to load agent transactions.', 'error'); }
     finally { if (!background) setLoading(false); }
-  }, [showToast]);
+  }, [f, showToast]);
 
   useEffect(() => { loadSummary(); loadRows(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  usePoll(() => { loadSummary(); loadRows({ background: true }); });
+  // Only the lightweight summary refreshes on the poll; the report table is re-read on an explicit
+  // Apply/Clear, never on a timer.
+  usePoll(() => { loadSummary(); });
 
   // Apply Filters — refresh from the server, then commit the draft so table, cards, footer
   // totals, count and exports all move to the same filter set together.
@@ -2432,14 +2506,14 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
       showToast('“To” date cannot be earlier than “From”.', 'error'); return;
     }
     setApplying(true);
-    try { await loadRows({ background: true }); setF(draft); setPage(1); }
+    try { await loadRows({ background: true, filters: draft }); setF(draft); setPage(1); }
     finally { setApplying(false); }
   };
   const clearFilters = async () => {
     if (applying) return;
     setApplying(true);
     setDraft(AGENT_EMPTY_FILTERS);
-    try { await loadRows({ background: true }); setF(AGENT_EMPTY_FILTERS); setPage(1); }
+    try { await loadRows({ background: true, filters: AGENT_EMPTY_FILTERS }); setF(AGENT_EMPTY_FILTERS); setPage(1); }
     finally { setApplying(false); }
   };
 
@@ -3498,36 +3572,61 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
   const [fromF, setFromF] = useState('');
   const [toF, setToF] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [exporting, setExporting] = useState(false);
+  const debouncedSearch = useDebouncedValue(search, 400);
 
-  const load = useCallback(async () => {
+  /** The filter set shared by the table page-fetch and the export — one definition, no drift. */
+  const query = useCallback((): AgentTxnPagedQuery => {
+    const q: AgentTxnPagedQuery = {};
+    if (status) q.status = status;
+    if (method) q.txn_method = method;
+    if (debouncedSearch.trim()) q.search = debouncedSearch.trim();
+    if (fromF) q.date_from = fromF;
+    if (toF) q.date_to = toF;
+    return q;
+  }, [status, method, debouncedSearch, fromF, toF]);
+
+  // Every filter — including the transaction-type refinement, which used to run in the browser —
+  // is now applied in SQL, so a page of 10 is a correct page of the whole ledger.
+  const load = useCallback(async (opts?: { page?: number; pageSize?: number }) => {
+    const p = opts?.page ?? page;
+    const ps = opts?.pageSize ?? pageSize;
     setLoading(true);
     try {
-      // Search / status / dates go server-side; the transaction-type (method) refinement is
-      // applied client-side, mirroring how the merchant page refines its server-filtered set.
-      const q: AgentTxnQuery = {};
-      if (status) q.status = status;
-      if (search.trim()) q.search = search.trim();
-      if (fromF) q.date_from = fromF;
-      if (toF) q.date_to = toF;
-      setRows(await agentTxnsAPI.list(q));
+      const res = await agentTxnsAPI.listPaged({ ...query(), page: p, page_size: ps });
+      setRows(res.items);
+      setTotal(res.total);
+      setTotalPages(Math.max(1, res.totalPages));
     } catch { showToast('Failed to load agent transactions.', 'error'); }
     finally { setLoading(false); }
-  }, [status, search, fromF, toF, showToast]);
+  }, [query, page, pageSize, showToast]);
 
-  useEffect(() => { load(); }, [load]);
-  usePoll(() => { if (!detailRow) load(); });
+  useEffect(() => { load(); }, [page, pageSize, status, method, debouncedSearch, fromF, toF]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setPage(1); }, [status, method, debouncedSearch, fromF, toF]);
 
-  const filtered = method ? rows.filter(r => r.txnMethod === method) : rows;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pageRows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  // `rows` is the server's page; the table renders it as-is.
+  const pageRows = rows;
 
   const clearFilters = () => {
     setSearch(''); setStatus(''); setMethod(''); setFromF(''); setToF(''); setPage(1);
   };
 
-  const exportCsv = () => {
-    if (filtered.length === 0) { showToast('Nothing to export for the current filters.', 'error'); return; }
+  // Export still covers the ENTIRE filtered result set, not just the visible page — it re-queries
+  // the server with the same filters instead of reading the page in memory.
+  const exportCsv = async () => {
+    if (exporting) return;
+    if (total === 0) { showToast('Nothing to export for the current filters.', 'error'); return; }
+    setExporting(true);
+    let filtered: AgentTxnRow[];
+    try {
+      filtered = await fetchAllPages(p => agentTxnsAPI.listPaged({ ...query(), page: p, page_size: 100 }));
+    } catch {
+      showToast('Failed to prepare the export.', 'error'); setExporting(false); return;
+    }
+    setExporting(false);
     downloadAgentCsv(`agent-all-transactions-${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}`,
       ['Reference', 'Agent ID', 'Agent Name', 'Type', 'Transaction Type', 'Membership ID', 'Member Name',
        'Membership Type', 'Amount', 'Status', 'Sending Account', 'Payout Account', 'Instructions',
@@ -3562,9 +3661,9 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
           <Input label="To Date" type="date" value={toF} onChange={e => setToF(e.target.value)} style={{ marginBottom: 0 }} />
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Btn size="sm" onClick={() => { setPage(1); load(); }} disabled={loading}>{loading ? 'Searching…' : 'Apply Filters'}</Btn>
+          <Btn size="sm" onClick={() => { setPage(1); load({ page: 1 }); }} disabled={loading}>{loading ? 'Searching…' : 'Apply Filters'}</Btn>
           <Btn size="sm" variant="ghost" onClick={clearFilters}>Clear</Btn>
-          <Btn size="sm" variant="secondary" onClick={exportCsv}>Export CSV</Btn>
+          <Btn size="sm" variant="secondary" onClick={exportCsv} disabled={exporting}>{exporting ? 'Preparing…' : 'Export CSV'}</Btn>
         </div>
       </Card>
 
@@ -3597,16 +3696,8 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
             </tbody>
           </table>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 16px', borderTop: `1px solid ${T.border}` }}>
-          <p style={{ fontSize: 11, color: T.textMuted, margin: 0 }}>Showing {pageRows.length} of {filtered.length}{method ? ` (filtered from ${rows.length})` : ''}</p>
-          {totalPages > 1 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</Btn>
-              <span style={{ fontSize: 12, color: T.textMuted }}>Page {safePage} of {totalPages}</span>
-              <Btn size="sm" variant="ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</Btn>
-            </div>
-          )}
-        </div>
+        <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading}
+          onPage={setPage} onPageSize={n => { setPageSize(n); setPage(1); }} />
       </Card>
 
       {detailRow && <AgentTxnDetailsModal row={detailRow} onClose={() => setDetailRow(null)} />}
