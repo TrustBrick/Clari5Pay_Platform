@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { cachedRef, invalidateRef } from '../utils/refCache';
 import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
@@ -11,6 +12,9 @@ const api = axios.create({ baseURL: BASE_URL });
 export const setAuthToken = (token: string | null) => {
   if (token) api.defaults.headers.common.Authorization = `Bearer ${token}`;
   else delete api.defaults.headers.common.Authorization;
+  // The reference-data cache is per-session: what a user may see depends on their role and
+  // business, so it must never survive a session change into the next login.
+  invalidateRef();
 };
 
 // Initialise the header from storage on page load (so a refresh is authenticated immediately).
@@ -36,6 +40,7 @@ api.interceptors.response.use(
     if (err.response?.status === 401 && !isAuthEndpoint) {
       localStorage.removeItem('clari5pay_token');
       localStorage.removeItem('clari5pay_user');
+      invalidateRef();
       window.location.href = '/';
     }
     return Promise.reject(err);
@@ -253,10 +258,10 @@ export const transactionAPI = {
   },
   // "Send To Approval" (demo only): Supervisors + Managers of the caller's business, for the
   // Authorized Approver selector on the Deposit/Withdrawal forms. 404s on Production.
-  approvers: async () => {
+  approvers: async () => cachedRef('ref:approvers', async () => {
     const res = await api.get<{ id: number; name: string; role: string }[]>('/api/transactions/approvers');
     return res.data;
-  },
+  }),
   createDeposit: async (data: Record<string, unknown>) => {
     const res = await api.post<Transaction>('/api/transactions/deposit', data);
     return res.data;
@@ -532,20 +537,24 @@ export const supportWsUrl = () => {
 };
 
 export const userAPI = {
-  getMerchants: async () => {
+  // Merchant/admin lists back several selectors and dashboard tiles and are re-read on every
+  // poll. Short-TTL cached + de-duplicated; user mutations below clear them.
+  getMerchants: async () => cachedRef('ref:merchants', async () => {
     const res = await api.get<User[]>('/api/users/merchants');
     return res.data;
-  },
-  getAdmins: async () => {
+  }),
+  getAdmins: async () => cachedRef('ref:admins', async () => {
     const res = await api.get<User[]>('/api/users/admins');
     return res.data;
-  },
+  }),
   createAdmin: async (data: Record<string, unknown>) => {
     const res = await api.post<User>('/api/users/admins', data);
+    invalidateRef('ref:');           // the cached admin/merchant lists are now stale
     return res.data;
   },
   createMerchant: async (data: Record<string, unknown>) => {
     const res = await api.post<User>('/api/users/merchants', data);
+    invalidateRef('ref:');
     return res.data;
   },
   getAdminMerchants: async (adminId: number) => {
@@ -554,6 +563,7 @@ export const userAPI = {
   },
   toggleStatus: async (id: number, reason: string) => {
     const res = await api.patch<User>(`/api/users/${id}/toggle`, { reason });
+    invalidateRef('ref:');           // active/inactive is rendered from the cached lists
     return res.data;
   },
   unlock: async (id: number) => {
@@ -647,13 +657,26 @@ export const agentAPI = {
   list: async (params?: AgentQuery) =>
     (await api.get<Agent[]>('/api/agents', { params: cleanParams(params) })).data,
   get: async (id: number) => (await api.get<Agent>(`/api/agents/${id}`)).data,
-  create: async (data: AgentCreatePayload) => (await api.post<Agent>('/api/agents', data)).data,
-  update: async (id: number, data: AgentUpdatePayload) => (await api.put<Agent>(`/api/agents/${id}`, data)).data,
-  setStatus: async (id: number, status: 'ACTIVE' | 'INACTIVE') =>
-    (await api.patch<Agent>(`/api/agents/${id}/status`, { status })).data,
-  approve: async (id: number) => (await api.patch<Agent>(`/api/agents/${id}/approve`, {})).data,
-  reject: async (id: number) => (await api.patch<Agent>(`/api/agents/${id}/reject`, {})).data,
-  remove: async (id: number) => (await api.delete<{ ok: boolean }>(`/api/agents/${id}`)).data,
+  // Anything that changes the agent master list clears the cached agent form-data, so the
+  // selectors on the agent transaction forms pick the change up immediately.
+  create: async (data: AgentCreatePayload) => {
+    const r = (await api.post<Agent>('/api/agents', data)).data; invalidateRef('agent:'); return r;
+  },
+  update: async (id: number, data: AgentUpdatePayload) => {
+    const r = (await api.put<Agent>(`/api/agents/${id}`, data)).data; invalidateRef('agent:'); return r;
+  },
+  setStatus: async (id: number, status: 'ACTIVE' | 'INACTIVE') => {
+    const r = (await api.patch<Agent>(`/api/agents/${id}/status`, { status })).data; invalidateRef('agent:'); return r;
+  },
+  approve: async (id: number) => {
+    const r = (await api.patch<Agent>(`/api/agents/${id}/approve`, {})).data; invalidateRef('agent:'); return r;
+  },
+  reject: async (id: number) => {
+    const r = (await api.patch<Agent>(`/api/agents/${id}/reject`, {})).data; invalidateRef('agent:'); return r;
+  },
+  remove: async (id: number) => {
+    const r = (await api.delete<{ ok: boolean }>(`/api/agents/${id}`)).data; invalidateRef('agent:'); return r;
+  },
 };
 
 // Agent Accounts (Bank / UPI / QR / Crypto) — nested under an agent (numeric agent_master id).

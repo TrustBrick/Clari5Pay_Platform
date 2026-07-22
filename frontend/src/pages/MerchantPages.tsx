@@ -1156,8 +1156,10 @@ const AgentSettlementCompletionQueue: React.FC<{ user: User }> = ({ user }) => {
   const [active, setActive] = useState<Transaction | null>(null);
   const isSupervisor = String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR';
   const on = IS_DEMO && isSupervisor;
-  const reload = () => transactionAPI.getAllOverseer()
-    .then(txs => setRows(txs.filter(t => t.type.startsWith('SETTLEMENT') && t.status === 'SLIP_SUBMITTED' && t.assignedAgentId != null && t.merchant === user.name)))
+  // Type and status are pushed into SQL; only the agent-assignment and own-business checks stay
+  // in the browser, over what is by then a handful of rows rather than the whole ledger.
+  const reload = () => transactionAPI.getAllOverseerPaged({ type: 'SETTLEMENT', status: 'SLIP_SUBMITTED', page_size: 100 })
+    .then(res => setRows(res.items.filter(t => t.assignedAgentId != null && t.merchant === user.name)))
     .catch(() => setRows([]));
   useEffect(() => { if (on) reload(); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => { if (on && !active) reload(); });
@@ -1628,12 +1630,15 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
   const [busy, setBusy] = useState<string | null>(null);
   const [target, setTarget] = useState<Transaction | null>(null);  // request awaiting a cancellation reason
 
-  const reload = () => transactionAPI.getMine().then(setTxns).catch(()=>setTxns([]));
-  useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
+  // Only requests still in flight can be cancelled — asked for by status in SQL rather than by
+  // pulling the merchant's whole history and filtering it in the browser.
+  const CANCELLABLE = 'ACCOUNT_REQUESTED,ACCOUNT_SUBMITTED';
+  const reload = () => transactionAPI.getMinePaged({ status: CANCELLABLE, page_size: 100 })
+    .then(res => setTxns(res.items)).catch(()=>setTxns([]));
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => { if (!busy && !target) reload(); });
 
-  // Only requests still in flight can be cancelled.
-  const cancellable = txns.filter(t => t.status === 'ACCOUNT_REQUESTED' || t.status === 'ACCOUNT_SUBMITTED');
+  const cancellable = txns;
 
   const confirmCancel = async (reason: string) => {
     if (!target) return;

@@ -2,6 +2,7 @@
 // This module NEVER calls any merchant Deposit/Withdrawal/Settlement/Treasury/Risk/Account/
 // Transaction-History endpoint. Every figure it returns comes only from the agent ledger.
 import api, { type Paged } from './api';
+import { cachedRef } from '../utils/refCache';
 
 /**
  * Agent deposit workflow — the same labels/order as the merchant deposit workflow, except the
@@ -327,7 +328,11 @@ export interface AgentProfile {
 
 export const agentTxnsAPI = {
   overview: async () => (await api.get<AgentOverview>('/api/agent-txns/overview')).data,
-  formData: async () => (await api.get<AgentFormData>('/api/agent-txns/form-data')).data,
+  // Reference data (agents, members, dropdown options) — five screens fetch this on mount and
+  // again on their polls. Short-TTL cached and de-duplicated; call invalidateRef('agent:') after
+  // anything that changes the agent master list.
+  formData: async () => cachedRef('agent:form-data',
+    async () => (await api.get<AgentFormData>('/api/agent-txns/form-data')).data),
   member: async (id: string) => (await api.get<AgentMemberLookup>(`/api/agent-txns/member/${encodeURIComponent(id)}`)).data,
   /** Read-only financial summary for a Membership ID (Balance Enquiry). */
   balanceEnquiry: async (id: string) => (await api.get<AgentMemberSummary>(`/api/agent-txns/balance-enquiry/${encodeURIComponent(id)}`)).data,
