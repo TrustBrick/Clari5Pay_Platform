@@ -4,7 +4,7 @@ import { T } from '../utils/theme';
 import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect, Pager } from '../components/UI';
 import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
-import { usePoll, useDebouncedValue } from '../utils/usePoll';
+import { usePoll, useDebouncedValue, useActivitySignal } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { Icon } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
@@ -2077,10 +2077,12 @@ const AgentTxnManagementPage: React.FC<{
   useEffect(() => { load(); }, [page, pageSize, status, debouncedSearch, dateF, fromF, toF]); // eslint-disable-line react-hooks/exhaustive-deps
   // Filter changes always return to page 1, otherwise page 3 of the old result set is requested.
   useEffect(() => { setPage(1); }, [status, debouncedSearch, dateF, fromF, toF]);
-  // NOTE: the 20s background poll that used to re-fetch this table on a timer is deliberately
-  // gone — a transaction table is now re-read only on an explicit refresh, a page/size change,
-  // a filter change, or after a mutation. Use the Search button to pull in other operators' new
-  // requests.
+  // Live operational awareness without timer-polling the table: a tiny change-detection probe
+  // runs every 25s and re-reads THIS page only when the server says something actually moved
+  // (a new request, an approval, a rejection, an amount edit). An idle queue costs one scalar
+  // query per tick and zero table reads.
+  useActivitySignal(() => { if (!showForm && !detailRow) load({ background: true }); },
+    { enabled: !showForm && !detailRow });
 
   const runSearch = () => { setPage(1); load({ page: 1 }); };
   const clearFilters = () => { setSearch(''); setStatus(''); setDateF(''); setFromF(''); setToF(''); setPage(1); };

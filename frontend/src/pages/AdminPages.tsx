@@ -12,11 +12,11 @@ import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
 import { ProofGallery, ReceiptImage } from './MerchantPages';
 import { AgentLedgerReport } from './ReportsPage';
 import { useAuth } from '../context/AuthContext';
-import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
+import { usePoll, PRESENCE_POLL_MS, useActivitySignal } from '../utils/usePoll';
 import { usePresenceStream } from '../utils/sse';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, telegramAPI, demoAPI, activeUsersAPI, fetchAllPages } from '../services/api';
 import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappLog, WhatsappStats, TelegramStatus } from '../services/api';
-import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts } from '../types';
+import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts, MerchantAnalyticsRow } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account, AccountBalance, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
 
@@ -501,8 +501,10 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   useEffect(() => { reload().finally(() => setLoading(false)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { loadRequests(); }, [page, pageSize, status, type]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setPage(1); }, [status, type]);
-  // Only the lightweight counters poll; the Requests table is not re-read on a timer.
+  // Lightweight counters keep polling (they ARE the cheap aggregate). The Requests table is
+  // never on a timer — it re-reads only when the change-detection probe says the ledger moved.
   usePoll(() => { if (!active) reloadCounters(); });
+  useActivitySignal(() => { if (!active) loadRequests(); }, { enabled: !active });
 
   // Counter helpers — read straight off the aggregated matrix.
   const cnt = (g: 'deposit'|'withdrawal'|'settlement', s: string) => counts?.statusCounts[g]?.[s] ?? 0;
@@ -641,7 +643,8 @@ export const AdminTransactionsPage: React.FC = () => {
   useEffect(() => { setFiltering(true); reload().finally(()=>{ setLoading(false); setFiltering(false); }); },
     [query, type, status, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { setPage(1); }, [query, type, status]);
-  // The table is not re-read on a timer — only on filter/page changes or after an action.
+  // Not on a timer: the change-detection probe refreshes this page only when the ledger moves.
+  useActivitySignal(() => { if (!active) reload(); }, { enabled: !active });
 
   // `txns` IS the server's page for the current filter set.
   const filtered = txns;
@@ -693,7 +696,8 @@ const EXPORT_SCOPES: Array<{ value: string; label: string }> = [
 
 export const MerchantAnalyticsPage: React.FC = () => {
   const [stats, setStats] = useState<MerchantStats[]>([]);
-  const [txns, setTxns] = useState<Transaction[]>([]);
+  // No transaction array here any more — every figure on this page is SQL-aggregated, and the
+  // drill-down holds only the page of rows it is currently showing.
   const [loading, setLoading] = useState(true);
   const [merchant, setMerchant] = useState('ALL');
   const [from, setFrom] = useState('');
@@ -704,33 +708,40 @@ export const MerchantAnalyticsPage: React.FC = () => {
   const [tab, setTab] = useState<'DEPOSIT' | 'WITHDRAWAL' | 'SETTLEMENT'>('DEPOSIT');
   const [exportScope, setExportScope] = useState<Record<string, string>>({});
 
-  const reload = () => Promise.all([transactionAPI.merchantStats(), transactionAPI.getAll()])
-    .then(([s, t]) => { setStats(s); setTxns(t); })
-    .catch(() => { setStats([]); setTxns([]); });
-  useEffect(() => { reload().finally(() => setLoading(false)); }, []);
+  // Date-scoped per-business breakdown, aggregated in SQL. Replaces the previous
+  // "download every transaction and reduce over the array" approach — same numbers, a few
+  // hundred bytes instead of the whole ledger.
+  const [analytics, setAnalytics] = useState<Record<string, MerchantAnalyticsRow>>({});
+
+  const reload = useCallback(() => Promise.all([
+    transactionAPI.merchantStats(),
+    transactionAPI.merchantAnalytics({ date_from: from || undefined, date_to: to || undefined }),
+  ])
+    .then(([s, a]) => { setStats(s); setAnalytics(a); })
+    .catch(() => { setStats([]); setAnalytics({}); }), [from, to]);
+  useEffect(() => { reload().finally(() => setLoading(false)); }, [from, to]); // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => { if (!drill) reload(); });
 
-  const inRange = (t: Transaction) => (!from || (t.date || '') >= from) && (!to || (t.date || '') <= to);
-  const merchTx = (name: string) => txns.filter(t => t.merchant === name);
+  const EMPTY_ANALYTICS: MerchantAnalyticsRow = {
+    depositCount: 0, depositAmount: 0, depositTotalAmount: 0,
+    withdrawalCount: 0, withdrawalAmount: 0, withdrawalTotalAmount: 0,
+    settlementCount: 0, settlementAmount: 0, settlementTotalAmount: 0,
+  };
 
   // Card numbers: counts include all statuses in range; amounts use COMPLETED/DEPOSITED only
-  // (fees realise on completion). Available/Net Available mirror the canonical balance formulas.
+  // (fees realise on completion) — both now computed by the database. Available/Net Available
+  // mirror the canonical balance formulas.
   const cardStats = (s: MerchantStats) => {
-    const tx = merchTx(s.name).filter(inRange);
-    const ofType = (pfx: string) => tx.filter(t => t.type.startsWith(pfx));
-    const done = (pfx: string) => ofType(pfx)
-      .filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED')
-      .reduce((a, t) => a + t.amount, 0);
-    const dep = done('DEPOSIT'), wd = done('WITHDRAWAL'), set = done('SETTLEMENT');
+    const a = analytics[s.name] || EMPTY_ANALYTICS;
     // Deposit/Withdrawal/Settlement counts & amounts stay date-scoped (the analytics
     // breakdown honours the date filter). The canonical balance figures — Total Available
     // Balance, Commission, Pay-Out Fee and Available Balance — come straight from the
     // backend compute_balance (single source of truth, all-time per business), so the
     // Available Balance shown here is identical to every other portal for the same business.
     return {
-      depositCount: ofType('DEPOSIT').length, depositAmount: dep,
-      withdrawalCount: ofType('WITHDRAWAL').length, withdrawalAmount: wd,
-      settlementCount: ofType('SETTLEMENT').length, settlementAmount: set,
+      depositCount: a.depositCount, depositAmount: a.depositAmount,
+      withdrawalCount: a.withdrawalCount, withdrawalAmount: a.withdrawalAmount,
+      settlementCount: a.settlementCount, settlementAmount: a.settlementAmount,
       depositCommission: s.depositCommission,
       withdrawalCommission: s.withdrawalCommission,
       settlementCommission: s.settlementCommission,
@@ -745,11 +756,55 @@ export const MerchantAnalyticsPage: React.FC = () => {
   const typePfx = type === 'ALL' ? null : type.split('_')[0];
   const tabsShown = ANALYTICS_TABS.filter(t => !typePfx || t.pfx === typePfx);
 
-  // Rows for a merchant scoped by date + status (+ optional type prefix), for tables & export.
-  const scopedRows = (name: string, pfx: string | null) => txns.filter(t =>
-    t.merchant === name && inRange(t)
-    && (status === 'ALL' || t.status === status)
-    && (!pfx || t.type.startsWith(pfx)));
+  // The filter set for a merchant's rows, scoped by date + status (+ optional type prefix).
+  // One definition drives the drill-down table, its tab counts and every export, so the three
+  // can never drift apart.
+  const scopedQuery = useCallback((name: string, pfx: string | null): TxPagedQuery => ({
+    merchant: name,
+    ...(from ? { date_from: from } : {}),
+    ...(to ? { date_to: to } : {}),
+    ...(status === 'ALL' ? {} : { status }),
+    ...(pfx ? { type: pfx } : {}),
+  }), [from, to, status]);
+
+  // Whole filtered set — used only by exports, which must still cover every matching row.
+  const scopedRows = useCallback((name: string, pfx: string | null) =>
+    fetchAllPages(p => transactionAPI.getAllPaged({ ...scopedQuery(name, pfx), page: p, page_size: 100 })),
+    [scopedQuery]);
+
+  // ── Drill-down data: one page of rows for the active tab + the SQL per-type aggregates ──
+  const [drillRows, setDrillRows] = useState<Transaction[]>([]);
+  const [drillAgg, setDrillAgg] = useState<MerchantAnalyticsRow | null>(null);
+  const [drillPage, setDrillPage] = useState(1);
+  const [drillPageSize, setDrillPageSize] = useState(10);
+  const [drillTotal, setDrillTotal] = useState(0);
+  const [drillTotalPages, setDrillTotalPages] = useState(1);
+  const [drillLoading, setDrillLoading] = useState(false);
+
+  useEffect(() => {
+    if (!drill) return;
+    let cancelled = false;
+    setDrillLoading(true);
+    Promise.all([
+      transactionAPI.getAllPaged({ ...scopedQuery(drill.name, tab), page: drillPage, page_size: drillPageSize }),
+      // Tab counts + summary cards for ALL three types, scoped by the same date/status filters.
+      transactionAPI.merchantAnalytics({
+        merchant: drill.name,
+        date_from: from || undefined, date_to: to || undefined,
+        status: status === 'ALL' ? undefined : status,
+      }),
+    ]).then(([res, agg]) => {
+      if (cancelled) return;
+      setDrillRows(res.items); setDrillTotal(res.total);
+      setDrillTotalPages(Math.max(1, res.totalPages));
+      setDrillAgg(agg[drill.name] || EMPTY_ANALYTICS);
+    }).catch(() => { if (!cancelled) { setDrillRows([]); setDrillTotal(0); setDrillAgg(EMPTY_ANALYTICS); } })
+      .finally(() => { if (!cancelled) setDrillLoading(false); });
+    return () => { cancelled = true; };
+  }, [drill, tab, drillPage, drillPageSize, from, to, status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Changing the tab or a filter always returns to page 1 of the drill-down.
+  useEffect(() => { setDrillPage(1); }, [drill, tab, from, to, status]);
 
   const dateSub = () => {
     const parts: string[] = [];
@@ -758,10 +813,11 @@ export const MerchantAnalyticsPage: React.FC = () => {
     return parts.length ? parts.join(' · ') : 'All dates & statuses';
   };
 
-  const runExport = (s: MerchantStats, fmtKind: 'pdf' | 'excel' = 'pdf') => {
+  const runExport = async (s: MerchantStats, fmtKind: 'pdf' | 'excel' = 'pdf') => {
     const scope = exportScope[s.name] || 'ALL';
     const pfx = scope === 'ALL' ? null : scope;
-    const rows = scopedRows(s.name, pfx);
+    // Exports still cover the entire filtered set — fetched on demand rather than held in memory.
+    const rows = await scopedRows(s.name, pfx);
     const scopeLabel = EXPORT_SCOPES.find(e => e.value === scope)?.label || 'Report';
     if (fmtKind === 'excel') {
       exportTransactionsXlsx(rows, `${s.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${scope.toLowerCase()}.xlsx`, s.name.slice(0, 31));
@@ -781,10 +837,16 @@ export const MerchantAnalyticsPage: React.FC = () => {
       const rate = (t.type.startsWith('DEPOSIT') ? (drill.payInFee || 0) : (drill.payOutFee || 0)) / 100;
       return t.amount * rate;
     };
-    // Per-type summary (respects active date + status filters).
+    // Per-type summary (respects active date + status filters) — SQL-aggregated. `*TotalAmount`
+    // is the all-status sum, which is what these cards showed before (they summed the rows they
+    // list, not completed-only).
+    const d = drillAgg || EMPTY_ANALYTICS;
     const summary = (pfx: string) => {
-      const r = scopedRows(drill.name, pfx);
-      return { count: r.length, amount: r.reduce((a, t) => a + t.amount, 0) };
+      const g = pfx.toLowerCase() as 'deposit' | 'withdrawal' | 'settlement';
+      return {
+        count: d[`${g}Count`] as number,
+        amount: d[`${g}TotalAmount`] as number,
+      };
     };
     const sumCards: Array<[string, ReturnType<typeof summary>, string]> = [
       ['Deposits', summary('DEPOSIT'), T.blue],
@@ -831,7 +893,8 @@ export const MerchantAnalyticsPage: React.FC = () => {
         <Card>
           <div style={{ display: 'flex', borderBottom: `1px solid ${T.border}` }}>
             {tabsShown.map(tb => {
-              const n = scopedRows(drill.name, tb.pfx).length;
+              const g = tb.pfx.toLowerCase() as 'deposit' | 'withdrawal' | 'settlement';
+              const n = (drillAgg || EMPTY_ANALYTICS)[`${g}Count`] as number;
               const on = tab === tb.pfx;
               return (
                 <button key={tb.pfx} onClick={() => setTab(tb.pfx)}
@@ -851,7 +914,7 @@ export const MerchantAnalyticsPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {scopedRows(drill.name, tab).map(t => (
+                {drillRows.map(t => (
                   <tr key={t.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
                     <td style={{ padding: '9px 14px', fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{t.ref}</td>
                     <td style={{ padding: '9px 14px', color: T.textMain, fontWeight: 600 }}>{memberLabel(t.memberId, t.member)}</td>
@@ -862,12 +925,18 @@ export const MerchantAnalyticsPage: React.FC = () => {
                     <td style={{ padding: '9px 14px', whiteSpace: 'nowrap', color: T.textMuted }}>{t.date} {t.time}</td>
                   </tr>
                 ))}
-                {scopedRows(drill.name, tab).length === 0 && (
+                {!drillLoading && drillRows.length === 0 && (
                   <tr><td colSpan={8} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>No {tab.toLowerCase()} transactions for this selection.</td></tr>
+                )}
+                {drillLoading && drillRows.length === 0 && (
+                  <tr><td colSpan={8} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>Loading…</td></tr>
                 )}
               </tbody>
             </table>
           </div>
+          <Pager page={drillPage} pageSize={drillPageSize} total={drillTotal} totalPages={drillTotalPages}
+            loading={drillLoading} onPage={setDrillPage}
+            onPageSize={n => { setDrillPageSize(n); setDrillPage(1); }} />
         </Card>
       </div>
     );

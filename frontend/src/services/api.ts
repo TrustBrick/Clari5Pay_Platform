@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -140,12 +140,27 @@ const cleanPagedParams = <T extends object>(p?: T): Record<string, string> | und
 
 // The server-side paginated envelope every /paged endpoint returns. Search / filter /
 // sort / count all execute in the database; the browser only ever holds one page.
+/** Change-detection signal from GET /api/transactions/activity-signal. */
+export interface ActivitySignal {
+  /** Opaque; compare for equality only. Moves on insert, approval, rejection or amount edit. */
+  version: string;
+  /** Count of in-flight (awaiting-action) requests in the caller's own scope. */
+  pending: number;
+  maxId: number;
+}
+
 export interface Paged<T> {
   items: T[];
   total: number;
   page: number;
   pageSize: number;
   totalPages: number;
+  /**
+   * Reserved for keyset (cursor) pagination. Null today, while the server pages by offset.
+   * Present in the contract now so a client can be written against it before the server
+   * switches — when keyset lands, pass it back as `cursor` and drop `page`.
+   */
+  nextCursor?: string | null;
 }
 
 /**
@@ -172,8 +187,11 @@ export interface TxPagedQuery extends TxQuery {
   type?: string;                   // DEPOSIT / WITHDRAWAL / SETTLEMENT group, or exact type, or ALL
   amount_min?: number;
   amount_max?: number;
+  merchant?: string;               // exact business name (Merchant Analytics drill-down)
   page?: number;                   // 1-based
   page_size?: number;              // 10 | 25 | 50 | 100 (backend clamps to these)
+  /** Keyset cursor. Ignored while the server pages by offset; see Paged.nextCursor. */
+  cursor?: string;
 }
 
 // One Membership-ID group in the Merchant management pages (all aggregates DB-computed).
@@ -355,6 +373,26 @@ export const transactionAPI = {
    * Platform-wide per-type × status COUNTS from a single GROUP BY. Lets the Admin / Super Admin
    * dashboards render their tiles and status charts without pulling the transaction table.
    */
+  /**
+   * Date-scoped per-business transaction breakdown for Merchant Analytics (one grouped query).
+   * Keyed by business name. Pair with merchantStats() for the all-time balance/commission
+   * figures — this endpoint deliberately does NOT duplicate those.
+   */
+  merchantAnalytics: async (params?: {
+    date_from?: string; date_to?: string; status?: string; merchant?: string;
+  }) => {
+    const res = await api.get<Record<string, MerchantAnalyticsRow>>(
+      '/api/transactions/merchant-analytics', { params: cleanPagedParams(params) });
+    return res.data;
+  },
+  /**
+   * Tiny "has anything changed?" probe for live approval queues — a version string, the
+   * pending count and the newest id. No transaction rows. Poll this instead of a table.
+   */
+  activitySignal: async () => {
+    const res = await api.get<ActivitySignal>('/api/transactions/activity-signal');
+    return res.data;
+  },
   globalStatusCounts: async () => {
     const res = await api.get<GlobalStatusCounts>('/api/transactions/status-counts');
     return res.data;

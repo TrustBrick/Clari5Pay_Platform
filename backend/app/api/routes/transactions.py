@@ -886,12 +886,18 @@ def _resolve_statuses(status_param: str | None):
 
 def _apply_paged_filters(stmt, *, search=None, ref=None, member_id=None,
                          date_from=None, date_to=None, datetime_from=None, datetime_to=None,
-                         status=None, type=None, amount_min=None, amount_max=None):
+                         status=None, type=None, amount_min=None, amount_max=None,
+                         merchant=None):
     """All filtering for the paged endpoints — every clause runs in the database.
     Reuses the shared date/ref/member filtering, then broadens `search` (ref + Membership
-    ID + member name + merchant + account holder) and adds status / type / amount filters."""
+    ID + member name + merchant + account holder) and adds status / type / amount /
+    merchant filters."""
     stmt = _apply_tx_filters(stmt, None, date_from, date_to, datetime_from, datetime_to,
                              ref=ref, member_id=member_id)
+    # Exact business name (not a partial `search` match) — Merchant Analytics drills into one
+    # business, and a LIKE would pull in every business whose name contains it.
+    if merchant and merchant.strip() and merchant.strip().upper() != "ALL":
+        stmt = stmt.where(Transaction.merchant_name == merchant.strip())
     if search and search.strip():
         like = f"%{search.strip()}%"
         stmt = stmt.where(or_(
@@ -915,9 +921,29 @@ def _apply_paged_filters(stmt, *, search=None, ref=None, member_id=None,
 
 
 async def _paged_response(db: AsyncSession, base_stmt, order_by, page: int | None,
-                          page_size: int | None) -> dict:
+                          page_size: int | None, *, cursor: str | None = None) -> dict:
     """Run COUNT(*) over the filtered set, then fetch one ordered page. The heavy image
-    columns are deferred on the model, so neither query drags them across the wire."""
+    columns are deferred on the model, so neither query drags them across the wire.
+
+    ── Cursor (keyset) readiness ──────────────────────────────────────────────────────────
+    Offset paging re-walks every skipped row, so page 5,000 costs far more than page 1. The
+    fix is keyset pagination, but swapping it in later must not break existing callers. This
+    function is the SINGLE place any paged endpoint builds its response, so the upgrade path
+    is contained here:
+
+      * the envelope already carries `nextCursor`, so clients can start honouring it before
+        the server actually implements keyset ordering (it is None while offset paging is in
+        use, and every current client ignores the field);
+      * `cursor` is accepted and threaded through by every endpoint, so enabling keyset means
+        implementing `_decode_cursor` below and adding the WHERE clause — no signature change,
+        no route change, no frontend change;
+      * `page`/`page_size` keep working exactly as now, so the two schemes can coexist during
+        a rollout and old clients never break.
+
+    To switch a route over: decode the cursor into the last row's (sort key, id), add
+    `WHERE (sort_key, id) < (:key, :id)` for DESC order, and drop the OFFSET. `total` stays
+    available for the UI's row count.
+    """
     page_size = _clamp_page_size(page_size)
     page = page if page and page >= 1 else 1
     total = int((await db.execute(
@@ -925,12 +951,16 @@ async def _paged_response(db: AsyncSession, base_stmt, order_by, page: int | Non
     )).scalar() or 0)
     stmt = base_stmt.order_by(*order_by).offset((page - 1) * page_size).limit(page_size)
     rows = (await db.execute(stmt)).scalars().all()
+    total_pages = (total + page_size - 1) // page_size if page_size else 0
     return {
         "items": [_t(t, full=False) for t in rows],
         "total": total,
         "page": page,
         "pageSize": page_size,
-        "totalPages": (total + page_size - 1) // page_size if page_size else 0,
+        "totalPages": total_pages,
+        # Reserved for keyset paging. None means "no cursor available, use page numbers" —
+        # the contract a client can already code against without behaviour changing today.
+        "nextCursor": None,
     }
 
 
@@ -949,17 +979,20 @@ async def get_all_transactions_paged(
     type: str | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
+    merchant: str | None = None,
     page: int = 1,
     page_size: int = 10,
+    cursor: str | None = None,
 ):
     """Paginated Admin/Super Admin feed — server-side search, filter, sort and count."""
     stmt = _apply_paged_filters(
         select(Transaction), search=search, ref=ref, member_id=member_id,
         date_from=date_from, date_to=date_to, datetime_from=datetime_from,
         datetime_to=datetime_to, status=status, type=type,
-        amount_min=amount_min, amount_max=amount_max,
+        amount_min=amount_min, amount_max=amount_max, merchant=merchant,
     )
-    return await _paged_response(db, stmt, _status_priority_order(), page, page_size)
+    return await _paged_response(db, stmt, _status_priority_order(), page, page_size,
+                                 cursor=cursor)
 
 
 @router.get("/mine/paged")
@@ -1469,6 +1502,141 @@ async def merchant_stats(
     # Cached ~5s under a single admin-independent key — the result is now identical for every
     # admin, so all callers share one computation and always see the same Merchant Analytics data.
     return await cached_json("c:txn:merchant-stats:all", 5, _compute)
+
+
+# In-flight (not yet completed / rejected / cancelled) statuses. Mirrors ACTIVE_STATUSES in the
+# frontend — the two must stay in step, since both answer "what is still awaiting action?".
+_ACTIVE_STATUSES = [
+    TxStatus.ACCOUNT_REQUESTED, TxStatus.ACCOUNT_SUBMITTED, TxStatus.PENDING_APPROVAL,
+    TxStatus.SUPERVISOR_REVIEW, TxStatus.MANAGER_REVIEW, TxStatus.SLIP_SUBMITTED,
+    TxStatus.RESUBMITTED, TxStatus.PENDING, TxStatus.ADMIN_APPROVED,
+]
+
+
+@router.get("/activity-signal")
+async def activity_signal(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """A tiny 'has anything changed?' probe for live operational awareness.
+
+    Approval queues need new requests to appear on their own, but re-fetching a transaction
+    table every 20s is exactly the load this whole optimization removed. So the client polls
+    THIS instead: three scalars from one aggregate query, a couple of hundred bytes, no rows.
+    The client compares the signal with the previous one and only re-fetches the affected
+    table when it actually moves.
+
+    `version` combines the row count with the newest updated_at, so it changes on an insert,
+    an approval, a rejection or an amount edit — but not on an unrelated read.
+
+    Scoped exactly like the caller's own feed: a merchant sees only their business, an
+    admin/super-admin sees the platform. No transaction data is returned, so this cannot leak
+    anything a role could not already fetch.
+    """
+    stmt = select(
+        func.count().label("n"),
+        func.max(Transaction.updated_at).label("updated"),
+        func.max(Transaction.id).label("max_id"),
+    )
+    if current_user.role == UserRole.MERCHANT:
+        ids = (await db.execute(
+            select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
+        )).scalars().all()
+        stmt = stmt.where(Transaction.merchant_id.in_(ids or [-1]))
+    elif current_user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        # Support and any other role get an inert signal rather than a 403 — the widget that
+        # polls this is harmless to leave mounted.
+        return {"version": "0:0:0", "pending": 0, "maxId": 0}
+
+    row = (await db.execute(stmt)).one()
+
+    # Pending = the in-flight statuses the approval queues care about.
+    pstmt = select(func.count()).select_from(Transaction).where(
+        Transaction.status.in_(_ACTIVE_STATUSES))
+    if current_user.role == UserRole.MERCHANT:
+        pstmt = pstmt.where(Transaction.merchant_id.in_(ids or [-1]))
+    pending = int((await db.execute(pstmt)).scalar() or 0)
+
+    updated = row.updated.isoformat() if row.updated else "0"
+    return {
+        "version": f"{int(row.n or 0)}:{updated}:{int(row.max_id or 0)}",
+        "pending": pending,
+        "maxId": int(row.max_id or 0),
+    }
+
+
+@router.get("/merchant-analytics")
+async def merchant_analytics(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+    date_from: date | None = None,
+    date_to: date | None = None,
+    status: str | None = None,
+    merchant: str | None = None,
+):
+    """Date-scoped per-business transaction breakdown for the Merchant Analytics cards.
+
+    Merchant Analytics needs two different things, and they must not be conflated:
+      * the canonical balance / commission figures — all-time, per business, from
+        compute_balance. Those already come from /merchant-stats and are untouched here.
+      * a DATE-SCOPED breakdown: per-type request counts (all statuses) and amounts
+        (COMPLETED/DEPOSITED only, because fees realise on completion).
+
+    The page used to get the second set by downloading every transaction and reducing over the
+    array in the browser. This computes it in ONE grouped query for every business at once — so
+    the browser receives a few hundred bytes instead of the ledger.
+
+    TWO amount figures are returned per type because the page legitimately uses two different
+    rules, and collapsing them would silently change the numbers on screen:
+      * `*Amount`      — COMPLETED/DEPOSITED only. Feeds the overview cards.
+      * `*TotalAmount` — every row in scope, regardless of status. Feeds the drill-down
+                         summary cards, which sum the rows they list.
+    `status` / `merchant` are optional and used by the drill-down, which scopes by both.
+    """
+    async def _compute():
+        completed = Transaction.status.in_([TxStatus.COMPLETED, TxStatus.DEPOSITED])
+        stmt = select(
+            Transaction.merchant_name.label("biz"),
+            Transaction.type.label("ttype"),
+            func.count().label("cnt"),
+            func.coalesce(func.sum(Transaction.amount).filter(completed), 0.0).label("done_amt"),
+            func.coalesce(func.sum(Transaction.amount), 0.0).label("all_amt"),
+        )
+        stmt = _apply_tx_filters(stmt, None, date_from, date_to, None, None)
+        if merchant and merchant.strip() and merchant.strip().upper() != "ALL":
+            stmt = stmt.where(Transaction.merchant_name == merchant.strip())
+        statuses = _resolve_statuses(status)
+        if statuses is not None:
+            stmt = stmt.where(Transaction.status.in_(statuses))
+        stmt = stmt.group_by(Transaction.merchant_name, Transaction.type)
+
+        def blank():
+            return {
+                "depositCount": 0, "depositAmount": 0.0, "depositTotalAmount": 0.0,
+                "withdrawalCount": 0, "withdrawalAmount": 0.0, "withdrawalTotalAmount": 0.0,
+                "settlementCount": 0, "settlementAmount": 0.0, "settlementTotalAmount": 0.0,
+            }
+
+        out: dict[str, dict] = {}
+        for biz, ttype, cnt, done_amt, all_amt in (await db.execute(stmt)).all():
+            group = _TYPE_GROUP.get(ttype)
+            if not group or biz is None:
+                continue
+            row = out.setdefault(biz, blank())
+            row[f"{group}Count"] += int(cnt or 0)
+            row[f"{group}Amount"] += float(done_amt or 0.0)
+            row[f"{group}TotalAmount"] += float(all_amt or 0.0)
+        for row in out.values():
+            for k, v in row.items():
+                if k.endswith("Amount"):
+                    row[k] = round(v, 2)
+        return out
+
+    # Same short TTL as the other admin aggregates; keyed by every scoping input so two admins
+    # looking at different ranges never read each other's numbers.
+    key = (f"c:txn:merchant-analytics:{date_from or 'all'}:{date_to or 'all'}"
+           f":{(status or 'ALL').upper()}:{merchant or 'ALL'}")
+    return await cached_json(key, 5, _compute)
 
 
 @router.get("/member-profile/{member_id}")
