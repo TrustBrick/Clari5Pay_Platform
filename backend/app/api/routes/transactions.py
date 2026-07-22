@@ -874,6 +874,176 @@ async def get_all_transactions_overseer(
     return [_t(t, full=False) for t in result.scalars().all()]
 
 
+# ─── Server-side paginated envelope (additive — the bare-array endpoints above are
+# untouched and stay in use until every caller is migrated). These return
+# {items, total, page, pageSize, totalPages} so the UI can render one page (default 10)
+# while search / filter / sort / count all execute in Postgres over the full dataset —
+# never in the browser. Page sizes are restricted to 10/25/50/100.
+_PAGE_SIZES = (10, 25, 50, 100)
+_TYPE_PREFIXES = ("DEPOSIT", "WITHDRAWAL", "SETTLEMENT")
+
+
+def _clamp_page_size(page_size: int | None) -> int:
+    return page_size if page_size in _PAGE_SIZES else 10
+
+
+def _resolve_types(type_param: str | None):
+    """A group prefix (DEPOSIT / WITHDRAWAL / SETTLEMENT) expands to all its sub-types;
+    an exact TxType value matches just that one. None → no type filter."""
+    if not type_param or type_param.strip().upper() in ("", "ALL"):
+        return None
+    val = type_param.strip().upper()
+    members = [m for m in TxType
+               if m.value == val or (val in _TYPE_PREFIXES and m.value.startswith(val))]
+    return members or None
+
+
+def _resolve_statuses(status_param: str | None):
+    """Comma-separated status names/values → matching TxStatus members. None → no filter."""
+    if not status_param or status_param.strip().upper() in ("", "ALL"):
+        return None
+    wanted = {s.strip().upper() for s in status_param.split(",") if s.strip()}
+    members = [m for m in TxStatus if m.value in wanted or m.name in wanted]
+    return members or None
+
+
+def _apply_paged_filters(stmt, *, search=None, ref=None, member_id=None,
+                         date_from=None, date_to=None, datetime_from=None, datetime_to=None,
+                         status=None, type=None, amount_min=None, amount_max=None):
+    """All filtering for the paged endpoints — every clause runs in the database.
+    Reuses the shared date/ref/member filtering, then broadens `search` (ref + Membership
+    ID + member name + merchant + account holder) and adds status / type / amount filters."""
+    stmt = _apply_tx_filters(stmt, None, date_from, date_to, datetime_from, datetime_to,
+                             ref=ref, member_id=member_id)
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        stmt = stmt.where(or_(
+            Transaction.ref.ilike(like),
+            Transaction.member_id.ilike(like),
+            Transaction.member_name.ilike(like),
+            Transaction.merchant_name.ilike(like),
+            Transaction.account_holder.ilike(like),
+        ))
+    types = _resolve_types(type)
+    if types is not None:
+        stmt = stmt.where(Transaction.type.in_(types))
+    statuses = _resolve_statuses(status)
+    if statuses is not None:
+        stmt = stmt.where(Transaction.status.in_(statuses))
+    if amount_min is not None:
+        stmt = stmt.where(Transaction.amount >= amount_min)
+    if amount_max is not None:
+        stmt = stmt.where(Transaction.amount <= amount_max)
+    return stmt
+
+
+async def _paged_response(db: AsyncSession, base_stmt, order_by, page: int | None,
+                          page_size: int | None) -> dict:
+    """Run COUNT(*) over the filtered set, then fetch one ordered page. The heavy image
+    columns are deferred on the model, so neither query drags them across the wire."""
+    page_size = _clamp_page_size(page_size)
+    page = page if page and page >= 1 else 1
+    total = int((await db.execute(
+        select(func.count()).select_from(base_stmt.subquery())
+    )).scalar() or 0)
+    stmt = base_stmt.order_by(*order_by).offset((page - 1) * page_size).limit(page_size)
+    rows = (await db.execute(stmt)).scalars().all()
+    return {
+        "items": [_t(t, full=False) for t in rows],
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "totalPages": (total + page_size - 1) // page_size if page_size else 0,
+    }
+
+
+@router.get("/paged")
+async def get_all_transactions_paged(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+    search: str | None = None,
+    ref: str | None = None,
+    member_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    datetime_from: datetime | None = None,
+    datetime_to: datetime | None = None,
+    status: str | None = None,
+    type: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    page: int = 1,
+    page_size: int = 10,
+):
+    """Paginated Admin/Super Admin feed — server-side search, filter, sort and count."""
+    stmt = _apply_paged_filters(
+        select(Transaction), search=search, ref=ref, member_id=member_id,
+        date_from=date_from, date_to=date_to, datetime_from=datetime_from,
+        datetime_to=datetime_to, status=status, type=type,
+        amount_min=amount_min, amount_max=amount_max,
+    )
+    return await _paged_response(db, stmt, _status_priority_order(), page, page_size)
+
+
+@router.get("/mine/paged")
+async def get_my_transactions_paged(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    search: str | None = None,
+    ref: str | None = None,
+    member_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    datetime_from: datetime | None = None,
+    datetime_to: datetime | None = None,
+    status: str | None = None,
+    type: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    page: int = 1,
+    page_size: int = 10,
+):
+    """Paginated Merchant feed (own transactions), newest first."""
+    if current_user.role != UserRole.MERCHANT:
+        raise HTTPException(status_code=403, detail="Merchant only")
+    stmt = _apply_paged_filters(
+        select(Transaction).where(Transaction.merchant_id == current_user.id),
+        search=search, ref=ref, member_id=member_id,
+        date_from=date_from, date_to=date_to, datetime_from=datetime_from,
+        datetime_to=datetime_to, status=status, type=type,
+        amount_min=amount_min, amount_max=amount_max,
+    )
+    return await _paged_response(db, stmt, (Transaction.created_at.desc(),), page, page_size)
+
+
+@router.get("/all/paged")
+async def get_all_transactions_overseer_paged(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_transactions_overseer),
+    search: str | None = None,
+    ref: str | None = None,
+    member_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    datetime_from: datetime | None = None,
+    datetime_to: datetime | None = None,
+    status: str | None = None,
+    type: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    page: int = 1,
+    page_size: int = 10,
+):
+    """Paginated system-wide oversight feed (Supervisor / Manager / Admin), business-priority order."""
+    stmt = _apply_paged_filters(
+        select(Transaction), search=search, ref=ref, member_id=member_id,
+        date_from=date_from, date_to=date_to, datetime_from=datetime_from,
+        datetime_to=datetime_to, status=status, type=type,
+        amount_min=amount_min, amount_max=amount_max,
+    )
+    return await _paged_response(db, stmt, _status_priority_order(), page, page_size)
+
+
 def _can_view_tx(tx: Transaction, user: User) -> bool:
     """Who may open a transaction's full details / slips / audit (read-only):
     Admins & Super Admins (any tx); oversight roles Supervisor/Manager (any tx, permanently,

@@ -134,6 +134,32 @@ _NEW_COLUMNS = [
     ("account_master", "debit_alert_threshold", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
 ]
 
+# ── Performance indexes ──────────────────────────────────────────────────────
+# (name, table, columns-expression) — created with CREATE INDEX CONCURRENTLY IF NOT
+# EXISTS so building them never takes an ACCESS EXCLUSIVE lock (writes keep flowing)
+# even on a multi-million-row transactions table. These back the server-side paginated
+# list endpoints (ordering + WHERE filters run in Postgres, not in Python): every list
+# query orders by created_at and filters on some combination of merchant_id / status /
+# type / member_id / assigned_agent_id, and /mine is (merchant_id, created_at).
+# create_all builds the tables first; these only add indexes, never touch data.
+_NEW_INDEXES = [
+    # transactions — the merchant/admin/overseer feeds.
+    ("ix_txn_created_at",            "transactions",     "(created_at DESC)"),
+    ("ix_txn_merchant_created",      "transactions",     "(merchant_id, created_at DESC)"),
+    ("ix_txn_status",                "transactions",     "(status)"),
+    ("ix_txn_type",                  "transactions",     "(type)"),
+    ("ix_txn_member_id",             "transactions",     "(member_id)"),
+    ("ix_txn_assigned_agent_id",     "transactions",     "(assigned_agent_id)"),
+    ("ix_txn_approver_user_id",      "transactions",     "(approver_user_id)"),
+    # agent_transaction — the isolated Agent Portal ledger (always business-scoped).
+    ("ix_agenttxn_business_id",      "agent_transaction", "(merchant_business, id DESC)"),
+    ("ix_agenttxn_created_at",       "agent_transaction", "(created_at DESC)"),
+    ("ix_agenttxn_status",           "agent_transaction", "(status)"),
+    ("ix_agenttxn_type",             "agent_transaction", "(txn_type)"),
+    ("ix_agenttxn_membership_id",    "agent_transaction", "(membership_id)"),
+    ("ix_agenttxn_agent_master_id",  "agent_transaction", "(agent_master_id)"),
+]
+
 # New enum values keyed by an existing label that lives in the same enum type
 # (used to discover the actual Postgres type name regardless of how it's named).
 _NEW_ENUM_VALUES = [
@@ -250,9 +276,20 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         # The former Lowest Credit column is superseded by Highest Debit — drop it once (idempotent).
         await conn.execute(text("ALTER TABLE account_master DROP COLUMN IF EXISTS lowest_credit"))
 
-    # ── Enum values (ALTER TYPE ... ADD VALUE must run outside a txn block) ──
+    # ── Performance indexes + enum values (both must run outside a txn block) ──
     autocommit = engine.execution_options(isolation_level="AUTOCOMMIT")
     async with autocommit.connect() as conn:
+        # CREATE INDEX CONCURRENTLY cannot run in a transaction and must not abort startup
+        # if one fails (e.g. a prior interrupted build left an INVALID index): log & continue,
+        # each is retried on the next startup. IF NOT EXISTS makes an already-built index a no-op.
+        for name, table, cols in _NEW_INDEXES:
+            try:
+                await conn.execute(
+                    text(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {table} {cols}")
+                )
+            except Exception as exc:  # noqa: BLE001 — never let index creation block boot
+                import logging
+                logging.getLogger("migrate").warning("index %s not created: %s", name, exc)
         for existing_label, new_label in _NEW_ENUM_VALUES:
             typname = (
                 await conn.execute(
