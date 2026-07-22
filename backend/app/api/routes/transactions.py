@@ -1526,18 +1526,21 @@ async def activity_signal(
     The client compares the signal with the previous one and only re-fetches the affected
     table when it actually moves.
 
-    `version` combines the row count with the newest updated_at, so it changes on an insert,
-    an approval, a rejection or an amount edit — but not on an unrelated read.
+    `version` is built from the per-status row counts plus the highest id. That histogram is
+    the right fingerprint for this job: a NEW request changes the count and the max id, and any
+    approval / rejection / cancellation moves a row from one status bucket to another, which
+    changes the histogram. Both are exactly the events an approval queue must react to.
+
+    (There is deliberately no `updated_at` dependency — Transaction does not carry one. An edit
+    that changes NEITHER the status NOR the row count — e.g. an amount correction in place —
+    will not move the version; such a change is picked up on the next explicit refresh. Widening
+    this would mean adding an updated_at column, which is a schema change, not a perf fix.)
 
     Scoped exactly like the caller's own feed: a merchant sees only their business, an
     admin/super-admin sees the platform. No transaction data is returned, so this cannot leak
     anything a role could not already fetch.
     """
-    stmt = select(
-        func.count().label("n"),
-        func.max(Transaction.updated_at).label("updated"),
-        func.max(Transaction.id).label("max_id"),
-    )
+    stmt = select(Transaction.status, func.count(), func.max(Transaction.id))
     if current_user.role == UserRole.MERCHANT:
         ids = (await db.execute(
             select(User.id).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
@@ -1546,23 +1549,29 @@ async def activity_signal(
     elif current_user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
         # Support and any other role get an inert signal rather than a 403 — the widget that
         # polls this is harmless to leave mounted.
-        return {"version": "0:0:0", "pending": 0, "maxId": 0}
+        return {"version": "0", "pending": 0, "maxId": 0, "total": 0}
+    stmt = stmt.group_by(Transaction.status)
 
-    row = (await db.execute(stmt)).one()
+    rows = (await db.execute(stmt)).all()
 
-    # Pending = the in-flight statuses the approval queues care about.
-    pstmt = select(func.count()).select_from(Transaction).where(
-        Transaction.status.in_(_ACTIVE_STATUSES))
-    if current_user.role == UserRole.MERCHANT:
-        pstmt = pstmt.where(Transaction.merchant_id.in_(ids or [-1]))
-    pending = int((await db.execute(pstmt)).scalar() or 0)
+    active = {s.value for s in _ACTIVE_STATUSES}
+    total = 0
+    pending = 0
+    max_id = 0
+    parts = []
+    for status, cnt, mx in rows:
+        skey = status.value if hasattr(status, "value") else str(status)
+        n = int(cnt or 0)
+        total += n
+        max_id = max(max_id, int(mx or 0))
+        if skey in active:
+            pending += n
+        parts.append(f"{skey}={n}")
 
-    updated = row.updated.isoformat() if row.updated else "0"
-    return {
-        "version": f"{int(row.n or 0)}:{updated}:{int(row.max_id or 0)}",
-        "pending": pending,
-        "maxId": int(row.max_id or 0),
-    }
+    # Sorted so the string is stable regardless of the order Postgres returns groups in —
+    # otherwise the client would see a "change" on every poll.
+    version = f"{total}:{max_id}:" + ",".join(sorted(parts))
+    return {"version": version, "pending": pending, "maxId": max_id, "total": total}
 
 
 @router.get("/merchant-analytics")
