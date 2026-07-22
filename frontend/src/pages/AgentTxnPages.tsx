@@ -25,7 +25,7 @@ import {
   type AgentTxnAuditRow, type AgentTxnQuery, type AgentTxnPagedQuery,
   type AgentAccountOption, type AgentMemberAccount,
 } from '../services/agentTxns';
-import type { Paged } from '../services/api';
+import { fetchAllPages } from '../services/api';
 
 // ─── Isolated Agent Transaction subsystem — Merchant operator workflow ─────────
 // Every figure and record on these pages comes ONLY from /api/agent-txns (the isolated agent
@@ -1998,22 +1998,6 @@ const SettlementSettleModal: React.FC<{ row: AgentTxnRow; onClose: () => void; o
 // Agent Transaction ledger (filtered to this txn_type) — never any merchant module. The "+ Create"
 // button opens the existing Agent Request form (reused, embedded), not a new form.
 const PAGE_SIZE = 10;
-
-/**
- * Walk a paginated endpoint to completion. Used ONLY by the CSV/XLSX exports, which must still
- * cover the whole filtered result set now that the tables themselves fetch a single page. Reads
- * the largest allowed page (100) and stops on the server's own totalPages, so it never spins.
- */
-const fetchAllPages = async <T,>(fetchPage: (page: number) => Promise<Paged<T>>): Promise<T[]> => {
-  const first = await fetchPage(1);
-  const out = [...first.items];
-  for (let p = 2; p <= first.totalPages; p++) {
-    const next = await fetchPage(p);
-    if (!next.items.length) break;
-    out.push(...next.items);
-  }
-  return out;
-};
 
 const AgentTxnManagementPage: React.FC<{
   user: User;

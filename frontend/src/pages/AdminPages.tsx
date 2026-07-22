@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
 import TxTable from '../components/TxTable';
@@ -14,9 +14,9 @@ import { AgentLedgerReport } from './ReportsPage';
 import { useAuth } from '../context/AuthContext';
 import { usePoll, PRESENCE_POLL_MS } from '../utils/usePoll';
 import { usePresenceStream } from '../utils/sse';
-import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, telegramAPI, demoAPI, activeUsersAPI } from '../services/api';
-import type { TxQuery, WhatsappSettings, WhatsappLog, WhatsappStats, TelegramStatus } from '../services/api';
-import type { SystemLogEntry, AuditLogEntry, NewsPost } from '../types';
+import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, telegramAPI, demoAPI, activeUsersAPI, fetchAllPages } from '../services/api';
+import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappLog, WhatsappStats, TelegramStatus } from '../services/api';
+import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account, AccountBalance, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
 
@@ -463,25 +463,56 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [merchants, setMerchants] = useState<User[]>([]);
   const [summary, setSummary] = useState<GlobalSummary | null>(null);
+  const [counts, setCounts] = useState<GlobalStatusCounts | null>(null);
   const [loading, setLoading] = useState(true);
   const [type, setType] = useState('ALL');
   const [status, setStatus] = useState('ALL');
   const [active, setActive] = useState<Transaction | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
 
-  const reload = () => Promise.all([transactionAPI.getAll(), userAPI.getMerchants(), transactionAPI.globalSummary()])
-    .then(([t,m,s]) => { setTxns(t); setMerchants(m); setSummary(s); })
-    .catch(() => {});
+  // The Requests table — ONE page, filtered in Postgres. "Pending (default)" is the set of
+  // in-flight statuses, sent as a comma-separated list rather than filtered in the browser.
+  const loadRequests = useCallback(async (opts?: { page?: number; pageSize?: number }) => {
+    const p = opts?.page ?? page;
+    const ps = opts?.pageSize ?? pageSize;
+    try {
+      const res = await transactionAPI.getAllPaged({
+        status: status === 'ALL' ? ACTIVE_STATUSES.join(',') : status,
+        ...(type === 'ALL' ? {} : { type }),
+        page: p, page_size: ps,
+      });
+      setTxns(res.items); setTotal(res.total); setTotalPages(Math.max(1, res.totalPages));
+    } catch { setTxns([]); setTotal(0); setTotalPages(1); }
+  }, [status, type, page, pageSize]);
 
-  useEffect(() => { reload().finally(() => setLoading(false)); }, []);
-  usePoll(() => { if (!active) reload(); });
+  // Counters and finance cards come from two small aggregate endpoints — no transaction list
+  // is fetched to compute them.
+  const reloadCounters = useCallback(() => Promise.all([
+    userAPI.getMerchants(), transactionAPI.globalSummary(), transactionAPI.globalStatusCounts(),
+  ]).then(([m, s, c]) => { setMerchants(m); setSummary(s); setCounts(c); })
+    .catch(() => {}), []);
 
+  const reload = useCallback(() => Promise.all([reloadCounters(), loadRequests()]),
+    [reloadCounters, loadRequests]);
+
+  useEffect(() => { reload().finally(() => setLoading(false)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadRequests(); }, [page, pageSize, status, type]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setPage(1); }, [status, type]);
+  // Only the lightweight counters poll; the Requests table is not re-read on a timer.
+  usePoll(() => { if (!active) reloadCounters(); });
+
+  // Counter helpers — read straight off the aggregated matrix.
+  const cnt = (g: 'deposit'|'withdrawal'|'settlement', s: string) => counts?.statusCounts[g]?.[s] ?? 0;
+  const sumAll = (s: string) => cnt('deposit', s) + cnt('withdrawal', s) + cnt('settlement', s);
   // Pending = every active (in-flight) request: Account Requested, Account Submitted,
   // Slip Submitted, Pending. Only completed/cancelled are excluded.
-  const pending = txns.filter(t => isActive(t.status));
-  const completed = txns.filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED');
-  // Default view = pending; picking a status filters the full set (so completed/cancelled are reachable too).
-  const base = status === 'ALL' ? pending : txns.filter(t => t.status === status);
-  const filtered = base.filter(t => type === 'ALL' || t.type === type);
+  const pendingCount = ACTIVE_STATUSES.reduce((n, s) => n + sumAll(s), 0);
+  const completedCount = sumAll('COMPLETED') + sumAll('DEPOSITED');
+  // `txns` IS the current server page of the selected filter — rendered as-is.
+  const filtered = txns;
 
   // Canonical financial-summary figures — the SINGLE source of truth (backend
   // /global-summary → compute_global_summary). These are system-wide platform totals,
@@ -498,22 +529,20 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
   const totalAvailableBalance = summary?.totalAvailableBalance ?? 0;
   const payoutFee = summary?.payoutFee ?? 0;
   const availableBalance = summary?.available ?? 0;
-  const depReqs = txns.filter(t => t.type.startsWith('DEPOSIT')).length;
-  const wdReqs = txns.filter(t => t.type.startsWith('WITHDRAWAL')).length;
-  const setReqs = txns.filter(t => t.type.startsWith('SETTLEMENT')).length;
+  const depReqs = counts?.typeTotals.deposit ?? 0;
+  const wdReqs = counts?.typeTotals.withdrawal ?? 0;
+  const setReqs = counts?.typeTotals.settlement ?? 0;
 
-  // Per-type status breakdown for the three dashboard graphs.
-  const byTypeStatus = (pfx: string) => {
-    const arr = txns.filter(t => t.type.startsWith(pfx));
-    return [
-      { label: 'Requested', value: arr.filter(t => t.status === 'ACCOUNT_REQUESTED').length, color: T.warning },
-      { label: 'Submitted', value: arr.filter(t => t.status === 'ACCOUNT_SUBMITTED').length, color: T.info },
-      { label: 'In Review', value: arr.filter(t => t.status === 'PENDING_APPROVAL' || t.status === 'SUPERVISOR_REVIEW' || t.status === 'MANAGER_REVIEW' || t.status === 'RESUBMITTED').length, color: T.warning },
-      { label: 'Slip', value: arr.filter(t => t.status === 'SLIP_SUBMITTED').length, color: T.blue },
-      { label: 'Completed', value: arr.filter(t => t.status === 'COMPLETED' || t.status === 'DEPOSITED').length, color: T.success },
-      { label: 'Rejected', value: arr.filter(t => t.status === 'REJECTED' || t.status === 'CANCELLED').length, color: T.danger },
-    ];
-  };
+  // Per-type status breakdown for the three dashboard graphs — same buckets as before, now read
+  // from the aggregated counts instead of counted over a full in-memory transaction array.
+  const byTypeStatus = (g: 'deposit'|'withdrawal'|'settlement') => [
+    { label: 'Requested', value: cnt(g, 'ACCOUNT_REQUESTED'), color: T.warning },
+    { label: 'Submitted', value: cnt(g, 'ACCOUNT_SUBMITTED'), color: T.info },
+    { label: 'In Review', value: cnt(g, 'PENDING_APPROVAL') + cnt(g, 'SUPERVISOR_REVIEW') + cnt(g, 'MANAGER_REVIEW') + cnt(g, 'RESUBMITTED'), color: T.warning },
+    { label: 'Slip', value: cnt(g, 'SLIP_SUBMITTED'), color: T.blue },
+    { label: 'Completed', value: cnt(g, 'COMPLETED') + cnt(g, 'DEPOSITED'), color: T.success },
+    { label: 'Rejected', value: cnt(g, 'REJECTED') + cnt(g, 'CANCELLED'), color: T.danger },
+  ];
 
   if (loading) return <LoadingScreen label="Loading dashboard…"/>;
 
@@ -530,12 +559,12 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
       <div className="ad-stat-counts" style={{ display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:12,marginBottom:20 }}>
         {/* A "merchant" is a company (business), not a login row — count distinct businesses. */}
         <StatCard icon="merchants" label="Total Merchants" value={new Set(merchants.map(m=>m.name)).size} color={T.blue}/>
-        <StatCard icon="completed-requests" label="Completed" value={completed.length} color={T.success}/>
-        <StatCard icon="pending" label="Pending" value={pending.length} color={T.warning}/>
+        <StatCard icon="completed-requests" label="Completed" value={completedCount} color={T.success}/>
+        <StatCard icon="pending" label="Pending" value={pendingCount} color={T.warning}/>
         <StatCard icon="deposit" label="No. of Deposit Requests" value={depReqs} color={T.blue}/>
         <StatCard icon="withdrawal" label="No. of Withdrawal Requests" value={wdReqs} color={T.danger}/>
         <StatCard icon="settlement" label="No. of Settlement Requests" value={setReqs} color={T.info}/>
-        <StatCard icon="transactions" label="Total Requests" value={txns.length} color={T.info}/>
+        <StatCard icon="transactions" label="Total Requests" value={counts?.total ?? 0} color={T.info}/>
       </div>
       <style>{`
         @media(max-width:1180px){.ad-stat-money{grid-template-columns:repeat(2,minmax(0,1fr))!important;}.ad-stat-counts{grid-template-columns:repeat(3,minmax(0,1fr))!important;}}
@@ -545,22 +574,22 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
         <Card style={{ padding:22 }}>
           <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.textMain }}>Deposits</h3>
           <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>{depReqs} total · by status</p>
-          <StatusChart data={byTypeStatus('DEPOSIT')}/>
+          <StatusChart data={byTypeStatus('deposit')}/>
         </Card>
         <Card style={{ padding:22 }}>
           <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.textMain }}>Withdrawals</h3>
           <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>{wdReqs} total · by status</p>
-          <StatusChart data={byTypeStatus('WITHDRAWAL')}/>
+          <StatusChart data={byTypeStatus('withdrawal')}/>
         </Card>
         <Card style={{ padding:22 }}>
           <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.textMain }}>Settlements</h3>
           <p style={{ margin:'0 0 14px',fontSize:11,color:T.textMuted }}>{setReqs} total · by status</p>
-          <StatusChart data={byTypeStatus('SETTLEMENT')}/>
+          <StatusChart data={byTypeStatus('settlement')}/>
         </Card>
       </div>
       <Card>
         <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap' }}>
-          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Requests ({filtered.length})</h3>
+          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Requests ({total})</h3>
           <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
             <select value={type} onChange={e=>setType(e.target.value)} style={{ padding:'7px 10px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
               {['ALL',...REQUEST_TYPES].map(v=><option key={v} value={v}>{v==='ALL'?'All Types':typeLabel(v)}</option>)}
@@ -571,6 +600,8 @@ export const AdminDashboard: React.FC<{ user: User }> = () => {
           </div>
         </div>
         <TxTable loading={loading} txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>
+        <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading}
+          onPage={setPage} onPageSize={n=>{ setPageSize(n); setPage(1); }}/>
       </Card>
       {active && <RequestModal tx={active} canAct onClose={()=>setActive(null)} onDone={reload}/>}
     </div>
@@ -586,13 +617,39 @@ export const AdminTransactionsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [filtering, setFiltering] = useState(false);   // Apply Filters request in flight
   const [active, setActive] = useState<Transaction | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
 
-  const reload = () => transactionAPI.getAll(query).then(setTxns).catch(()=>setTxns([]));
-  useEffect(() => { setFiltering(true); reload().finally(()=>{ setLoading(false); setFiltering(false); }); }, [query]);
-  usePoll(() => { if (!active) reload(); });
+  // Type and status used to be client-side refinements on the server-filtered set — correct only
+  // while the client held every matching row. They are now part of the server query.
+  const pagedQuery = useCallback((): TxPagedQuery => ({
+    ...query,
+    ...(type === 'ALL' ? {} : { type }),
+    ...(status === 'ALL' ? {} : { status }),
+  }), [query, type, status]);
 
-  // Type/status are client-side refinements on the server-filtered set.
-  const filtered = txns.filter(t => (type === 'ALL' || t.type === type) && (status === 'ALL' || t.status === status));
+  const reload = useCallback((opts?: { page?: number; pageSize?: number }) => {
+    const p = opts?.page ?? page;
+    const ps = opts?.pageSize ?? pageSize;
+    return transactionAPI.getAllPaged({ ...pagedQuery(), page: p, page_size: ps })
+      .then(res => { setTxns(res.items); setTotal(res.total); setTotalPages(Math.max(1, res.totalPages)); })
+      .catch(()=>{ setTxns([]); setTotal(0); setTotalPages(1); });
+  }, [pagedQuery, page, pageSize]);
+
+  useEffect(() => { setFiltering(true); reload().finally(()=>{ setLoading(false); setFiltering(false); }); },
+    [query, type, status, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setPage(1); }, [query, type, status]);
+  // The table is not re-read on a timer — only on filter/page changes or after an action.
+
+  // `txns` IS the server's page for the current filter set.
+  const filtered = txns;
+
+  // Export still covers the ENTIRE filtered result set, not just the visible page.
+  const exportRows = useCallback(
+    () => fetchAllPages(p => transactionAPI.getAllPaged({ ...pagedQuery(), page: p, page_size: 100 })),
+    [pagedQuery]);
 
   return (
     <Card>
@@ -606,14 +663,13 @@ export const AdminTransactionsPage: React.FC = () => {
           <select value={status} onChange={e=>setStatus(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...REQUEST_STATUSES].map(v=><option key={v} value={v}>{v==='ALL'?'All Statuses':typeLabel(v)}</option>)}
           </select>
-          <TxExportButton txns={filtered} title="All Transactions" />
+          <TxExportButton txns={filtered} fetchTxns={exportRows} title="All Transactions" />
         </div>
       </div>
       <TxTable loading={loading} txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>
-      <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}` }}>
-        <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {txns.length}</p>
-      </div>
-      {active && <RequestModal tx={active} canAct onClose={()=>setActive(null)} onDone={reload}/>}
+      <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading}
+        onPage={setPage} onPageSize={n=>{ setPageSize(n); setPage(1); }}/>
+      {active && <RequestModal tx={active} canAct onClose={()=>setActive(null)} onDone={()=>reload()}/>}
     </Card>
   );
 };
@@ -1670,11 +1726,24 @@ export const SaDashboard: React.FC<{ onNavigate?: (p: string) => void }> = ({ on
   const [active, setActive] = useState<ActiveUsersData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const reload = () => Promise.all([userAPI.getMerchants(), userAPI.getAdmins(), transactionAPI.getAll(), transactionAPI.globalSummary()])
-    .then(([m,a,t,s]) => { setMerchants(m); setAdmins(a); setTxns(t); setSummary(s); })
-    .catch(()=>{});
+  // This dashboard reads transactions ONLY for the Monthly Volume figure and the 7-day chart, so
+  // it fetches exactly that window — completed rows from the start of the current month or the
+  // last 7 days, whichever reaches further back — instead of the entire platform ledger.
+  const volumeFrom = () => {
+    const now = new Date();
+    const monthStart = `${now.toISOString().slice(0, 7)}-01`;
+    const weekStart = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10);
+    return monthStart < weekStart ? monthStart : weekStart;
+  };
+
+  const reload = useCallback(() => Promise.all([
+    userAPI.getMerchants(), userAPI.getAdmins(),
+    fetchAllPages(p => transactionAPI.getAllPaged({ status: 'COMPLETED', date_from: volumeFrom(), page: p, page_size: 100 })),
+    transactionAPI.globalSummary(),
+  ]).then(([m,a,t,s]) => { setMerchants(m); setAdmins(a); setTxns(t); setSummary(s); })
+    .catch(()=>{}), []);
   const loadActive = () => activeUsersAPI.list().then(setActive).catch(()=>{});
-  useEffect(() => { reload().finally(()=>setLoading(false)); loadActive(); }, []);
+  useEffect(() => { reload().finally(()=>setLoading(false)); loadActive(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const liveActive = usePresenceStream(setActive);   // SSE push (<1s); presence poll below is the fallback
   usePoll(reload);
   usePoll(() => { if (!liveActive) loadActive(); }, PRESENCE_POLL_MS);

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -142,6 +142,24 @@ export interface Paged<T> {
   pageSize: number;
   totalPages: number;
 }
+
+/**
+ * Walk a paginated endpoint to completion.
+ *
+ * Used ONLY by exports and by aggregate views that must cover the whole filtered result set now
+ * that the tables themselves fetch a single page — never for rendering a table. Reads the largest
+ * allowed page (100) and stops on the server's own totalPages, so it cannot spin.
+ */
+export const fetchAllPages = async <T,>(fetchPage: (page: number) => Promise<Paged<T>>): Promise<T[]> => {
+  const first = await fetchPage(1);
+  const out = [...first.items];
+  for (let p = 2; p <= first.totalPages; p++) {
+    const next = await fetchPage(p);
+    if (!next.items.length) break;
+    out.push(...next.items);
+  }
+  return out;
+};
 
 // Superset of TxQuery accepted by the /paged endpoints (all filtering is server-side).
 export interface TxPagedQuery extends TxQuery {
@@ -326,6 +344,14 @@ export const transactionAPI = {
   // Platform-wide financial summary — single source of truth, identical for every admin.
   globalSummary: async () => {
     const res = await api.get<GlobalSummary>('/api/transactions/global-summary');
+    return res.data;
+  },
+  /**
+   * Platform-wide per-type × status COUNTS from a single GROUP BY. Lets the Admin / Super Admin
+   * dashboards render their tiles and status charts without pulling the transaction table.
+   */
+  globalStatusCounts: async () => {
+    const res = await api.get<GlobalStatusCounts>('/api/transactions/status-counts');
     return res.data;
   },
   recheck: async (id: string, reason?: string) => {
