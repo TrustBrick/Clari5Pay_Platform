@@ -121,6 +121,19 @@ const agentsForMethod = <A extends { category?: string | null }>(agents: A[], m?
   return want ? agents.filter(a => String(a.category || '').toUpperCase() === want) : agents;
 };
 
+// The member's registered bank/UPI account to auto-fill a Bank Transfer form from — the same accounts
+// the member lookup already returns (savedAccounts, the isolated agent register). Prefers the default
+// account; for a bank-style method one that carries an account number, for UPI one that carries a UPI
+// id. Returns undefined when nothing suitable is on file, so the operator falls back to manual entry.
+const pickMemberAccount = (accounts: AgentMemberAccount[] | undefined, m?: string | null): AgentMemberAccount | undefined => {
+  const list = (accounts || []).filter(Boolean);
+  if (!list.length) return undefined;
+  const wantUpi = String(m || '').toUpperCase() === 'UPI';
+  const usable = list.filter(a => (wantUpi ? a.upiId : a.accountNumber));
+  const pool = usable.length ? usable : list;
+  return pool.find(a => a.isDefault) || pool[0];
+};
+
 // The chain's first two steps are named for what the method actually asks the operator to supply —
 // mirrors _requested_status / _submitted_status in backend/app/api/routes/agent_txns.py. Keep the
 // two in step: the backend rejects an action attempted from the wrong status.
@@ -601,6 +614,11 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   const senderIfscFill = useIfscAutoFill(senderIfsc, setSenderIfsc, (bank, branch) => {
     setSenderBankName(bank); setSenderBranch(branch);
   });
+  // The member's registered bank/UPI accounts (isolated agent register), fetched with the membership
+  // lookup. For a Bank Transfer deposit the Sending Account IS the member's own account, so these
+  // auto-fill the fields below — the operator never re-types details already on file.
+  const [savedAccounts, setSavedAccounts] = useState<AgentMemberAccount[]>([]);
+  const [bankAutoFilled, setBankAutoFilled] = useState(false);
   const [country, setCountry] = useState('');
   const [state, setState] = useState('');
   const [location, setLocation] = useState('');
@@ -623,22 +641,49 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
   // Request flow: an existing membership auto-fills + locks the name; a new ID stays manually editable.
   useEffect(() => {
     const id = membershipId.trim();
-    if (id.length < 3) { setMemberLocked(false); return; }
+    if (id.length < 3) { setMemberLocked(false); setSavedAccounts([]); return; }
     let alive = true;
     const t = setTimeout(() => {
       agentTxnsAPI.member(id).then(r => {
         if (!alive) return;
         if (r.membershipName) { setMembershipName(r.membershipName); setMemberLocked(true); }
         else setMemberLocked(false);
-      }).catch(() => { if (alive) setMemberLocked(false); });
+        setSavedAccounts(r.savedAccounts || []);
+      }).catch(() => { if (alive) { setMemberLocked(false); setSavedAccounts([]); } });
     }, 400);
     return () => { alive = false; clearTimeout(t); };
   }, [membershipId]);
+
+  // Auto-fetch the member's registered bank details for a Bank Transfer deposit. The Sending Account
+  // is the member's own account, so a registered one on file fills these fields for the operator.
+  // ONLY the Bank Transfer category (BANK/IMPS/NEFT/RTGS/UPI) — Cash/Crypto have no Sending Account,
+  // so anything an earlier method auto-filled is cleared. Fields stay editable, so the operator can
+  // still override. Runs when the accounts load or the Transaction Type changes.
+  useEffect(() => {
+    if (categoryForMethod(txnMethod) !== 'BANK_TRANSFER') {
+      setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
+      setSenderIfsc(''); setSenderBankName(''); setSenderBranch(''); setBankAutoFilled(false);
+      return;
+    }
+    const acct = pickMemberAccount(savedAccounts, txnMethod);
+    if (!acct) { setBankAutoFilled(false); return; }
+    if (txnMethod === 'UPI') {
+      setSenderUpiId(acct.upiId || '');
+    } else {
+      setSenderAccountHolder(acct.accountHolder || '');
+      setSenderAccountNumber(acct.accountNumber || '');
+      setSenderIfsc(acct.ifsc || '');
+      setSenderBankName(acct.bankName || '');
+      setSenderBranch(acct.branch || '');
+    }
+    setBankAutoFilled(true);
+  }, [savedAccounts, txnMethod]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const reset = () => {
     setAgentId(''); setMembershipId(''); setMembershipName(''); setMemberLocked(false); setMembershipType(''); setAmount('');
     setTxnMethod(''); setSenderUpiId(''); setSenderAccountHolder(''); setSenderAccountNumber('');
     setSenderIfsc(''); setSenderBankName(''); setSenderBranch(''); senderIfscFill.reset();
+    setSavedAccounts([]); setBankAutoFilled(false);
     setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91'); setNotes(''); setInstructions('');
   };
 
@@ -738,7 +783,13 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
             Request). Only bank-style and UPI sends name an account; Cash/Crypto do not. */}
         {(txnMethod === 'UPI' || BANK_LIKE.includes(txnMethod)) && (
           <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-            <p style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sending Account Details</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+              <p style={{ margin: 0, fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sending Account Details</p>
+              {bankAutoFilled && <span style={{ fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>✓ Auto-fetched from member's registered account</span>}
+            </div>
+            {memberLocked && savedAccounts.length === 0 && (
+              <p style={{ margin: '0 0 10px', fontSize: 11.5, color: T.textMuted }}>No bank details are configured for this member — enter them manually.</p>
+            )}
             {txnMethod === 'UPI' ? (
               <Input label="Sender UPI ID" value={senderUpiId} onChange={e => setSenderUpiId(e.target.value)} required
                 placeholder="e.g. satish@ybl" hint="The UPI the payment is sent from" style={{ marginBottom: 0 }} />
@@ -806,6 +857,21 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [memberBalance, setMemberBalance] = useState<number | null>(null);
   const [agentId, setAgentId] = useState('');
   const [autoAgent, setAutoAgent] = useState<AgentMemberLookup['latestDeposit']>(null);
+  // The member's registered bank/UPI accounts (isolated agent register), fetched with the membership
+  // lookup. A Bank Transfer withdrawal pays OUT to the member's own account, so a registered one on
+  // file auto-fills the Payout Account fields below. Not used for Cash/Crypto or Settlement.
+  const [savedAccounts, setSavedAccounts] = useState<AgentMemberAccount[]>([]);
+  const [payoutHolder, setPayoutHolder] = useState('');
+  const [payoutNumber, setPayoutNumber] = useState('');
+  const [payoutIfsc, setPayoutIfsc] = useState('');
+  const [payoutBank, setPayoutBank] = useState('');
+  const [payoutBranch, setPayoutBranch] = useState('');
+  const [payoutUpi, setPayoutUpi] = useState('');
+  const [payoutAutoFilled, setPayoutAutoFilled] = useState(false);
+  // Editing any payout field means it is no longer purely the registered account — drop the badge.
+  const payoutIfscFill = useIfscAutoFill(payoutIfsc, (v) => { setPayoutIfsc(v); setPayoutAutoFilled(false); }, (bank, branch) => {
+    setPayoutBank(bank); setPayoutBranch(branch);
+  });
   const [txnMethod, setTxnMethod] = useState('');
   // Supplied by the customer/agent and typed in by the operator — never generated.
   const [tokenDetails, setTokenDetails] = useState('');
@@ -835,13 +901,14 @@ export const AgentWithdrawalRequestPage: React.FC<{
   // Membership lookup → auto-fetch the agent from the latest agent DEPOSIT for this membership.
   const lookupMember = async () => {
     const id = membershipId.trim();
-    setAutoAgent(null); setManualOverride(false); setMemberBalance(null);
+    setAutoAgent(null); setManualOverride(false); setMemberBalance(null); setSavedAccounts([]);
     if (!id) return;
     setLooking(true);
     try {
       const r = await agentTxnsAPI.member(id);
       if (r.membershipName) setMembershipName(r.membershipName);
       setMemberBalance(typeof r.availableBalance === 'number' ? r.availableBalance : null);
+      setSavedAccounts(r.savedAccounts || []);
       // The member's latest agent deposit still auto-links its agent (and its depositId), but only
       // when that agent serves the Transaction Type already chosen — the type is picked before the
       // agent now, so an out-of-category auto-link would drop in an agent the filtered list does
@@ -871,12 +938,40 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const overMax = !isSettlement && maxWithdrawable != null && Number(parseIndianAmount(amount)) > maxWithdrawable + 0.01;
   const mdLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' };
   const mdVal: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' };
+
+  // Auto-fetch the member's registered bank details for a Bank Transfer withdrawal — the payout goes
+  // to the member's own account, so a registered one on file fills the Payout Account fields. ONLY
+  // the Bank Transfer category (BANK/IMPS/NEFT/RTGS/UPI); Cash/Crypto pay out with no account, and a
+  // Settlement has no member. Fields stay editable, so the operator can override. Runs when the
+  // accounts load or the Transaction Type changes.
+  useEffect(() => {
+    if (isSettlement || categoryForMethod(txnMethod) !== 'BANK_TRANSFER') {
+      setPayoutHolder(''); setPayoutNumber(''); setPayoutIfsc('');
+      setPayoutBank(''); setPayoutBranch(''); setPayoutUpi(''); setPayoutAutoFilled(false);
+      return;
+    }
+    const acct = pickMemberAccount(savedAccounts, txnMethod);
+    if (!acct) { setPayoutAutoFilled(false); return; }
+    if (txnMethod === 'UPI') {
+      setPayoutUpi(acct.upiId || '');
+    } else {
+      setPayoutHolder(acct.accountHolder || '');
+      setPayoutNumber(acct.accountNumber || '');
+      setPayoutIfsc(acct.ifsc || '');
+      setPayoutBank(acct.bankName || '');
+      setPayoutBranch(acct.branch || '');
+    }
+    setPayoutAutoFilled(true);
+  }, [savedAccounts, txnMethod, isSettlement]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const reset = () => {
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
     setNotes(''); setInstructions(''); setApproverId('');
     setTxnMethod(''); setMemberBalance(null);
     setTokenDetails(''); setNoteNumber('');
+    setSavedAccounts([]); setPayoutHolder(''); setPayoutNumber(''); setPayoutIfsc('');
+    setPayoutBank(''); setPayoutBranch(''); setPayoutUpi(''); setPayoutAutoFilled(false); payoutIfscFill.reset();
   };
 
   const submit = async () => {
@@ -916,6 +1011,17 @@ export const AgentWithdrawalRequestPage: React.FC<{
       approverUserId: Number(approverId),
       txnMethod,
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
+      // Payout Account — only the Bank Transfer category names an account (Cash/Crypto do not). The
+      // typed fields are always sent (never a saved-account id), so the backend de-dupes an unchanged
+      // account against the register and saves an edited one for re-use.
+      ...(categoryForMethod(txnMethod) === 'BANK_TRANSFER' ? {
+        payoutAccountHolder: payoutHolder.trim() || undefined,
+        payoutAccountNumber: payoutNumber.trim() || undefined,
+        payoutIfsc: payoutIfsc.trim() || undefined,
+        payoutBankName: payoutBank.trim() || undefined,
+        payoutBranch: payoutBranch.trim() || undefined,
+        payoutUpiId: payoutUpi.trim() || undefined,
+      } : {}),
     };
     try {
       const row = await (isSettlement ? agentTxnsAPI.createSettlement(body) : agentTxnsAPI.createWithdrawal(body));
@@ -1010,6 +1116,33 @@ export const AgentWithdrawalRequestPage: React.FC<{
             {overMax && <p style={{ margin: '10px 0 0', fontSize: 12, color: T.danger, fontWeight: 600 }}>
               Requested amount exceeds the member's maximum withdrawable balance after commission.
             </p>}
+          </div>
+        )}
+
+        {/* Payout Account — where a Bank Transfer withdrawal is SENT. It is the member's own
+            registered account, auto-fetched from the isolated agent register when on file. Only the
+            Bank Transfer category (BANK/IMPS/NEFT/RTGS/UPI); Cash/Crypto pay out with no account. */}
+        {!isSettlement && categoryForMethod(txnMethod) === 'BANK_TRANSFER' && (
+          <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+              <p style={{ margin: 0, fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Payout Account Details</p>
+              {payoutAutoFilled && <span style={{ fontSize: 11, fontWeight: 700, color: T.success, background: T.successBg, padding: '2px 10px', borderRadius: 20 }}>✓ Auto-fetched from member's registered account</span>}
+            </div>
+            {memberBalance != null && !looking && !payoutAutoFilled && savedAccounts.length === 0 && (
+              <p style={{ margin: '0 0 10px', fontSize: 11.5, color: T.textMuted }}>No bank details are configured for this member — enter them manually.</p>
+            )}
+            {txnMethod === 'UPI' ? (
+              <Input label="Payout UPI ID" value={payoutUpi} onChange={e => { setPayoutUpi(e.target.value); setPayoutAutoFilled(false); }}
+                placeholder="e.g. satish@ybl" hint="The UPI the withdrawal is paid to" style={{ marginBottom: 0 }} />
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
+                <Input label="Account Holder" value={payoutHolder} onChange={e => { setPayoutHolder(e.target.value); setPayoutAutoFilled(false); }} />
+                <Input label="Account Number" value={payoutNumber} onChange={e => { setPayoutNumber(e.target.value); setPayoutAutoFilled(false); }} />
+                <IfscField label="IFSC Code" value={payoutIfsc} ifsc={payoutIfscFill} />
+                <Input label="Bank Name" value={payoutBank} onChange={e => { setPayoutBank(e.target.value); setPayoutAutoFilled(false); }} readOnly={payoutIfscFill.locked} />
+                <Input label="Branch" value={payoutBranch} onChange={e => { setPayoutBranch(e.target.value); setPayoutAutoFilled(false); }} readOnly={payoutIfscFill.locked} />
+              </div>
+            )}
           </div>
         )}
 
