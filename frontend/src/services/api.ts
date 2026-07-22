@@ -122,6 +122,65 @@ const cleanTxParams = (p?: TxQuery): Record<string, string> | undefined => {
   return Object.keys(out).length ? out : undefined;
 };
 
+// Generic query-param cleaner (same blank-stripping as cleanTxParams) for the
+// server-side paginated endpoints, whose params are a superset of TxQuery.
+const cleanPagedParams = <T extends object>(p?: T): Record<string, string> | undefined => {
+  if (!p) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(p)) {
+    if (v != null && String(v).trim() !== '') out[k] = String(v);
+  }
+  return Object.keys(out).length ? out : undefined;
+};
+
+// The server-side paginated envelope every /paged endpoint returns. Search / filter /
+// sort / count all execute in the database; the browser only ever holds one page.
+export interface Paged<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
+// Superset of TxQuery accepted by the /paged endpoints (all filtering is server-side).
+export interface TxPagedQuery extends TxQuery {
+  status?: string;                 // one or comma-separated statuses (backend matches enum)
+  type?: string;                   // DEPOSIT / WITHDRAWAL / SETTLEMENT group, or exact type, or ALL
+  amount_min?: number;
+  amount_max?: number;
+  page?: number;                   // 1-based
+  page_size?: number;              // 10 | 25 | 50 | 100 (backend clamps to these)
+}
+
+// One Membership-ID group in the Merchant management pages (all aggregates DB-computed).
+export interface MemberGroup {
+  membershipId: string;
+  memberName?: string | null;
+  depositRequests: number;
+  withdrawalRequests: number;
+  settlementRequests: number;
+  requests: number;                // count within the active type filter (drives "Total {noun} Requests")
+  totalAmount: number;             // sum within the active type filter
+  latestStatus?: string | null;
+  latestType?: string | null;
+  latestDate?: string | null;
+  latestTime?: string | null;
+  latestCreatedAt?: string | null;
+}
+
+export interface MemberGroupQuery {
+  type?: string;                   // DEPOSIT / WITHDRAWAL / SETTLEMENT
+  member?: string;                 // member group key (drill-down only)
+  search?: string;
+  date_from?: string;
+  date_to?: string;
+  datetime_from?: string;
+  datetime_to?: string;
+  page?: number;
+  page_size?: number;
+}
+
 export const transactionAPI = {
   getAll: async (params?: TxQuery) => {
     const res = await api.get<Transaction[]>('/api/transactions', { params: cleanTxParams(params) });
@@ -135,6 +194,30 @@ export const transactionAPI = {
   // Returns every transaction (all types) newest-first; the backend enforces access.
   getAllOverseer: async (params?: TxQuery) => {
     const res = await api.get<Transaction[]>('/api/transactions/all', { params: cleanTxParams(params) });
+    return res.data;
+  },
+  // ── Server-side paginated feeds (additive; the bare-array getters above stay until every
+  // caller is migrated). Return {items,total,page,pageSize,totalPages}; default 10 per page.
+  getMinePaged: async (params?: TxPagedQuery) => {
+    const res = await api.get<Paged<Transaction>>('/api/transactions/mine/paged', { params: cleanPagedParams(params) });
+    return res.data;
+  },
+  getAllPaged: async (params?: TxPagedQuery) => {
+    const res = await api.get<Paged<Transaction>>('/api/transactions/paged', { params: cleanPagedParams(params) });
+    return res.data;
+  },
+  getAllOverseerPaged: async (params?: TxPagedQuery) => {
+    const res = await api.get<Paged<Transaction>>('/api/transactions/all/paged', { params: cleanPagedParams(params) });
+    return res.data;
+  },
+  // Merchant management pages: paginated Membership-ID groups (aggregates computed in the DB).
+  memberGroups: async (params?: MemberGroupQuery) => {
+    const res = await api.get<Paged<MemberGroup>>('/api/transactions/mine/members', { params: cleanPagedParams(params) });
+    return res.data;
+  },
+  // Drill-down: one member group's own transactions, server-paginated.
+  memberTransactions: async (params?: MemberGroupQuery) => {
+    const res = await api.get<Paged<Transaction>>('/api/transactions/mine/member-transactions', { params: cleanPagedParams(params) });
     return res.data;
   },
   // Full single transaction incl. proof/receipt images (lists omit those for speed).

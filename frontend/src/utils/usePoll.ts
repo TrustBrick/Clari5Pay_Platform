@@ -1,4 +1,18 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+
+/**
+ * Debounce a rapidly-changing value (e.g. a search box) so dependent effects — a
+ * server-side search request — fire only after the user pauses typing, instead of on
+ * every keystroke. Default 400ms sits in the spec's 300–500ms window.
+ */
+export const useDebouncedValue = <T,>(value: T, ms = 400): T => {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(id);
+  }, [value, ms]);
+  return debounced;
+};
 
 /**
  * Refresh cadence for the live-presence views (Active Users page, the Super Admin dashboard
