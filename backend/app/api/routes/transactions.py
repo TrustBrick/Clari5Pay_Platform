@@ -1374,6 +1374,43 @@ async def global_summary(
     return await cached_json("c:txn:global-summary", 5, lambda: compute_global_summary(db))
 
 
+async def _compute_global_status_counts(db: AsyncSession) -> dict:
+    """Platform-wide per-type × status transaction COUNTS, straight from a single GROUP BY.
+
+    The global counterpart of the per-merchant matrix in /summary. The Admin and Super Admin
+    dashboards used to derive these numbers by pulling every transaction and running .filter()
+    .length over the array in the browser — correct, but it moved the entire table across the
+    wire to render a handful of tiles and three bar charts."""
+    rows = (await db.execute(
+        select(Transaction.type, Transaction.status, func.count())
+        .group_by(Transaction.type, Transaction.status)
+    )).all()
+    status_counts: dict[str, dict[str, int]] = {"deposit": {}, "withdrawal": {}, "settlement": {}}
+    totals = {"deposit": 0, "withdrawal": 0, "settlement": 0}
+    grand = 0
+    for ttype, status, cnt in rows:
+        group = _TYPE_GROUP.get(ttype)
+        n = int(cnt)
+        grand += n
+        if not group:
+            continue
+        skey = status.value if hasattr(status, "value") else str(status)
+        status_counts[group][skey] = status_counts[group].get(skey, 0) + n
+        totals[group] += n
+    return {"statusCounts": status_counts, "typeTotals": totals, "total": grand}
+
+
+@router.get("/status-counts")
+async def global_status_counts(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Lightweight dashboard counters — one aggregate query, a few hundred bytes of JSON.
+    Cached ~5s like /global-summary: identical for every admin and read-only."""
+    return await cached_json("c:txn:global-status-counts", 5,
+                             lambda: _compute_global_status_counts(db))
+
+
 @router.get("/merchant-balances")
 async def merchant_balances(
     db: AsyncSession = Depends(get_db),

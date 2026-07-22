@@ -69,16 +69,24 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
   setTimeout(() => { try { w.print(); } catch { /* user can print manually */ } }, 500);
 }
 
-export const TxExportButton: React.FC<{ txns: Transaction[]; title?: string }> = ({ txns, title = 'Transaction Report' }) => {
+/**
+ * `txns` is what the caller already has in memory. Callers whose table is server-paginated pass
+ * `fetchTxns` as well: it resolves the ENTIRE filtered result set, so an export is never silently
+ * reduced to the visible page. Without it, behaviour is exactly as before.
+ */
+export const TxExportButton: React.FC<{
+  txns: Transaction[]; title?: string; fetchTxns?: () => Promise<Transaction[]>;
+}> = ({ txns, title = 'Transaction Report', fetchTxns }) => {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<'last' | 'range'>('last');
   const [lastN, setLastN] = useState('50');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [busy, setBusy] = useState(false);
 
   // Apply the chosen Last-N / date-range filter, returning the rows + a subtitle/scope label.
-  const selected = (): { rows: Transaction[]; subtitle: string; scope: string } => {
-    let rows = [...txns];   // already newest-first from the API
+  const selected = async (): Promise<{ rows: Transaction[]; subtitle: string; scope: string }> => {
+    let rows = fetchTxns ? await fetchTxns() : [...txns];   // already newest-first from the API
     if (mode === 'range') {
       rows = rows.filter(t => (!from || (t.date || '') >= from) && (!to || (t.date || '') <= to));
       return { rows, subtitle: `Date range: ${from || 'beginning'} → ${to || 'today'}`, scope: `${from || 'all'}_${to || 'today'}` };
@@ -88,11 +96,20 @@ export const TxExportButton: React.FC<{ txns: Transaction[]; title?: string }> =
     return { rows, subtitle: `Last ${n} transactions`, scope: `last-${n}` };
   };
 
-  const runPdf = () => { const { rows, subtitle } = selected(); exportTransactionsPdf(rows, title, subtitle); setOpen(false); };
-  const runExcel = () => {
-    const { rows, scope } = selected();
-    exportTransactionsXlsx(rows, `${title.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${scope}.xlsx`, title.slice(0, 31));
-    setOpen(false);
+  const runPdf = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { const { rows, subtitle } = await selected(); exportTransactionsPdf(rows, title, subtitle); setOpen(false); }
+    finally { setBusy(false); }
+  };
+  const runExcel = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { rows, scope } = await selected();
+      exportTransactionsXlsx(rows, `${title.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${scope}.xlsx`, title.slice(0, 31));
+      setOpen(false);
+    } finally { setBusy(false); }
   };
 
   const inp = { padding: '8px 12px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 13, outline: 'none', fontFamily: 'inherit', width: '100%', boxSizing: 'border-box' as const };
@@ -122,8 +139,8 @@ export const TxExportButton: React.FC<{ txns: Transaction[]; title?: string }> =
               </div>
             )}
             <div style={{ display: 'flex', gap: 8 }}>
-              <Btn full variant="secondary" onClick={runPdf}><Icon name="pdf" size={15} /> Download PDF</Btn>
-              <Btn full onClick={runExcel}><Icon name="excel" size={15} /> Download Excel</Btn>
+              <Btn full variant="secondary" onClick={runPdf} disabled={busy}><Icon name="pdf" size={15} /> {busy ? 'Preparing…' : 'Download PDF'}</Btn>
+              <Btn full onClick={runExcel} disabled={busy}><Icon name="excel" size={15} /> {busy ? 'Preparing…' : 'Download Excel'}</Btn>
             </div>
           </div>
         </>

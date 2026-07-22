@@ -305,6 +305,21 @@ export interface GlobalSummary {
   availableBalance: number;
 }
 
+/**
+ * Platform-wide transaction counters, aggregated in Postgres (GET /api/transactions/status-counts).
+ * `statusCounts[group][STATUS]` is the row count for that type-group and status; a status absent
+ * from the map simply has no rows, so read it with `?? 0`.
+ */
+export interface GlobalStatusCounts {
+  statusCounts: {
+    deposit: Record<string, number>;
+    withdrawal: Record<string, number>;
+    settlement: Record<string, number>;
+  };
+  typeTotals: { deposit: number; withdrawal: number; settlement: number };
+  total: number;
+}
+
 export interface AdminUpi {
   id: number;
   label: string;
