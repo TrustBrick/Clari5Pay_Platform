@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -1706,6 +1706,81 @@ async def list_txns(status: str | None = None, txn_type: str | None = None, sear
         d["netAmount"] = round(amt - commission, 2) if r.txn_type == "DEPOSIT" else round(amt + commission, 2)
         out.append(d)
     return out
+
+
+def _ist_day_bounds(day_str: str):
+    """IST calendar day (YYYY-MM-DD) → [start, end) in stored naive-UTC created_at space."""
+    y, m, d = (int(p) for p in day_str.split("-"))
+    start = datetime(y, m, d) - timedelta(hours=5, minutes=30)
+    return start, start + timedelta(days=1)
+
+
+@router.get("/paged")
+async def list_txns_paged(status: str | None = None, txn_type: str | None = None,
+                          search: str | None = None, date: str | None = None,
+                          date_from: str | None = None, date_to: str | None = None,
+                          page: int = 1, page_size: int = 10,
+                          db: AsyncSession = Depends(get_db),
+                          user: User = Depends(get_current_agent_operator)):
+    """Server-side paginated + filtered Agent Portal feed (additive sibling of the bare-array
+    list above; that endpoint stays until every caller is migrated). Status/type/search/date
+    filtering and the row count all run in Postgres — never over a full in-memory table load.
+    Returns {items, total, page, pageSize, totalPages}; page sizes restricted to 10/25/50/100."""
+    business = _business(user)
+    stmt = select(AgentTransaction).where(AgentTransaction.merchant_business == business)
+    if status:
+        wanted = [s.strip().upper() for s in status.split(",") if s.strip()]
+        if wanted:
+            stmt = stmt.where(AgentTransaction.status.in_(wanted))
+    if txn_type:
+        stmt = stmt.where(AgentTransaction.txn_type == txn_type.strip().upper())
+    if search and search.strip():
+        like = f"%{search.strip().lower()}%"
+        stmt = stmt.where(or_(
+            func.lower(AgentTransaction.reference_number).like(like),
+            func.lower(AgentTransaction.membership_id).like(like),
+            func.lower(AgentTransaction.agent_code).like(like),
+            func.lower(AgentTransaction.membership_name).like(like),
+        ))
+    if date:
+        s, e = _ist_day_bounds(date)
+        stmt = stmt.where(AgentTransaction.created_at >= s, AgentTransaction.created_at < e)
+    if date_from:
+        s, _e = _ist_day_bounds(date_from)
+        stmt = stmt.where(AgentTransaction.created_at >= s)
+    if date_to:
+        _s, e = _ist_day_bounds(date_to)
+        stmt = stmt.where(AgentTransaction.created_at < e)
+
+    page_size = page_size if page_size in (10, 25, 50, 100) else 10
+    page = page if page and page >= 1 else 1
+    total = int((await db.execute(
+        select(func.count()).select_from(stmt.subquery())
+    )).scalar() or 0)
+    rows = (await db.execute(
+        stmt.order_by(AgentTransaction.id.desc()).offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
+
+    # Per-leg commission enrichment — batched agent fetch (no N+1), identical maths to the list above.
+    agents = {a.id: a for a in (await db.execute(select(AgentMaster).where(
+        AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()} if rows else {}
+    items = []
+    for r in rows:
+        rate = _leg_rate(agents.get(r.agent_master_id), r.txn_type)
+        amt = r.amount or 0.0
+        commission = round(amt * rate, 2)
+        d = _row(r)
+        d["commissionPct"] = round(rate * 100, 4)
+        d["commissionAmount"] = commission
+        d["netAmount"] = round(amt - commission, 2) if r.txn_type == "DEPOSIT" else round(amt + commission, 2)
+        items.append(d)
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "totalPages": (total + page_size - 1) // page_size if page_size else 0,
+    }
 
 
 @router.get("/{txn_id}/audit")
