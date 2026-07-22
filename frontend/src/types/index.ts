@@ -320,6 +320,17 @@ export interface GlobalStatusCounts {
   total: number;
 }
 
+/**
+ * Date-scoped per-business breakdown from GET /api/transactions/merchant-analytics.
+ * Counts include every status in the window; amounts are COMPLETED/DEPOSITED only, because
+ * fees realise on completion — the same rule the page applied client-side before.
+ */
+export interface MerchantAnalyticsRow {
+  depositCount: number; depositAmount: number; depositTotalAmount: number;
+  withdrawalCount: number; withdrawalAmount: number; withdrawalTotalAmount: number;
+  settlementCount: number; settlementAmount: number; settlementTotalAmount: number;
+}
+
 export interface AdminUpi {
   id: number;
   label: string;
