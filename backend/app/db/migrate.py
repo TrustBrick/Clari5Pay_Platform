@@ -151,13 +151,8 @@ _NEW_INDEXES = [
     ("ix_txn_member_id",             "transactions",     "(member_id)"),
     ("ix_txn_assigned_agent_id",     "transactions",     "(assigned_agent_id)"),
     ("ix_txn_approver_user_id",      "transactions",     "(approver_user_id)"),
-    # agent_transaction — the isolated Agent Portal ledger (always business-scoped).
-    ("ix_agenttxn_business_id",      "agent_transaction", "(merchant_business, id DESC)"),
-    ("ix_agenttxn_created_at",       "agent_transaction", "(created_at DESC)"),
-    ("ix_agenttxn_status",           "agent_transaction", "(status)"),
-    ("ix_agenttxn_type",             "agent_transaction", "(txn_type)"),
-    ("ix_agenttxn_membership_id",    "agent_transaction", "(membership_id)"),
-    ("ix_agenttxn_agent_master_id",  "agent_transaction", "(agent_master_id)"),
+    # NOTE: the agent_transaction indexes that exist on the demo branch are deliberately omitted —
+    # that table belongs to the isolated Agent Transaction subsystem, which is not deployed here.
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
