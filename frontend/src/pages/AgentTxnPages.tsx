@@ -102,12 +102,13 @@ const isTokenMethod = (m?: string | null) => m === 'CASH';
 const isWalletMethod = (m?: string | null) => m === 'CRYPTO';
 const isSpecialMethod = (m?: string | null) => isTokenMethod(m) || isWalletMethod(m);
 /** Whether a withdrawal already holds the payment details its method needs — mirrors the server's
- *  `_missing_payment_detail`, and gates the Complete Withdrawal action. */
+ *  `_missing_payment_detail`, and gates the Complete Withdrawal action. The Unique Note Number is
+ *  part of that set for CASH only: a bank or crypto withdrawal never captures one. */
 const hasPaymentDetails = (r: AgentTxnRow) =>
-  !!(r.noteNumber || '').trim() && (
-    isTokenMethod(r.txnMethod) ? !!(r.tokenDetails || '').trim()
-      : isWalletMethod(r.txnMethod) ? !!(r.walletAddress || '').trim()
-      : !!r.slipImage && !!(r.depositUtr || '').trim());
+  isTokenMethod(r.txnMethod)
+    ? !!(r.tokenDetails || '').trim() && !!(r.noteNumber || '').trim()
+    : isWalletMethod(r.txnMethod) ? !!(r.walletAddress || '').trim()
+      : !!r.slipImage && !!(r.depositUtr || '').trim();
 
 // A transaction can only be routed through an agent of the matching category: cash moves through a
 // Cash agent, a bank transfer through a Bank Transfer agent, crypto through a Crypto agent. The
@@ -1001,6 +1002,12 @@ export const AgentWithdrawalRequestPage: React.FC<{
   // Saved destinations for the chosen Bank Transfer method, as radio options (mirrors the merchant
   // Withdrawal Destination list): UPI method → the member's UPI ids, bank methods → their accounts.
   const payoutIsBankCat = !isSettlement && categoryForMethod(txnMethod) === 'BANK_TRANSFER';
+  // The Withdrawal Method decides which member-supplied details the form asks for, so that each
+  // method shows only its own: cash is collected against a token and a note number, crypto pays out
+  // to a wallet address, and a bank transfer needs neither — it names a payout account instead
+  // (the Withdrawal Destination block below, already gated on payoutIsBankCat).
+  const wantsToken = !isSettlement && isTokenMethod(txnMethod);
+  const wantsWallet = !isSettlement && isWalletMethod(txnMethod);
   const payoutDests = !payoutIsBankCat ? [] : (txnMethod === 'UPI'
     ? savedAccounts.filter(a => a.upiId).map(a => ({ id: `acct-${a.id}`, kind: 'UPI' as const, label: `UPI · ${a.upiId}${a.isDefault ? '  ★ default' : ''}`, row: a }))
     : savedAccounts.filter(a => a.accountNumber).map(a => ({ id: `acct-${a.id}`, kind: 'BANK' as const, label: `Bank · ${a.bankName || 'Account'} ····${(a.accountNumber || '').slice(-4)}`, row: a })));
@@ -1013,7 +1020,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
     setNotes(''); setInstructions(''); setApproverId('');
     setTxnMethod(''); setMemberBalance(null); setAgentBal(null);
-    setTokenDetails(''); setNoteNumber(''); setMemberReference('');
+    setTokenDetails(''); setNoteNumber(''); setMemberReference(''); setWalletAddress('');
     setSavedAccounts([]); setPayoutDestId(''); clearPayoutFields(); payoutIfscFill.reset();
   };
 
@@ -1026,8 +1033,12 @@ export const AgentWithdrawalRequestPage: React.FC<{
     if (!isSettlement && maxWithdrawable != null && amt > maxWithdrawable + 0.01) {
       showToast('Requested amount exceeds the maximum withdrawable from this agent after the withdrawal fee.', 'error'); return;
     }
-    // The member supplies both during the withdrawal, so both are mandatory on the request.
-    if (!isSettlement && !noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+    // Only the fields the chosen Withdrawal Method actually shows are validated — a hidden field is
+    // never required. Mirrors _validate_common on the server.
+    if (wantsToken && !tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
+    if (wantsToken && !noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+    if (wantsWallet && !walletAddress.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
+    // The member quotes a Reference Number on every withdrawal, whatever the method.
     if (!isSettlement && !memberReference.trim()) { showToast('Enter the Reference Number.', 'error'); return; }
     if (notes.length > 100) { showToast(`${isSettlement ? 'Remarks' : 'Notes'} must be 100 characters or fewer.`, 'error'); return; }
     if (!isSettlement && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
@@ -1067,8 +1078,10 @@ export const AgentWithdrawalRequestPage: React.FC<{
       instructions: instructions || undefined, sentForApproval: true,
       approverUserId: Number(approverId),
       txnMethod,
-      // Provided by the member during the withdrawal — captured before the request is created.
-      noteNumber: noteNumber.trim(),
+      // Provided by the member during the withdrawal — captured before the request is created, and
+      // only the ones this method asks for. A hidden field is never sent.
+      ...(wantsToken ? { tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim() } : {}),
+      ...(wantsWallet ? { walletAddress: walletAddress.trim() } : {}),
       memberReference: memberReference.trim(),
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
       // Payout Account — only the Bank Transfer category names an account (Cash/Crypto do not). The
@@ -1134,7 +1147,13 @@ export const AgentWithdrawalRequestPage: React.FC<{
           {/* Transaction Type is chosen first and narrows the agent list to that category, so the
               selected agent always matches it. A settlement offers only Cash / Bank Transfer /
               Crypto; deposits and withdrawals keep the full method list. */}
-          <Sel label="Transaction Type" value={txnMethod} onChange={e => { setTxnMethod(e.target.value); setAgentId(''); setAutoAgent(null); }} required
+          <Sel label="Transaction Type" value={txnMethod} onChange={e => {
+            setTxnMethod(e.target.value); setAgentId(''); setAutoAgent(null);
+            // The method-specific fields are hidden when the method changes, so drop what was typed
+            // into them — otherwise a token entered for Cash would still be submitted after
+            // switching to Crypto, on a field the operator can no longer see.
+            setTokenDetails(''); setNoteNumber(''); setWalletAddress('');
+          }} required
             options={[{ value: '', label: '— Select —' },
               ...(isSettlement ? AGENT_SETTLEMENT_METHODS : (fd.txnMethods || [])).map(v => ({ value: v, label: methodLabel(v) }))]} />
           <Sel label={isSettlement ? 'Assigned Agent' : 'Select Agent ID'} value={agentId} onChange={e => setAgentId(e.target.value)} required
@@ -1156,10 +1175,17 @@ export const AgentWithdrawalRequestPage: React.FC<{
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />}
           <Input label={isSettlement ? 'Settlement Amount' : 'Transaction Amount'} type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal"
             hint={!isSettlement && maxWithdrawable != null ? `Maximum Withdrawable: ₹${fmt(maxWithdrawable)}` : undefined} />
-          {/* The member hands both of these over during the withdrawal, so they are captured on the
-              request itself and carried through the whole withdrawal lifecycle. */}
-          {!isSettlement && <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(normalizeNoteNumber(e.target.value))} required
+          {/* Method-specific member details. The member hands these over during the withdrawal, so
+              they are captured on the request itself and carried through the whole lifecycle — but
+              only the ones their Withdrawal Method actually has. Cash is collected against a token
+              and a note number; crypto pays out to a wallet address; a bank transfer has neither.
+              The Reference Number is not method-specific — the member quotes one every time. */}
+          {wantsToken && <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)} required
+            placeholder="As provided by the member" hint="The token the member presents at cash collection" />}
+          {wantsToken && <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(normalizeNoteNumber(e.target.value))} required
             placeholder="As provided by the member" hint="Uppercase letters and numbers only; must be unique" />}
+          {wantsWallet && <Input label="Crypto Wallet Address" value={walletAddress} onChange={e => setWalletAddress(e.target.value)} required
+            placeholder="Destination wallet address" hint="Where the member is paid out" />}
           {!isSettlement && <Input label="Reference Number" value={memberReference} onChange={e => setMemberReference(e.target.value)} required
             placeholder="As provided by the member" hint="The member's own withdrawal reference" />}
         </div>
@@ -3233,8 +3259,10 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
     catch { showToast('Could not read the file.', 'error'); }
   };
 
-  // The Unique Note Number is mandatory for every method, on top of the method-specific fields.
-  const ready = !!note.trim() && (isCash ? !!token.trim() : isCryptoM ? !!wallet.trim() : (!!slip && !!utr.trim()));
+  // The Unique Note Number belongs to CASH, alongside the Token Number — a bank or crypto payout
+  // has none, so it is neither shown nor required for those.
+  const ready = isCash ? (!!note.trim() && !!token.trim())
+    : isCryptoM ? !!wallet.trim() : (!!slip && !!utr.trim());
   // Saving the proof is a DATA UPDATE — it never moves the transaction's status. Completing it is
   // the separate, explicit action below, so an upload can no longer complete a withdrawal by itself.
   const submit = async () => {
@@ -3242,8 +3270,7 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
     setBusy(true);
     try {
       const body = {
-        noteNumber: note.trim(),
-        ...(isCash ? { tokenDetails: token.trim() }
+        ...(isCash ? { noteNumber: note.trim(), tokenDetails: token.trim() }
           : isCryptoM ? { walletAddress: wallet.trim(), ...(txHash.trim() ? { txHash: txHash.trim() } : {}) }
           : { slipImage: slip, utr: utr.trim() }),
       };
@@ -3261,8 +3288,7 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
     setBusy(true);
     try {
       await agentTxnsAPI.payout(row.id, {
-        noteNumber: note.trim(),
-        ...(isCash ? { tokenDetails: token.trim() }
+        ...(isCash ? { noteNumber: note.trim(), tokenDetails: token.trim() }
           : isCryptoM ? { walletAddress: wallet.trim(), ...(txHash.trim() ? { txHash: txHash.trim() } : {}) }
           : { slipImage: slip, utr: utr.trim() }),
       });
@@ -3284,12 +3310,13 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
         <DField k="Membership" v={row.membershipId} />
         {row.memberReference ? <DField k="Reference Number" v={row.memberReference} /> : null}
       </div>
-      {/* Unique Note Number — supplied by the member and captured on the request, so it is shown
-          read-only here. A legacy request without one can still have it entered. */}
-      <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required
+      {/* Unique Note Number — a CASH detail, supplied by the member and captured on the request, so
+          it is shown read-only here. A legacy request without one can still have it entered. Bank
+          and crypto withdrawals never carry one, so the field is not shown for them at all. */}
+      {isCash && <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required
         readOnly={!!noteFromRequest}
         placeholder="As provided by the member"
-        hint={noteFromRequest ? 'Captured on the withdrawal request' : 'Uppercase letters and numbers only; must be unique'} />
+        hint={noteFromRequest ? 'Captured on the withdrawal request' : 'Uppercase letters and numbers only; must be unique'} />}
       {isCash && <Input label="Token Number" value={token} onChange={e => setToken(e.target.value)} required placeholder="Token number handed to the member" />}
       {isCryptoM && (<>
         <Input label="Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="The wallet paid out to" />

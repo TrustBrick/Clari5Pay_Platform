@@ -1003,26 +1003,32 @@ def _validate_common(body: _Base, txn_type: str) -> None:
     if body.txnMethod and body.txnMethod.upper() not in TXN_METHODS:
         raise HTTPException(status_code=400, detail="Invalid Transaction Type.")
     method = (body.txnMethod or "").upper()
-    # No method-specific payment detail (Token / Note / Wallet / slip) is captured at CREATE for
-    # ANY transaction type — the create step only records the request. Which detail is collected,
-    # and when, depends on the method but always happens LATER:
+    # What a CREATE captures depends on the transaction type. A DEPOSIT or SETTLEMENT records only
+    # the request; every method-specific payment detail is collected LATER:
     #   • DEPOSIT     → CASH: Token + Note, CRYPTO: Wallet, BANK/UPI: an agent account — all at
     #                   the Submit Account step.
-    #   • WITHDRAWAL  → approve-first: after the chosen approver approves, the creating operator
-    #                   submits the method-specific Payment Details (CASH → Token, CRYPTO → Wallet,
-    #                   BANK → payment slip + reference, UPI → UTR + screenshot).
     #   • SETTLEMENT  → an offline merchant<->agent payment; proof is uploaded in its own chain.
-    # Requiring a Token / Note / Wallet here was a leftover from the pre-approval design and wrongly
-    # rejected a Bank Transfer (or UPI/Cash) withdrawal at creation for missing "Token Details".
-    # Tokens belong to CASH and a wallet to CRYPTO — never to a bank transfer — and none of them
-    # exist yet at creation, so the create step enforces none of them.
-    #
-    # The two EXCEPTIONS are the Unique Note Number and the Reference Number on a WITHDRAWAL: the
-    # member hands both over during the withdrawal, so they exist before the request is raised and
-    # are captured here rather than at the post-approval payment step.
+    # A WITHDRAWAL is the exception, and only for the details the MEMBER hands over in person, which
+    # therefore already exist when the request is raised. Which ones those are depends on the
+    # Withdrawal Method, so each method validates only its own fields and never another's:
+    #   • CASH   → Token Details + Unique Note Number (given by the member at cash collection)
+    #   • CRYPTO → Crypto Wallet Address (the destination the member nominates)
+    #   • BANK/UPI/IMPS/NEFT/RTGS → neither; the payout bank account is validated in
+    #     create_withdrawal, and the slip/UTR still belong to the post-approval payment step.
+    # A token belongs to CASH and a wallet to CRYPTO — never to a bank transfer — so demanding one
+    # across all methods is what wrongly rejected a Bank Transfer withdrawal at creation. Whatever
+    # is required here must stay in step with payout_withdrawal and complete_withdrawal, or a
+    # method can be created and then dead-end after approval.
+    # The Reference Number is not method-specific: the member supplies it for every withdrawal.
     if txn_type == "WITHDRAWAL":
-        if not (body.noteNumber or "").strip():
-            raise HTTPException(status_code=400, detail="Unique Note Number is required.")
+        if method in TOKEN_METHODS:
+            if not (body.tokenDetails or "").strip():
+                raise HTTPException(status_code=400, detail="Token Details are required for a cash withdrawal.")
+            if not (body.noteNumber or "").strip():
+                raise HTTPException(status_code=400, detail="Unique Note Number is required for a cash withdrawal.")
+        elif method in WALLET_METHODS:
+            if not (body.walletAddress or "").strip():
+                raise HTTPException(status_code=400, detail="Crypto Wallet Address is required for a crypto withdrawal.")
         if not (body.memberReference or "").strip():
             raise HTTPException(status_code=400, detail="Reference Number is required.")
     if txn_type == "SETTLEMENT" and method and method not in SETTLEMENT_METHODS:
@@ -1717,8 +1723,11 @@ async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSes
     # Unique Note Number — captured on the Create Agent Withdrawal Request form now (the member
     # supplies it during the withdrawal). It stays accepted here so a legacy request raised before
     # that change, or a correction, can still set it; the uniqueness rule is unchanged.
+    # It belongs to CASH only, alongside the Token Details: a bank transfer or a crypto payout has
+    # no note to quote, so demanding one here would block the very methods whose form no longer
+    # offers the field.
     note = (body.noteNumber or "").strip()
-    if not note and not (t.note_number or "").strip():
+    if method in TOKEN_METHODS and not note and not (t.note_number or "").strip():
         raise HTTPException(status_code=400, detail="Unique Note Number is required.")
     if note and note != (t.note_number or ""):
         clash = (await db.execute(select(AgentTransaction.id).where(
@@ -1774,7 +1783,8 @@ async def complete_withdrawal(txn_id: int, db: AsyncSession = Depends(get_db),
     missing = _missing_payment_detail(t)
     if missing:
         raise HTTPException(status_code=400, detail=f"Submit the payment details first — {missing}")
-    if not (t.note_number or "").strip():
+    # Cash only — a bank or crypto withdrawal never carries a note number (see payout_withdrawal).
+    if str(t.txn_method or "").upper() in TOKEN_METHODS and not (t.note_number or "").strip():
         raise HTTPException(status_code=400, detail="Submit the payment details first — Unique Note Number is required.")
     # Balance BEFORE this leg completes (still in-flight here, so excluded), for the audit line.
     _before = (await _member_balance(db, _business(user), t.membership_id))["available"]

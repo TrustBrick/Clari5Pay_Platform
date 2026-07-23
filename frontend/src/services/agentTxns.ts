@@ -220,9 +220,9 @@ export interface AgentDepositBody {
   // Supplied by the customer/agent and typed in by the operator — mandatory on a Deposit.
   tokenDetails?: string;
   noteNumber?: string;
-  /** Member-supplied Reference Number — mandatory on a Withdrawal, alongside noteNumber. */
+  /** Member-supplied Reference Number — mandatory on a Withdrawal, whatever its method. */
   memberReference?: string;
-  walletAddress?: string;   // CRYPTO withdrawal
+  walletAddress?: string;   // CRYPTO withdrawal — mandatory, replaces token/note
   // Transaction type + Sending Account (mirrors the merchant Deposit Request).
   txnMethod?: string;
   senderUpiId?: string;
