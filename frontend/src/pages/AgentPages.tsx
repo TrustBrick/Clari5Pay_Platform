@@ -4,6 +4,7 @@ import { Card, Btn, Input, Sel, Modal, TableSkeleton, LoadingScreen, StatCard } 
 import { Icon, isIconName } from '../components/Icon';
 import { agentAPI, agentAccountAPI, agentAssignmentAPI, agentDashboardAPI, agentTransactionAPI } from '../services/api';
 import { formatDateTimeIST, COUNTRY_CODES, fileToDataUrl, fmt, downloadText } from '../utils/helpers';
+import { useDebouncedValue } from '../utils/usePoll';
 import { downloadXlsx } from '../utils/xlsx';
 import type { Col } from '../utils/xlsx';
 import type { Agent, AgentAccount, AgentAccountType, AgentAssignmentResult, AgentAuditRow, AgentCategory, AgentDashboard, AgentFinancialRow, AgentStatus, AgentTxRow, User } from '../types';
@@ -44,6 +45,8 @@ const REFERENCE_OPTIONS = ['', 'Internal Staff', 'Existing Agent', 'Other']
   .map((v) => ({ value: v, label: v || '— None —' }));
 
 const PAGE_SIZE = 10;
+// Server-paginated listings offer these sizes (matches the backend clamp and the other portals).
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const todayISO = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
 // Cross-page hand-off: "Manage Accounts" on the Agents page stashes the chosen agent id here,
@@ -1327,16 +1330,32 @@ const TxStatusPill: React.FC<{ status: string }> = ({ status }) => {
   return <span style={{ background: good ? T.successBg : bad ? T.dangerBg : T.infoBg, color: good ? T.success : bad ? T.danger : T.info, fontSize: 10.5, fontWeight: 800, padding: '2px 8px', borderRadius: 20, whiteSpace: 'nowrap' }}>{prettyStatus(status)}</span>;
 };
 
-const Pager: React.FC<{ page: number; pageCount: number; total: number; onPage: (p: number) => void }> = ({ page, pageCount, total, onPage }) => (
-  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderTop: `1px solid ${T.border}`, flexWrap: 'wrap', gap: 10 }}>
-    <span style={{ fontSize: 12.5, color: T.textMuted }}>Showing {total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}</span>
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-      <Btn variant="secondary" size="sm" disabled={page <= 1} onClick={() => onPage(Math.max(1, page - 1))}>← Prev</Btn>
-      <span style={{ fontSize: 12.5, color: T.textMuted }}>Page {page} / {pageCount}</span>
-      <Btn variant="secondary" size="sm" disabled={page >= pageCount} onClick={() => onPage(Math.min(pageCount, page + 1))}>Next →</Btn>
+// `pageSize`/`onPageSize` are supplied by the server-paginated tables (Transactions, Unassigned)
+// so the reader can pick 10/25/50/100; the client-sliced tables omit them and keep the fixed
+// PAGE_SIZE they always had. Layout is otherwise unchanged.
+const Pager: React.FC<{
+  page: number; pageCount: number; total: number; onPage: (p: number) => void;
+  pageSize?: number; onPageSize?: (n: number) => void;
+}> = ({ page, pageCount, total, onPage, pageSize, onPageSize }) => {
+  const size = pageSize ?? PAGE_SIZE;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderTop: `1px solid ${T.border}`, flexWrap: 'wrap', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {onPageSize && (
+          <Sel label="" value={String(size)} onChange={(e) => onPageSize(Number(e.target.value))}
+            style={{ marginBottom: 0, minWidth: 76 }}
+            options={PAGE_SIZE_OPTIONS.map((n) => ({ value: String(n), label: String(n) }))} />
+        )}
+        <span style={{ fontSize: 12.5, color: T.textMuted }}>Showing {total === 0 ? 0 : (page - 1) * size + 1}–{Math.min(page * size, total)} of {total}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <Btn variant="secondary" size="sm" disabled={page <= 1} onClick={() => onPage(Math.max(1, page - 1))}>← Prev</Btn>
+        <span style={{ fontSize: 12.5, color: T.textMuted }}>Page {page} / {pageCount}</span>
+        <Btn variant="secondary" size="sm" disabled={page >= pageCount} onClick={() => onPage(Math.min(pageCount, page + 1))}>Next →</Btn>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const AuditTable: React.FC<{ rows: AgentAuditRow[] }> = ({ rows }) => (
   rows.length === 0 ? <div style={{ padding: '32px', textAlign: 'center', color: T.textMuted, fontSize: 13 }}>No audit entries.</div> : (
@@ -1362,35 +1381,50 @@ export const AgentTransactionsPage: React.FC<AgentPageProps> = () => {
   const [rows, setRows] = useState<AgentTxRow[]>([]);
   const [audit, setAudit] = useState<AgentAuditRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [ready, setReady] = useState(false);   // first fetch done — see the LoadingScreen note below
   const [search, setSearch] = useState(''); const [fType, setFType] = useState(''); const [fPay, setFPay] = useState(''); const [fStatus, setFStatus] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [pageCount, setPageCount] = useState(1);
+  const [statuses, setStatuses] = useState<string[]>([]);
   const [detail, setDetail] = useState<AgentTxRow | null>(null);
   const [history, setHistory] = useState<AgentTxRow | null>(null);
   const [auditRow, setAuditRow] = useState<AgentTxRow | null>(null);
 
+  // Typing in Search hits the server, so debounce it rather than firing per keystroke.
+  const debouncedSearch = useDebouncedValue(search, 400);
+
   const load = useCallback(async () => {
     setLoading(true);
-    try { const [a, au] = await Promise.all([agentTransactionAPI.assigned(), agentTransactionAPI.audit()]); setRows(a); setAudit(au); }
-    catch { setRows([]); } finally { setLoading(false); }
-  }, []);
+    try {
+      const res = await agentTransactionAPI.assignedPaged({
+        search: debouncedSearch.trim() || undefined,
+        type: fType || undefined, status: fStatus || undefined,
+        payment_method: fPay || undefined, page, page_size: pageSize,
+      });
+      setRows(res.items); setTotal(res.total); setPageCount(Math.max(1, res.totalPages));
+    } catch { setRows([]); setTotal(0); setPageCount(1); }
+    finally { setLoading(false); setReady(true); }
+  }, [debouncedSearch, fType, fStatus, fPay, page, pageSize]);
   useEffect(() => { load(); }, [load]);
+  // The Status dropdown's options come from the database, not from the rows on screen.
+  useEffect(() => { agentTransactionAPI.statusOptions('assigned').then(setStatuses).catch(() => setStatuses([])); }, []);
+  useEffect(() => { setPage(1); }, [debouncedSearch, fType, fPay, fStatus]);
+  // One transaction's audit trail, fetched when its modal opens — the page used to preload the
+  // whole 500-row trail on mount just to filter it here.
+  useEffect(() => {
+    if (!auditRow) { setAudit([]); return; }
+    agentTransactionAPI.audit(auditRow.ref).then(setAudit).catch(() => setAudit([]));
+  }, [auditRow]);
 
-  const statuses = useMemo(() => Array.from(new Set(rows.map((r) => r.status))).sort(), [rows]);
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (q && !`${r.ref} ${r.memberId || ''} ${r.memberName || ''} ${r.agentCode || ''} ${r.agentName || ''}`.toLowerCase().includes(q)) return false;
-      if (fType && r.type !== fType) return false;
-      if (fPay && r.paymentMethod !== fPay) return false;
-      if (fStatus && r.status !== fStatus) return false;
-      return true;
-    });
-  }, [rows, search, fType, fPay, fStatus]);
-  useEffect(() => { setPage(1); }, [search, fType, fPay, fStatus]);
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // `rows` IS the server's page for the current filter set.
+  const filtered = rows;
+  const pageRows = rows;
 
-  if (loading) return <LoadingScreen label="Loading transactions…" />;
+  // Only the very first fetch takes over the screen — every later one is a filter/page change, and
+  // blanking the page would tear the search box out from under the reader mid-keystroke.
+  if (loading && !ready) return <LoadingScreen label="Loading transactions…" />;
   return (
     <div>
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 16 }}>
@@ -1401,7 +1435,7 @@ export const AgentTransactionsPage: React.FC<AgentPageProps> = () => {
         <Btn variant="secondary" size="sm" onClick={load} style={{ marginLeft: 'auto' }}><Icon name="refresh" size={13} /> Refresh</Btn>
       </div>
       <Card>
-        {filtered.length === 0 ? <div style={{ padding: '48px', textAlign: 'center', color: T.textMuted }}>No assigned transactions{rows.length ? ' match your filters' : ' yet'}.</div> : (
+        {filtered.length === 0 ? <div style={{ padding: '48px', textAlign: 'center', color: T.textMuted }}>No assigned transactions{(search || fType || fPay || fStatus) ? ' match your filters' : ' yet'}.</div> : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1200 }}>
               <thead><tr>{['Reference', 'Type', 'Membership', 'Player', 'Agent', 'Account', 'Payment', 'Amount', 'Status', 'Assigned By', 'Assigned (IST)', 'Actions'].map((h) => <th key={h} style={thc}>{h}</th>)}</tr></thead>
@@ -1430,7 +1464,8 @@ export const AgentTransactionsPage: React.FC<AgentPageProps> = () => {
             </table>
           </div>
         )}
-        {filtered.length > 0 && <Pager page={page} pageCount={pageCount} total={filtered.length} onPage={setPage} />}
+        {total > 0 && <Pager page={page} pageCount={pageCount} total={total} onPage={setPage}
+          pageSize={pageSize} onPageSize={(n) => { setPageSize(n); setPage(1); }} />}
       </Card>
 
       {detail && (
@@ -1458,7 +1493,7 @@ export const AgentTransactionsPage: React.FC<AgentPageProps> = () => {
       )}
       {auditRow && (
         <Modal title={`Audit Trail — ${auditRow.ref}`} onClose={() => setAuditRow(null)} wide>
-          <AuditTable rows={audit.filter((a) => a.reference === auditRow.ref)} />
+          <AuditTable rows={audit} />
         </Modal>
       )}
     </div>
@@ -1468,30 +1503,40 @@ export const AgentTransactionsPage: React.FC<AgentPageProps> = () => {
 export const UnassignedTransactionsPage: React.FC<AgentPageProps> = () => {
   const [rows, setRows] = useState<AgentTxRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [ready, setReady] = useState(false);   // first fetch done
   const [search, setSearch] = useState(''); const [fType, setFType] = useState(''); const [fStatus, setFStatus] = useState('');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [pageCount, setPageCount] = useState(1);
+  const [statuses, setStatuses] = useState<string[]>([]);
   const [assignRow, setAssignRow] = useState<AgentTxRow | null>(null);
   const [sel, setSel] = useState<AgentAssignSelection>(emptyAgentAssignSelection);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(''); const [banner, setBanner] = useState('');
   const flash = (m: string) => { setBanner(m); window.setTimeout(() => setBanner(''), 3500); };
 
-  const load = useCallback(async () => { setLoading(true); try { setRows(await agentTransactionAPI.unassigned()); } catch { setRows([]); } finally { setLoading(false); } }, []);
-  useEffect(() => { load(); }, [load]);
+  const debouncedSearch = useDebouncedValue(search, 400);
 
-  const statuses = useMemo(() => Array.from(new Set(rows.map((r) => r.status))).sort(), [rows]);
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (q && !`${r.ref} ${r.memberId || ''} ${r.memberName || ''}`.toLowerCase().includes(q)) return false;
-      if (fType && r.type !== fType) return false;
-      if (fStatus && r.status !== fStatus) return false;
-      return true;
-    });
-  }, [rows, search, fType, fStatus]);
-  useEffect(() => { setPage(1); }, [search, fType, fStatus]);
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await agentTransactionAPI.unassignedPaged({
+        search: debouncedSearch.trim() || undefined,
+        type: fType || undefined, status: fStatus || undefined,
+        page, page_size: pageSize,
+      });
+      setRows(res.items); setTotal(res.total); setPageCount(Math.max(1, res.totalPages));
+    } catch { setRows([]); setTotal(0); setPageCount(1); }
+    finally { setLoading(false); setReady(true); }
+  }, [debouncedSearch, fType, fStatus, page, pageSize]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { agentTransactionAPI.statusOptions('unassigned').then(setStatuses).catch(() => setStatuses([])); }, []);
+  useEffect(() => { setPage(1); }, [debouncedSearch, fType, fStatus]);
+
+  // `rows` IS the server's page for the current filter set.
+  const filtered = rows;
+  const pageRows = rows;
 
   const confirmAssign = async () => {
     if (!assignRow) return;
@@ -1499,13 +1544,16 @@ export const UnassignedTransactionsPage: React.FC<AgentPageProps> = () => {
     setSaving(true); setErr('');
     try {
       await agentAssignmentAPI.assign(assignRow.ref, { agentId: Number(sel.agentId), agentAccountId: Number(sel.accountId), paymentMethod: sel.accountType });
-      setRows((l) => l.filter((x) => x.id !== assignRow.id));
       flash(`Agent assigned to ${assignRow.ref}.`);
       setAssignRow(null);
+      // The row leaves the worklist server-side, so refresh this page rather than splicing it out
+      // locally — otherwise the total and the page count would drift.
+      await load();
     } catch (e) { setErr(errText(e)); } finally { setSaving(false); }
   };
 
-  if (loading) return <LoadingScreen label="Loading unassigned transactions…" />;
+  // First fetch only — see the note on the Transactions page.
+  if (loading && !ready) return <LoadingScreen label="Loading unassigned transactions…" />;
   return (
     <div>
       {banner && <div style={{ background: T.successBg, color: T.success, borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 600, marginBottom: 14 }}>{banner}</div>}
@@ -1522,7 +1570,7 @@ export const UnassignedTransactionsPage: React.FC<AgentPageProps> = () => {
         {filtered.length === 0 ? (
           <div style={{ padding: '48px', textAlign: 'center', color: T.textMuted }}>
             <div style={{ fontSize: 34, marginBottom: 8 }}><Icon name="verified" size={34} /></div>
-            <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: T.textMain }}>{rows.length ? 'No transactions match your filters' : 'Every transaction is assigned'}</p>
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: T.textMain }}>{(search || fType || fStatus) ? 'No transactions match your filters' : 'Every transaction is assigned'}</p>
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
@@ -1544,7 +1592,8 @@ export const UnassignedTransactionsPage: React.FC<AgentPageProps> = () => {
             </table>
           </div>
         )}
-        {filtered.length > 0 && <Pager page={page} pageCount={pageCount} total={filtered.length} onPage={setPage} />}
+        {total > 0 && <Pager page={page} pageCount={pageCount} total={total} onPage={setPage}
+          pageSize={pageSize} onPageSize={(n) => { setPageSize(n); setPage(1); }} />}
       </Card>
 
       {assignRow && (

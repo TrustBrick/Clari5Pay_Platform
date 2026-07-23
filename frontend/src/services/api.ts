@@ -183,6 +183,9 @@ export const fetchAllPages = async <T,>(fetchPage: (page: number) => Promise<Pag
   return out;
 };
 
+/** Date window for the Reports table's row list (IST calendar dates, YYYY-MM-DD). */
+export interface ReportRange { date_from?: string; date_to?: string }
+
 // Superset of TxQuery accepted by the /paged endpoints (all filtering is server-side).
 export interface TxPagedQuery extends TxQuery {
   status?: string;                 // one or comma-separated statuses (backend matches enum)
@@ -410,15 +413,17 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/flag-risk`, { reason });
     return res.data;
   },
-  reports: async () => {
-    const res = await api.get<ReportData>('/api/transactions/reports');
+  // `range` bounds only the report TABLE's rows to the selected date window — every card,
+  // analytic, trend and the running-balance column stay all-time. Omit it for the full payload.
+  reports: async (range?: ReportRange) => {
+    const res = await api.get<ReportData>('/api/transactions/reports', { params: cleanPagedParams(range) });
     return res.data;
   },
   // Admin Reports — same payload as merchant reports but system-wide. Pass a business name
   // to scope to one merchant; omit it for the consolidated all-merchants view.
-  adminReports: async (merchant?: string) => {
+  adminReports: async (merchant?: string, range?: ReportRange) => {
     const res = await api.get<ReportData>('/api/transactions/admin-reports', {
-      params: merchant ? { merchant } : undefined,
+      params: cleanPagedParams({ ...(merchant ? { merchant } : {}), ...(range || {}) }),
     });
     return res.data;
   },
@@ -759,12 +764,35 @@ export const agentDashboardAPI = {
   get: async () => (await api.get<AgentDashboard>('/api/agent-dashboard')).data,
 };
 
+/** Server-side query for the Agent Management transaction listings — every field filters in SQL. */
+export interface AgentMgmtPagedQuery {
+  search?: string;
+  type?: string;
+  status?: string;
+  payment_method?: string;
+  page?: number;
+  page_size?: number;
+}
+
 export const agentTransactionAPI = {
+  // Bare-array feeds: kept for the Reports exports, which by definition want the whole set.
   assigned: async () => (await api.get<AgentTxRow[]>('/api/agent-transactions')).data,
   unassigned: async () => (await api.get<AgentTxRow[]>('/api/agent-transactions/unassigned')).data,
   assignmentHistory: async () => (await api.get<AgentAssignmentHistoryRow[]>('/api/agent-transactions/assignment-history')).data,
   allAccounts: async () => (await api.get<Record<string, unknown>[]>('/api/agent-transactions/all-accounts')).data,
-  audit: async () => (await api.get<AgentAuditRow[]>('/api/agent-transactions/audit')).data,
+  // Paginated feeds — what every listing screen uses. Search / filter / sort / count in Postgres.
+  assignedPaged: async (params?: AgentMgmtPagedQuery) =>
+    (await api.get<Paged<AgentTxRow>>('/api/agent-transactions/paged', { params: cleanPagedParams(params) })).data,
+  unassignedPaged: async (params?: AgentMgmtPagedQuery) =>
+    (await api.get<Paged<AgentTxRow>>('/api/agent-transactions/unassigned/paged', { params: cleanPagedParams(params) })).data,
+  /** Distinct statuses present in a listing — the Status dropdown's options, from the database
+   *  rather than from whatever rows the page happens to be holding. */
+  statusOptions: async (scope: 'assigned' | 'unassigned') =>
+    (await api.get<string[]>('/api/agent-transactions/status-options', { params: { scope } })).data,
+  /** `reference` narrows to one transaction's trail; omit it for the full (500-capped) trail. */
+  audit: async (reference?: string) =>
+    (await api.get<AgentAuditRow[]>('/api/agent-transactions/audit',
+      { params: reference ? { reference } : undefined })).data,
 };
 
 export const systemLogAPI = {
