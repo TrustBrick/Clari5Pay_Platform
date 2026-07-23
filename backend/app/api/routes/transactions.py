@@ -2524,6 +2524,17 @@ async def submit_slip(
     return _t(tx)
 
 
+def _settlement_needs_utr(tx: Transaction) -> bool:
+    """Whether completing this settlement must carry a bank UTR number.
+
+    A CASH settlement is handed over in person — there is no bank reference to record, so the
+    settlement proof is the only evidence. Every other method (bank transfer, and legacy rows
+    that predate the Settlement Method and have no payout_mode) still requires one. This mirrors
+    what the Admin pay screen has always rendered (`needUtr = !isCashPayout`), which the backend
+    used to contradict by demanding a UTR the UI never offered a field for."""
+    return (tx.payout_mode or "BANK").upper() != "CASH"
+
+
 @router.post("/{tx_id}/done")
 async def mark_done(
     tx_id: str,
@@ -2537,10 +2548,11 @@ async def mark_done(
     tx = await _get_tx(tx_id, db)
     is_deposit = tx.type.value.startswith("DEPOSIT")
     is_settlement = tx.type.value.startswith("SETTLEMENT")
-    # Settlement final approval requires BOTH a UTR number and a settlement proof (image or PDF):
-    # the admin cannot complete a settlement without them. Deposits/withdrawals keep prior behaviour.
+    # Settlement final approval requires a settlement proof (image or PDF) and — for every method
+    # except cash, which has no bank reference — a UTR number. The admin cannot complete a
+    # settlement without them. Deposits/withdrawals keep prior behaviour.
     if is_settlement:
-        if not (data and (data.adminUtr or "").strip()):
+        if _settlement_needs_utr(tx) and not (data and (data.adminUtr or "").strip()):
             raise HTTPException(status_code=400, detail="UTR Number is required to complete a settlement.")
         if not (data and data.adminProof):
             raise HTTPException(status_code=400, detail="Settlement proof (image or PDF) is required to complete a settlement.")
@@ -2851,14 +2863,15 @@ async def supervisor_settle_settlement(
         raise HTTPException(status_code=400, detail="Only an agent-assigned settlement can be completed by a Supervisor; others require Admin approval.")
     if tx.status != TxStatus.SLIP_SUBMITTED:
         raise HTTPException(status_code=400, detail="This settlement is not awaiting completion.")
-    if not (data.utr or "").strip():
+    if _settlement_needs_utr(tx) and not (data.utr or "").strip():
         raise HTTPException(status_code=400, detail="UTR Number is required to complete a settlement.")
     if not data.proof:
         raise HTTPException(status_code=400, detail="Settlement proof (image or PDF) is required to complete a settlement.")
     tx.admin_proof = _store(
         validate_upload(data.proof, allowed=IMAGE_PDF_TYPES, label="settlement proof"),
         field="admin_proof")
-    tx.admin_utr = data.utr.strip()
+    if (data.utr or "").strip():
+        tx.admin_utr = data.utr.strip()
     tx.status = TxStatus.COMPLETED
     tx.processed_by = reviewer.name
     tx.approved_by = tx.approved_by or reviewer.name

@@ -337,7 +337,9 @@ export const transactionAPI = {
   },
   // Supervisor completes an AGENT-ASSIGNED settlement (demo) with the mandatory UTR + proof —
   // no Admin needed. Non-agent settlements are rejected server-side (they still go to the Admin).
-  supervisorSettle: async (id: string, data: { remark: string; utr: string; proof: string }) => {
+  // `utr` is omitted for a CASH settlement — there is no bank reference to record, so the
+  // settlement proof is the only evidence (the backend applies the same rule).
+  supervisorSettle: async (id: string, data: { remark: string; utr?: string; proof: string }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/supervisor/settle`, data);
     return res.data;
   },
