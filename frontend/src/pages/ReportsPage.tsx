@@ -23,12 +23,20 @@ const rtypeLabel = (r: ReportRow) => {
   return r.type === 'deposit' && r.depositType ? `${base} (${depositTypeLabel(r.depositType)})` : base;
 };
 
+/** Who the money is for. Deposits and withdrawals are a member's, so they keep the existing
+ *  "Membership - Member" label. A settlement is paid to the merchant/company itself and carries
+ *  no membership at all, so it shows the company name instead of an empty cell. */
+const entityLabel = (r: ReportRow) =>
+  r.type === 'settlement'
+    ? (r.business || memberLabel(r.memberId, r.member))
+    : memberLabel(r.memberId, r.member);
+
 const exportRowsXlsx = (rows: ReportRow[], filename: string) => {
   downloadXlsx(filename, [{
     name: 'Transactions',
     columns: [
       { header: 'Reference Number', get: r => r.ref },
-      { header: 'Membership - Member', get: r => memberLabel(r.memberId, r.member), width: 28 },
+      { header: 'Recipient', get: r => entityLabel(r), width: 28 },
       { header: 'Transaction Type', get: r => rtypeLabel(r) },
       { header: 'Amount (INR)', get: r => Number(r.amount), width: 14, z: INR_NUMFMT },
       { header: 'Status', get: r => prettyStatusR(r.status) },
@@ -149,7 +157,7 @@ const ReportRowsTable: React.FC<{ rows: ReportRow[]; onPick?: (id: string) => vo
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
         <thead>
           <tr style={{ background: T.canvas }}>
-            {['Reference', 'Membership - Member', 'Type', 'Amount', 'Status', 'Date & Time'].map(h => <th key={h} style={thR}>{h}</th>)}
+            {['Reference', 'Recipient', 'Type', 'Amount', 'Status', 'Date & Time'].map(h => <th key={h} style={thR}>{h}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -157,7 +165,7 @@ const ReportRowsTable: React.FC<{ rows: ReportRow[]; onPick?: (id: string) => vo
           {rows.slice(0, 500).map(r => (
             <tr key={r.ref} style={{ cursor: onPick ? 'pointer' : 'default' }} onClick={() => onPick && r.memberId && onPick(r.memberId)}>
               <td style={{ ...tdR, fontFamily: 'monospace' }}>{r.ref}</td>
-              <td style={{ ...tdR, fontWeight: 600 }}>{memberLabel(r.memberId, r.member)}</td>
+              <td style={{ ...tdR, fontWeight: 600 }}>{entityLabel(r)}</td>
               <td style={tdR}>{rtypeLabel(r) || '-'}</td>
               <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
               <td style={tdR}>{prettyStatusR(r.status)}</td>
@@ -561,7 +569,7 @@ const matchesFilters = (r: ReportRow, f: RFilters): boolean => {
   const inc = (v: string | null | undefined, q: string) => !q || (v || '').toLowerCase().includes(q.toLowerCase());
   return inc(r.ref, f.ref) && inc(r.memberId, f.memberId) && inc(r.member, f.memberName)
     && inc(r.business, f.business)
-    && (!f.combined || memberLabel(r.memberId, r.member).toLowerCase().includes(f.combined.toLowerCase()))
+    && (!f.combined || entityLabel(r).toLowerCase().includes(f.combined.toLowerCase()))
     // Approver matches the role the client actually sees (Supervisor / Manager), not the internal
     // admin name behind it — searching an internal name must never be able to identify rows.
     && (!f.approvedBy || (r.approvedBy ? clientApproverLabel(r.type) : '').toLowerCase().includes(f.approvedBy.toLowerCase()))
@@ -584,7 +592,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
   const c = data.cards; const now = new Date().toLocaleString('en-IN'); const tot = totalsOf(rows);
   const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
   const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
-  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(memberLabel(r.memberId, r.member))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type) : '—')}</td></tr>`).join('');
+  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type) : '—')}</td></tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay Report</title><style>
     @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
     .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0052cc;padding-bottom:10px}
@@ -601,7 +609,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
       ${kpi('Total Deposits', fmt(c.totalDepositAmount))}${kpi('Total Withdrawals', fmt(c.totalWithdrawalAmount))}${kpi('Total Settlements', fmt(c.totalSettlementAmount))}
       ${kpi('Available Balance', fmt(c.availableBalance))}</div>
     <h2>Transactions (filtered)</h2>
-    <table><thead><tr><th>Reference</th><th>Membership - Member</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th></tr></thead>
+    <table><thead><tr><th>Reference</th><th>Recipient</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th></tr></thead>
       <tbody>${body || '<tr><td colspan="9" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>'}</tbody>
       <tfoot><tr><td colspan="3">Footer Totals (filtered)</td><td class="amt">Dep ${esc(fmt(tot.deposits))}</td><td colspan="2">Wd ${esc(fmt(tot.withdrawals))}</td><td colspan="2">Set ${esc(fmt(tot.settlements))}</td><td>Available ${esc(fmt(c.availableBalance))}</td></tr></tfoot>
     </table>
@@ -1012,7 +1020,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
           <Input label="Reference Number" value={draft.ref} onChange={e => set('ref', e.target.value)} />
           <Input label="Membership Number" value={draft.memberId} onChange={e => set('memberId', e.target.value)} />
           <Input label="Member Name" value={draft.memberName} onChange={e => set('memberName', e.target.value)} />
-          <Input label="Membership - Member" value={draft.combined} onChange={e => set('combined', e.target.value)} placeholder="MBR… - Name" />
+          <Input label="Recipient" value={draft.combined} onChange={e => set('combined', e.target.value)} placeholder="MBR… - Name or company" />
           <Input label="Agent Code" value={draft.agentCode} onChange={e => set('agentCode', e.target.value)} />
           <Sel label="Transaction Type" value={draft.type} onChange={e => set('type', e.target.value)} options={[{ value: '', label: 'All' }, { value: 'deposit', label: 'Deposit' }, { value: 'withdrawal', label: 'Withdrawal' }, { value: 'settlement', label: 'Settlement' }]} />
           <Sel label="Status" value={draft.status} onChange={e => set('status', e.target.value)} options={[{ value: '', label: 'All' }, ...statuses.map(s => ({ value: s, label: prettyStatusR(s) }))]} />
@@ -1056,7 +1064,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: T.canvas }}>
-                {['Reference Number', 'Membership - Member', 'Transaction Type', 'Amount', 'Status', 'Date & Time', 'Payment Method', 'Available Balance', 'Approved By'].map(h => <th key={h} style={thR}>{h}</th>)}
+                {['Reference Number', 'Recipient', 'Transaction Type', 'Amount', 'Status', 'Date & Time', 'Payment Method', 'Available Balance', 'Approved By'].map(h => <th key={h} style={thR}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
@@ -1064,7 +1072,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
               {filtered.slice(0, 500).map(r => (
                 <tr key={r.ref} className="c5-row-hover" style={{ cursor: r.memberId ? 'pointer' : 'default' }} onClick={() => r.memberId && setProfileId(r.memberId)}>
                   <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{r.ref}</td>
-                  <td style={{ ...tdR, fontWeight: 600 }}>{memberLabel(r.memberId, r.member)}</td>
+                  <td style={{ ...tdR, fontWeight: 600 }}>{entityLabel(r)}</td>
                   <td style={tdR}>{rtypeLabel(r) || '-'}</td>
                   <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
                   <td style={tdR}>{prettyStatusR(r.status)}</td>
