@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager } from '../components/UI';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField } from '../components/UI';
 import { Icon } from '../components/Icon';
+import { IfscField } from '../components/IfscField';
+import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { fireConfetti } from '../utils/confetti';
 import TxTable from '../components/TxTable';
 import { TxExportButton } from '../components/TxExport';
@@ -874,42 +876,137 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
 };
 
 // ─── Settlement form ───────────────────────────────────────────────────────────
+// A Settlement Request is a payment made directly to the merchant/company (e.g. Bellagio) — it
+// is NOT a payment to an individual member, so no Membership ID / Member Name is collected. The
+// Supervisor picks a Settlement Method and fills that method's destination fields; the company
+// itself is shown read-only from the signed-in account.
+const SETTLEMENT_METHOD_OPTIONS = [
+  { value:'', label:'— Select —' },
+  { value:'BANK', label:'Bank Transfer' },
+  { value:'CASH', label:'Cash' },
+];
+// Option lists built from the same shared constants the Agent forms use.
+const SETTLE_COUNTRY_OPTIONS = COUNTRY_CODES
+  .map(c => c.label.split(' ').slice(2).join(' '))
+  .filter((n, i, a) => !!n && a.indexOf(n) === i)
+  .sort()
+  .map(n => ({ value:n, label:n }));
+const SETTLE_STATE_OPTIONS = INDIAN_STATES.map(n => ({ value:n, label:n }));
+const SETTLE_DIAL_OPTIONS = COUNTRY_CODES.map(c => ({ value:c.code, label:c.label }));
+// Same two account types the Account Master form offers.
+const SETTLE_ACCOUNT_TYPES = ['Savings Account','Current Account'].map(v => ({ value:v, label:v }));
+const isIndiaCountry = (c?: string | null) => (c || '').trim().toLowerCase() === 'india';
+// Read-back labels for a submitted settlement destination — the same wording as the form.
+const SETTLEMENT_METHOD_LABEL: Record<string,string> = { BANK:'Bank Transfer', CASH:'Cash' };
+const SETTLEMENT_FIELD_LABEL: Record<string,string> = {
+  accountHolder:'Account Holder Name', accountNumber:'Account Number', ifsc:'IFSC / SWIFT Code',
+  bankName:'Bank Name', branch:'Branch Name', accountType:'Account Type', country:'Country',
+  village:'Village', city:'City', state:'State', pinCode:'PIN / ZIP Code',
+  mobile:'Mobile Number', collectionAddress:'Collection Address',
+};
+
 export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ user, onSubmitted }) => {
   const { showToast } = useToast();
-  const [form, setForm] = useState({ amount:'', memberId:'', memberName:'' });
-  const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState('');
   const [available, setAvailable] = useState(0);
   const [maxSettleable, setMaxSettleable] = useState(0);
   const [rb, setRb] = useState(0);
   const [loading, setLoading] = useState(false);
-  const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+
+  // ── Bank Transfer destination (same fields and behaviour as every other bank capture here) ──
+  const [accountHolder, setAccountHolder] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+  const [confirmAccount, setConfirmAccount] = useState('');
+  const [ifsc, setIfsc] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [branch, setBranch] = useState('');
+  const [accountType, setAccountType] = useState('Savings Account');
+  // Defaults to the company's own country; India → IFSC (with auto-fill), elsewhere → SWIFT/BIC.
+  const [country, setCountry] = useState(user.country || 'India');
+  const ifscFill = useIfscAutoFill(ifsc, setIfsc, (b, br) => { setBankName(b); if (br) setBranch(br); });
+
+  // ── Cash collection details ──
+  const [village, setVillage] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [pinCode, setPinCode] = useState('');
+  const [mobileCode, setMobileCode] = useState('+91');
+  const [mobile, setMobile] = useState('');
+  const [collectionAddress, setCollectionAddress] = useState('');
 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxSettleable(s.maxSettleable ?? s.available); }).catch(()=>{}); }, []);
 
-  // Membership ID is optional for settlements; when entered, auto-fill + lock the Member Name.
-  useEffect(() => {
-    const mid = form.memberId.trim();
-    if (mid.length < 3) { setMemberLocked(false); return; }
-    let alive = true;
-    const t = setTimeout(() => {
-      transactionAPI.memberProfile(mid).then(p => {
-        if (!alive) return;
-        if (p.memberName) { setForm(f => ({ ...f, memberName: p.memberName as string })); setMemberLocked(true); }
-        else setMemberLocked(false);
-      }).catch(()=>{});
-    }, 400);
-    return () => { alive = false; clearTimeout(t); };
-  }, [form.memberId]);
+  const isBank = method === 'BANK';
+  const isCash = method === 'CASH';
+  // The bank code is country-driven: IFSC for India, SWIFT/BIC everywhere else. Cash PIN/ZIP
+  // validation follows the company's own country, since cash is collected at the company.
+  const bankIsIndian = isIndiaCountry(country);
+  const codeLabel = bankIsIndian ? 'IFSC Code' : 'SWIFT / BIC Code';
+  const companyIsIndian = isIndiaCountry(user.country || 'India');
+
+  // Inline validation, recomputed on every render so it reacts as the operator types.
+  const confirmErr = confirmAccount && confirmAccount !== accountNumber
+    ? 'Account Number and Confirm Account Number do not match.' : null;
+  const pinErr = !pinCode ? null
+    : companyIsIndian
+      ? (/^\d{6}$/.test(pinCode) ? null : 'PIN Code must be 6 digits.')
+      : (/^[A-Za-z0-9 -]{3,10}$/.test(pinCode) ? null : 'Enter a valid ZIP / postal code.');
+  const mobileErr = mobile && mobile.length !== 10 ? 'Mobile Number must be 10 digits.' : null;
 
   const submit = async () => {
-    const amountNum = parseFloat(parseIndianAmount(form.amount));
-    if(!form.amount){ showToast('Enter an amount','error'); return; }
-    if(form.memberId && !form.memberName.trim()){ showToast('Enter the Member Name for this Membership ID','error'); return; }
+    const amountNum = parseFloat(parseIndianAmount(amount));
+    if(!amount){ showToast('Enter an amount','error'); return; }
+    if(isNaN(amountNum) || amountNum <= 0){ showToast('Enter a valid amount greater than 0.','error'); return; }
     if(amountNum > maxSettleable + 0.01){ showToast('We cannot process this request. The requested amount exceeds your available balance.','error'); return; }
-    // Agent assignment is optional on a normal merchant settlement — see the deposit path.
+    if(!method){ showToast('Select a Settlement Method','error'); return; }
+
+    let details: Record<string,string>;
+    if (isBank) {
+      const required: Array<[string,string]> = [
+        [accountHolder,'Account Holder Name'], [accountNumber,'Account Number'],
+        [confirmAccount,'Confirm Account Number'], [ifsc, codeLabel],
+        [bankName,'Bank Name'], [branch,'Branch Name'],
+        [accountType,'Account Type'], [country,'Country'],
+      ];
+      const missing = required.filter(([v]) => !v.trim()).map(([,l]) => l);
+      if(missing.length){ showToast(`Fill: ${missing.join(', ')}`,'error'); return; }
+      if(confirmErr){ showToast(confirmErr,'error'); return; }
+      details = {
+        accountHolder: accountHolder.trim(), accountNumber: accountNumber.trim(),
+        ifsc: ifsc.trim(), bankName: bankName.trim(), branch: branch.trim(),
+        accountType, country: country.trim(),
+      };
+    } else {
+      const required: Array<[string,string]> = [
+        [village,'Village'], [city,'City'], [state,'State'],
+        [pinCode,'PIN / ZIP Code'], [mobile,'Mobile Number'],
+      ];
+      const missing = required.filter(([v]) => !v.trim()).map(([,l]) => l);
+      if(missing.length){ showToast(`Fill: ${missing.join(', ')}`,'error'); return; }
+      if(pinErr){ showToast(pinErr,'error'); return; }
+      if(mobileErr){ showToast(mobileErr,'error'); return; }
+      details = {
+        village: village.trim(), city: city.trim(), state: state.trim(),
+        pinCode: pinCode.trim(), mobile: `${mobileCode} ${mobile}`,
+        ...(collectionAddress.trim() ? { collectionAddress: collectionAddress.trim() } : {}),
+      };
+    }
+
     setLoading(true);
     try {
-      const created = await transactionAPI.createSettlement({ amount: amountNum, memberId: form.memberId || undefined, memberName: form.memberName.trim() || undefined });
+      const payload: Record<string, unknown> = { amount: amountNum, settlementMethod: method, settlementDetails: details };
+      // Bank fields also travel top-level so they land on the transaction's own bank columns —
+      // the same shape the Withdrawal form sends.
+      if (isBank) {
+        payload.accountHolder = details.accountHolder;
+        payload.accountNumber = details.accountNumber;
+        payload.confirmAccountNumber = confirmAccount.trim();
+        payload.ifsc = details.ifsc;
+        payload.bankName = details.bankName;
+        payload.branch = details.branch;
+      }
+      await transactionAPI.createSettlement(payload);
       fireConfetti();
       showToast('Settlement request submitted');
       onSubmitted?.();
@@ -929,15 +1026,72 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
           Max you can settle after fees: <b>{fmt(maxSettleable)}</b>{rb > 0 ? ` · Reserved (pending): ${fmt(rb)}` : ''}
         </p>
       </div>
+
+      {/* The payee is the company itself — shown read-only, straight from the signed-in account. */}
+      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Settling To (Company)</p>
+      <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:16 }}>
+        <SlipRow k="Company / Merchant Name" v={user.name} />
+        {user.merchantCode && <SlipRow k="Merchant ID" v={user.merchantCode} />}
+        {user.settlement && <SlipRow k="Settlement Code" v={user.settlement} />}
+        {user.country && <SlipRow k="Country" v={user.country} />}
+      </div>
+
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Input label="Settlement Amount (INR)" type="text" inputMode="decimal" value={form.amount} onChange={e=>set('amount',formatIndianAmountInput(e.target.value))} placeholder="Enter amount" required/>
-        <Input label="Membership ID" value={form.memberId} onChange={e=>set('memberId',e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''))} placeholder="e.g. MBR20240001"/>
-        <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined}/>
+        <Input label="Settlement Amount (INR)" type="text" inputMode="decimal" value={amount} onChange={e=>setAmount(formatIndianAmountInput(e.target.value))} placeholder="Enter amount" required/>
+        <Sel label="Settlement Method" value={method} onChange={e=>setMethod(e.target.value)} options={SETTLEMENT_METHOD_OPTIONS} required/>
       </div>
+
+      {isBank && (
+        <div style={{ background:T.canvas,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Bank Account Details</p>
+          <BankNamesDatalist names={BANK_NAMES}/>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+            <SearchSelect label="Country" value={country} onChange={setCountry} options={SETTLE_COUNTRY_OPTIONS} required placeholder="Type to search…"/>
+            <Sel label="Account Type" value={accountType} onChange={e=>setAccountType(e.target.value)} options={SETTLE_ACCOUNT_TYPES} required/>
+            <Input label="Account Holder Name" value={accountHolder} onChange={e=>setAccountHolder(e.target.value)} placeholder="As per the bank record" required/>
+            <Input label="Account Number" value={accountNumber} onChange={e=>setAccountNumber(e.target.value.replace(/\s/g,''))} placeholder="Account number" required/>
+            <Input label="Confirm Account Number" value={confirmAccount} onChange={e=>setConfirmAccount(e.target.value.replace(/\s/g,''))} placeholder="Re-enter account number" required error={confirmErr || undefined}/>
+            {bankIsIndian
+              ? <IfscField label={codeLabel} value={ifsc} ifsc={ifscFill} required/>
+              : <Input label={codeLabel} value={ifsc} onChange={e=>setIfsc(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,11))} placeholder="e.g. HDFCINBB" required hint="8 or 11 characters"/>}
+            <Input label="Bank Name" value={bankName} onChange={e=>setBankName(e.target.value)} list="bank-names" required readOnly={bankIsIndian && ifscFill.locked}/>
+            <Input label="Branch Name" value={branch} onChange={e=>setBranch(e.target.value)} required readOnly={bankIsIndian && ifscFill.locked}/>
+          </div>
+          {bankName && (() => { const b = bankBadge(bankName); return (
+            <div style={{ display:'flex',alignItems:'center',gap:8,margin:'0 0 4px',fontSize:12,color:T.textMain }}>
+              <span style={{ width:20,height:20,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
+              <b>{bankName}</b>{branch ? <span style={{ color:T.textMuted }}>· {branch}</span> : null}
+            </div>); })()}
+        </div>
+      )}
+
+      {isCash && (
+        <div style={{ background:T.canvas,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Cash Collection Details</p>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+            <Input label="Village" value={village} onChange={e=>setVillage(e.target.value)} placeholder="Village" required/>
+            <Input label="City" value={city} onChange={e=>setCity(e.target.value)} placeholder="City" required/>
+            <SearchSelect label="State" value={state} onChange={setState} options={SETTLE_STATE_OPTIONS} required placeholder="Type to search…"/>
+            <Input label={companyIsIndian ? 'PIN Code' : 'ZIP / Postal Code'} value={pinCode} inputMode="numeric" required
+              onChange={e=>setPinCode(companyIsIndian ? e.target.value.replace(/\D/g,'').slice(0,6) : e.target.value.slice(0,10))}
+              placeholder={companyIsIndian ? '6 digits' : 'Postal code'} error={pinErr || undefined}/>
+            {/* Mobile Number keeps the platform's existing phone rules (dial code + 10 digits,
+                with the built-in n/10 counter) — no separate validation is introduced here. */}
+            <PhoneField code={mobileCode} onCode={setMobileCode} value={mobile} onValue={setMobile}
+              codeOptions={SETTLE_DIAL_OPTIONS} required style={{ marginBottom:16 }}/>
+          </div>
+          <div style={{ marginBottom:4 }}>
+            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Collection Address (optional)</label>
+            <textarea value={collectionAddress} onChange={e=>setCollectionAddress(e.target.value)} placeholder="Where the cash is to be collected"
+              style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:60 }}/>
+          </div>
+        </div>
+      )}
+
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
-        No proof needed — after the Admin approves, they enter the UTR number and upload the settlement proof, which you can then view.
+        No proof needed — after the Admin approves, they {isCash ? 'upload the settlement proof' : 'enter the UTR number and upload the settlement proof'}, which you can then view.
       </div>
-      <Btn size="lg" full onClick={submit} disabled={loading||!form.amount}>{loading?'Submitting...':'Submit Settlement Request →'}</Btn>
+      <Btn size="lg" full onClick={submit} disabled={loading||!amount||!method}>{loading?'Submitting...':'Submit Settlement Request →'}</Btn>
     </div>
   );
 };
@@ -950,7 +1104,10 @@ const ManagementPage: React.FC<{
   requestLabel: string;
   noun: string;
   FormComp: React.FC<{ user: User; onSubmitted?: () => void }>;
-}> = ({ user, title, prefix, requestLabel, noun, FormComp }) => {
+  /** What the history rows are grouped by. Deposits/withdrawals group by member (the default);
+   *  settlements are paid to the company itself and carry no member, so they group by company. */
+  groupBy?: 'member' | 'company';
+}> = ({ user, title, prefix, requestLabel, noun, FormComp, groupBy = 'member' }) => {
   // ── Server-side member groups (grouping / counts / totals computed in the DB) ──
   const [groups, setGroups] = useState<MemberGroup[]>([]);
   const [total, setTotal] = useState(0);
@@ -996,6 +1153,13 @@ const ManagementPage: React.FC<{
   };
   useEffect(() => { if (openMember) loadMemberTxns(); }, [openMember, memberPage, memberPageSize]);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Group-column wording — identical to today for member-grouped pages.
+  const byCompany = groupBy === 'company';
+  const groupSubtitle = byCompany ? `${noun} history grouped by company` : `${noun} history grouped by Membership ID`;
+  const groupCardTitle = byCompany ? 'Companies' : 'Members';
+  const groupColumn = byCompany ? 'Company' : 'Membership - Member';
+  const groupSearchHint = byCompany ? 'Search company or reference…' : 'Search Membership ID or member…';
+
   const openGroup = (g: MemberGroup) => { setMemberPage(1); setMemberTxns([]); setOpenMember(g); };
   const active = openMember;
   // Refresh after a mutation: reload the member list and, if a drill-down is open, its page too.
@@ -1006,16 +1170,16 @@ const ManagementPage: React.FC<{
       <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18,gap:8,flexWrap:'wrap' }}>
         <div>
           <h2 style={{ margin:0,fontSize:16,fontWeight:800 }}>{title}</h2>
-          <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>{noun} history grouped by Membership ID</p>
+          <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>{groupSubtitle}</p>
         </div>
         <Btn onClick={()=>setShowForm(true)}>+ {requestLabel}</Btn>
       </div>
 
       <Card>
         <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap' }}>
-          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>Members ({total})</h3>
+          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>{groupCardTitle} ({total})</h3>
           <div style={{ width:260,maxWidth:'100%' }}>
-            <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search Membership ID or member…" icon="search" style={{ marginBottom:0 }}/>
+            <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder={groupSearchHint} icon="search" style={{ marginBottom:0 }}/>
           </div>
         </div>
         {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : (
@@ -1023,7 +1187,7 @@ const ManagementPage: React.FC<{
             <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
               <thead>
                 <tr style={{ background:T.canvas }}>
-                  {['Membership - Member',`Total ${noun} Requests`,'Status','Total Amount','Action'].map(h=>(
+                  {[groupColumn,`Total ${noun} Requests`,'Status','Total Amount','Action'].map(h=>(
                     <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                   ))}
                 </tr>
@@ -1032,7 +1196,7 @@ const ManagementPage: React.FC<{
                 {groups.length === 0 && <tr><td colSpan={5} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No {noun.toLowerCase()} requests yet</td></tr>}
                 {groups.map((g,i)=>(
                   <tr key={g.membershipId} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>openGroup(g)}>
-                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{memberLabel(g.membershipId, g.memberName)}</td>
+                    <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{byCompany ? g.membershipId : memberLabel(g.membershipId, g.memberName)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.requests}</td>
                     <td style={{ padding:'11px 14px' }}>{g.latestStatus ? <Badge status={g.latestStatus as Transaction['status']} type={g.latestType || undefined} viewerRole="MERCHANT"/> : '—'}</td>
                     <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.totalAmount)}</td>
@@ -1053,7 +1217,7 @@ const ManagementPage: React.FC<{
       )}
 
       {active && (
-        <Modal title={`Member ${active.membershipId} — ${noun} History`} onClose={()=>setOpenMember(null)} xl>
+        <Modal title={`${byCompany ? '' : 'Member '}${active.membershipId} — ${noun} History`} onClose={()=>setOpenMember(null)} xl>
           <div style={{ display:'flex',gap:14,marginBottom:14,flexWrap:'wrap' }}>
             <div style={{ background:T.infoBg,borderRadius:10,padding:'10px 16px' }}>
               <p style={{ margin:0,fontSize:10,color:T.textMuted,fontWeight:700,textTransform:'uppercase' }}>Total {noun} Requests</p>
@@ -1121,11 +1285,16 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
 
   return (
     <Modal title={`Complete Settlement — ${d.ref}`} onClose={onClose} wide>
+      {/* A settlement is paid to the company, so the payee here is the merchant and its chosen
+          Settlement Method — not a member. */}
       <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
-        <SlipRow k="Member" v={memberLabel(d.memberId, d.member) || '—'} />
+        <SlipRow k="Company / Merchant" v={d.merchant} />
+        {d.payoutMode && <SlipRow k="Settlement Method" v={SETTLEMENT_METHOD_LABEL[d.payoutMode] || d.payoutMode} />}
         <SlipRow k="Amount" v={fmt(d.amount)} />
         <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} />} />
         <SlipRow k="Reference" v={d.ref} />
+        {d.payoutDetails && Object.entries(d.payoutDetails).map(([k, v]) =>
+          v ? <SlipRow key={k} k={SETTLEMENT_FIELD_LABEL[k] || k} v={String(v)} /> : null)}
       </div>
       <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 12 }}>
         Routed through an assigned agent — complete it directly (no Admin approval needed). Enter the payment UTR and upload the settlement proof.
@@ -1201,7 +1370,7 @@ const AgentSettlementCompletionQueue: React.FC<{ user: User }> = ({ user }) => {
 export const SettlementManagement: React.FC<{ user: User }> = ({ user }) => (
   <div>
     <AgentSettlementCompletionQueue user={user} />
-    <ManagementPage user={user} title="Settlement Requests" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm}/>
+    <ManagementPage user={user} title="Settlement Requests" prefix="SETTLEMENT" requestLabel="Settlement Request" noun="Settlement" FormComp={SettlementForm} groupBy="company"/>
   </div>
 );
 
@@ -1334,6 +1503,16 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         {isWithdrawal && <SlipRow k="Withdrawal Amount" v={fmt(d.amount)} />}
         {isSettlement && <SlipRow k="Settlement Amount" v={fmt(d.amount)} />}
       </DetailSection>
+
+      {/* Where the settlement is paid. A settlement goes to the company itself, so this replaces
+          the member section entirely. Deposits/withdrawals are untouched. */}
+      {isSettlement && d.payoutMode && (
+        <DetailSection title="Settlement Destination">
+          <SlipRow k="Settlement Method" v={SETTLEMENT_METHOD_LABEL[d.payoutMode] || d.payoutMode} />
+          {d.payoutDetails && Object.entries(d.payoutDetails).map(([k, v]) =>
+            v ? <SlipRow key={k} k={SETTLEMENT_FIELD_LABEL[k] || k} v={String(v)} /> : null)}
+        </DetailSection>
+      )}
 
       {/* Client-facing: the Approver is the client's own approval role (Deposit → Supervisor,
           Withdrawal/Settlement → Manager), never the internal admin who actioned it. Supervisor

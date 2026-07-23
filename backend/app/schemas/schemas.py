@@ -202,9 +202,23 @@ class WithdrawalCreate(BaseModel):
 
 
 class SettlementCreate(BaseModel):
+    """A settlement is paid to the merchant/company itself (e.g. Bellagio), never to an
+    individual member — so no Membership ID / Member Name is captured. The Supervisor picks
+    HOW the company is paid (`settlementMethod`) and fills that method's fields, which travel
+    in `settlementDetails` exactly as a withdrawal's payoutDetails do."""
     amount: float
-    memberId: Optional[str] = None
-    memberName: Optional[str] = None   # captured/auto-filled membership name (Change 10)
+    settlementMethod: Optional[str] = None    # BANK | CASH — mandatory (validated in the route)
+    # Method-specific fields. BANK → accountHolder / accountNumber / ifsc / bankName / branch /
+    # accountType / country; CASH → village / city / state / pinCode / mobile / collectionAddress.
+    settlementDetails: Optional[dict] = None
+    # Bank-transfer destination, also sent top-level so it lands on the dedicated transaction
+    # columns — the same shape the withdrawal payout path uses.
+    accountHolder: Optional[str] = None
+    accountNumber: Optional[str] = None
+    confirmAccountNumber: Optional[str] = None
+    ifsc: Optional[str] = None
+    bankName: Optional[str] = None
+    branch: Optional[str] = None
     proof: Optional[str] = None
     proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
 
