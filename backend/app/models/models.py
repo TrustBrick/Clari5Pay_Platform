@@ -819,7 +819,8 @@ class AgentTransaction(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     # System-generated, unique, immutable serials. reference_number: AGD000001 (deposit) /
-    # AGW000001 (withdrawal). transaction_code embeds the agent's 3-char code, e.g. "ABC-D-000123".
+    # AGW000001 (withdrawal). transaction_code is <agent 3-char code>-<D|W|S>-<agent id>-<that
+    # agent's own sequence>, e.g. "ABC-D-000123-04" -- see _transaction_code() in agent_txns.
     reference_number: Mapped[str] = mapped_column(String(24), unique=True, index=True, nullable=False)
     transaction_code: Mapped[str] = mapped_column(String(32), nullable=False)
     txn_type: Mapped[str] = mapped_column(String(12), nullable=False)      # DEPOSIT | WITHDRAWAL
