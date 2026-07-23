@@ -1273,11 +1273,13 @@ export const AgentWithdrawalRequestPage: React.FC<{
         {!isSettlement && <div style={{ marginTop: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
           <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
           <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
-            Every Agent Withdrawal goes to an approver — choose who reviews this one.
+            Every Agent Withdrawal goes to a Manager for approval — choose who reviews this one.
           </p>
           <div style={{ maxWidth: 360 }}>
+            {/* Withdrawal approval is a Manager-only authority, so this list is the business's
+                Managers — never a Supervisor. The backend rejects a Supervisor id as well. */}
             <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
-              options={[{ value: '', label: '— Select approver —' }, ...fd.approvers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+              options={[{ value: '', label: '— Select approver —' }, ...(fd.withdrawalApprovers || []).map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
           </div>
         </div>}
 
@@ -1474,6 +1476,10 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
   ({ row, fd, canApprove, role, onClose, onRefresh }) => {
     const { showToast } = useToast();
     const canSendToApproval = role !== 'MANAGER';
+    // Withdrawal approval is Manager-only, so forwarding a withdrawal may only offer Managers, and
+    // a Supervisor gets no Approve/Reject on one (the backend 403s them too).
+    const manageApprovers = (row.type === 'WITHDRAWAL' ? fd?.withdrawalApprovers : fd?.approvers) || [];
+    const canDecide = canApprove && !(row.type === 'WITHDRAWAL' && role !== 'MANAGER');
     const [amount, setAmount] = useState(formatIndianAmountInput(String(row.amount)));
     const [notes, setNotes] = useState('');
     const [sendApproval, setSendApproval] = useState(false);
@@ -1553,8 +1559,10 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
             </label>
             {sendApproval && (
               <div style={{ marginTop: 10, maxWidth: 360 }}>
+                {/* Same per-type rule as the request forms: forwarding a withdrawal offers
+                    Managers only, a deposit either approval role. */}
                 <Sel label="Authorized Approver" value={approverId} onChange={e => setApproverId(e.target.value)} required
-                  options={[{ value: '', label: '— Select approver —' }, ...(fd?.approvers || []).map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
+                  options={[{ value: '', label: '— Select approver —' }, ...manageApprovers.map(a => ({ value: String(a.id), label: `${a.name} (${a.role})` }))]} />
               </div>
             )}
           </div>
@@ -1562,7 +1570,7 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
           <Btn onClick={saveAmount} disabled={busy}>{busy ? 'Saving…' : 'Update Amount'}</Btn>
-          {canApprove && <>
+          {canDecide && <>
             <Btn variant="success" onClick={() => decide(true)} disabled={busy}>Approve</Btn>
             <Btn variant="danger" onClick={() => decide(false)} disabled={busy}>Reject</Btn>
           </>}
@@ -3640,19 +3648,24 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [reviewRow, setReviewRow] = useState<AgentTxnRow | null>(null);
-  // Every request (deposit or withdrawal) is addressed to ONE chosen Authorized Approver (Manager
-  // OR Supervisor), so each reviewer sees only the requests assigned to them — routing is by the
-  // selected user, not by role. The backend also enforces this with a 403 on the review actions.
+  // Every request is addressed to ONE chosen Authorized Approver, so each reviewer sees only the
+  // requests assigned to them — routing is by the selected user, not by role. A DEPOSIT may be
+  // addressed to a Manager or a Supervisor; a WITHDRAWAL only ever to a Manager, so Supervisors
+  // never load the withdrawal queue at all. The backend also enforces this with a 403 on the
+  // review actions.
   const role = String(user.merchantRole || '').toUpperCase();
   const isSupervisor = role === 'SUPERVISOR';
-  const canReview = role === 'MANAGER' || role === 'SUPERVISOR';
+  const isManager = role === 'MANAGER';
+  const canReview = isManager || isSupervisor;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [wds, deps] = canReview
         ? await Promise.all([
-            agentTxnsAPI.list({ status: 'MANAGER_REVIEW', txn_type: 'WITHDRAWAL' }),
+            // Withdrawal approvals are a Manager-only authority — a Supervisor gets none.
+            isManager ? agentTxnsAPI.list({ status: 'MANAGER_REVIEW', txn_type: 'WITHDRAWAL' })
+                      : Promise.resolve([] as AgentTxnRow[]),
             agentTxnsAPI.list({ status: 'SLIP_SUBMITTED', txn_type: 'DEPOSIT' }),
           ])
         : [[], []];
@@ -3664,7 +3677,7 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
       setRows([...myWds, ...myDeps]);
     } catch { showToast('Failed to load approvals.', 'error'); }
     finally { setLoading(false); }
-  }, [showToast, user.username, canReview, isSupervisor]);
+  }, [showToast, user.username, canReview, isSupervisor, isManager]);
 
   useEffect(() => { load(); }, [load]);
   usePoll(() => { if (!reviewRow) load(); });

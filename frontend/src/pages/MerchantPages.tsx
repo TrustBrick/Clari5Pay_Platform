@@ -696,10 +696,12 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [savedBanks, setSavedBanks] = useState<MerchantBankAccount[]>([]);
   const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
   const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
-  // "Send To Approval" (demo only): chosen Authorized Approver + the business's Supervisors/Managers.
+  // "Send To Approval": the chosen Authorized Approver. A Withdrawal is authorised by a Manager
+  // only, so this list is the business's Managers — Supervisors are never offered (the backend
+  // rejects one too).
   const [approverId, setApproverId] = useState('');
   const [approvers, setApprovers] = useState<ApproverOption[]>([]);
-  useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
+  useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers('WITHDRAWAL').then(setApprovers).catch(()=>{}); }, []);
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
@@ -1755,7 +1757,10 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
   // Overseer feed, scoped to the reviewer's own business (matches the backend same-business guard).
   const mine = (t: Transaction) => {
     if (t.merchant !== user.name) return false;
-    // Demo: a request addressed to me — regardless of my role or its type (backend also 403s others).
+    // Withdrawal approval is a Manager-only authority, so a withdrawal never appears in a
+    // Supervisor's queue — not even a legacy row that still names one as its approver.
+    if (t.type.startsWith('WITHDRAWAL') && !isManager) return false;
+    // A request addressed to me — regardless of my role or its type (backend also 403s others).
     if (unifiedDemo && t.approverUserId) return t.approverUserId === user.id && atReviewGate(t);
     // Production / Settlement / unassigned: classic role-partitioned queue, unchanged.
     return t.status === roleStatus && t.type.startsWith(rolePrefix) && !t.approverUserId;

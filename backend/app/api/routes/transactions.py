@@ -42,19 +42,35 @@ def _require_amount(amount: float) -> None:
         raise HTTPException(status_code=400, detail="Amount must be greater than 0.")
 
 
-async def _resolve_merchant_approver(db: AsyncSession, merchant: User, approver_user_id: int | None):
-    """Validate the "Send To Approval" Authorized Approver (demo): must be a Supervisor or Manager
-    of the caller's OWN business. Returns (user_id, username, role). Mirrors the Agent module's
-    _resolve_approver — the request still flows through the same review queue; this records who the
-    operator addressed it to, plus their role so the review status can DISPLAY as that role."""
+# Which merchant roles may be chosen as the Authorized Approver, per request kind. A DEPOSIT may be
+# approved by either review role; a WITHDRAWAL is a Manager-only authorisation — Supervisors take no
+# part in withdrawal approval at all (dropdown, notification, queue and action are all closed to
+# them). Settlements never pass the review gate, so they are not listed here.
+APPROVER_ROLES = {
+    "DEPOSIT": ("SUPERVISOR", "MANAGER"),
+    "WITHDRAWAL": ("MANAGER",),
+}
+
+
+async def _resolve_merchant_approver(db: AsyncSession, merchant: User, approver_user_id: int | None,
+                                     kind: str = "DEPOSIT"):
+    """Validate the "Send To Approval" Authorized Approver: must hold an approval role for THIS
+    request kind (deposit → Supervisor or Manager, withdrawal → Manager only) in the caller's OWN
+    business. Returns (user_id, username, role). Mirrors the Agent module's _resolve_approver — the
+    request still flows through the same review queue; this records who the operator addressed it
+    to, plus their role so the review status can DISPLAY as that role. Rejecting a Supervisor on a
+    withdrawal here is what makes the rule un-bypassable from outside the UI."""
     if approver_user_id is None:
         return None, None, None
+    allowed = APPROVER_ROLES.get(kind.upper(), APPROVER_ROLES["DEPOSIT"])
     u = (await db.execute(select(User).where(User.id == approver_user_id))).scalar_one_or_none()
     role = str(u.merchant_role or "").upper() if u else ""
-    ok = (u and u.role == UserRole.MERCHANT and u.name == merchant.name
-          and role in ("SUPERVISOR", "MANAGER"))
+    ok = (u and u.role == UserRole.MERCHANT and u.name == merchant.name and role in allowed)
     if not ok:
-        raise HTTPException(status_code=400, detail="Authorized Approver must be a Supervisor or Manager of your business.")
+        who = "a Manager" if allowed == ("MANAGER",) else "a Supervisor or Manager"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Authorized Approver for a {kind.title()} Request must be {who} of your business.")
     return u.id, u.username, role
 
 
@@ -575,12 +591,19 @@ async def _notify_approver_or_role(db: AsyncSession, tx: Transaction, role: str,
 
 
 def _require_sole_merchant_approver(reviewer: User, tx: Transaction) -> None:
-    """When a request was addressed to a specific Authorized Approver ("Send To Approval", demo),
+    """When a request was addressed to a specific Authorized Approver ("Send To Approval"),
     ONLY that user may review it — every other Manager/Supervisor in the business is denied (403).
-    No approver set (Production) → unchanged same-business role review."""
+    No approver set (Production) → unchanged same-business role review.
+
+    A WITHDRAWAL additionally requires the reviewer to be a Manager: Supervisors take no part in
+    withdrawal approval, so even a legacy row that still names one as its approver is refused."""
     if tx.approver_user_id and reviewer.id != tx.approver_user_id:
         raise HTTPException(status_code=403,
                             detail="Only the selected Authorized Approver can review this request.")
+    if (tx.type.value.startswith("WITHDRAWAL")
+            and str(reviewer.merchant_role or "").upper() not in APPROVER_ROLES["WITHDRAWAL"]):
+        raise HTTPException(status_code=403,
+                            detail="Withdrawal Requests can only be approved by a Manager.")
 
 
 def _client_ip(request: Request | None) -> str | None:
@@ -2142,20 +2165,24 @@ async def admin_reports(
 
 @router.get("/approvers")
 async def list_approvers(
+    txnType: str = "DEPOSIT",
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Authorized Approvers for the "Send To Approval" selector on the merchant Deposit/Withdrawal
-    forms — every Supervisor and Manager of the caller's own business. GA on Demo + Production;
-    404 only when the feature is switched off (SEND_TO_APPROVAL_ENABLED=false)."""
+    forms, scoped to the caller's own business. `txnType` selects which approval roles apply:
+    DEPOSIT (default) → Supervisors + Managers; WITHDRAWAL → Managers only, so a Supervisor can
+    never even be offered. GA on Demo + Production; 404 only when the feature is switched off
+    (SEND_TO_APPROVAL_ENABLED=false)."""
     if not settings.SEND_TO_APPROVAL_ENABLED:
         raise HTTPException(status_code=404, detail="Not found")
+    allowed = APPROVER_ROLES.get((txnType or "").upper(), APPROVER_ROLES["DEPOSIT"])
     rows = (await db.execute(
         select(User).where(User.role == UserRole.MERCHANT, User.name == current_user.name)
     )).scalars().all()
     return [
         {"id": u.id, "name": u.username, "role": str(u.merchant_role or "").upper()}
-        for u in rows if str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER")
+        for u in rows if str(u.merchant_role or "").upper() in allowed
     ]
 
 
@@ -2293,9 +2320,11 @@ async def create_withdrawal(
         creator_role=current_user.merchant_role,
     )
     # "Send To Approval": record the chosen Authorized Approver on the row (GA on Demo + Prod). The
-    # withdrawal still enters the same review queue; this captures who it was addressed to (and routes to them).
+    # withdrawal still enters the same review queue; this captures who it was addressed to (and routes
+    # to them). kind="WITHDRAWAL" → only a Manager is accepted; a Supervisor id is rejected (400).
     if settings.SEND_TO_APPROVAL_ENABLED:
-        tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
+        tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(
+            db, current_user, data.approverUserId, kind="WITHDRAWAL")
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "WIT", current_user.pay_out)

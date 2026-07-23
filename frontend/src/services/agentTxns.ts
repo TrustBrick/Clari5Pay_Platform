@@ -178,7 +178,10 @@ export interface AgentFormAgent {
 export interface AgentApprover { id: number; name: string; role: string }
 export interface AgentFormData {
   agents: AgentFormAgent[];
+  /** Deposit approvers — Supervisors + Managers. */
   approvers: AgentApprover[];
+  /** Withdrawal approvers — Managers only; a Supervisor may not approve a withdrawal. */
+  withdrawalApprovers: AgentApprover[];
   instructions: string[];
   membershipTypes: string[];
   txnMethods: string[];      // CASH | UPI | BANK | IMPS | NEFT | RTGS | CRYPTO
