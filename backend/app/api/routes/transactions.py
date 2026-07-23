@@ -1765,6 +1765,52 @@ async def create_withdrawal(
     return _t(tx)
 
 
+# ─── Settlement destination (Settlement Method + its fields) ───────────────────────
+# A settlement is a payment made directly to the merchant/company, so there is no member and
+# no membership involved — the Supervisor only chooses HOW the company is paid. What they
+# capture is persisted exactly like a withdrawal payout: the method in `payout_mode` and its
+# fields in `payout_details` (JSON), with the bank fields mirrored onto the dedicated
+# account_holder / account_number / ifsc / bank_name columns. Reusing that shape means every
+# existing surface — the Admin "Receiver Payout Details (pay here)" panel, the merchant slip /
+# details modals, reports and exports — renders a settlement destination with no change, and
+# the Admin's Cash-vs-Bank pay step (no UTR for cash) already behaves correctly.
+SETTLEMENT_METHODS = ("BANK", "CASH")
+# (key in settlementDetails, label shown if it is missing) — the mandatory fields per method.
+_SETTLEMENT_REQUIRED: dict[str, tuple[tuple[str, str], ...]] = {
+    "BANK": (
+        ("accountHolder", "Account Holder Name"), ("accountNumber", "Account Number"),
+        ("ifsc", "IFSC / SWIFT Code"), ("bankName", "Bank Name"), ("branch", "Branch Name"),
+    ),
+    "CASH": (
+        ("village", "Village"), ("city", "City"), ("state", "State"),
+        ("pinCode", "PIN / ZIP Code"), ("mobile", "Mobile Number"),
+    ),
+}
+
+
+def _settlement_destination(data: SettlementCreate) -> tuple[str, dict]:
+    """Validate the chosen Settlement Method and return (method, cleaned details)."""
+    method = (data.settlementMethod or "").strip().upper()
+    if method not in SETTLEMENT_METHODS:
+        raise HTTPException(status_code=400, detail="Select a Settlement Method (Bank Transfer or Cash).")
+    details = {k: ("" if v is None else str(v).strip()) for k, v in (data.settlementDetails or {}).items()}
+    if method == "BANK":
+        # Top-level bank fields (sent the same way a withdrawal sends them) fill any gap.
+        for key, val in (("accountHolder", data.accountHolder), ("accountNumber", data.accountNumber),
+                         ("ifsc", data.ifsc), ("bankName", data.bankName), ("branch", data.branch)):
+            if val and not details.get(key):
+                details[key] = str(val).strip()
+        # The confirmation is a check, never stored — pop it before validating/persisting.
+        echoed = details.pop("confirmAccountNumber", "")
+        confirm = ((data.confirmAccountNumber or "").strip() or echoed)
+        if confirm and confirm != details.get("accountNumber", ""):
+            raise HTTPException(status_code=400, detail="Account Number and Confirm Account Number do not match.")
+    missing = [label for key, label in _SETTLEMENT_REQUIRED[method] if not details.get(key)]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Complete the settlement details: {', '.join(missing)}.")
+    return method, {k: v for k, v in details.items() if v}   # blank optional fields are not persisted
+
+
 @router.post("/settlement")
 async def create_settlement(
     data: SettlementCreate,
@@ -1777,11 +1823,11 @@ async def create_settlement(
     if str(current_user.merchant_role or "").upper() != "SUPERVISOR":
         raise HTTPException(status_code=403, detail="Only a Supervisor can create settlement requests.")
     _require_amount(data.amount)
+    # Settlement Method + its destination fields (mandatory). No membership lookup happens on a
+    # settlement: the money goes to the company, so member_id / member_name stay NULL on the row.
+    settlement_method, settlement_details = _settlement_destination(data)
     # Block settlements whose amount + pay-out fee exceeds the Available Balance (exactly the
     # same rule as withdrawals), so the balance can never go negative once the fee is charged.
-    data.memberId = normalize_member_id(data.memberId)
-    # Membership lookup + capture rule (shared service); Membership ID is optional here.
-    member_name = await resolve_member_name(db, current_user, data.memberId, data.memberName)
     summary = await compute_balance(db, current_user)
     pay_out_rate = (current_user.pay_out_fee or 0) / 100
     total_required = data.amount * (1 + pay_out_rate)
@@ -1800,8 +1846,13 @@ async def create_settlement(
         merchant_name=current_user.name,
         tx_date=_ist_now().date(),
         tx_time=_ist_now().strftime("%H:%M:%S"),
-        member_id=data.memberId,
-        member_name=member_name,
+        # Settlement destination — the company is the payee, so no member is recorded.
+        payout_mode=settlement_method,
+        payout_details=json.dumps(settlement_details) if settlement_details else None,
+        bank_name=settlement_details.get("bankName") or None,
+        account_holder=settlement_details.get("accountHolder") or None,
+        account_number=settlement_details.get("accountNumber") or None,
+        ifsc=settlement_details.get("ifsc") or None,
         agent_code=current_user.merchant_code,
         creator_username=current_user.username,
         creator_role=current_user.merchant_role,
