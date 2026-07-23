@@ -32,6 +32,38 @@ export const formatIndianAmountInput = (value: string): string => {
 export const parseIndianAmount = (value: string): string =>
   String(value ?? '').replace(/,/g, '').replace(/[^\d.]/g, '');
 
+// ── Client-facing Approver — the CLIENT's approval hierarchy, never a real user ───────────────
+// Client-facing output (reports, exports, dashboards, transaction history) must never expose the
+// name of the internal Clari5Pay admin who actioned a transaction. The client sees only the
+// business approver role their own workflow defines:
+//     Deposit → Supervisor · Withdrawal → Manager · Settlement → Manager
+// Accepts either the report `type` ('deposit') or a raw TxType ('DEPOSIT_BANK'). Callers gate this
+// on the transaction actually having been approved, so an unapproved row still shows '—' — this
+// only swaps the displayed NAME for the ROLE, it never changes when an approver is shown.
+// Internal audit logs / admin screens keep recording and showing the real system user.
+export const clientApproverLabel = (type?: string | null): string => {
+  const t = String(type || '').toUpperCase();
+  if (t.startsWith('DEPOSIT')) return 'Supervisor';
+  if (t.startsWith('WITHDRAWAL') || t.startsWith('SETTLEMENT')) return 'Manager';
+  return '—';
+};
+
+// Roles that belong to Clari5Pay, not to the client. Their real names/usernames are recorded in
+// the internal audit log and shown on internal/admin screens, but never surfaced to the client —
+// a client-facing row attributed to one of these shows the role alone. That an Admin acted is
+// already part of the base UI (e.g. the slip's "Admin Action" row); only the person is hidden.
+const INTERNAL_ROLE_LABELS: Record<string, string> = {
+  ADMIN: 'Admin',
+  SUPER_ADMIN: 'Super Admin',
+  SUPERADMIN: 'Super Admin',
+  SUPPORT: 'Support',
+};
+export const isInternalRole = (role?: string | null) =>
+  Object.prototype.hasOwnProperty.call(INTERNAL_ROLE_LABELS, String(role || '').toUpperCase());
+// Display label for an internal role — never falls through to a raw enum like "SUPER_ADMIN".
+const internalRoleLabel = (role?: string | null) =>
+  INTERNAL_ROLE_LABELS[String(role || '').toUpperCase()] || String(role || '');
+
 export const statusStyle = (s: TxStatus) => {
   const map: Record<string, { color: string; bg: string }> = {
     PENDING: { color: T.warning, bg: T.warningBg },
@@ -138,6 +170,21 @@ export const nameWithRole = (name?: string | null, role?: string | null, fallbac
   const inside = [label, (username || '').trim()].filter(Boolean).join(' • ');
   return inside ? `${name ?? ''} (${inside})` : `${name ?? ''}`;
 };
+
+// Actor line for a remark / audit entry on a CLIENT-facing screen. An internal Clari5Pay role
+// collapses to the role alone ("Admin"); the client's own staff keep the existing
+// "Role · Name (Role • username)" format unchanged. Pairs with clientApproverLabel — same rule:
+// the client sees the business role, never the internal person. Internal/admin screens must NOT
+// use this (they show the real actor), and the audit log itself still records the real user.
+export const clientRemarkActor = (role?: string | null, user?: string | null, username?: string | null): string =>
+  isInternalRole(role)
+    ? internalRoleLabel(role)
+    : `${merchantRoleLabel(role) || String(role || '')} · ${nameWithRole(user, role, '', username)}`;
+
+// Same rule for an audit row's actor column: internal actors show the role only — never their
+// username, and never their IP (an internal operational detail with no client business value).
+export const clientAuditActor = (role?: string | null, username?: string | null): string =>
+  isInternalRole(role) ? internalRoleLabel(role) : `${username || ''}${role ? ` (${role})` : ''}`;
 
 // ─── Customer Support chat: IST timestamps + attachment helpers ───────────────
 // Chat timestamps are ALWAYS shown in Indian Standard Time (Asia/Kolkata), regardless of the
@@ -321,6 +368,32 @@ export const DEPOSIT_TYPE_OPTIONS = [
 ];
 
 // Country dialing codes for the phone-number dropdown (India first, then alphabetical).
+// Indian states + union territories, for the State pickers. The searchable dropdown still accepts
+// free text, so a state outside this list (non-India agents) can simply be typed.
+export const INDIAN_STATES = [
+  'Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar',
+  'Chandigarh', 'Chhattisgarh', 'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa',
+  'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka',
+  'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya',
+  'Mizoram', 'Nagaland', 'Odisha', 'Puducherry', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
+  'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+];
+
+// Crypto wallet address — structural format check across the common networks (mirrors the agent
+// backend's _valid_wallet). No network selector, so an address is valid if it is a valid shape on
+// ANY network; a format check, not an on-chain proof.
+const WALLET_FORMATS = [
+  /^0x[0-9a-fA-F]{40}$/,                       // EVM: Ethereum / ERC20 / BSC / Polygon
+  /^T[1-9A-HJ-NP-Za-km-z]{33}$/,               // TRON / TRC20
+  /^(bc1)[0-9ac-hj-np-z]{11,87}$/,             // Bitcoin bech32
+  /^[13][1-9A-HJ-NP-Za-km-z]{25,34}$/,         // Bitcoin legacy
+  /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,             // Solana
+];
+export const isValidWallet = (addr: string): boolean => {
+  const a = (addr || '').trim();
+  return !!a && WALLET_FORMATS.some((re) => re.test(a));
+};
+
 export const COUNTRY_CODES = [
   { code: '+91', label: '🇮🇳 +91 India' },
   { code: '+93', label: '🇦🇫 +93 Afghanistan' },

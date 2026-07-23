@@ -146,19 +146,20 @@ export const Btn: React.FC<{
 export const Input: React.FC<{
   label?: string; type?: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   placeholder?: string; required?: boolean; hint?: string; icon?: string; style?: CSSProperties; list?: string;
-  readOnly?: boolean; onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
+  readOnly?: boolean; onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void; error?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
-}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list, inputMode, readOnly, onBlur }) => (
+}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list, inputMode, readOnly, onBlur, error }) => (
   <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <div style={{ position:'relative' }}>
       {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',display:'flex',alignItems:'center',fontSize:16,color:T.textMuted }}>{isIconName(icon) ? <Icon name={icon} size={16} color={T.textMuted} /> : icon}</span>}
-      <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode} readOnly={readOnly}
-        style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:readOnly?T.canvas:T.surface,cursor:readOnly?'not-allowed':'text',outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
-        onFocus={e=>{ if(readOnly) return; e.target.style.borderColor=T.blue;e.target.style.boxShadow=`0 0 0 3px ${T.blue}18`;}}
-        onBlur={e=>{e.target.style.borderColor=T.border;e.target.style.boxShadow='none';onBlur?.(e);}}/>
+      <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode} readOnly={readOnly} aria-invalid={error?true:undefined}
+        style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',borderWidth:1.5,borderStyle:'solid',borderColor:error?T.danger:T.border,borderRadius:10,fontSize:14,color:T.textMain,background:readOnly?T.canvas:T.surface,cursor:readOnly?'not-allowed':'text',outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
+        onFocus={e=>{ if(readOnly) return; e.target.style.borderColor=error?T.danger:T.blue;e.target.style.boxShadow=`0 0 0 3px ${error?T.danger:T.blue}18`;}}
+        onBlur={e=>{e.target.style.borderColor=error?T.danger:T.border;e.target.style.boxShadow='none';onBlur?.(e);}}/>
     </div>
-    {hint && <p style={{ fontSize:11,color:T.textMuted,marginTop:4 }}>{hint}</p>}
+    {error ? <p style={{ fontSize:11,color:T.danger,marginTop:4,fontWeight:600 }}>{error}</p>
+     : hint && <p style={{ fontSize:11,color:T.textMuted,marginTop:4 }}>{hint}</p>}
   </div>
 );
 
@@ -182,6 +183,38 @@ export const Sel: React.FC<{
     </select>
   </div>
 );
+
+// ─── Pager ───────────────────────────────────────────────────────────────────
+// Shared server-side pagination control for every paginated listing (Merchant / Agent /
+// Admin / Super Admin). Page size is restricted to 10/25/50/100 (matches the backend clamp).
+// Purely presentational: the parent owns page/pageSize state and refetches on change.
+export const PAGE_SIZES = [10, 25, 50, 100];
+export const Pager: React.FC<{
+  page: number; pageSize: number; total: number; totalPages: number;
+  onPage: (p: number) => void; onPageSize: (n: number) => void; loading?: boolean;
+}> = ({ page, pageSize, total, totalPages, onPage, onPageSize, loading }) => {
+  if (!total) return null;
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+  const pages = Math.max(totalPages, 1);
+  return (
+    <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'12px 16px',flexWrap:'wrap',borderTop:`1px solid ${T.border}` }}>
+      <div style={{ display:'flex',alignItems:'center',gap:8,fontSize:12,color:T.textMuted }}>
+        <span>Rows per page</span>
+        <select value={pageSize} onChange={e=>onPageSize(Number(e.target.value))}
+          style={{ padding:'5px 26px 5px 10px',border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:12,color:T.textMain,background:T.surface,outline:'none',appearance:'none',backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%236b7280' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E")`,backgroundRepeat:'no-repeat',backgroundPosition:'right 8px center',cursor:'pointer',fontFamily:'inherit' }}>
+          {PAGE_SIZES.map(n=><option key={n} value={n}>{n}</option>)}
+        </select>
+        <span style={{ fontWeight:600 }}>{from}–{to} of {total}</span>
+      </div>
+      <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+        <Btn size="sm" variant="ghost" disabled={loading || page<=1} onClick={()=>onPage(page-1)}>Prev</Btn>
+        <span style={{ fontSize:12,color:T.textMuted,minWidth:96,textAlign:'center' }}>Page {page} of {pages}</span>
+        <Btn size="sm" variant="ghost" disabled={loading || page>=pages} onClick={()=>onPage(page+1)}>Next</Btn>
+      </div>
+    </div>
+  );
+};
 
 // ─── MiniBar Chart ───────────────────────────────────────────────────────────
 export const MiniBar: React.FC<{ data: ChartDataPoint[] }> = ({ data }) => {
@@ -215,6 +248,113 @@ export const StatusChart: React.FC<{ data: Array<{ label: string; value: number;
           <span style={{ fontSize:9,color:T.textMuted,fontWeight:600,textAlign:'center',lineHeight:1.2 }}>{d.label}</span>
         </div>
       ))}
+    </div>
+  );
+};
+
+// ─── PhoneField ──────────────────────────────────────────────────────────────
+// Country-code selector + national number, in one place. Same layout and rules the platform
+// already uses for phone entry (Sel of dial codes + digits-only field); previously inlined per
+// page, so this is the shared version rather than a fourth copy.
+//   • digits only — letters, spaces and punctuation are stripped as you type
+//   • max 10 digits (national part; the dial code is separate)
+export const PHONE_MAX = 10;
+export const digitsOnly = (v: string, max = PHONE_MAX) => (v || '').replace(/\D/g, '').slice(0, max);
+
+export const PhoneField: React.FC<{
+  label?: string;
+  code: string;
+  onCode: (v: string) => void;
+  value: string;
+  onValue: (v: string) => void;
+  codeOptions: Array<{ value: string; label: string }>;
+  required?: boolean;
+  hint?: string;
+  style?: CSSProperties;
+}> = ({ label = 'Mobile Number', code, onCode, value, onValue, codeOptions, required, hint, style = {} }) => (
+  <div style={{ display: 'grid', gridTemplateColumns: '118px 1fr', gap: 8, ...style }}>
+    <Sel label="Code" value={code} onChange={(e) => onCode(e.target.value)} options={codeOptions} style={{ marginBottom: 0 }} />
+    <Input
+      label={label}
+      value={value}
+      onChange={(e) => onValue(digitsOnly(e.target.value))}
+      required={required}
+      inputMode="numeric"
+      placeholder="10 digits"
+      hint={hint ?? (value && value.length !== PHONE_MAX ? `${value.length}/10 digits` : undefined)}
+      style={{ marginBottom: 0 }}
+    />
+  </div>
+);
+
+// ─── SearchSelect ────────────────────────────────────────────────────────────
+// Type-to-filter dropdown for long option lists (countries, states). The platform's only
+// existing typeahead is the native <datalist> (see BankNamesDatalist), which cannot cap how many
+// rows are visible — so this renders the same idea explicitly: type to filter, ~5 rows visible,
+// the rest reachable by scrolling. Falls back to accepting free text, like the datalist does.
+export const SEARCH_VISIBLE_ROWS = 5;
+
+export const SearchSelect: React.FC<{
+  label?: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<{ value: string; label: string }>;
+  placeholder?: string;
+  required?: boolean;
+  hint?: string;
+  style?: CSSProperties;
+}> = ({ label, value, onChange, options, placeholder = 'Type to search…', required, hint, style = {} }) => {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const away = (e: MouseEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', away);
+    return () => document.removeEventListener('mousedown', away);
+  }, []);
+
+  // While open the field shows what you typed; closed, it shows the chosen value.
+  const shown = open ? q : value;
+  const needle = (open ? q : '').trim().toLowerCase();
+  const list = needle ? options.filter((o) => o.label.toLowerCase().includes(needle)) : options;
+  const ROW = 34;
+
+  return (
+    <div style={{ marginBottom: 16, ...style }} ref={box}>
+      {label && (
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {label}{required && <span style={{ color: T.danger }}> *</span>}
+        </label>
+      )}
+      <div style={{ position: 'relative' }}>
+        <input
+          value={shown}
+          placeholder={placeholder}
+          onFocus={() => { setOpen(true); setQ(''); }}
+          onChange={(e) => { setQ(e.target.value); setOpen(true); onChange(e.target.value); }}
+          style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${open ? T.blue : T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', transition: 'border-color 0.2s' }}
+        />
+        {open && (
+          <div style={{ position: 'absolute', zIndex: 30, top: '100%', left: 0, right: 0, marginTop: 4, background: T.surface, border: `1.5px solid ${T.border}`, borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,0.14)', maxHeight: ROW * SEARCH_VISIBLE_ROWS, overflowY: 'auto' }}>
+            {list.length === 0 && (
+              <div style={{ padding: '9px 14px', fontSize: 12.5, color: T.textMuted }}>No matches</div>
+            )}
+            {list.map((o) => (
+              <div
+                key={o.value}
+                onMouseDown={(e) => { e.preventDefault(); onChange(o.value); setOpen(false); setQ(''); }}
+                style={{ padding: '8px 14px', fontSize: 13.5, cursor: 'pointer', height: ROW, boxSizing: 'border-box', color: o.value === value ? T.blue : T.textMain, fontWeight: o.value === value ? 700 : 500, background: o.value === value ? `${T.blue}0e` : 'transparent' }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = T.canvas; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = o.value === value ? `${T.blue}0e` : 'transparent'; }}
+              >
+                {o.label}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {hint && <p style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>{hint}</p>}
     </div>
   );
 };
