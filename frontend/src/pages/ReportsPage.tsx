@@ -5,6 +5,7 @@ import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { Icon, type IconName } from '../components/Icon';
 import { transactionAPI, userAPI } from '../services/api';
+import type { ReportRange } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
@@ -481,6 +482,29 @@ export const DATE_PRESETS: [string, string][] = [
   ['30m', 'Last 30 Minutes'], ['1h', 'Last 1 Hour'], ['24h', 'Last 24 Hours'],
   ['7d', 'Last 7 Days'], ['30d', 'Last 30 Days'], ['custom', 'Custom Range'],
 ];
+
+/** An IST calendar date (YYYY-MM-DD), optionally shifted by whole days. */
+const istDateStr = (shiftDays = 0) =>
+  new Date(Date.now() + shiftDays * 86400000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
+/**
+ * The applied date preset as a server-side row window. Deliberately a SUPERSET of what the
+ * browser-side date filter will keep: the sub-day presets (30m / 1h / 24h) compare against
+ * createdAt in the browser, so they map to whole IST days here and the client narrows further.
+ * Bounding only the table's rows leaves every card, analytic and total untouched.
+ * 'all' stays unbounded, by explicit user choice — the same contract the Agent Reports use.
+ */
+const serverRange = (preset: string, from: string, to: string): ReportRange => {
+  switch (preset) {
+    case 'today': case '30m': case '1h': return { date_from: istDateStr(0) };
+    case 'yesterday': return { date_from: istDateStr(-1), date_to: istDateStr(-1) };
+    case '24h': return { date_from: istDateStr(-1) };
+    case '7d': return { date_from: istDateStr(-7) };
+    case '30d': return { date_from: istDateStr(-30) };
+    case 'custom': return { ...(from ? { date_from: from } : {}), ...(to ? { date_to: to } : {}) };
+    default: return {};
+  }
+};
 const PAYMENT_METHODS = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'CASH', 'CRYPTO'];
 
 interface RFilters {
@@ -490,9 +514,16 @@ interface RFilters {
   fromTime: string; toTime: string;   // Custom Range time-of-day bounds (IST, "HH:MM")
   business: string;   // admin Reports only — client-side business-name filter (all-merchants view)
 }
+// The default date window. 'all' is still one click away and still fully supported; defaulting to
+// Last 30 Days is what stops the report table asking for the entire ledger on every page open,
+// and it matches the Agent Reports, which already default this way. Summary cards, analytics,
+// trends and balances are all-time regardless of this setting — only the table's rows are scoped.
+// To restore the old default, set datePreset back to 'all' here; nothing else needs to change.
+const DEFAULT_DATE_PRESET = '30d';
 const EMPTY_FILTERS: RFilters = {
   ref: '', memberId: '', memberName: '', combined: '', agentCode: '', approvedBy: '',
-  type: '', status: '', method: '', riskLevel: '', minA: '', maxA: '', exactA: '', datePreset: 'all', from: '', to: '',
+  type: '', status: '', method: '', riskLevel: '', minA: '', maxA: '', exactA: '',
+  datePreset: DEFAULT_DATE_PRESET, from: '', to: '',
   fromTime: '', toTime: '',
   business: '',
 };
@@ -839,7 +870,9 @@ export const AgentLedgerReport: React.FC<{ rows: ReportRow[]; allRows?: ReportRo
 // (single source of truth) — this component only renders + applies client-side filters.
 interface ReportsViewProps {
   data: ReportData | null;
-  reload: () => Promise<void> | void;
+  // The applied date window travels with the refetch, so the server ships only the rows the
+  // table will actually show instead of the whole ledger.
+  reload: (range?: ReportRange) => Promise<void> | void;
   businessName: string;     // shown as "Merchant Name" + used in PDF/Excel titles
   generatedBy: string;
   subtitle?: string;
@@ -877,7 +910,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
       if (toDT < fromDT) { toast.showToast('“To” date & time cannot be earlier than “From”.', 'error'); return; }
     }
     setApplying(true);
-    try { await reload(); setF(draft); }
+    try { await reload(serverRange(draft.datePreset, draft.from, draft.to)); setF(draft); }
     finally { setApplying(false); }
   };
   // Clear Filters — reset every field to its default, refresh from the server and
@@ -886,7 +919,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
     if (applying) return;
     setApplying(true);
     setDraft(EMPTY_FILTERS);
-    try { await reload(); setF(EMPTY_FILTERS); }
+    try { await reload(serverRange(EMPTY_FILTERS.datePreset, '', '')); setF(EMPTY_FILTERS); }
     finally { setApplying(false); }
   };
 
@@ -1077,9 +1110,16 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 // ── Merchant Reports page (own business) ──
 export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
   const [data, setData] = useState<ReportData | null>(null);
-  const reload = () => transactionAPI.reports().then(setData).catch(() => {});
-  useEffect(() => { reload(); }, []);
-  usePoll(reload, 30000);
+  // The applied window is held here so the 30s poll keeps refetching the SAME scope the reader
+  // chose, rather than silently widening back to the whole ledger.
+  const [range, setRange] = useState<ReportRange>(() => serverRange(EMPTY_FILTERS.datePreset, '', ''));
+  const reload = useCallback((next?: ReportRange) => {
+    const r = next ?? range;
+    if (next) setRange(next);
+    return transactionAPI.reports(r).then(setData).catch(() => {});
+  }, [range]);
+  useEffect(() => { reload(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  usePoll(() => reload(), 30000);
   return <ReportsView data={data} reload={reload} businessName={user.name} generatedBy={user.name} />;
 };
 
@@ -1091,18 +1131,23 @@ export const AdminReportsPage: React.FC<{ user: User }> = ({ user }) => {
   const [data, setData] = useState<ReportData | null>(null);
   const [merchant, setMerchant] = useState('');         // '' = all merchants
   const [businesses, setBusinesses] = useState<string[]>([]);
-  const reload = useCallback(
-    () => transactionAPI.adminReports(merchant || undefined).then(setData).catch(() => {}),
-    [merchant],
-  );
+  // See the note on ReportsPage: the applied window is held here so the poll keeps the reader's scope.
+  const [range, setRange] = useState<ReportRange>(() => serverRange(EMPTY_FILTERS.datePreset, '', ''));
+  const reload = useCallback((next?: ReportRange) => {
+    const r = next ?? range;
+    if (next) setRange(next);
+    return transactionAPI.adminReports(merchant || undefined, r).then(setData).catch(() => {});
+  }, [merchant, range]);
   // Distinct merchant business names for the scope dropdown (system-wide).
   useEffect(() => {
     userAPI.getMerchants()
       .then(ms => setBusinesses(Array.from(new Set(ms.map(m => m.name))).sort((a, b) => a.localeCompare(b))))
       .catch(() => {});
   }, []);
-  useEffect(() => { setData(null); reload(); }, [reload]);
-  usePoll(reload, 30000);
+  // Re-scope on merchant change only — `reload`'s identity also moves with the applied window,
+  // and depending on it would fire a second, redundant fetch right after Apply Filters.
+  useEffect(() => { setData(null); reload(); }, [merchant]); // eslint-disable-line react-hooks/exhaustive-deps
+  usePoll(() => reload(), 30000);
 
   const selector = (
     <Sel label="Merchant" value={merchant} onChange={e => setMerchant(e.target.value)} style={{ marginBottom: 0, minWidth: 220 }}

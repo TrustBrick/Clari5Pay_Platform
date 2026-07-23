@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField } from '../components/UI';
@@ -11,8 +11,8 @@ import { TxExportButton } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
 import { IS_DEMO, SEND_TO_APPROVAL_ENABLED } from '../utils/portal';
 import { AgentAssignmentPanel } from './AgentPages';
-import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI } from '../services/api';
-import type { TxQuery, MemberGroup } from '../services/api';
+import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI, fetchAllPages } from '../services/api';
+import type { TxQuery, TxPagedQuery, MemberGroup, Paged } from '../services/api';
 import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
@@ -393,25 +393,30 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
   const [loading, setLoading] = useState(true);
   const go = (p: string) => onNavigate?.(p);
 
-  // The dashboard renders only a 6-row preview of in-flight requests, so fetch just the recent
-  // 50 (not the whole history). All cards/charts read their counts from the aggregated summary
-  // (statusCounts), so they stay exact & live without pulling every row on each poll.
-  const reload = () => Promise.all([transactionAPI.getMine({ limit: 50 }), transactionAPI.summary()])
-    .then(([t, s]) => { setTxns(t); setSummary(s); })
+  const IN_FLIGHT = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED'];
+
+  // The dashboard renders only a 6-row preview of in-flight requests, so ask the server for one
+  // page of exactly those statuses rather than a recent-N window it then has to sift. All
+  // cards/charts read their counts from the aggregated summary (statusCounts), so they stay exact
+  // & live without pulling every row on each poll.
+  const reload = () => Promise.all([
+      transactionAPI.getMinePaged({ status: IN_FLIGHT.join(','), page: 1, page_size: 10 }),
+      transactionAPI.summary(),
+    ])
+    .then(([t, s]) => { setTxns(t.items); setSummary(s); })
     .catch(()=>{});
   useEffect(() => { reload().finally(()=>setLoading(false)); }, []);
   usePoll(reload);
 
   // Counts/charts come from the backend summary (SQL-aggregated over the full history).
-  const IN_FLIGHT = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED'];
   const sc = summary?.statusCounts;
   const scAt = (g: 'deposit' | 'withdrawal' | 'settlement', s: string) => sc?.[g]?.[s] ?? 0;
   const inFlightCount = (['deposit', 'withdrawal', 'settlement'] as const)
     .reduce((n, g) => n + IN_FLIGHT.reduce((m, s) => m + scAt(g, s), 0), 0);
   const settlementCount = summary?.settlementCount ?? 0;
-  // Recent in-flight rows for the 6-row preview table (pending requests are the newest, so the
-  // recent-50 window covers them; the accurate total is inFlightCount above).
-  const inFlight = txns.filter(t => IN_FLIGHT.includes(t.status));
+  // The 6-row preview table. `txns` is already the newest page of in-flight rows from the server;
+  // the accurate total across the whole history is inFlightCount above.
+  const inFlight = txns;
   const depositGraph = [
     { label: 'Requested', value: scAt('deposit', 'ACCOUNT_REQUESTED'), color: T.warning },
     { label: 'Submitted', value: scAt('deposit', 'ACCOUNT_SUBMITTED'), color: T.info },
@@ -1755,7 +1760,13 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
     // Production / Settlement / unassigned: classic role-partitioned queue, unchanged.
     return t.status === roleStatus && t.type.startsWith(rolePrefix) && !t.approverUserId;
   };
-  const reload = () => transactionAPI.getAllOverseer()
+  // The queue only ever contains rows sitting at a review gate, so ask the database for exactly
+  // those two statuses instead of pulling the entire platform ledger and discarding ~all of it.
+  // This is a strict superset of what `mine` accepts, so the approver-routing predicate — which
+  // stays client-side, since it encodes the routing rule — returns exactly the same rows.
+  const REVIEW_GATES = 'SUPERVISOR_REVIEW,MANAGER_REVIEW';
+  const reload = () => fetchAllPages(p =>
+      transactionAPI.getAllOverseerPaged({ status: REVIEW_GATES, page: p, page_size: 100 }))
     .then(rows => setTxns(rows.filter(mine)))
     .catch(() => setTxns([]));
   useEffect(() => { reload().finally(() => setLoading(false)); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
@@ -1894,12 +1905,20 @@ export const TemplatesPage: React.FC<{ user: User }> = ({ user }) => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
   // Oversight roles (Manager/Supervisor) see every merchant's requests; others see their own.
-  const reload = () => {
-    const fn = isOverseerRole(user) ? transactionAPI.getAllOverseer : transactionAPI.getMine;
-    return fn().then(setTxns).catch(()=>setTxns([]));
-  };
-  useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role, user.merchantRole]);
+  // Read-only overview, so it takes one server page at a time rather than the whole history.
+  const reload = useCallback(() => {
+    const fn = isOverseerRole(user) ? transactionAPI.getAllOverseerPaged : transactionAPI.getMinePaged;
+    return fn({ page, page_size: pageSize })
+      .then(res => { setTxns(res.items); setTotal(res.total); setTotalPages(Math.max(1, res.totalPages)); })
+      .catch(()=>{ setTxns([]); setTotal(0); setTotalPages(1); });
+  }, [user, page, pageSize]);
+  useEffect(() => { reload().finally(()=>setLoading(false)); }, [user.role, user.merchantRole, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(reload);
 
   return (
@@ -1910,9 +1929,11 @@ export const TemplatesPage: React.FC<{ user: User }> = ({ user }) => {
       </div>
       <Card>
         <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
-          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>All Requests ({txns.length})</h3>
+          <h3 style={{ margin:0,fontSize:14,fontWeight:800 }}>All Requests ({total})</h3>
         </div>
         {loading ? <div style={{ padding:32,textAlign:'center',color:T.textMuted }}>Loading...</div> : <TxTable txns={txns} viewerRole="MERCHANT"/>}
+        <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading}
+          onPage={setPage} onPageSize={n=>{ setPageSize(n); setPage(1); }}/>
       </Card>
     </div>
   );
@@ -1967,21 +1988,48 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
   const [detailTx, setDetailTx] = useState<Transaction | null>(null);
 
   const overseer = isOverseerRole(user);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
 
-  const reload = () => {
-    // Supervisor/Manager → all transactions (read-only); merchant → own; admin → all.
-    // The applied search/date filters are sent server-side for performance.
-    const fn = overseer ? transactionAPI.getAllOverseer
-      : user.role === 'MERCHANT' ? transactionAPI.getMine
-      : transactionAPI.getAll;
-    return fn(query).then(setTxns).catch(()=>setTxns([]));
-  };
-  // Refetch on mount, role change, and whenever the applied filters change.
-  useEffect(() => { setFiltering(true); reload().finally(()=>{ setLoading(false); setFiltering(false); }); }, [user.role, user.merchantRole, query]);
+  // Supervisor/Manager → all transactions (read-only); merchant → own; admin → all.
+  // Each role's paginated feed; the bare-array variants pulled the entire ledger.
+  const fetchPage = useCallback((q: TxPagedQuery): Promise<Paged<Transaction>> =>
+    overseer ? transactionAPI.getAllOverseerPaged(q)
+      : user.role === 'MERCHANT' ? transactionAPI.getMinePaged(q)
+      : transactionAPI.getAllPaged(q), [overseer, user.role]);
+
+  // Type and status used to be client-side refinements on the server-filtered set — correct only
+  // while the client held every matching row. They are now part of the server query.
+  const pagedQuery = useCallback((): TxPagedQuery => ({
+    ...query,
+    ...(type === 'ALL' ? {} : { type }),
+    ...(status === 'ALL' ? {} : { status }),
+  }), [query, type, status]);
+
+  const reload = useCallback((opts?: { page?: number; pageSize?: number }) => {
+    const p = opts?.page ?? page;
+    const ps = opts?.pageSize ?? pageSize;
+    return fetchPage({ ...pagedQuery(), page: p, page_size: ps })
+      .then(res => { setTxns(res.items); setTotal(res.total); setTotalPages(Math.max(1, res.totalPages)); })
+      .catch(()=>{ setTxns([]); setTotal(0); setTotalPages(1); });
+  }, [fetchPage, pagedQuery, page, pageSize]);
+
+  // Refetch on mount, role change, and whenever the applied filters or the page move.
+  useEffect(() => { setFiltering(true); reload().finally(()=>{ setLoading(false); setFiltering(false); }); },
+    [user.role, user.merchantRole, query, type, status, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Any change to the filter set puts the reader back on page 1.
+  useEffect(() => { setPage(1); }, [query, type, status]);
   usePoll(() => { if (!slipTx && !detailTx) reload(); });
 
-  // Type/status are lightweight client-side refinements on the server-filtered set.
-  const filtered = txns.filter(t => (type === 'ALL' || t.type === type) && (status === 'ALL' || t.status === status));
+  // `txns` IS the server's page for the current filter set.
+  const filtered = txns;
+
+  // Export still covers the ENTIRE filtered result set, not just the visible page.
+  const exportRows = useCallback(
+    () => fetchAllPages(p => fetchPage({ ...pagedQuery(), page: p, page_size: 100 })),
+    [fetchPage, pagedQuery]);
 
   return (
     <>
@@ -1997,15 +2045,14 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
           <select value={status} onChange={e=>setStatus(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...MERCHANT_STATUSES].map(v=><option key={v} value={v}>{v==='ALL'?'All Statuses':typeLabel(v)}</option>)}
           </select>
-          <TxExportButton txns={filtered} title="Transaction Ledger" />
+          <TxExportButton txns={filtered} fetchTxns={exportRows} title="Transaction Ledger" />
         </div>
       </div>
       <TxTable loading={loading} txns={filtered} viewerRole={user.role}
         actionMode={overseer ? 'view' : (user.role==='MERCHANT'?'merchant':'view')}
         onAction={(t, action)=> action==='slip' ? setSlipTx(t) : setDetailTx(t)}/>
-      <div style={{ padding:'10px 20px',borderTop:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center' }}>
-        <p style={{ fontSize:11,color:T.textMuted,margin:0 }}>Showing {filtered.length} of {txns.length}</p>
-      </div>
+      <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading}
+        onPage={setPage} onPageSize={n=>{ setPageSize(n); setPage(1); }}/>
     </Card>
     {slipTx && (
       <MerchantSlipModal tx={slipTx} onClose={()=>setSlipTx(null)} onSubmitted={()=>{ setSlipTx(null); reload(); }}/>

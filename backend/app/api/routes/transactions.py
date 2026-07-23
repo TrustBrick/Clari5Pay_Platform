@@ -1770,6 +1770,8 @@ def _build_report_payload(
     rates_by_business: dict[str, tuple[float, float]],
     business_by_mid: dict[int, str],
     operator_by_mid: dict[int, str] | None = None,
+    rows_from: date | None = None,
+    rows_to: date | None = None,
 ) -> dict:
     """Build the full Reports analytics payload from a transaction set + canonical balance
     figures. SINGLE source of truth shared by the merchant Reports (own business) and the
@@ -1777,7 +1779,14 @@ def _build_report_payload(
     compute_balance-derived figures, so the numbers are identical everywhere. The
     rates_by_business / business_by_mid maps let the running Available Balance column use each
     business's own pay-in / pay-out fee rates (so a consolidated all-merchants view stays
-    correct across merchants with different fee structures)."""
+    correct across merchants with different fee structures).
+
+    ``rows_from`` / ``rows_to`` bound only the ``transactions`` ROW LIST — the report table's
+    data — to the date window the reader has selected. Deliberately nothing else: every card,
+    window, leaderboard, intelligence figure, trend and the cumulative running-balance column
+    are still computed over the FULL set passed in, so no displayed figure moves. The table was
+    already filtered to this same window in the browser; the window simply stops the entire
+    ledger being serialised and shipped to draw it."""
     now = datetime.utcnow()
     today = date.today()
     yesterday = today - timedelta(days=1)
@@ -2013,6 +2022,14 @@ def _build_report_payload(
             return round(t.amount * pay_out_rate, 2)
         return 0.0
 
+    # Row-list window. bal_by_id above was accumulated over the whole ordered set, so a row's
+    # running balance is unchanged by which rows we go on to serialise.
+    row_txns = txns
+    if rows_from or rows_to:
+        row_txns = [t for t in txns
+                    if (not rows_from or (t.tx_date and t.tx_date >= rows_from))
+                    and (not rows_to or (t.tx_date and t.tx_date <= rows_to))]
+
     rows = [{
         "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
         "business": business_by_mid.get(t.merchant_id, ""),
@@ -2034,7 +2051,7 @@ def _build_report_payload(
         "agentCode": t.agent_code,
         "riskLevel": "HIGH" if t.high_risk else "LOW",
         "availableBalance": bal_by_id.get(t.id),
-    } for t in txns]
+    } for t in row_txns]
     rows.sort(key=lambda r: r["createdAt"] or "", reverse=True)
 
     return {
@@ -2048,10 +2065,15 @@ def _build_report_payload(
 async def merchant_reports(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    date_from: date | None = None,
+    date_to: date | None = None,
 ):
     """Full analytics payload for the merchant Reports module — summary cards, time-window
     quick reports, membership analytics, leaderboards, transaction intelligence, daily trends
-    and auto-generated business insights. Strictly scoped to the caller's own business pool."""
+    and auto-generated business insights. Strictly scoped to the caller's own business pool.
+
+    ``date_from`` / ``date_to`` bound only the report TABLE's rows (see _build_report_payload);
+    every card and analytic stays all-time. Omit both for the previous unbounded payload."""
     if current_user.role != UserRole.MERCHANT:
         raise HTTPException(status_code=403, detail="Merchant only")
 
@@ -2070,6 +2092,7 @@ async def merchant_reports(
         rates_by_business={current_user.name: rates},
         business_by_mid={i: current_user.name for i in ids},
         operator_by_mid={u.id: (u.full_name or u.username or u.name) for u in biz_users},
+        rows_from=date_from, rows_to=date_to,
     )
 
 
@@ -2078,6 +2101,8 @@ async def admin_reports(
     merchant: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_admin),
+    date_from: date | None = None,
+    date_to: date | None = None,
 ):
     """System-wide Reports for Admins / Super Admins — the SAME analytics payload as the
     merchant Reports module, but spanning every merchant. With no `merchant` filter it is a
@@ -2111,7 +2136,8 @@ async def admin_reports(
     txns = (await db.execute(
         select(Transaction).where(Transaction.merchant_id.in_(ids))
     )).scalars().all() if ids else []
-    return _build_report_payload(txns, bal, rates_by_business, business_by_mid, operator_by_mid)
+    return _build_report_payload(txns, bal, rates_by_business, business_by_mid, operator_by_mid,
+                                 rows_from=date_from, rows_to=date_to)
 
 
 @router.get("/approvers")
