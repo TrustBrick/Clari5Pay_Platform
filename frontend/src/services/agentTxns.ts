@@ -129,6 +129,7 @@ export interface AgentTxnRow {
   depositProof?: string | null;
   sentForApproval: boolean;
   approverName?: string | null;
+  approverRole?: string | null;   // SUPERVISOR / MANAGER — makes the review status display as the chosen role.
   approvedBy?: string | null;
   approvedDate?: string | null;
   approvedTime?: string | null;

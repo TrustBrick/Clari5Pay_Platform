@@ -163,6 +163,7 @@ _NEW_COLUMNS = [
     ("agent_transaction", "deposited_at", "TIMESTAMP"),
     ("agent_transaction", "deposit_utr", "VARCHAR(64)"),
     ("agent_transaction", "deposit_proof", "TEXT"),
+    ("agent_transaction", "approver_role", "VARCHAR(32)"),
     # Withdrawal chain: the member account the payout is sent to (agent_member_bank_account is a
     # NEW table, so create_all makes it — only these ALTERs are needed here).
     ("agent_transaction", "payout_account_id", "INTEGER"),

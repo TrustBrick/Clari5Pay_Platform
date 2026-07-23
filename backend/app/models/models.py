@@ -928,6 +928,9 @@ class AgentTransaction(Base):
     sent_for_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     approver_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)     # chosen Authorized Approver
     approver_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # The chosen approver's role (SUPERVISOR / MANAGER) — a deposit may go to either, so the review
+    # status must DISPLAY as whoever actually owns it. Mirrors Transaction.approver_role.
+    approver_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     approved_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     approved_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

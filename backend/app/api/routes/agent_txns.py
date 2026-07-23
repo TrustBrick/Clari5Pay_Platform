@@ -497,6 +497,7 @@ def _row(t: AgentTransaction) -> dict:
         "depositUtr": t.deposit_utr, "depositProof": t.deposit_proof,
         "sentForApproval": t.sent_for_approval,
         "approverName": t.approver_name,
+        "approverRole": t.approver_role,
         "approvedBy": t.approved_by, "approvedDate": a_date, "approvedTime": a_time, "approvedAt": a_iso,
         # When the money actually moved, whichever route completed it. Null until it completes.
         "completedAt": _ist_parts(t.completed_at)[0],
@@ -856,19 +857,23 @@ async def _resolve_approver(db: AsyncSession, business: str, approver_user_id: i
     """Validate the chosen Authorized Approver against the roles that may approve THIS request type
     (see APPROVER_ROLES): a deposit takes a Supervisor or a Manager, a withdrawal a Manager only.
     Sending a Supervisor's id on a withdrawal — from the API or any other manual route — is a 400,
-    which is what keeps the rule enforceable outside the UI."""
+    which is what keeps the rule enforceable outside the UI.
+
+    Returns (user_id, username, role). The role is kept, not just checked: a deposit may go to a
+    Supervisor OR a Manager, so it is the only thing that can tell the UI whose review a request is
+    actually sitting in."""
     if approver_user_id is None:
-        return None, None
+        return None, None, None
     allowed = APPROVER_ROLES.get((txn_type or "").upper(), APPROVER_ROLES["DEPOSIT"])
     u = (await db.execute(select(User).where(User.id == approver_user_id))).scalar_one_or_none()
-    ok = (u and u.role == UserRole.MERCHANT and u.name == business
-          and str(u.merchant_role or "").upper() in allowed)
+    role = str(u.merchant_role or "").upper() if u else ""
+    ok = (u and u.role == UserRole.MERCHANT and u.name == business and role in allowed)
     if not ok:
         who = "a Manager" if allowed == ("MANAGER",) else "a Supervisor or Manager"
         raise HTTPException(
             status_code=400,
             detail=f"Authorized approver for an Agent {txn_type.title()} must be {who} of your business.")
-    return u.id, u.username
+    return u.id, u.username, role
 
 
 # ── Request models ──────────────────────────────────────────────────────────────
@@ -1072,7 +1077,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
             )
 
     # Approver roles are scoped to the request type: a WITHDRAWAL accepts a Manager only.
-    approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId, txn_type)
+    approver_id, approver_name, approver_role = await _resolve_approver(db, business, body.approverUserId, txn_type)
 
     ref = await _next_serial(db, AgentTransaction.reference_number, prefix)
     # The operator-entered note number must stay unique, so a clash is reported plainly instead
@@ -1157,7 +1162,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         payout_branch=(payout.branch if payout else None),
         payout_upi_id=(payout.upi_id if payout else None),
         sent_for_approval=bool(body.sentForApproval),
-        approver_user_id=approver_id, approver_name=approver_name,
+        approver_user_id=approver_id, approver_name=approver_name, approver_role=approver_role,
         linked_deposit_id=linked_deposit_id,
         created_by=user.username, created_by_id=user.id,
     )
@@ -1431,7 +1436,7 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     # "Send To Approval": the Authorized Approver is chosen at this step (after the slip uploads),
     # not at creation. Record who the deposit is addressed to; the Supervisor review is unchanged.
     if body.approverUserId is not None:
-        t.approver_user_id, t.approver_name = await _resolve_approver(db, business, body.approverUserId, "DEPOSIT")
+        t.approver_user_id, t.approver_name, t.approver_role = await _resolve_approver(db, business, body.approverUserId, "DEPOSIT")
         t.sent_for_approval = True
     await _log(db, t, "SLIP_SUBMITTED", user, note="Slip submitted — awaiting Supervisor approval")
     if t.approver_name:
@@ -2164,7 +2169,7 @@ async def manage_txn(txn_id: int, body: AgentManage, db: AsyncSession = Depends(
     if body.notes and len(body.notes) > 100:
         raise HTTPException(status_code=400, detail="Notes must be 100 characters or fewer.")
     # Forwarding a managed request follows the same per-type rule as creating one.
-    approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId, t.txn_type)
+    approver_id, approver_name, approver_role = await _resolve_approver(db, business, body.approverUserId, t.txn_type)
 
     old_amount = t.amount
     new_amount = round(body.amount, 2)
@@ -2177,6 +2182,7 @@ async def manage_txn(txn_id: int, body: AgentManage, db: AsyncSession = Depends(
         t.sent_for_approval = True
         t.approver_user_id = approver_id
         t.approver_name = approver_name
+        t.approver_role = approver_role
     if new_amount != old_amount:
         t.amount = new_amount
         # Old → new amount, actor and timestamp; append-only, so no prior record is overwritten.

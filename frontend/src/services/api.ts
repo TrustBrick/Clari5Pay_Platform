@@ -210,6 +210,8 @@ export interface MemberGroup {
   totalAmount: number;             // sum within the active type filter
   latestStatus?: string | null;
   latestType?: string | null;
+  latestApproverRole?: string | null;   // so the group badge names the approver who owns it
+
   latestDate?: string | null;
   latestTime?: string | null;
   latestCreatedAt?: string | null;

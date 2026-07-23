@@ -74,12 +74,38 @@ const STATUS_STYLE: Record<string, { c: string; bg: string; label: string }> = {
   SETTLED: { c: T.success, bg: T.successBg, label: 'Settled' },
 };
 
-const StatusPill: React.FC<{ status: string; type?: string | null; method?: string | null }> = ({ status, type, method }) => {
+// A request sitting in a review gate is owned by the approver it was actually sent to. A deposit may
+// go to a Supervisor OR a Manager (APPROVER_ROLES), so the role — not the gate's name — decides the
+// wording: "Manager Review" when a Manager owns it, "Supervisor Review" when a Supervisor does.
+// Falls back to the stored label when no approver was recorded (legacy rows), so nothing regresses.
+const ROLE_WORD: Record<string, string> = {
+  SUPERVISOR: 'Supervisor', MANAGER: 'Manager', ADMIN: 'Admin', SUPER_ADMIN: 'Super Admin',
+};
+const roleWord = (approverRole?: string | null) => ROLE_WORD[String(approverRole || '').toUpperCase()] || '';
+
+// The statuses whose owner is the chosen approver — these read as "<Role> Review".
+const REVIEW_STATUSES = new Set(['MANAGER_REVIEW', 'SUPERVISOR_REVIEW']);
+
+/** Display label for an agent status, resolved against whoever currently owns it. */
+export const agentStatusLabel = (
+  status: string, type?: string | null, method?: string | null, approverRole?: string | null,
+): string => {
+  const s = STATUS_STYLE[status];
+  const who = roleWord(approverRole);
+  // A cash deposit uploads a token image, not a slip, so its SLIP_SUBMITTED is really the
+  // awaiting-approver state — it reads as that approver's review, not "Slip Submitted".
+  if (status === 'SLIP_SUBMITTED' && type === 'DEPOSIT' && isTokenMethod(method)) {
+    return `${who || 'Supervisor'} Review`;
+  }
+  if (REVIEW_STATUSES.has(status) && who) return `${who} Review`;
+  // "Approved by <Role>" must name the role that actually approved it, not the gate's name.
+  if (status === 'SUPERVISOR_APPROVED' && who) return `Approved by ${who}`;
+  return s?.label || String(status || '').replace(/_/g, ' ');
+};
+
+const StatusPill: React.FC<{ status: string; type?: string | null; method?: string | null; approverRole?: string | null }> = ({ status, type, method, approverRole }) => {
   const s = STATUS_STYLE[status] || { c: T.textMuted, bg: T.borderLight, label: status };
-  // A cash deposit uploads a token image, not a slip, so its SLIP_SUBMITTED — the awaiting-Supervisor
-  // state — reads "Supervisor Review". Same colour/state; only the word "Slip" is wrong for cash.
-  const label = (status === 'SLIP_SUBMITTED' && type === 'DEPOSIT' && isTokenMethod(method))
-    ? 'Supervisor Review' : s.label;
+  const label = agentStatusLabel(status, type, method, approverRole);
   return <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 20, color: s.c, background: s.bg, whiteSpace: 'nowrap' }}>{label}</span>;
 };
 
@@ -262,7 +288,7 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
                   <td style={tdS}>{r.type}</td>
                   <td style={tdS}>{r.membershipId}{r.membershipName ? ` · ${r.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(r.amount)}</td>
-                  <td style={tdS}><StatusPill status={r.status} type={r.type} method={r.txnMethod} /></td>
+                  <td style={tdS}><StatusPill status={r.status} type={r.type} method={r.txnMethod} approverRole={r.approverRole} /></td>
                   <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{r.createdDate} {r.createdTime}</td>
                 </tr>
               ))}
@@ -442,7 +468,7 @@ export const AgentProfileModal: React.FC<{ agentMasterId: number; onClose: () =>
                 <td style={tdS}>{x.type.charAt(0) + x.type.slice(1).toLowerCase()}</td>
                 <td style={tdS}>{x.membershipId}</td>
                 <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmt(x.amount)}</td>
-                <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} /></td>
+                <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} approverRole={x.approverRole} /></td>
               </tr>
             ))}
           </tbody>
@@ -586,7 +612,7 @@ export const AgentBalanceEnquiryPage: React.FC<{ user: User; onNavigate?: (p: st
                       <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmt(t.amount)}</td>
                       <td style={{ ...tdS, textAlign: 'right', color: T.warning }}>{t.commissionAmount != null ? fmt(t.commissionAmount) : '—'}</td>
                       <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{t.netAmount != null ? fmt(t.netAmount) : '—'}</td>
-                      <td style={tdS}><StatusPill status={t.status} type={t.type} method={t.txnMethod} /></td>
+                      <td style={tdS}><StatusPill status={t.status} type={t.type} method={t.txnMethod} approverRole={t.approverRole} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -1854,7 +1880,7 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
 
   const allFields: Array<[string, React.ReactNode]> = [
     ['Reference Number', row.referenceNumber], ['Transaction Code', row.transactionCode],
-    ['Type', row.type], ['Status', <StatusPill status={row.status} type={row.type} method={row.txnMethod} />],
+    ['Type', row.type], ['Status', <StatusPill status={row.status} type={row.type} method={row.txnMethod} approverRole={row.approverRole} />],
     ['Agent', `${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`],
     ['Agent Country', row.agentCountry], ['Agent State', row.agentState],
     ['Agent Location', row.agentLocation], ['Agent Category', row.agentCategory],
@@ -2243,7 +2269,7 @@ const AgentTxnManagementPage: React.FC<{
                   <td style={tdS}>{categoryOf(x)}</td>
                   <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
-                  <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} /></td>
+                  <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} approverRole={x.approverRole} /></td>
                   <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
                   <td style={{ ...tdS, whiteSpace: 'nowrap', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn>
@@ -2392,7 +2418,11 @@ const AGENT_TYPE_OPTIONS = [
   { value: 'DEPOSIT', label: 'Deposit' }, { value: 'WITHDRAWAL', label: 'Withdrawal' }, { value: 'SETTLEMENT', label: 'Settlement' },
 ];
 const typeLabelA = (t: string) => AGENT_TYPE_OPTIONS.find(o => o.value === t)?.label || t;
-const statusLabelA = (s: string) => STATUS_STYLE[s]?.label || String(s || '').replace(/_/g, ' ');
+// Exports and the status filter share the on-screen resolver, so a row reads the same in a CSV/PDF
+// as it does in the table. The filter dropdown has no row context and passes none — it keeps the
+// generic gate wording, which is correct for a "show me everything in this state" control.
+const statusLabelA = (s: string, type?: string | null, method?: string | null, approverRole?: string | null) =>
+  agentStatusLabel(s, type, method, approverRole);
 
 /** Only Completed transactions feed reports, cards, ledger, commission and balance. */
 const isCompletedA = (r: AgentTxnRow) => AGENT_COMPLETED_STATUSES.includes(r.status);
@@ -2720,8 +2750,8 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   // ── Exports — PDF/Print via the shared print-to-PDF letterhead, Excel via the shared xlsx
   // helper, CSV via the shared CSV helper. Every export honours the applied filters. ──
   const stamp = today();
-  const fullCsv = filtered.map(r => [r.createdDate || '', r.createdTime || '', r.referenceNumber, r.membershipId, r.membershipName || '', r.agentCode || '', r.agentName || '', r.agentCategory || '', typeLabelA(r.type), r.amount, r.commissionPct ?? 0, commissionA(r), r.netAmount ?? 0, statusLabelA(r.status), r.createdBy || '', approverA(r) === '—' ? '' : approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r) === '—' ? '' : completedAtA(r)]);
-  const fullPdf = filtered.map(r => [r.createdDate || '—', r.createdTime || '—', r.referenceNumber, r.membershipId, r.membershipName || '—', r.agentCode || '—', r.agentName || '—', r.agentCategory || '—', typeLabelA(r.type), fmt(r.amount), `${r.commissionPct ?? 0}%`, fmt(commissionA(r)), fmt(r.netAmount ?? 0), statusLabelA(r.status), r.createdBy || '—', approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r)]);
+  const fullCsv = filtered.map(r => [r.createdDate || '', r.createdTime || '', r.referenceNumber, r.membershipId, r.membershipName || '', r.agentCode || '', r.agentName || '', r.agentCategory || '', typeLabelA(r.type), r.amount, r.commissionPct ?? 0, commissionA(r), r.netAmount ?? 0, statusLabelA(r.status, r.type, r.txnMethod, r.approverRole), r.createdBy || '', approverA(r) === '—' ? '' : approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r) === '—' ? '' : completedAtA(r)]);
+  const fullPdf = filtered.map(r => [r.createdDate || '—', r.createdTime || '—', r.referenceNumber, r.membershipId, r.membershipName || '—', r.agentCode || '—', r.agentName || '—', r.agentCategory || '—', typeLabelA(r.type), fmt(r.amount), `${r.commissionPct ?? 0}%`, fmt(commissionA(r)), fmt(r.netAmount ?? 0), statusLabelA(r.status, r.type, r.txnMethod, r.approverRole), r.createdBy || '—', approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r)]);
   const commCsv = commissionRows.map(a => [a.agentId, a.agentName, a.category, a.depositAmount, a.depositCommission, a.withdrawalAmount, a.withdrawalCommission, a.settlementAmount, a.settlementCommission, a.totalCommission, a.count]);
   const commPdf = commissionRows.map(a => [a.agentId, a.agentName, a.category || '—', fmt(a.depositAmount), fmt(a.depositCommission), fmt(a.withdrawalAmount), fmt(a.withdrawalCommission), fmt(a.settlementAmount), fmt(a.settlementCommission), fmt(a.totalCommission), a.count]);
   const ledgerCsv: Array<Array<string | number>> = [
@@ -2763,7 +2793,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
           { header: 'Commission %', get: r => Number(r.commissionPct ?? 0) },
           { header: 'Commission Amount', get: r => Number(commissionA(r)), width: 16, z: INR_NUMFMT },
           { header: 'Net Amount', get: r => Number(r.netAmount ?? 0), width: 16, z: INR_NUMFMT },
-          { header: 'Status', get: r => statusLabelA(r.status) },
+          { header: 'Status', get: r => statusLabelA(r.status, r.type, r.txnMethod, r.approverRole) },
           { header: 'Created By', get: r => r.createdBy || '' },
           { header: 'Approved By', get: r => (approverA(r) === '—' ? '' : approverA(r)) },
           { header: 'Created Date & Time', get: r => `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), width: 20 },
@@ -2962,7 +2992,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
                     <td style={{ ...tdR, textAlign: 'right', color: T.textMuted }}>{r.commissionPct != null ? `${r.commissionPct}%` : '—'}</td>
                     <td style={{ ...tdR, textAlign: 'right', color: T.green, fontWeight: 700 }}>{fmt(commissionA(r))}</td>
                     <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{r.netAmount != null ? fmt(r.netAmount) : '—'}</td>
-                    <td style={tdR}><StatusPill status={r.status} type={r.type} method={r.txnMethod} /></td>
+                    <td style={tdR}><StatusPill status={r.status} type={r.type} method={r.txnMethod} approverRole={r.approverRole} /></td>
                     <td style={{ ...tdR, color: T.textMuted }}>{r.createdBy || '—'}</td>
                     <td style={{ ...tdR, color: T.textMuted }}>{approverA(r)}</td>
                     <td style={{ ...tdR, whiteSpace: 'nowrap', color: T.textMuted }}>{`${r.createdDate || ''} ${r.createdTime || ''}`.trim() || '—'}</td>
@@ -3883,7 +3913,7 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
                   <td style={tdS}>{x.type.charAt(0) + x.type.slice(1).toLowerCase()}</td>
                   <td style={tdS}>{methodLabel(x.txnMethod)}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
-                  <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} /></td>
+                  <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} approverRole={x.approverRole} /></td>
                   <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
                   <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn></td>
                 </tr>
