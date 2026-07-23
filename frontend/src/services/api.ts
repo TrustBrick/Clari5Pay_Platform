@@ -150,10 +150,11 @@ export const transactionAPI = {
     const res = await api.get<{ memberName?: string|null; upiId?: string|null; accountHolder?: string|null; accountNumber?: string|null; ifsc?: string|null; branch?: string|null; bankName?: string|null }>(`/api/transactions/member-profile/${encodeURIComponent(memberId)}`);
     return res.data;
   },
-  // "Send To Approval" (demo only): Supervisors + Managers of the caller's business, for the
-  // Authorized Approver selector on the Deposit/Withdrawal forms. 404s on Production.
-  approvers: async () => {
-    const res = await api.get<{ id: number; name: string; role: string }[]>('/api/transactions/approvers');
+  // "Send To Approval": the approval roles of the caller's business, for the Authorized Approver
+  // selector. Scoped to the request type — a Deposit takes a Supervisor or a Manager, a Withdrawal
+  // a Manager only. 404s when the feature is switched off.
+  approvers: async (txnType: 'DEPOSIT' | 'WITHDRAWAL' = 'DEPOSIT') => {
+    const res = await api.get<{ id: number; name: string; role: string }[]>('/api/transactions/approvers', { params: { txnType } });
     return res.data;
   },
   createDeposit: async (data: Record<string, unknown>) => {
