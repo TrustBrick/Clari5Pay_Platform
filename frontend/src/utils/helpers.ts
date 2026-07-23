@@ -105,10 +105,18 @@ const MERCHANT_WITHDRAWAL_VIEW: Record<string, string> = {
 //     — so the label matches who must act, not the fixed deposit/supervisor·withdrawal/manager gate.
 //     The stored status and the workflow are unchanged; this is presentation only.
 //  2. A withdrawal seen from the Merchant Portal collapses its internal steps (MERCHANT_WITHDRAWAL_VIEW).
+const REVIEW_STATUS_FOR_ROLE: Record<string, string> = {
+  MANAGER: 'MANAGER_REVIEW',
+  SUPERVISOR: 'SUPERVISOR_REVIEW',
+};
+
 export const displayStatus = (status: string, type?: string, viewerRole?: string, approverRole?: string | null): string => {
   const appr = String(approverRole || '').toUpperCase();
   if (appr && (status === 'SUPERVISOR_REVIEW' || status === 'MANAGER_REVIEW')) {
-    return appr === 'MANAGER' ? 'MANAGER_REVIEW' : 'SUPERVISOR_REVIEW';
+    // Only a role that maps to a real review gate may rewrite the label. An unrecognised role
+    // leaves the stored status alone — silently collapsing it to "Supervisor Review" is exactly
+    // how a Manager's request ends up reading as a Supervisor's.
+    return REVIEW_STATUS_FOR_ROLE[appr] || status;
   }
   if (viewerRole !== 'MERCHANT' || !type || !type.startsWith('WITHDRAWAL')) return status;
   return MERCHANT_WITHDRAWAL_VIEW[status] || status;

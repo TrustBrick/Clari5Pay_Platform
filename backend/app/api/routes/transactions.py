@@ -1168,6 +1168,9 @@ async def get_my_member_groups(
             "totalAmount": float(r.total_amount or 0.0),
             "latestStatus": lt.get("status"),
             "latestType": lt.get("type"),
+            # Carried so the group's status badge names the approver who owns it, exactly as the
+            # row badges in the drill-down do — without it the badge falls back to the gate name.
+            "latestApproverRole": lt.get("approverRole"),
             "latestDate": lt.get("date"),
             "latestTime": lt.get("time"),
             "latestCreatedAt": lt.get("createdAt"),

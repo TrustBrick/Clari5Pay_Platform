@@ -1244,7 +1244,7 @@ const ManagementPage: React.FC<{
                   <tr key={g.membershipId} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>openGroup(g)}>
                     <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{byCompany ? g.membershipId : memberLabel(g.membershipId, g.memberName)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.requests}</td>
-                    <td style={{ padding:'11px 14px' }}>{g.latestStatus ? <Badge status={g.latestStatus as Transaction['status']} type={g.latestType || undefined} viewerRole="MERCHANT"/> : '—'}</td>
+                    <td style={{ padding:'11px 14px' }}>{g.latestStatus ? <Badge status={g.latestStatus as Transaction['status']} type={g.latestType || undefined} viewerRole="MERCHANT" approverRole={g.latestApproverRole}/> : '—'}</td>
                     <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.totalAmount)}</td>
                     <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={(e?:any)=>{ e?.stopPropagation?.(); openGroup(g); }}>View History</Btn></td>
                   </tr>
