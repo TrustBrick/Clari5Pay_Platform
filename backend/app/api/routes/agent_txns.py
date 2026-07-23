@@ -204,12 +204,31 @@ def _require(user: User, roles: tuple[str, ...], what: str) -> None:
         raise HTTPException(status_code=403, detail=f"Your role cannot {what}.")
 
 
+# Which merchant roles may be chosen as — and act as — the Authorized Approver, per request type.
+# A DEPOSIT may be approved by either review role; a WITHDRAWAL is a Manager-only authorisation, so
+# Supervisors are excluded from the dropdown, the approval queue and the approve/reject actions
+# alike. This mirrors APPROVER_ROLES in the merchant module (transactions.py) so both modules run
+# the same rule. A MANAGE request keeps the both-roles default; a SETTLEMENT has no approver.
+APPROVER_ROLES = {
+    "DEPOSIT": ("SUPERVISOR", "MANAGER"),
+    "WITHDRAWAL": ("MANAGER",),
+}
+
+
 def _require_sole_approver(user: User, t: AgentTransaction) -> None:
     """The chosen Authorized Approver is the SOLE reviewer of a request (deposit or withdrawal):
     only the specific Manager/Supervisor the operator selected on it may approve or reject — routing
-    is by the selected user, not by role. Every other Manager/Supervisor is denied (403)."""
-    if not agent_role_in(user, ("MANAGER", "SUPERVISOR")):
-        raise HTTPException(status_code=403, detail="Only a Manager or Supervisor can review Agent requests.")
+    is by the selected user, not by role. Every other Manager/Supervisor is denied (403).
+
+    On top of that, the reviewer must hold a role that may approve this request type at all: a
+    WITHDRAWAL is Manager-only, so a Supervisor is refused even on a legacy row that still names
+    one as its approver."""
+    allowed = APPROVER_ROLES.get((t.txn_type or "").upper(), APPROVER_ROLES["DEPOSIT"])
+    if not agent_role_in(user, allowed):
+        raise HTTPException(
+            status_code=403,
+            detail=("Only a Manager can review Agent Withdrawal Requests." if allowed == ("MANAGER",)
+                    else "Only a Manager or Supervisor can review Agent requests."))
     if t.approver_user_id and user.id != t.approver_user_id:
         raise HTTPException(status_code=403, detail="Only the selected Authorized Approver can review this request.")
 
@@ -832,13 +851,23 @@ async def _agent_profile(db: AsyncSession, business: str, agent_master_id: int) 
     }
 
 
-async def _resolve_approver(db: AsyncSession, business: str, approver_user_id: int | None):
+async def _resolve_approver(db: AsyncSession, business: str, approver_user_id: int | None,
+                            txn_type: str = "DEPOSIT"):
+    """Validate the chosen Authorized Approver against the roles that may approve THIS request type
+    (see APPROVER_ROLES): a deposit takes a Supervisor or a Manager, a withdrawal a Manager only.
+    Sending a Supervisor's id on a withdrawal — from the API or any other manual route — is a 400,
+    which is what keeps the rule enforceable outside the UI."""
     if approver_user_id is None:
         return None, None
+    allowed = APPROVER_ROLES.get((txn_type or "").upper(), APPROVER_ROLES["DEPOSIT"])
     u = (await db.execute(select(User).where(User.id == approver_user_id))).scalar_one_or_none()
-    ok = u and u.role == UserRole.MERCHANT and u.name == business and str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER")
+    ok = (u and u.role == UserRole.MERCHANT and u.name == business
+          and str(u.merchant_role or "").upper() in allowed)
     if not ok:
-        raise HTTPException(status_code=400, detail="Authorized approver must be a Supervisor or Manager of your business.")
+        who = "a Manager" if allowed == ("MANAGER",) else "a Supervisor or Manager"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Authorized approver for an Agent {txn_type.title()} must be {who} of your business.")
     return u.id, u.username
 
 
@@ -1036,7 +1065,8 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
                         f"Requested Amount + Commission: ₹{required:,.2f}"),
             )
 
-    approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId)
+    # Approver roles are scoped to the request type: a WITHDRAWAL accepts a Manager only.
+    approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId, txn_type)
 
     ref = await _next_serial(db, AgentTransaction.reference_number, prefix)
     # The operator-entered note number must stay unique, so a clash is reported plainly instead
@@ -1157,8 +1187,12 @@ async def form_data(db: AsyncSession = Depends(get_db), user: User = Depends(get
             # Maximum Withdrawable Amount after commission, using the same fee the server charges.
             "withdrawalFee": a.pay_out_fee or 0,
         } for a in agents],
+        # Deposit approvers — Supervisors + Managers (unchanged).
         "approvers": [{"id": u.id, "name": u.username, "role": str(u.merchant_role or "").upper()}
-                      for u in approvers if str(u.merchant_role or "").upper() in ("SUPERVISOR", "MANAGER")],
+                      for u in approvers if str(u.merchant_role or "").upper() in APPROVER_ROLES["DEPOSIT"]],
+        # Withdrawal approvers — Managers only, so the Withdrawal form can never offer a Supervisor.
+        "withdrawalApprovers": [{"id": u.id, "name": u.username, "role": str(u.merchant_role or "").upper()}
+                                for u in approvers if str(u.merchant_role or "").upper() in APPROVER_ROLES["WITHDRAWAL"]],
         "instructions": sorted(INSTRUCTIONS),
         "membershipTypes": ["ONLINE", "OFFLINE"],
         # Transaction types offered on the request form (drives the Sending Account fields and
@@ -1391,7 +1425,7 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     # "Send To Approval": the Authorized Approver is chosen at this step (after the slip uploads),
     # not at creation. Record who the deposit is addressed to; the Supervisor review is unchanged.
     if body.approverUserId is not None:
-        t.approver_user_id, t.approver_name = await _resolve_approver(db, business, body.approverUserId)
+        t.approver_user_id, t.approver_name = await _resolve_approver(db, business, body.approverUserId, "DEPOSIT")
         t.sent_for_approval = True
     await _log(db, t, "SLIP_SUBMITTED", user, note="Slip submitted — awaiting Supervisor approval")
     if t.approver_name:
@@ -2119,7 +2153,8 @@ async def manage_txn(txn_id: int, body: AgentManage, db: AsyncSession = Depends(
         raise HTTPException(status_code=400, detail="Transaction Amount must be greater than zero.")
     if body.notes and len(body.notes) > 100:
         raise HTTPException(status_code=400, detail="Notes must be 100 characters or fewer.")
-    approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId)
+    # Forwarding a managed request follows the same per-type rule as creating one.
+    approver_id, approver_name = await _resolve_approver(db, business, body.approverUserId, t.txn_type)
 
     old_amount = t.amount
     new_amount = round(body.amount, 2)
@@ -2293,6 +2328,10 @@ async def _decide(db: AsyncSession, user: User, txn_id: int, approve: bool) -> d
     _require(user, APPROVE_ROLES, "approve or reject Agent Transactions")
     business = _business(user)
     t = await _load_pending(db, business, txn_id)
+    # Withdrawal approval is a Manager-only authority, so this legacy one-step decide honours the
+    # same rule as the review gate — a Supervisor cannot approve or reject a withdrawal here either.
+    if (t.txn_type or "").upper() == "WITHDRAWAL" and not agent_role_in(user, APPROVER_ROLES["WITHDRAWAL"]):
+        raise HTTPException(status_code=403, detail="Only a Manager can approve or reject Agent Withdrawal Requests.")
     t.status = "APPROVED" if approve else "REJECTED"
     t.approved_by = user.username
     t.approved_by_id = user.id
