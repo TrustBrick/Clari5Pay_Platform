@@ -41,7 +41,13 @@ export const parseIndianAmount = (value: string): string =>
 // on the transaction actually having been approved, so an unapproved row still shows '—' — this
 // only swaps the displayed NAME for the ROLE, it never changes when an approver is shown.
 // Internal audit logs / admin screens keep recording and showing the real system user.
-export const clientApproverLabel = (type?: string | null): string => {
+// `approverRole` is the role actually recorded against the approval — always prefer it. The
+// type-derived fallback only covers rows approved before the role was captured; it is an
+// assumption ("a deposit must have been a Supervisor") and is wrong whenever the request was
+// sent to an approver of a different role, which is exactly what this pair of arguments fixes.
+export const clientApproverLabel = (type?: string | null, approverRole?: string | null): string => {
+  const actual = merchantRoleLabel(String(approverRole || '').toUpperCase());
+  if (actual) return actual;
   const t = String(type || '').toUpperCase();
   if (t.startsWith('DEPOSIT')) return 'Supervisor';
   if (t.startsWith('WITHDRAWAL') || t.startsWith('SETTLEMENT')) return 'Manager';
@@ -168,6 +174,22 @@ export const MERCHANT_ROLE_LABELS: Record<string, string> = {
 };
 export const merchantRoleLabel = (r?: string | null) =>
   r ? (MERCHANT_ROLE_LABELS[String(r).toUpperCase()] || r) : '';
+
+// Which role a review-gate row on the Approval Record belongs to.
+// The reviewer's NAME is stored in the gate's slot (supervisor_name for a deposit, manager_name
+// for a withdrawal), but under "Send To Approval" the person who acted may hold a different role
+// — a Manager can approve a deposit. `approverRole` records who actually acted, so prefer it.
+// Deliberately narrow: it applies ONLY to the gate that reviews this transaction type. A
+// settlement's supervisor_name is its CREATOR (settlements skip the review gate), so a settlement
+// keeps the plain gate label and is never relabelled from approverRole.
+export const reviewerRoleCode = (
+  txType?: string | null, approverRole?: string | null, gate: 'SUPERVISOR' | 'MANAGER' = 'SUPERVISOR',
+): string => {
+  const t = String(txType || '').toUpperCase();
+  const gateReviewsThisType = gate === 'SUPERVISOR' ? t.startsWith('DEPOSIT') : t.startsWith('WITHDRAWAL');
+  const actual = String(approverRole || '').toUpperCase();
+  return gateReviewsThisType && actual ? actual : gate;
+};
 
 // Approval-record / remarks display: "Full Name (Role • username)", e.g.
 // "BELLAGIO (Supervisor • harsha)". Role is resolved via MERCHANT_ROLE_LABELS (never

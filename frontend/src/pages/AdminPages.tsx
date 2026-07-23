@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
@@ -331,8 +331,8 @@ const RequestModal: React.FC<{
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Approval Record</p>
           <Row k="Created By" v={`${nameWithRole(record.merchant, record.creatorRole, 'Merchant User', record.creatorUsername)}${record.createdAt ? ` · ${formatDateTime(record.createdAt)}` : ''}`} />
-          {record.supervisorName && <Row k="Supervisor" v={`${nameWithRole(record.supervisorName, 'SUPERVISOR', '', record.supervisorUsername)}${record.supervisorActionAt ? ` · ${formatDateTime(record.supervisorActionAt)}` : ''}`} />}
-          {record.managerName && <Row k="Manager" v={`${nameWithRole(record.managerName, 'MANAGER', '', record.managerUsername)}${record.managerActionAt ? ` · ${formatDateTime(record.managerActionAt)}` : ''}`} />}
+          {record.supervisorName && <Row k={merchantRoleLabel(reviewerRoleCode(record.type, record.approverRole, 'SUPERVISOR'))} v={`${nameWithRole(record.supervisorName, reviewerRoleCode(record.type, record.approverRole, 'SUPERVISOR'), '', record.supervisorUsername)}${record.supervisorActionAt ? ` · ${formatDateTime(record.supervisorActionAt)}` : ''}`} />}
+          {record.managerName && <Row k={merchantRoleLabel(reviewerRoleCode(record.type, record.approverRole, 'MANAGER'))} v={`${nameWithRole(record.managerName, reviewerRoleCode(record.type, record.approverRole, 'MANAGER'), '', record.managerUsername)}${record.managerActionAt ? ` · ${formatDateTime(record.managerActionAt)}` : ''}`} />}
           {record.processedBy && <Row k="Admin" v={`${nameWithRole(record.processedBy, 'ADMIN', '', record.adminUsername)}${record.adminActionAt ? ` · ${formatDateTime(record.adminActionAt)}` : ''}`} />}
           {record.remarksHistory && record.remarksHistory.length > 0 && (
             <div style={{ marginTop:8 }}>

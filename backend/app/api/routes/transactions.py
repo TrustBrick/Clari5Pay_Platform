@@ -2067,6 +2067,9 @@ def _build_report_payload(
         "cancelReason": t.cancel_reason,
         "paymentMethod": _payment_method(t),
         "approvedBy": t.approved_by,
+        # Real role of the user who approved, so the report names the actual approver's role
+        # instead of assuming one from the transaction type (a Manager may approve a deposit).
+        "approverRole": t.approver_role,
         "processedBy": t.processed_by,
         # Operator = the logged-in user who actually performed (created) this transaction —
         # a Deposit/Withdrawal/Settlement Operator, distinct from the Approver. Name resolved
@@ -2755,6 +2758,13 @@ async def regenerate_qr(
 # to Admin as SLIP SUBMITTED), Reject (→ REJECTED) or Resubmit (→ RESUBMITTED, back to the
 # Data Operator). Remarks are mandatory on every action. Settlements do NOT pass through
 # this gate — the Supervisor creates them and they go straight to the Admin.
+# Display label for a merchant-business role code. Used only for the human role word in review
+# messages — the stored remark keeps the raw role CODE, which the frontend maps for display.
+_MERCHANT_ROLE_LABELS = {
+    "SUPERVISOR": "Supervisor", "MANAGER": "Manager", "DEO": "Data Operator",
+    "DEPOSIT_OPERATOR": "Deposit Operator", "WITHDRAWAL_OPERATOR": "Withdrawal Operator",
+}
+
 _REVIEW_CONFIG = {
     "SUPERVISOR": {
         "prefixes": ("DEPOSIT",), "kind": "deposits", "label": "Supervisor",
@@ -2804,8 +2814,18 @@ async def _reviewer_action(
     if tx.status != cfg["review_status"]:
         raise HTTPException(status_code=400, detail=f"This request is not awaiting {cfg['label'].lower()} review.")
 
+    # The review GATE and the person who actually acts on it are not the same thing. `role` names
+    # the gate (a deposit's gate is "SUPERVISOR"), but under "Send To Approval" the sole chosen
+    # approver may hold a different role — a Manager can approve a deposit. Recording the gate name
+    # made the history read "Supervisor" for a Manager's approval. Record the ACTOR's real role.
+    actor_role = str(reviewer.merchant_role or "").upper() or role
+    actor_label = _MERCHANT_ROLE_LABELS.get(actor_role, cfg["label"])
+
     setattr(tx, cfg["name_attr"], reviewer.name)
     setattr(tx, cfg["time_attr"], datetime.utcnow())
+    # Name lands in the gate's slot (supervisor_name / manager_name) so every existing screen still
+    # finds it; approver_role carries WHO that name belongs to, so the row can be labelled correctly.
+    tx.approver_role = tx.approver_role or actor_role
 
     if decision == "approve":
         action = "APPROVED"
@@ -2819,7 +2839,7 @@ async def _reviewer_action(
             tx.processed_by = reviewer.name
             tx.approved_by = tx.approved_by or reviewer.name
             tx.admin_action_at = datetime.utcnow()
-            _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
+            _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
             await db.flush()
             if is_dep:
                 await _track_account_credit(db, tx, reviewer, request)
@@ -2827,7 +2847,7 @@ async def _reviewer_action(
                 await _track_account_debit(db, tx, reviewer, request)
             label = "deposited" if is_dep else "completed"
             await notify_tx(db, tx, f"{tx.ref}: approved and {label} successfully", "✓")
-            await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and {label} successfully", "✓")
+            await _notify_merchant(db, tx, f"{tx.ref}: approved by the {actor_label} and {label} successfully", "✓")
             # Telegram (demo, next-step only): final approval → notify ONLY the requesting user.
             await tgn.notify(db, tx, "USER", "deposit_done" if is_dep else "withdrawal_done")
         else:
@@ -2839,10 +2859,10 @@ async def _reviewer_action(
             # (they skip the review gate), so this only ever splits deposit vs withdrawal.
             tx.status = (TxStatus.ACCOUNT_REQUESTED if tx.type.value.startswith("WITHDRAWAL")
                          else TxStatus.SLIP_SUBMITTED)
-            _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
+            _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
             await db.flush()
-            await _notify_admin(db, tx, f"{tx.ref}: approved by {cfg['label']} {reviewer.name} — awaiting your final approval", "✅")
-            await _notify_merchant(db, tx, f"{tx.ref}: approved by the {cfg['label']} and forwarded to Admin for final approval", "✅")
+            await _notify_admin(db, tx, f"{tx.ref}: approved by {actor_label} {reviewer.name} — awaiting your final approval", "✅")
+            await _notify_merchant(db, tx, f"{tx.ref}: approved by the {actor_label} and forwarded to Admin for final approval", "✅")
             # Telegram (demo, next-step only): reviewer approved → notify the Admin for final action.
             if role == "SUPERVISOR":
                 await tgn.notify(db, tx, "ADMIN", "supervisor_approved", actor=reviewer.name)
@@ -2852,25 +2872,25 @@ async def _reviewer_action(
         action = "REJECTED"
         tx.status = TxStatus.REJECTED
         tx.reject_reason = remark
-        _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
+        _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
-        await _notify_merchant(db, tx, f"{tx.ref}: rejected by the {cfg['label']}. Reason: {remark}", "✕")
+        await _notify_merchant(db, tx, f"{tx.ref}: rejected by the {actor_label}. Reason: {remark}", "✕")
         # Telegram (demo, next-step only): reviewer rejected → notify ONLY the requesting user.
         await tgn.notify(db, tx, "USER", "rejected", reason=remark)
     elif decision == "resubmit":
         action = "RESUBMITTED"
         tx.status = TxStatus.RESUBMITTED            # returned to the Data Operator
-        _append_remark(tx, role=role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
+        _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
-        await _notify_merchant(db, tx, f"{tx.ref}: returned by the {cfg['label']} — please correct and resubmit. Reason: {remark}", "↻")
-        await _notify_business_role(db, tx, "DEO", f"{tx.ref}: returned for correction by the {cfg['label']} — please fix and resubmit. Reason: {remark}", "↻")
+        await _notify_merchant(db, tx, f"{tx.ref}: returned by the {actor_label} — please correct and resubmit. Reason: {remark}", "↻")
+        await _notify_business_role(db, tx, "DEO", f"{tx.ref}: returned for correction by the {actor_label} — please fix and resubmit. Reason: {remark}", "↻")
         # Telegram (demo, next-step only): returned for correction → notify ONLY the requesting user.
         await tgn.notify(db, tx, "USER", "returned", reason=remark)
     else:
         raise HTTPException(status_code=400, detail="Unknown review decision.")
 
     await log_event(db, f"{role}_{action}",
-                    f"{tx.ref}: {action.lower()} by {cfg['label']} {reviewer.name} — {remark}", actor=reviewer)
+                    f"{tx.ref}: {action.lower()} by {actor_label} {reviewer.name} — {remark}", actor=reviewer)
     await record_audit(db, f"{role}_{action}", actor=reviewer, entity_type=tx.type.value,
                        entity_id=tx.ref, new=tx.status.value, reason=remark, ip=_client_ip(request))
     await _refresh_with_images(db, tx)

@@ -152,7 +152,9 @@ export interface Transaction {
   managerName?: string | null;
   managerActionAt?: string | null;
   adminActionAt?: string | null;
-  // "Send To Approval" (demo): the Authorized Approver the operator addressed this to (NULL in prod).
+  // "Send To Approval": the Authorized Approver the operator addressed this to. GA on Demo AND
+  // Prod (backend kill-switch SEND_TO_APPROVAL_ENABLED, default true) — it is NOT demo-only, so a
+  // Manager can hold a deposit's approval in production too.
   approverUserId?: number | null;
   approverName?: string | null;
   approverRole?: string | null;   // SUPERVISOR / MANAGER — makes the review status display as the chosen role.
@@ -766,6 +768,7 @@ export interface ReportRow {
   cancelReason?: string | null;
   paymentMethod?: string | null;
   approvedBy?: string | null;
+  approverRole?: string | null;   // real role of the approver — never assume one from the type
   processedBy?: string | null;
   operator?: string | null;       // logged-in operator who performed (created) the transaction
   operatorRole?: string | null;   // that operator's role (e.g. DEPOSIT_OPERATOR)

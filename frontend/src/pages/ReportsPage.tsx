@@ -570,7 +570,7 @@ const matchesFilters = (r: ReportRow, f: RFilters): boolean => {
     && (!f.combined || entityLabel(r).toLowerCase().includes(f.combined.toLowerCase()))
     // Approver matches the role the client actually sees (Supervisor / Manager), not the internal
     // admin name behind it — searching an internal name must never be able to identify rows.
-    && (!f.approvedBy || (r.approvedBy ? clientApproverLabel(r.type) : '').toLowerCase().includes(f.approvedBy.toLowerCase()))
+    && (!f.approvedBy || (r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '').toLowerCase().includes(f.approvedBy.toLowerCase()))
     && inc(r.agentCode, f.agentCode)
     && (!f.type || r.type === f.type) && (!f.status || r.status === f.status)
     && (!f.method || (r.paymentMethod || '').toUpperCase() === f.method) && (!f.riskLevel || (r.riskLevel || '') === f.riskLevel)
@@ -590,7 +590,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
   const c = data.cards; const now = new Date().toLocaleString('en-IN'); const tot = totalsOf(rows);
   const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
   const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
-  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type) : '—')}</td></tr>`).join('');
+  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '—')}</td></tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay Report</title><style>
     @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
     .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0052cc;padding-bottom:10px}
@@ -704,13 +704,13 @@ const operatorLabel = (r: ReportRow): string => {
 };
 // Approver shown to the client = their own approval hierarchy role, never the internal admin's
 // name. Gated on the row actually having been approved so pending rows still read '—'.
-const approverCell = (r: ReportRow): string => (r.approvedBy ? clientApproverLabel(r.type) : '—');
+const approverCell = (r: ReportRow): string => (r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '—');
 const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
   ({ rows, businessName, generatedBy, rangeLabel }) => {
     const toast = useToast();
     const data = rows;   // all transactions honouring the advanced filters (incl. Status)
     const opCsv = (r: ReportRow) => ((r.operator || '').trim() ? operatorLabel(r) : '');
-    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy ? clientApproverLabel(r.type) : '', opCsv(r), r.amount, methodLabel(r)]);
+    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '', opCsv(r), r.amount, methodLabel(r)]);
     const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), approverCell(r), operatorLabel(r), fmt(r.amount), methodLabel(r)]);
     const onExcel = () => {
       downloadXlsx(`clari5pay-treasury-${today()}.xlsx`, [{
@@ -721,7 +721,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
           { header: 'Membership ID', get: r => r.memberId || '' },
           { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
           { header: 'Status', get: r => prettyStatusR(r.status) },
-          { header: 'Approver', get: r => (r.approvedBy ? clientApproverLabel(r.type) : '') },
+          { header: 'Approver', get: r => (r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '') },
           { header: 'Operator', get: r => ((r.operator || '').trim() ? operatorLabel(r) : '') },
           { header: 'Transaction Amount', get: r => Number(r.amount), width: 16, z: INR_NUMFMT },
           { header: 'Transaction Method', get: r => methodLabel(r) },

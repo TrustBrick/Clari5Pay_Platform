@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, SearchSelect, PhoneField, Pager } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
@@ -1571,9 +1571,9 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
           "Processed By (Admin)" row is not shown to the client — the audit log still records it. */}
       {(d.approvedBy || d.supervisorName || d.managerName) && (
         <DetailSection title="Approval Information">
-          {d.approvedBy && <SlipRow k="Approved By" v={clientApproverLabel(d.type)} />}
-          {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', d.supervisorUsername)}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
-          {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', d.managerUsername)}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
+          {d.approvedBy && <SlipRow k="Approved By" v={clientApproverLabel(d.type, d.approverRole)} />}
+          {d.supervisorName && <SlipRow k={merchantRoleLabel(reviewerRoleCode(d.type, d.approverRole, 'SUPERVISOR'))} v={`${nameWithRole(d.supervisorName, reviewerRoleCode(d.type, d.approverRole, 'SUPERVISOR'), '', d.supervisorUsername)}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
+          {d.managerName && <SlipRow k={merchantRoleLabel(reviewerRoleCode(d.type, d.approverRole, 'MANAGER'))} v={`${nameWithRole(d.managerName, reviewerRoleCode(d.type, d.approverRole, 'MANAGER'), '', d.managerUsername)}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
         </DetailSection>
       )}
 
@@ -1730,8 +1730,8 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
       <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>
         <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Timeline</p>
         <SlipRow k="Created By" v={`${nameWithRole(d.merchant, d.creatorRole, 'Merchant User', d.creatorUsername)}${d.createdAt ? ` · ${formatDateTime(d.createdAt)}` : ''}`} />
-        {d.supervisorName && <SlipRow k="Supervisor" v={`${nameWithRole(d.supervisorName, 'SUPERVISOR', '', d.supervisorUsername)}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
-        {d.managerName && <SlipRow k="Manager" v={`${nameWithRole(d.managerName, 'MANAGER', '', d.managerUsername)}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
+        {d.supervisorName && <SlipRow k={merchantRoleLabel(reviewerRoleCode(d.type, d.approverRole, 'SUPERVISOR'))} v={`${nameWithRole(d.supervisorName, reviewerRoleCode(d.type, d.approverRole, 'SUPERVISOR'), '', d.supervisorUsername)}${d.supervisorActionAt ? ` · ${formatDateTime(d.supervisorActionAt)}` : ''}`} />}
+        {d.managerName && <SlipRow k={merchantRoleLabel(reviewerRoleCode(d.type, d.approverRole, 'MANAGER'))} v={`${nameWithRole(d.managerName, reviewerRoleCode(d.type, d.approverRole, 'MANAGER'), '', d.managerUsername)}${d.managerActionAt ? ` · ${formatDateTime(d.managerActionAt)}` : ''}`} />}
         {d.adminActionAt && <SlipRow k="Admin Action" v={formatDateTime(d.adminActionAt)} />}
       </div>
 
