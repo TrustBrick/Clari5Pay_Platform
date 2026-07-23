@@ -133,18 +133,18 @@ class Settings(BaseSettings):
     # Defaults are the supplied staging keys so the Demo build works out of the box; override
     # via env for other environments. MELENTO_VERIFY_BASE_URL is the in-verify-utils host used
     # by generateUrl / getAadhaarDetails / panVerification (distinct from MELENTO_BASE_URL).
-    MELENTO_API_KEY: str = "673d4777b6236537fba6aea3c3f81c7a"
+    MELENTO_API_KEY: str = "d0075c09c1227bba5356ee34305ff85f"
     MELENTO_API_ID: str = "trustbrickrealtyfintechprivatelimited_user_1"
     MELENTO_BASE_URL: str = "https://api.melento.ai"
-    MELENTO_VERIFY_BASE_URL: str = "https://in-verify-utils.staging-melento.ai"
+    MELENTO_VERIFY_BASE_URL: str = "https://in-verify-utils.melento.ai"
     # Full endpoint URLs for every Melento verification API on the in-verify-utils host. All are
     # configurable via env so UAT↔Production is a pure config switch (no code change); the defaults
-    # are the documented staging endpoints.
-    PAN_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/pan/panVerification"
-    PASSPORT_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/passport/passportVerification"
-    AADHAAR_GENERATE_URL: str = "https://in-verify-utils.staging-melento.ai/api/digilocker/generateUrl"
-    AADHAAR_DETAILS_URL: str = "https://in-verify-utils.staging-melento.ai/api/digilocker/getAadhaarDetails"
-    OCR_VERIFICATION_URL: str = "https://in-verify-utils.staging-melento.ai/api/general-document/documentVerification"
+    # are the documented UAT endpoints.
+    PAN_VERIFICATION_URL: str = "https://in-verify-utils.melento.ai/api/pan/panVerification"
+    PASSPORT_VERIFICATION_URL: str = "https://in-verify-utils.melento.ai/api/passport/passportVerification"
+    AADHAAR_GENERATE_URL: str = "https://in-verify-utils.melento.ai/api/digilocker/generateUrl"
+    AADHAAR_DETAILS_URL: str = "https://in-verify-utils.melento.ai/api/digilocker/getAadhaarDetails"
+    OCR_VERIFICATION_URL: str = "https://in-verify-utils.melento.ai/api/general-document/documentVerification"
     DIGILOCKER_CLIENT_ID: str = ""
     DIGILOCKER_CLIENT_SECRET: str = ""
     DIGILOCKER_BASE_URL: str = "https://api.digitallocker.gov.in"

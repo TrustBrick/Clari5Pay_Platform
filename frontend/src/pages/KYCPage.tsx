@@ -87,10 +87,14 @@ const Spinner: React.FC = () => (
   <span style={{ width: 14, height: 14, border: `2px solid rgba(255,255,255,0.5)`, borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block', animation: 'kycspin 0.7s linear infinite' }} />
 );
 
-// Coloured status pill for PENDING / SUCCESS / FAILED (and the friendly labels).
+// Coloured status pill. Successful verifications carry a name-match status (VERIFIED /
+// MANUAL_REVIEW / NOT_VERIFIED); records still in flight or errored fall back to the API state.
 const StatusPill: React.FC<{ status?: string | null }> = ({ status }) => {
   const s = String(status || '').toUpperCase();
   const map: Record<string, { c: string; bg: string; label: string }> = {
+    VERIFIED:      { c: T.success, bg: T.successBg, label: 'Verified' },
+    MANUAL_REVIEW: { c: T.warning, bg: T.warningBg, label: 'Manual Review Required' },
+    NOT_VERIFIED:  { c: T.danger,  bg: T.dangerBg,  label: 'Not Verified' },
     SUCCESS: { c: T.success, bg: T.successBg, label: 'Verified' },
     PENDING: { c: T.warning, bg: T.warningBg, label: 'Pending' },
     FAILED:  { c: T.danger,  bg: T.dangerBg,  label: 'Failed' },
@@ -754,7 +758,11 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
         // *image* record (document_type = aadhaar_card) is resolved immediately, like PAN/OCR.
         const isDigilocker = item.verificationType === 'AADHAAR' && !item.documentType;
         if (isDigilocker) {
-          if (d.status === 'SUCCESS' && d.response) {
+          // A completed DigiLocker record carries a resolved status (VERIFIED / MANUAL_REVIEW /
+          // NOT_VERIFIED, or legacy SUCCESS) and the stored Aadhaar details — render those without
+          // re-hitting the provider. Only a record still awaiting completion is polled.
+          const completed = ['SUCCESS', 'VERIFIED', 'MANUAL_REVIEW', 'NOT_VERIFIED'].includes(String(d.status || ''));
+          if (completed && d.response) {
             setAadhaar(d.response as AadhaarDetails);
           } else {
             const s = await kycAPI.getAadhaarStatus(item.id);

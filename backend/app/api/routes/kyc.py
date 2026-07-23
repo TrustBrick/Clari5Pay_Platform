@@ -28,6 +28,7 @@ from app.db.session import get_db
 from app.models.models import KycVerificationHistory, User
 from app.services import kyc as kyc_service
 from app.services.membership import lookup_member_name, normalize_member_id
+from app.services.name_match import score_and_status
 
 router = APIRouter(prefix="/api/kyc", tags=["kyc"])
 
@@ -118,7 +119,13 @@ def _gen_reference(prefix: str) -> str:
 
 
 def _history_summary(row: KycVerificationHistory) -> dict:
-    """List-shape row (omits the large request/response JSON blobs)."""
+    """List-shape row (omits the large request/response JSON blobs).
+
+    The "Status" column shows the name-match status (VERIFIED / MANUAL_REVIEW / NOT_VERIFIED) once
+    a verification has completed and a name comparison was possible; otherwise it falls back to the
+    raw API state (PENDING while DigiLocker is awaited, FAILED on an API error). The numeric
+    match_score is intentionally NOT exposed — only the status is shown.
+    """
     return {
         "id": row.id,
         "membershipId": row.membership_id,
@@ -128,10 +135,53 @@ def _history_summary(row: KycVerificationHistory) -> dict:
         "documentType": row.document_type,
         "referenceId": row.reference_id,
         "transactionId": row.transaction_id,
-        "status": row.verification_status,
+        "status": row.match_status or row.verification_status,
         "createdBy": row.created_by,
         "createdAt": (row.created_at.isoformat() + "Z") if row.created_at else None,
     }
+
+
+# ── Name matching ─────────────────────────────────────────────────────────────
+# Which response keys carry the document holder's name (vs. a relative/authority), searched across
+# the provider's varied shapes (top-level, result, extracted_data, validated_data, …).
+_NAME_KEYS = ("name", "full_name", "fullname", "name_on_card", "holder_name",
+              "candidate_name", "person_name", "given_name")
+_NAME_BLOCK = ("father", "mother", "guardian", "spouse", "care_of", "careof",
+               "issuing", "authority", "bank", "relation")
+
+
+def _iter_name_candidates(node, depth: int = 0):
+    """(priority, name) pairs found anywhere in a verification response; lower priority is better."""
+    if depth > 6:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            kl = str(key).lower()
+            if isinstance(value, str) and value.strip() and not any(b in kl for b in _NAME_BLOCK):
+                if kl in _NAME_KEYS:
+                    yield (_NAME_KEYS.index(kl), value.strip())
+            elif isinstance(value, (dict, list)):
+                yield from _iter_name_candidates(value, depth + 1)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            yield from _iter_name_candidates(value, depth + 1)
+
+
+def _extract_kyc_name(response) -> str | None:
+    """The document holder's official name from a KYC verification response, or None."""
+    candidates = sorted(_iter_name_candidates(response), key=lambda c: c[0])
+    return candidates[0][1] if candidates else None
+
+
+def _apply_name_match(row: KycVerificationHistory, response, member_name: str | None) -> None:
+    """Compute + store the name-match score/status when the response carries an official name.
+
+    The score/status compare the member's registered name (``member_name``) with the official KYC
+    name. Leaves the row untouched (status falls back to the API state) when no name is returned.
+    """
+    kyc_name = _extract_kyc_name(response)
+    if kyc_name and member_name:
+        row.match_score, row.match_status = score_and_status(member_name, kyc_name)
 
 
 def _image_b64(data_url: str, field: str = "image") -> str:
@@ -514,6 +564,8 @@ async def aadhaar_status(
         # Capture the cardholder photo NOW: the response's xml_file link is presigned and expires
         # after 48h, so this is the only moment it can be downloaded.
         row.aadhaar_photo = await _aadhaar_photo(data)
+        # Name match: compare the member's registered name with the official Aadhaar name.
+        _apply_name_match(row, data, row.member_name)
         db.add(row)
         return {"pending": False, "status": "SUCCESS", "details": data, "photo": row.aadhaar_photo}
 
@@ -582,6 +634,8 @@ async def aadhaar_verify_image(
         await db.commit()
         raise HTTPException(status_code=502, detail=error_message)
 
+    # Name match: compare the member's registered name with the official name extracted from the doc.
+    _apply_name_match(row, data, member_name)
     return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")), "raw": data}
 
 
@@ -638,6 +692,8 @@ async def pan_verify_membership(
         await db.commit()
         raise HTTPException(status_code=502, detail=error_message)
 
+    # Name match: compare the member's registered name with the official PAN name.
+    _apply_name_match(row, data, member_name)
     return {"id": row.id, "status": row.verification_status, "validPan": valid_pan, "result": result, "raw": data}
 
 
@@ -702,6 +758,8 @@ async def passport_verify_membership(
         await db.commit()
         raise HTTPException(status_code=502, detail=error_message)
 
+    # Name match: compare the member's registered name with the official passport name.
+    _apply_name_match(row, data, member_name)
     return {"id": row.id, "status": row.verification_status, "validPassport": valid_passport, "result": result, "raw": data}
 
 
@@ -763,6 +821,8 @@ async def ocr_verify_membership(
         await db.commit()
         raise HTTPException(status_code=502, detail=error_message)
 
+    # Name match: compare the member's registered name with the official name extracted from the doc.
+    _apply_name_match(row, data, member_name)
     return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")), "raw": data}
 
 

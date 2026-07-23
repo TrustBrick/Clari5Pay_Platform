@@ -124,6 +124,9 @@ _NEW_COLUMNS = [
     ("kyc_verification_history", "document_type", "VARCHAR(32)"),
     # KYC: how the verification was performed (ID Number / Image Upload / DigiLocker).
     ("kyc_verification_history", "verification_method", "VARCHAR(16)"),
+    # KYC name matching: confidence score (0-100, audit only) + derived status shown in the table.
+    ("kyc_verification_history", "match_score", "INTEGER"),
+    ("kyc_verification_history", "match_status", "VARCHAR(24)"),
     # Account Management high-water marks: highest single Deposit credited to the account, and
     # highest single Debit (withdrawal/settlement) processed from it. highest_debit replaces the
     # former lowest_credit (dropped below in ensure_schema).
