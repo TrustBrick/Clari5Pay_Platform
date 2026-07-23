@@ -7,6 +7,7 @@
 // integration lands, only the backend service seams change — these methods and
 // their signatures stay exactly the same.
 import api from './api';
+import type { Paged } from './api';
 
 // ── Response models ────────────────────────────────────────────────────────────
 export interface AadhaarResult {
@@ -167,8 +168,12 @@ export const kycAPI = {
   ): Promise<OcrVerifyResult> =>
     (await api.post<OcrVerifyResult>('/api/kyc/ocr/verify-membership', { membershipId, documentType, fileName, fileData, verification, memberName })).data,
 
-  listHistory: async (): Promise<KycHistoryItem[]> =>
-    (await api.get<KycHistoryItem[]>('/api/kyc/history')).data,
+  // Server-side paged: one page of rows plus the full-set count. The complete history is never
+  // sent to the browser — sorting (newest first) and counting both happen in the database.
+  listHistory: async (page = 1, pageSize = 10): Promise<Paged<KycHistoryItem>> =>
+    (await api.get<Paged<KycHistoryItem>>('/api/kyc/history', {
+      params: { page, page_size: pageSize },
+    })).data,
 
   getHistoryDetail: async (id: number): Promise<KycHistoryDetail> =>
     (await api.get<KycHistoryDetail>(`/api/kyc/history/${id}`)).data,

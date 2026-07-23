@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { Card, Btn, Input, Modal } from '../components/UI';
+import { Card, Btn, Input, Modal, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { useToast } from '../context/ToastContext';
 import { fileToDataUrl } from '../utils/helpers';
@@ -16,6 +16,10 @@ import {
 // is persisted server-side and shown in the Verification History table.
 
 type ViewKey = 'home' | 'aadhaar' | 'pan' | 'passport';
+
+// Verification History rows per page on first load. The Pager offers 10/25/50/100 and the backend
+// clamps to the same set.
+const PAGE_SIZE = 10;
 
 // Custom document icons (Aadhaar / PAN / Passport) served from /public/kyc. Used both by the
 // dashboard cards and each verification view's header, so the icon is identical in both places.
@@ -834,7 +838,13 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
 };
 
 // ─── History table (DB-backed — Aadhaar / PAN / Passport / OCR) ────────────────
-const HistoryTable: React.FC<{ rows: KycHistoryItem[]; loading: boolean; onView: (r: KycHistoryItem) => void }> = ({ rows, loading, onView }) => (
+// Server-side paged: `rows` is one page of results, never the full history. The parent owns the
+// page / pageSize state and refetches on every change (see the Pager wiring below).
+const HistoryTable: React.FC<{
+  rows: KycHistoryItem[]; loading: boolean; onView: (r: KycHistoryItem) => void;
+  page: number; pageSize: number; total: number; totalPages: number;
+  onPage: (p: number) => void; onPageSize: (n: number) => void;
+}> = ({ rows, loading, onView, page, pageSize, total, totalPages, onPage, onPageSize }) => (
   <Card style={{ marginTop: 24 }}>
     <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}` }}>
       <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: T.textMain }}>Verification History</h2>
@@ -869,6 +879,8 @@ const HistoryTable: React.FC<{ rows: KycHistoryItem[]; loading: boolean; onView:
         </tbody>
       </table>
     </div>
+    <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages}
+      onPage={onPage} onPageSize={onPageSize} loading={loading} fullControls />
   </Card>
 );
 
@@ -878,19 +890,42 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
   const [history, setHistory] = useState<KycHistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [detailItem, setDetailItem] = useState<KycHistoryItem | null>(null);
+  // Server-side pagination state. Only ONE page of rows is ever in the browser; `total` /
+  // `totalPages` come from the backend's COUNT over the whole history.
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (opts?: { page?: number; pageSize?: number }) => {
+    const p = opts?.page ?? page;
+    const ps = opts?.pageSize ?? pageSize;
     setLoadingHistory(true);
-    try { setHistory(await kycAPI.listHistory()); }
+    try {
+      const res = await kycAPI.listHistory(p, ps);
+      setHistory(res.items);
+      setTotal(res.total);
+      setTotalPages(res.totalPages);
+      // A page can fall past the end once rows age out of it — step back onto the last real one.
+      if (res.items.length === 0 && res.total > 0 && p > res.totalPages) setPage(Math.max(1, res.totalPages));
+    }
     catch { /* leave prior rows on transient error */ }
     finally { setLoadingHistory(false); }
-  }, []);
+  }, [page, pageSize]);
 
-  useEffect(() => { loadHistory(); }, [loadHistory]);
+  // Refetch when the page or page size changes — and only then.
+  useEffect(() => { loadHistory(); }, [page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const back = () => { setView('home'); loadHistory(); };
+  // A new verification is the newest row, so it lands on page 1 — go there and refetch. Guarded so
+  // we fire exactly one request either way (changing `page` already triggers the effect above).
+  const refresh = useCallback(() => {
+    if (page === 1) loadHistory({ page: 1 });
+    else setPage(1);
+  }, [page, loadHistory]);
+
+  const back = () => { setView('home'); refresh(); };
   const flowProps: FlowProps = {
-    onDone: (ok) => { loadHistory(); if (ok) setView('home'); },   // success → back to the dashboard
+    onDone: (ok) => { refresh(); if (ok) setView('home'); },   // success → back to the dashboard
     onBack: back,
   };
 
@@ -915,7 +950,9 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
               </Card>
             ))}
           </div>
-          <HistoryTable rows={history} loading={loadingHistory} onView={setDetailItem} />
+          <HistoryTable rows={history} loading={loadingHistory} onView={setDetailItem}
+            page={page} pageSize={pageSize} total={total} totalPages={totalPages}
+            onPage={setPage} onPageSize={n => { setPageSize(n); setPage(1); }} />
         </>
       )}
 

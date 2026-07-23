@@ -20,7 +20,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_kyc_user
@@ -826,18 +826,49 @@ async def ocr_verify_membership(
     return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")), "raw": data}
 
 
+# ─── Server-side pagination (Verification History) ────────────────────────────
+# Same envelope as the transaction / agent-txn paged feeds: {items, total, page, pageSize,
+# totalPages}. Default 10 rows, sizes restricted to 10/25/50/100. The COUNT, the ORDER BY and
+# the LIMIT/OFFSET all run in Postgres over the full history, so the browser only ever receives
+# the rows it is about to draw.
+_PAGE_SIZES = (10, 25, 50, 100)
+
+
 @router.get("/history")
 async def kyc_history(
+    page: int = 1,
+    page_size: int = 10,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_kyc_user),
 ):
-    """All KYC verifications for the caller's merchant business pool, newest first."""
+    """One page of KYC verifications for the caller's merchant business pool, newest first.
+
+    Sorting is unchanged (newest verification first, by descending id) and stays server-side.
+    An out-of-range `page` yields an empty `items` with a truthful `total`, which lets the client
+    step back onto the last real page.
+    """
+    page_size = page_size if page_size in _PAGE_SIZES else 10
+    page = page if page >= 1 else 1
+
+    # Same tenancy predicate as before — pagination never widens what the caller can see.
+    base = select(KycVerificationHistory).where(
+        KycVerificationHistory.merchant_business == user.name
+    )
+    total = int((await db.execute(
+        select(func.count()).select_from(base.subquery())
+    )).scalar() or 0)
     rows = (await db.execute(
-        select(KycVerificationHistory)
-        .where(KycVerificationHistory.merchant_business == user.name)
-        .order_by(KycVerificationHistory.id.desc())
+        base.order_by(KycVerificationHistory.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
     )).scalars().all()
-    return [_history_summary(r) for r in rows]
+    return {
+        "items": [_history_summary(r) for r in rows],
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "totalPages": (total + page_size - 1) // page_size if page_size else 0,
+    }
 
 
 @router.get("/history/{history_id}")

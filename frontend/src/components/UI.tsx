@@ -192,11 +192,23 @@ export const PAGE_SIZES = [10, 25, 50, 100];
 export const Pager: React.FC<{
   page: number; pageSize: number; total: number; totalPages: number;
   onPage: (p: number) => void; onPageSize: (n: number) => void; loading?: boolean;
-}> = ({ page, pageSize, total, totalPages, onPage, onPageSize, loading }) => {
+  /**
+   * Opt-in extended controls: First / Last buttons and numbered page links in place of the
+   * "Page X of Y" label, plus the "Showing A–B of N Records" wording. Defaults to off, so every
+   * existing caller keeps the exact control it has today — only tables that ask get the extras.
+   */
+  fullControls?: boolean;
+}> = ({ page, pageSize, total, totalPages, onPage, onPageSize, loading, fullControls }) => {
   if (!total) return null;
   const from = (page - 1) * pageSize + 1;
   const to = Math.min(page * pageSize, total);
   const pages = Math.max(totalPages, 1);
+  // Windowed page numbers — at most 5, centred on the current page and clamped to the ends, so a
+  // long history never spills a hundred buttons across the footer.
+  const firstNum = Math.max(1, Math.min(page - 2, pages - 4));
+  const nums = fullControls
+    ? Array.from({ length: Math.min(5, pages) }, (_, i) => firstNum + i)
+    : [];
   return (
     <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'12px 16px',flexWrap:'wrap',borderTop:`1px solid ${T.border}` }}>
       <div style={{ display:'flex',alignItems:'center',gap:8,fontSize:12,color:T.textMuted }}>
@@ -205,12 +217,21 @@ export const Pager: React.FC<{
           style={{ padding:'5px 26px 5px 10px',border:`1.5px solid ${T.border}`,borderRadius:8,fontSize:12,color:T.textMain,background:T.surface,outline:'none',appearance:'none',backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24'%3E%3Cpath fill='%236b7280' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E")`,backgroundRepeat:'no-repeat',backgroundPosition:'right 8px center',cursor:'pointer',fontFamily:'inherit' }}>
           {PAGE_SIZES.map(n=><option key={n} value={n}>{n}</option>)}
         </select>
-        <span style={{ fontWeight:600 }}>{from}–{to} of {total}</span>
+        <span style={{ fontWeight:600 }}>
+          {fullControls ? `Showing ${from}–${to} of ${total} Records` : `${from}–${to} of ${total}`}
+        </span>
       </div>
-      <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+      <div style={{ display:'flex',alignItems:'center',gap:8,...(fullControls?{flexWrap:'wrap' as const}:{}) }}>
+        {fullControls && <Btn size="sm" variant="ghost" disabled={loading || page<=1} onClick={()=>onPage(1)}>First</Btn>}
         <Btn size="sm" variant="ghost" disabled={loading || page<=1} onClick={()=>onPage(page-1)}>Prev</Btn>
-        <span style={{ fontSize:12,color:T.textMuted,minWidth:96,textAlign:'center' }}>Page {page} of {pages}</span>
+        {fullControls
+          ? nums.map(n => (
+              <Btn key={n} size="sm" variant={n===page?'primary':'ghost'} disabled={loading}
+                onClick={()=>onPage(n)}>{String(n)}</Btn>
+            ))
+          : <span style={{ fontSize:12,color:T.textMuted,minWidth:96,textAlign:'center' }}>Page {page} of {pages}</span>}
         <Btn size="sm" variant="ghost" disabled={loading || page>=pages} onClick={()=>onPage(page+1)}>Next</Btn>
+        {fullControls && <Btn size="sm" variant="ghost" disabled={loading || page>=pages} onClick={()=>onPage(pages)}>Last</Btn>}
       </div>
     </div>
   );
