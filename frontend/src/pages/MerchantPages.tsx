@@ -1272,13 +1272,17 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
     if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
     try { setProof(await fileToDataUrl(f)); setProofName(f.name); } catch { showToast('Could not read the file', 'error'); }
   };
+  // A cash settlement is handed over in person, so there is no bank UTR to record — the proof
+  // is the only evidence. Same rule as the Admin pay screen and the backend.
+  const needUtr = (d.payoutMode || 'BANK').toUpperCase() !== 'CASH';
+
   const submit = async () => {
-    if (!utr.trim()) { showToast('UTR Number is required', 'error'); return; }
+    if (needUtr && !utr.trim()) { showToast('UTR Number is required', 'error'); return; }
     if (!proof) { showToast('Settlement proof (image or PDF) is required', 'error'); return; }
     if (!remark.trim()) { showToast('Remarks are required', 'error'); return; }
     setBusy(true);
     try {
-      await transactionAPI.supervisorSettle(tx.id, { remark: remark.trim(), utr: utr.trim(), proof });
+      await transactionAPI.supervisorSettle(tx.id, { remark: remark.trim(), ...(needUtr ? { utr: utr.trim() } : {}), proof });
       showToast('Settlement completed successfully');
       onDone();
     } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to complete settlement', 'error'); }
@@ -1299,9 +1303,10 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
           v ? <SlipRow key={k} k={SETTLEMENT_FIELD_LABEL[k] || k} v={String(v)} /> : null)}
       </div>
       <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 12 }}>
-        Routed through an assigned agent — complete it directly (no Admin approval needed). Enter the payment UTR and upload the settlement proof.
+        Routed through an assigned agent — complete it directly (no Admin approval needed).
+        {needUtr ? ' Enter the payment UTR and upload the settlement proof.' : ' Cash settlement — no UTR applies; upload the settlement proof.'}
       </p>
-      <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)} placeholder="Enter the payment UTR number" required />
+      {needUtr && <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)} placeholder="Enter the payment UTR number" required />}
       <div style={{ marginBottom: 12 }}>
         <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6 }}>Settlement Proof (image or PDF) *</label>
         <input type="file" accept={SETTLE_ACCEPT} onChange={onFile} />
