@@ -236,9 +236,14 @@ async def _next_serial(db: AsyncSession, model_col, prefix: str) -> str:
 
 
 def _agent_serial(agent: AgentMaster) -> int:
-    """The Agent's numeric ID — the digits of its AGT… serial (AGT000015 → 15), falling back to
-    the row id if an agent predates the serial format."""
-    m = re.search(r"(\d+)$", str(agent.agent_id or ""))
+    """The Agent's numeric ID — the digits of its canonical AGT… serial (AGT000015 → 15).
+
+    The match is anchored to the WHOLE serial on purpose. Grabbing whatever digits happen to trail
+    the id turns a non-standard one like "AGTP0" into agent 0, and makes "AGTP1"/"AGTP2" collide
+    with the real AGT000001/AGT000002. Anything not of the form AGT<digits> falls back to the row
+    id, which is unique by definition.
+    """
+    m = re.fullmatch(r"AGT(\d+)", str(agent.agent_id or "").strip().upper())
     return int(m.group(1)) if m else int(agent.id)
 
 
