@@ -1057,11 +1057,20 @@ async def get_my_transactions_paged(
 # MEMBER GROUPS (default 10). The per-member drill-down uses /mine/member-transactions.
 def _member_group_key():
     """The same grouping key the UI used client-side: Membership ID, else member name,
-    else the literal 'Unassigned' — computed in SQL so grouping happens in the database."""
-    return func.coalesce(
+    else the literal 'Unassigned' — computed in SQL so grouping happens in the database.
+
+    Settlements are the one exception: they are paid to the merchant/company itself and carry
+    no membership at all, so they group under the company name rather than falling through to
+    'Unassigned'. Deposits and withdrawals are unaffected."""
+    member_key = func.coalesce(
         func.nullif(Transaction.member_id, ""),
         func.nullif(Transaction.member_name, ""),
         literal("Unassigned"),
+    )
+    return case(
+        (Transaction.type.in_(_SETTLEMENT_TYPES),
+         func.coalesce(func.nullif(Transaction.merchant_name, ""), member_key)),
+        else_=member_key,
     )
 
 
