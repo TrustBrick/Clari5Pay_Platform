@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl } from '../utils/helpers';
+import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl, reviewerRoleCode } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect, Pager } from '../components/UI';
 import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
 import { usePoll, useDebouncedValue, useActivitySignal } from '../utils/usePoll';
@@ -95,7 +95,7 @@ export const agentStatusLabel = (
   // A cash deposit uploads a token image, not a slip, so its SLIP_SUBMITTED is really the
   // awaiting-approver state — it reads as that approver's review, not "Slip Submitted".
   if (status === 'SLIP_SUBMITTED' && type === 'DEPOSIT' && isTokenMethod(method)) {
-    return `${who || 'Supervisor'} Review`;
+    return who ? `${who} Review` : 'Awaiting Review';
   }
   if (REVIEW_STATUSES.has(status) && who) return `${who} Review`;
   // "Approved by <Role>" must name the role that actually approved it, not the gate's name.
@@ -1903,7 +1903,9 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
     ['Sent To (Agent A/C)', row.agentAccountRef ? `${row.agentAccountRef} · ${row.agentAccountDetail || ''}` : null],
     ['Paid To', [row.payoutAccountHolder, row.payoutAccountNumber || row.payoutUpiId, row.payoutBankName].filter(Boolean).join(' · ') || null],
-    ['Supervisor', row.supervisorName], ['Manager', row.managerName], ['Review Remark', row.reviewRemark],
+    [roleWord(reviewerRoleCode(row.type, row.approverRole, 'SUPERVISOR')) || 'Supervisor', row.supervisorName],
+    [roleWord(reviewerRoleCode(row.type, row.approverRole, 'MANAGER')) || 'Manager', row.managerName],
+    ['Review Remark', row.reviewRemark],
     ['Deposited By', row.depositedBy],
     ['Deposited (IST)', row.depositedDate ? `${row.depositedDate} ${row.depositedTime || ''}` : null],
     ['Created By', row.createdBy], ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`],

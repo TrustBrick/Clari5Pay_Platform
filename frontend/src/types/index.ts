@@ -775,6 +775,7 @@ export interface ReportRow {
   cancelReason?: string | null;
   paymentMethod?: string | null;
   approvedBy?: string | null;
+  approverRole?: string | null;   // real role of the approver — never assume one from the type
   processedBy?: string | null;
   operator?: string | null;       // logged-in operator who performed (created) the transaction
   operatorRole?: string | null;   // that operator's role (e.g. DEPOSIT_OPERATOR)
