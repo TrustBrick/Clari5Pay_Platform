@@ -23,7 +23,7 @@ import {
   type AgentWithdrawalBody, type AgentMemberLookup, type AgentMemberSummary, type AgentTxnRow,
   type AgentPerformance, type AgentProfile, type AgentTxnCommission,
   type AgentTxnAuditRow, type AgentTxnQuery, type AgentTxnPagedQuery,
-  type AgentAccountOption, type AgentMemberAccount,
+  type AgentAccountOption, type AgentMemberAccount, type AgentBalance,
 } from '../services/agentTxns';
 import { fetchAllPages } from '../services/api';
 
@@ -101,6 +101,13 @@ const BANK_LIKE = ['BANK', 'IMPS', 'NEFT', 'RTGS'];
 const isTokenMethod = (m?: string | null) => m === 'CASH';
 const isWalletMethod = (m?: string | null) => m === 'CRYPTO';
 const isSpecialMethod = (m?: string | null) => isTokenMethod(m) || isWalletMethod(m);
+/** Whether a withdrawal already holds the payment details its method needs — mirrors the server's
+ *  `_missing_payment_detail`, and gates the Complete Withdrawal action. */
+const hasPaymentDetails = (r: AgentTxnRow) =>
+  !!(r.noteNumber || '').trim() && (
+    isTokenMethod(r.txnMethod) ? !!(r.tokenDetails || '').trim()
+      : isWalletMethod(r.txnMethod) ? !!(r.walletAddress || '').trim()
+      : !!r.slipImage && !!(r.depositUtr || '').trim());
 
 // A transaction can only be routed through an agent of the matching category: cash moves through a
 // Cash agent, a bank transfer through a Bank Transfer agent, crypto through a Crypto agent. The
@@ -497,11 +504,16 @@ export const AgentBalanceEnquiryPage: React.FC<{ user: User; onNavigate?: (p: st
   const totalWd = r ? (r.totalWithdrawals ?? 0) + (r.withdrawalCommission ?? 0) : 0;
   const totalSt = r ? (r.totalSettlements ?? 0) + (r.settlementCommission ?? 0) : 0;
 
+  // This screen renders without the sidebar (see SIDEBARLESS_PAGES in App.tsx), so it centres in
+  // the full width and carries its own way back into the module.
   return (
-    <div style={{ maxWidth: 1000 }}>
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Balance Enquiry</h1>
-        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Read-only member financial breakdown from the isolated Agent ledger — completed transactions only.</p>
+    <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Balance Enquiry</h1>
+          <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Read-only member financial breakdown from the isolated Agent ledger — completed transactions only.</p>
+        </div>
+        <Btn size="sm" variant="ghost" onClick={() => onNavigate?.('agent-overview')}>← Back to Agent Overview</Btn>
       </div>
 
       {/* 1. Search */}
@@ -887,7 +899,10 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [txnMethod, setTxnMethod] = useState('');
   // Supplied by the customer/agent and typed in by the operator — never generated.
   const [tokenDetails, setTokenDetails] = useState('');
+  // The member hands the Unique Note Number and their Reference Number over during the withdrawal,
+  // so both are captured here on the request — not at the post-approval payment step. Mandatory.
   const [noteNumber, setNoteNumber] = useState('');
+  const [memberReference, setMemberReference] = useState('');
   const [walletAddress, setWalletAddress] = useState('');
   const [manualOverride, setManualOverride] = useState(false);
   const [looking, setLooking] = useState(false);
@@ -936,6 +951,19 @@ export const AgentWithdrawalRequestPage: React.FC<{
     } finally { setLooking(false); }
   };
 
+  // What the SELECTED AGENT currently holds — a withdrawal is capped by the agent's balance after
+  // its withdrawal fee, not by the member's own prior transactions. Fetched whenever the agent
+  // changes; the server validates the same figure on submit.
+  const [agentBal, setAgentBal] = useState<AgentBalance | null>(null);
+  useEffect(() => {
+    if (isSettlement || !agentId) { setAgentBal(null); return; }
+    let live = true;
+    agentTxnsAPI.agentBalance(Number(agentId))
+      .then(b => { if (live) setAgentBal(b); })
+      .catch(() => { if (live) setAgentBal(null); });
+    return () => { live = false; };
+  }, [agentId, isSettlement]);
+
   const usingAuto = Boolean(autoAgent) && !manualOverride && !!agentId && String(autoAgent!.agentMasterId) === agentId;
   const fdAgent: AgentFormAgent | undefined = fd?.agents.find(a => String(a.id) === agentId);
   const disp = fdAgent
@@ -943,10 +971,12 @@ export const AgentWithdrawalRequestPage: React.FC<{
     : (autoAgent && String(autoAgent.agentMasterId) === agentId
         ? { code: autoAgent.agentCode || '', name: autoAgent.agentName || '', country: autoAgent.country || '', state: autoAgent.state || '', location: autoAgent.location || '', category: autoAgent.category || '' }
         : undefined);
-  // Maximum Withdrawable Amount = the member's balance net of the agent's withdrawal commission,
-  // using the SAME fee the server charges (required = amount × (1 + rate)); so max = balance ÷ (1 + rate).
-  const wdFee = fdAgent?.withdrawalFee ?? 0;
-  const maxWithdrawable = memberBalance != null ? memberBalance / (1 + wdFee / 100) : null;
+  // Maximum Withdrawable Amount = the AGENT's Available Balance less the agent's withdrawal fee,
+  // computed by the server with the same fee it charges on the leg. The member's own balance is no
+  // longer a limit — it is shown for context only.
+  const wdFee = agentBal?.withdrawalFeePct ?? fdAgent?.withdrawalFee ?? 0;
+  const agentAvailable = agentBal?.spendable ?? null;
+  const maxWithdrawable = agentBal?.maxWithdrawable ?? null;
   const overMax = !isSettlement && maxWithdrawable != null && Number(parseIndianAmount(amount)) > maxWithdrawable + 0.01;
   const mdLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' };
   const mdVal: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' };
@@ -982,8 +1012,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
     setMembershipId(''); setMembershipName(''); setMembershipType(''); setAgentId(''); setAutoAgent(null);
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
     setNotes(''); setInstructions(''); setApproverId('');
-    setTxnMethod(''); setMemberBalance(null);
-    setTokenDetails(''); setNoteNumber('');
+    setTxnMethod(''); setMemberBalance(null); setAgentBal(null);
+    setTokenDetails(''); setNoteNumber(''); setMemberReference('');
     setSavedAccounts([]); setPayoutDestId(''); clearPayoutFields(); payoutIfscFill.reset();
   };
 
@@ -994,8 +1024,11 @@ export const AgentWithdrawalRequestPage: React.FC<{
     const amt = Number(parseIndianAmount(amount));
     if (!amt || amt <= 0) { showToast(`Enter a valid ${isSettlement ? 'Settlement' : 'Transaction'} Amount.`, 'error'); return; }
     if (!isSettlement && maxWithdrawable != null && amt > maxWithdrawable + 0.01) {
-      showToast("Requested amount exceeds the member's maximum withdrawable balance after commission.", 'error'); return;
+      showToast('Requested amount exceeds the maximum withdrawable from this agent after the withdrawal fee.', 'error'); return;
     }
+    // The member supplies both during the withdrawal, so both are mandatory on the request.
+    if (!isSettlement && !noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
+    if (!isSettlement && !memberReference.trim()) { showToast('Enter the Reference Number.', 'error'); return; }
     if (notes.length > 100) { showToast(`${isSettlement ? 'Remarks' : 'Notes'} must be 100 characters or fewer.`, 'error'); return; }
     if (!isSettlement && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
@@ -1034,6 +1067,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
       instructions: instructions || undefined, sentForApproval: true,
       approverUserId: Number(approverId),
       txnMethod,
+      // Provided by the member during the withdrawal — captured before the request is created.
+      noteNumber: noteNumber.trim(),
+      memberReference: memberReference.trim(),
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
       // Payout Account — only the Bank Transfer category names an account (Cash/Crypto do not). The
       // typed fields are always sent (never a saved-account id), so the backend de-dupes an unchanged
@@ -1073,7 +1109,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
         <Card style={{ padding: 16, marginBottom: 18, borderLeft: `4px solid ${T.success}` }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent {NOUN} Request created</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '10px 18px' }}>
-            {[['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Note Number', result.noteNumber], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', `${result.createdDate} ${result.createdTime}`]].map(([k, v]) => (
+            {([['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Unique Note Number', result.noteNumber], ['Member Reference Number', result.memberReference], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', `${result.createdDate} ${result.createdTime}`]] as Array<[string, string | null | undefined]>).filter(([, v]) => v != null && String(v).trim() !== '').map(([k, v]) => (
               <div key={k}><div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div><div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v}</div></div>
             ))}
           </div>
@@ -1119,26 +1155,34 @@ export const AgentWithdrawalRequestPage: React.FC<{
           {!isSettlement && <Sel label="Membership Type" value={membershipType} onChange={e => setMembershipType(e.target.value)} required
             options={[{ value: '', label: '— Select —' }, ...fd.membershipTypes.map(t => ({ value: t, label: t.charAt(0) + t.slice(1).toLowerCase() }))]} />}
           <Input label={isSettlement ? 'Settlement Amount' : 'Transaction Amount'} type="text" value={amount} onChange={e => setAmount(formatIndianAmountInput(e.target.value))} required inputMode="decimal"
-            hint={!isSettlement && memberBalance != null ? `Member Available Balance: ₹${fmt(memberBalance)}` : undefined} />
+            hint={!isSettlement && maxWithdrawable != null ? `Maximum Withdrawable: ₹${fmt(maxWithdrawable)}` : undefined} />
+          {/* The member hands both of these over during the withdrawal, so they are captured on the
+              request itself and carried through the whole withdrawal lifecycle. */}
+          {!isSettlement && <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(normalizeNoteNumber(e.target.value))} required
+            placeholder="As provided by the member" hint="Uppercase letters and numbers only; must be unique" />}
+          {!isSettlement && <Input label="Reference Number" value={memberReference} onChange={e => setMemberReference(e.target.value)} required
+            placeholder="As provided by the member" hint="The member's own withdrawal reference" />}
         </div>
 
-        {/* Member Details — the member's balance net of the agent's withdrawal commission, so the
-            operator sees the Maximum Withdrawable Amount without calculating it. Shown once the
-            membership is looked up (balance known) and an agent is selected (commission known). */}
-        {!isSettlement && memberBalance != null && (
+        {/* Agent Availability — a member may withdraw up to what the SELECTED AGENT currently holds,
+            after the agent's withdrawal fee. Shown as soon as an agent is chosen, so the operator
+            sees the ceiling the server enforces without calculating it. The member's own balance is
+            listed alongside for context only; it no longer caps the withdrawal. */}
+        {!isSettlement && agentBal && (
           <div style={{ margin: '4px 0 14px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-            <p style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Member Details</p>
+            <p style={{ margin: '0 0 10px', fontSize: 11, fontWeight: 800, color: T.textMain, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Agent Availability</p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: '10px 18px' }}>
-              {disp?.name && <div><div style={mdLabel}>Name</div><div style={mdVal}>{disp.name}</div></div>}
-              <div><div style={mdLabel}>Current Balance</div><div style={mdVal}>₹{fmt(memberBalance)}</div></div>
-              <div><div style={mdLabel}>Withdrawal Commission</div><div style={mdVal}>{wdFee}%</div></div>
+              {disp?.name && <div><div style={mdLabel}>Agent</div><div style={mdVal}>{disp.name}</div></div>}
+              <div><div style={mdLabel}>Available Agent Balance</div><div style={mdVal}>₹{fmt(agentAvailable || 0)}</div></div>
+              <div><div style={mdLabel}>Withdrawal Fee</div><div style={mdVal}>{wdFee}% · ₹{fmt(agentBal.withdrawalFee)}</div></div>
               <div style={{ padding: '2px 10px', borderRadius: 8, background: T.successBg }}>
                 <div style={mdLabel}>Maximum Withdrawable Amount</div>
                 <div style={{ ...mdVal, color: T.success, fontWeight: 800 }}>₹{fmt(maxWithdrawable || 0)}</div>
               </div>
+              {memberBalance != null && <div><div style={mdLabel}>Member Balance (info)</div><div style={mdVal}>₹{fmt(memberBalance)}</div></div>}
             </div>
             {overMax && <p style={{ margin: '10px 0 0', fontSize: 12, color: T.danger, fontWeight: 600 }}>
-              Requested amount exceeds the member's maximum withdrawable balance after commission.
+              Requested amount exceeds the maximum withdrawable from this agent after the withdrawal fee.
             </p>}
           </div>
         )}
@@ -1275,10 +1319,12 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
   const amt = (s: string) => Number(parseIndianAmount(s)) || 0;
   const round2 = (n: number) => Math.round(n * 100) / 100;
   const commissionOf = (a: number) => Math.round(a * feePct) / 100;   // a × feePct%  → 2dp
+  // The agent's commission was ALREADY deducted on this deposit, so the split allocates only what
+  // remained and charges nothing further: each member is credited the full amount entered for them.
+  const commission = commissionOf(original);
+  const distributable = round2(original - commission);
   const distributed = round2(rows.reduce((s, r) => s + amt(r.amount), 0));
-  const remaining = round2(original - distributed);
-  const totalCommission = round2(rows.reduce((s, r) => s + commissionOf(amt(r.amount)), 0));
-  const totalNet = round2(distributed - totalCommission);
+  const remaining = round2(distributable - distributed);
 
   const setRow = (i: number, patch: Partial<DistRow>) => setRows(rs => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const addRow = () => setRows(rs => [...rs, { memberId: '', memberName: '', locked: false, amount: '' }]);
@@ -1314,7 +1360,7 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
   const save = async () => {
     if (rows.some(r => !r.memberId.trim())) { showToast('Every distribution row needs a Member ID.', 'error'); return; }
     if (rows.some(r => amt(r.amount) <= 0)) { showToast('Enter a valid deposit amount for every member.', 'error'); return; }
-    if (distributed - original > 0.01) { showToast('Total distributed amount cannot exceed the original deposit amount.', 'error'); return; }
+    if (distributed - distributable > 0.01) { showToast('Total distributed amount cannot exceed the distributable amount.', 'error'); return; }
     if (Math.abs(remaining) > 0.01) { showToast(`Remaining balance must be ₹0.00 to submit — ₹${fmt(remaining)} left.`, 'error'); return; }
     setBusy(true);
     try {
@@ -1348,28 +1394,34 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
     <div style={{ marginTop: 4, marginBottom: 18, padding: 16, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
       <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 800, color: T.textMain }}>Deposit Distribution</p>
       <p style={{ margin: '0 0 14px', fontSize: 11.5, color: T.textMuted }}>
-        Split this cash deposit among multiple members — each is credited individually. The total distributed must equal the original deposit amount.
+        Split this cash deposit among multiple members — each is credited individually, in full. The
+        agent's commission was already deducted on the deposit and is not charged again here, so the
+        total distributed must equal the distributable amount.
       </p>
 
-      {/* Live summary — Original / Distributed / Remaining */}
+      {/* Live summary — Original / Commission already deducted / Distributable / Distributed / Remaining */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', padding: 12, borderRadius: 8, background: T.surface, border: `1px solid ${T.border}`, marginBottom: 14 }}>
         {stat('Original Deposit', fmt(original), T.textMain)}
+        {stat('Commission (already deducted)', fmt(commission), T.warning)}
+        {stat('Distributable', fmt(distributable), T.textMain)}
         {stat('Distributed', fmt(distributed), T.blue)}
         {stat('Remaining', fmt(remaining), remainingColor)}
       </div>
 
       {remaining < -0.01 && (
         <div style={{ padding: '9px 12px', borderRadius: 8, background: T.dangerBg, color: T.danger, fontSize: 11.5, fontWeight: 600, marginBottom: 12 }}>
-          Total distributed amount cannot exceed the original deposit amount.
+          Total distributed amount cannot exceed the distributable amount ({fmt(distributable)}).
         </div>
       )}
 
       <div ref={wrapRef} style={{ overflowX: 'auto', border: `1px solid ${T.border}`, borderRadius: 10 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
-          <thead><tr style={{ background: T.surface }}>{['Member ID', 'Member Name', 'Deposit Amount', 'Commission', 'Net Credit', ''].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+          {/* No per-member Commission column: the commission came off the deposit, so each member
+              is credited exactly the amount entered. */}
+          <thead><tr style={{ background: T.surface }}>{['Member ID', 'Member Name', 'Deposit Amount', 'Net Credit', ''].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
           <tbody>
             {rows.map((r, i) => {
-              const a = amt(r.amount); const com = commissionOf(a); const net = round2(a - com);
+              const a = amt(r.amount);
               return (
                 <tr key={i} style={{ background: T.canvas }}>
                   <td style={tdS}><Input value={r.memberId} onChange={e => { const v = normalizeMemberId(e.target.value); setRow(i, { memberId: v }); fetchName(i, v); }} placeholder="Member ID" style={{ marginBottom: 0 }} /></td>
@@ -1383,8 +1435,7 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
                       </button>
                     )}
                   </td>
-                  <td style={{ ...tdS, color: T.warning, fontWeight: 700, whiteSpace: 'nowrap' }}>{a > 0 ? fmt(com) : '—'}</td>
-                  <td style={{ ...tdS, fontWeight: 700, whiteSpace: 'nowrap' }}>{a > 0 ? fmt(net) : '—'}</td>
+                  <td style={{ ...tdS, fontWeight: 700, whiteSpace: 'nowrap' }}>{a > 0 ? fmt(a) : '—'}</td>
                   <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => removeRow(i)} disabled={rows.length <= 1 || busy}>Remove</Btn></td>
                 </tr>
               );
@@ -1401,9 +1452,9 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
       {/* Summary card — totals, live */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', padding: 12, borderRadius: 8, background: T.surface, border: `1px solid ${T.border}`, marginTop: 14 }}>
         {stat('Original Deposit', fmt(original), T.textMain)}
+        {stat('Commission (already deducted)', fmt(commission), T.warning)}
         {stat('Total Distributed', fmt(distributed), T.blue)}
-        {stat('Total Commission', fmt(totalCommission), T.warning)}
-        {stat('Total Net Credit', fmt(totalNet), T.success)}
+        {stat('Total Net Credit', fmt(distributed), T.success)}
         {stat('Remaining', fmt(remaining), remainingColor)}
       </div>
 
@@ -1650,6 +1701,23 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
 };
 
 // ─── Read-only View Details modal (Agent Deposit / Withdrawal Management) ───────
+/**
+ * Does a detail row carry anything worth showing? Transaction Details is a superset of every
+ * workflow's fields, so on any single transaction most of them are blank — a Cash deposit has no
+ * UTR, an unapproved request has no approver, a withdrawal has no "Sent To (Agent A/C)". Rendering
+ * those as "—" filled the grid with empty rows; they are dropped instead so only real data shows.
+ *
+ * A rendered element (a status pill, a link) always counts. A string counts once the placeholders
+ * and separators are stripped, so composites like "— · " or "AGT001 · " collapse to nothing when
+ * every part they join is missing.
+ */
+const hasDetailValue = (v: React.ReactNode): boolean => {
+  if (v == null || v === false) return false;
+  if (typeof v === 'number') return true;
+  if (typeof v !== 'string') return true;             // a React element — always rendered
+  return v.replace(/[—·|,/\s]/g, '') !== '';
+};
+
 const DField: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
   <div>
     <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div>
@@ -1750,7 +1818,7 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
   // How this transaction's commission was calculated (item 6) — the exact figures behind it.
   useEffect(() => { agentTxnsAPI.txnCommission(row.id).then(setComm).catch(() => {}); }, [row.id]);
 
-  const fields: Array<[string, React.ReactNode]> = [
+  const allFields: Array<[string, React.ReactNode]> = [
     ['Reference Number', row.referenceNumber], ['Transaction Code', row.transactionCode],
     ['Type', row.type], ['Status', <StatusPill status={row.status} type={row.type} method={row.txnMethod} />],
     ['Agent', `${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`],
@@ -1759,7 +1827,9 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ['Membership ID', row.membershipId], ['Membership Name', row.membershipName],
     ['Membership Type', row.membershipType], ['Amount', fmt(row.amount)],
     ['Country', row.country], ['State', row.state], ['Location', row.location], ['Mobile', row.mobile],
-    ['Token Details', row.tokenDetails], ['Note Number', row.noteNumber],
+    ['Token Details', row.tokenDetails], ['Unique Note Number', row.noteNumber],
+    // The member's own Reference Number, captured on the withdrawal request.
+    ['Reference Number (Member)', row.memberReference],
     ['Crypto Wallet Address', row.walletAddress],
     ['Instructions', row.instructions ? instrLabel(row.instructions) : null], ['Notes', row.notes],
     ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'], ['Approver', row.approverName],
@@ -1778,6 +1848,8 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
     ['Deposited (IST)', row.depositedDate ? `${row.depositedDate} ${row.depositedTime || ''}` : null],
     ['Created By', row.createdBy], ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`],
   ];
+  // Only rows that actually carry data are rendered; the grid reflows to close the gaps.
+  const fields = allFields.filter(([, v]) => hasDetailValue(v));
 
   // The uploaded slip and the Mark-Deposit proof, shown from storage every time. Each renders
   // through SlipView, which shows the image (or names the PDF) and offers a Download.
@@ -2027,6 +2099,7 @@ const AgentTxnManagementPage: React.FC<{
   const [slipRow, setSlipRow] = useState<AgentTxnRow | null>(null);
   const [depositRow, setDepositRow] = useState<AgentTxnRow | null>(null);
   const [payoutRow, setPayoutRow] = useState<AgentTxnRow | null>(null);
+  const [completeRow, setCompleteRow] = useState<AgentTxnRow | null>(null);
   // Settlement chain steps.
   const [acceptRow, setAcceptRow] = useState<AgentTxnRow | null>(null);
   const [rejectRow, setRejectRow] = useState<AgentTxnRow | null>(null);
@@ -2149,11 +2222,15 @@ const AgentTxnManagementPage: React.FC<{
                     {isDeposit && canOperate && x.status === 'SUPERVISOR_APPROVED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
                     {/* Withdrawal (approve-first): every method is created at MANAGER_REVIEW
                         (Waiting for Approval); once the chosen approver approves (MANAGER_APPROVED),
-                        the CREATING operator submits the method-specific payment details, which
-                        completes it. Only the creator sees this action. */}
+                        the CREATING operator records the method-specific payment details. Saving
+                        those only updates the payment information — completing is the separate
+                        action beside it. Only the creator sees either. */}
                     {!isDeposit && txnType !== 'SETTLEMENT' && canPayout && x.status === 'MANAGER_APPROVED'
                       && x.createdBy === user.username
-                      && <Btn size="sm" variant="success" onClick={() => setPayoutRow(x)}>Submit Payment Details</Btn>}
+                      && <Btn size="sm" onClick={() => setPayoutRow(x)}>{hasPaymentDetails(x) ? 'Edit Payment Details' : 'Submit Payment Details'}</Btn>}
+                    {!isDeposit && txnType !== 'SETTLEMENT' && canPayout && x.status === 'MANAGER_APPROVED'
+                      && x.createdBy === user.username && hasPaymentDetails(x)
+                      && <Btn size="sm" variant="success" onClick={() => setCompleteRow(x)}>Complete Withdrawal</Btn>}
                     {/* Settlement chain — Requested → Accepted → Proof Uploaded → Settled. The
                         payment happens offline between merchant and agent; these actions only
                         record the workflow and the proof. Reject is available until the payment
@@ -2188,6 +2265,7 @@ const AgentTxnManagementPage: React.FC<{
       {slipRow && <UploadSlipModal row={slipRow} onClose={() => setSlipRow(null)} onDone={load} />}
       {depositRow && <MarkDepositModal row={depositRow} onClose={() => setDepositRow(null)} onDone={load} />}
       {payoutRow && <PaymentDetailsModal row={payoutRow} onClose={() => setPayoutRow(null)} onDone={load} />}
+      {completeRow && <CompleteWithdrawalModal row={completeRow} onClose={() => setCompleteRow(null)} onDone={load} />}
       {acceptRow && <SettlementDecisionModal row={acceptRow} action="accept" onClose={() => setAcceptRow(null)} onDone={load} />}
       {rejectRow && <SettlementDecisionModal row={rejectRow} action="reject" onClose={() => setRejectRow(null)} onDone={load} />}
       {proofRow && <SettlementProofModal row={proofRow} onClose={() => setProofRow(null)} onDone={load} />}
@@ -2372,8 +2450,11 @@ const inBoundsA = (r: AgentTxnRow, [start, end]: [number, number]): boolean => {
  *  running balance over this scope *before* the period starts, to derive the Opening Balance. */
 const matchesNonDateA = (r: AgentTxnRow, f: AgentRFilters): boolean => {
   const inc = (v: string | null | undefined, q: string) => !q || (v || '').toLowerCase().includes(q.toLowerCase());
+  // Agent ID / Agent Name are picked from dropdowns of real agents, so they match exactly — a
+  // substring test would let "Ravi" also select "Ravi Kumar".
   return inc(r.referenceNumber, f.ref) && inc(r.membershipId, f.membershipId) && inc(r.membershipName, f.memberName)
-    && inc(r.agentCode, f.agentId) && inc(r.agentName, f.agentName)
+    && (!f.agentId || (r.agentCode || '') === f.agentId)
+    && (!f.agentName || (r.agentName || '') === f.agentName)
     && (!f.agentCategory || String(r.agentCategory || '').toUpperCase() === f.agentCategory)
     && (!f.type || r.type === f.type) && (!f.status || r.status === f.status)
     && (!f.approvedBy || approverA(r).toLowerCase().includes(f.approvedBy.toLowerCase()))
@@ -2450,6 +2531,10 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   const { showToast } = useToast();
   const [ov, setOv] = useState<AgentOverview | null>(null);
   const [rows, setRows] = useState<AgentTxnRow[]>([]);
+  // The agent master list backing the Agent ID / Agent Name filter dropdowns (active agents for
+  // this user). Cached and shared with the rest of the module — no extra round trip per report.
+  const [fd, setFd] = useState<AgentFormData | null>(null);
+  useEffect(() => { agentTxnsAPI.formData().then(setFd).catch(() => {}); }, []);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<AgentRTab>('full');
   const [draft, setDraft] = useState<AgentRFilters>(AGENT_EMPTY_FILTERS);
@@ -2513,11 +2598,20 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   // Current Available Balance — the module-wide figure from the shared overview endpoint
   // (completed deposits net of commission, less completed withdrawals/settlements + theirs).
   const availableBalance = ov?.cards.netAmount ?? 0;
-  // Agent + status dropdown options, derived from the ledger itself (no extra API call).
-  const agentOptions = Array.from(new Map(rows.filter(r => r.agentCode)
-    .map(r => [r.agentCode as string, r.agentName || ''])).entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([code, name]) => ({ value: code, label: name ? `${code} · ${name}` : code }));
+  // Agent dropdowns: every ACTIVE agent available to this user (from /form-data), merged with any
+  // agent that appears in the loaded ledger so a since-deactivated agent's history stays filterable.
+  const agentPairs = (() => {
+    const by = new Map<string, string>();   // agent code → agent name
+    for (const a of (fd?.agents || [])) by.set(a.agentId, a.name || '');
+    for (const r of rows) if (r.agentCode && !by.has(r.agentCode)) by.set(r.agentCode, r.agentName || '');
+    return Array.from(by.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  })();
+  const agentIdOptions = agentPairs.map(([code, name]) => ({ value: code, label: name ? `${code} · ${name}` : code }));
+  const agentNameOptions = Array.from(new Set(agentPairs.map(([, name]) => name).filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b))
+    .map(name => ({ value: name, label: name }));
+  // The combined Agent select on the Commission / Ledger tabs uses the same source.
+  const agentOptions = agentIdOptions;
   const statusOptions = Array.from(new Set(rows.map(r => r.status)))
     .map(s => ({ value: s, label: statusLabelA(s) }));
 
@@ -2765,8 +2859,12 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
             <Input label="Reference Number" value={draft.ref} onChange={e => set('ref', e.target.value)} />
             <Input label="Membership ID" value={draft.membershipId} onChange={e => set('membershipId', normalizeMemberId(e.target.value))} />
             <Input label="Member Name" value={draft.memberName} onChange={e => set('memberName', e.target.value)} />
-            <Input label="Agent ID" value={draft.agentId} onChange={e => set('agentId', e.target.value)} />
-            <Input label="Agent Name" value={draft.agentName} onChange={e => set('agentName', e.target.value)} />
+            {/* Agent filters — dropdowns of the agents available to this user, so a report is
+                narrowed to one agent by picking it rather than typing a code that has to match. */}
+            <Sel label="Agent ID" value={draft.agentId} onChange={e => set('agentId', e.target.value)}
+              options={[{ value: '', label: 'All Agents' }, ...agentIdOptions]} />
+            <Sel label="Agent Name" value={draft.agentName} onChange={e => set('agentName', e.target.value)}
+              options={[{ value: '', label: 'All Agent Names' }, ...agentNameOptions]} />
             <Sel label="Agent Category" value={draft.agentCategory} onChange={e => set('agentCategory', e.target.value)}
               options={[{ value: '', label: 'All Categories' }, ...AGENT_CATEGORIES]} />
             <Sel label="Transaction Type" value={draft.type} onChange={e => set('type', e.target.value)}
@@ -3107,7 +3205,11 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
   const isCash = isTokenMethod(row.txnMethod);       // CASH → Token Number
   const isCryptoM = isWalletMethod(row.txnMethod);   // CRYPTO → Wallet Address (+ optional Tx Hash)
   const isBank = method === 'BANK';                  // BANK → Slip + Reference; else UPI-style → UTR + Screenshot
-  const [note, setNote] = useState('');              // Unique Note Number — mandatory for every method
+  // The Unique Note Number is captured on the request form now (the member supplies it during the
+  // withdrawal). It is pre-filled and read-only here; a legacy request raised before that change
+  // has none, so the field stays editable for those.
+  const noteFromRequest = (row.noteNumber || '').trim();
+  const [note, setNote] = useState(noteFromRequest);
   const [token, setToken] = useState('');
   const [wallet, setWallet] = useState('');
   const [txHash, setTxHash] = useState('');
@@ -3125,6 +3227,8 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
 
   // The Unique Note Number is mandatory for every method, on top of the method-specific fields.
   const ready = !!note.trim() && (isCash ? !!token.trim() : isCryptoM ? !!wallet.trim() : (!!slip && !!utr.trim()));
+  // Saving the proof is a DATA UPDATE — it never moves the transaction's status. Completing it is
+  // the separate, explicit action below, so an upload can no longer complete a withdrawal by itself.
   const submit = async () => {
     if (!ready) { showToast('Fill the required payment details.', 'error'); return; }
     setBusy(true);
@@ -3136,26 +3240,48 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
           : { slipImage: slip, utr: utr.trim() }),
       };
       await agentTxnsAPI.payout(row.id, body);
-      showToast(`${row.referenceNumber} completed.`, 'success');
+      showToast(`Payment details saved for ${row.referenceNumber}. Status unchanged.`, 'success');
       onDone(); onClose();
     } catch (e) { showToast(agentTxnError(e, 'Failed to submit payment details.'), 'error'); }
+    finally { setBusy(false); }
+  };
+
+  // Save the details and complete in one go, for the operator who is doing both at the same time.
+  // The completion is still its own server-side step, gated on the approval already given.
+  const saveAndComplete = async () => {
+    if (!ready) { showToast('Fill the required payment details.', 'error'); return; }
+    setBusy(true);
+    try {
+      await agentTxnsAPI.payout(row.id, {
+        noteNumber: note.trim(),
+        ...(isCash ? { tokenDetails: token.trim() }
+          : isCryptoM ? { walletAddress: wallet.trim(), ...(txHash.trim() ? { txHash: txHash.trim() } : {}) }
+          : { slipImage: slip, utr: utr.trim() }),
+      });
+      await agentTxnsAPI.completeWithdrawal(row.id);
+      showToast(`${row.referenceNumber} completed.`, 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Failed to complete the withdrawal.'), 'error'); }
     finally { setBusy(false); }
   };
 
   return (
     <Modal title={`Submit Payment Details — ${row.referenceNumber}`} onClose={onClose}>
       <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
-        Approved by {row.approverName || row.managerName || 'the approver'}. Enter the {methodLabel(row.txnMethod)} payment details to complete this withdrawal.
+        Approved by {row.approverName || row.managerName || 'the approver'}. Record the {methodLabel(row.txnMethod)} payment details.
+        Saving them updates the payment information only — the status stays as the approval workflow left it until you complete the withdrawal.
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
         <DField k="Amount" v={fmt(row.amount)} />
         <DField k="Membership" v={row.membershipId} />
+        {row.memberReference ? <DField k="Reference Number" v={row.memberReference} /> : null}
       </div>
-      {/* Unique Note Number — mandatory for every method, placed directly above the payment-specific
-          fields. Reuses the same field, formatting (normalizeNoteNumber) and uniqueness rule as the
-          original request / deposit token step. */}
+      {/* Unique Note Number — supplied by the member and captured on the request, so it is shown
+          read-only here. A legacy request without one can still have it entered. */}
       <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required
-        placeholder="As provided by the customer" hint="Uppercase letters and numbers only; must be unique" />
+        readOnly={!!noteFromRequest}
+        placeholder="As provided by the member"
+        hint={noteFromRequest ? 'Captured on the withdrawal request' : 'Uppercase letters and numbers only; must be unique'} />
       {isCash && <Input label="Token Number" value={token} onChange={e => setToken(e.target.value)} required placeholder="Token number handed to the member" />}
       {isCryptoM && (<>
         <Input label="Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="The wallet paid out to" />
@@ -3170,9 +3296,49 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
         <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
         {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
       </>)}
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10, flexWrap: 'wrap' }}>
+        <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+        <Btn onClick={submit} disabled={busy || !ready}>{busy ? 'Saving…' : 'Save Payment Details'}</Btn>
+        <Btn variant="success" onClick={saveAndComplete} disabled={busy || !ready}>{busy ? 'Completing…' : 'Save & Complete'}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
+/** Complete Withdrawal — the explicit step that finalises an approved withdrawal whose payment
+ *  details are already on the record. Kept separate from the proof upload so a file upload can
+ *  never change a status by itself. */
+const CompleteWithdrawalModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await agentTxnsAPI.completeWithdrawal(row.id);
+      showToast(`${row.referenceNumber} completed.`, 'success');
+      onDone(); onClose();
+    } catch (e) { showToast(agentTxnError(e, 'Failed to complete the withdrawal.'), 'error'); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Modal title={`Complete Withdrawal — ${row.referenceNumber}`} onClose={onClose}>
+      <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
+        The payment details below are already recorded. Completing deducts the amount and its commission
+        and closes the withdrawal.
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+        <DField k="Amount" v={fmt(row.amount)} />
+        <DField k="Membership" v={row.membershipId} />
+        {row.noteNumber ? <DField k="Unique Note Number" v={row.noteNumber} /> : null}
+        {row.memberReference ? <DField k="Reference Number" v={row.memberReference} /> : null}
+        {row.tokenDetails ? <DField k="Token Number" v={row.tokenDetails} /> : null}
+        {row.walletAddress ? <DField k="Wallet Address" v={row.walletAddress} /> : null}
+        {row.depositUtr ? <DField k="UTR / Reference" v={row.depositUtr} /> : null}
+      </div>
+      {row.slipImage && <div style={{ marginBottom: 14 }}><SlipView label="Payment Proof" src={row.slipImage} filename={`${row.referenceNumber}-payment-proof`} /></div>}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-        <Btn variant="success" onClick={submit} disabled={busy || !ready}>{busy ? 'Completing…' : 'Complete Withdrawal'}</Btn>
+        <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : 'Complete Withdrawal'}</Btn>
       </div>
     </Modal>
   );
@@ -3416,6 +3582,8 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
     // What this method asks the reviewer to verify.
     ['Token Details', row.tokenDetails],
     ['Unique Note Number', row.noteNumber],
+    // The member's own Reference Number, captured on the withdrawal request.
+    ['Reference Number (Member)', row.memberReference],
     ['Crypto Wallet Address', row.walletAddress],
     ...(isDep
       ? ([
@@ -3438,8 +3606,9 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
 
   return (
     <Modal title={`Review ${row.referenceNumber}`} onClose={onClose} wide>
+      {/* Empty rows are dropped, same rule as Transaction Details — this list spans every method. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-        {facts.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
+        {facts.filter(([, v]) => hasDetailValue(v)).map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
       </div>
       {row.accountProof && (
         <div style={{ marginBottom: 14 }}>

@@ -96,6 +96,13 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   return true;
 };
 
+/**
+ * Pages rendered WITHOUT the sidebar navigation — only the page's own content is shown.
+ * Balance Enquiry is a focused, read-only member lookup, so the module navigation is dropped and
+ * the screen uses the full width; the header (and the page's own links) still navigate on.
+ */
+const SIDEBARLESS_PAGES = new Set(['agent-balance']);
+
 const App: React.FC = () => {
   const { user, logout } = useAuth();
   // Seeded from the URL so a refresh or deep link starts on the right page instead of the
@@ -157,6 +164,11 @@ const App: React.FC = () => {
   // app.win365jackpot.com is just a chooser that routes users to their dedicated portal.
   if (PORTAL === 'app') return (<><DemoBanner /><PortalChooser /></>);
   if (!user) return (<><DemoBanner /><LoginPage /></>);
+
+  // Pages that render WITHOUT the sidebar — the screen is the whole content, so the header spans
+  // the full width and the main area loses its sidebar gutter. Balance Enquiry is a focused
+  // read-only lookup; it navigates on through the links on the page itself.
+  const hideSidebar = SIDEBARLESS_PAGES.has(activePage);
 
   const renderPage = () => {
     const props = { user, onNavigate: navigate };
@@ -253,24 +265,25 @@ const App: React.FC = () => {
         @keyframes pulse{from{opacity:0.6;transform:scale(1);}to{opacity:1;transform:scale(1.05);}}
       `}</style>
 
-      <Sidebar
+      {!hideSidebar && <Sidebar
         user={user}
         active={activePage}
         onNav={(key) => { navigate(key); setNavTick((t) => t + 1); setSidebarOpen(false); }}
         onLogout={logout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
-      />
+      />}
 
       <Header
         user={user}
         title={PAGE_TITLES[activePage] || 'Dashboard'}
         onMenuClick={() => setSidebarOpen(o => !o)}
+        fullWidth={hideSidebar}
       />
 
       <main
         className="main-content"
-        style={{ marginLeft: 248, marginTop: 'calc(60px + var(--demo-banner-h, 0px))', minHeight: 'calc(100vh - 60px)', background: T.canvas, padding: 24, boxSizing: 'border-box' }}
+        style={{ marginLeft: hideSidebar ? 0 : 248, marginTop: 'calc(60px + var(--demo-banner-h, 0px))', minHeight: 'calc(100vh - 60px)', background: T.canvas, padding: 24, boxSizing: 'border-box' }}
       >
         {renderPage()}
       </main>

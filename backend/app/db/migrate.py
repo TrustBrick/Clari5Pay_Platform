@@ -189,6 +189,9 @@ _NEW_COLUMNS = [
     # only its own step timestamp, so "Completed Date & Time" had to guess; this is the one
     # authoritative value. Backfilled from the audit trail below.
     ("agent_transaction", "completed_at", "TIMESTAMP"),
+    # Member-supplied Reference Number, captured on the Create Agent Withdrawal Request form next
+    # to the Unique Note Number. Not unique (unlike note_number) — it is the member's reference.
+    ("agent_transaction", "member_reference", "VARCHAR(64)"),
 ]
 
 # ── Performance indexes ──────────────────────────────────────────────────────

@@ -10,9 +10,13 @@ interface HeaderProps {
   user: User;
   title: string;
   onMenuClick: () => void;
+  /** Span the full width — set on the pages rendered without the sidebar, so the header does not
+   *  leave a 248px gap where the sidebar would have been. Also hides the menu button, since there
+   *  is no sidebar for it to open. */
+  fullWidth?: boolean;
 }
 
-const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick }) => {
+const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth }) => {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<Notification[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -105,14 +109,14 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick }) => {
   return (
     <header
       className="main-header"
-      style={{ height:60,background:T.surface,borderBottom:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 20px',position:'fixed',top:'var(--demo-banner-h, 0px)',left:248,right:0,zIndex:90,boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}
+      style={{ height:60,background:T.surface,borderBottom:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 20px',position:'fixed',top:'var(--demo-banner-h, 0px)',left:fullWidth?0:248,right:0,zIndex:90,boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}
     >
       <div style={{ display:'flex',alignItems:'center',gap:12 }}>
-        <button
+        {!fullWidth && <button
           onClick={onMenuClick}
           className="hamburger"
           style={{ display:'none',background:'none',border:'none',cursor:'pointer',color:T.textMuted,padding:4,alignItems:'center' }}
-        ><Icon name="menu" size={22} /></button>
+        ><Icon name="menu" size={22} /></button>}
         <div>
           <h1 style={{ fontSize:16,fontWeight:800,color:T.textMain,margin:0 }}>{title}</h1>
           <p style={{ fontSize:10,color:T.textMuted,margin:0 }}>

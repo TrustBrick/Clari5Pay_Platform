@@ -79,6 +79,9 @@ export interface AgentTxnRow {
   mobileCode?: string | null;
   tokenDetails?: string | null;
   noteNumber?: string | null;
+  /** The Reference Number the MEMBER supplied during the withdrawal — not the system serial
+   *  in `referenceNumber`. Captured on the Create Agent Withdrawal Request form. */
+  memberReference?: string | null;
   notes?: string | null;
   instructions?: string | null;
   /** Same labels as the merchant deposit workflow. Legacy rows keep PENDING/APPROVED/REJECTED. */
@@ -214,6 +217,8 @@ export interface AgentDepositBody {
   // Supplied by the customer/agent and typed in by the operator — mandatory on a Deposit.
   tokenDetails?: string;
   noteNumber?: string;
+  /** Member-supplied Reference Number — mandatory on a Withdrawal, alongside noteNumber. */
+  memberReference?: string;
   walletAddress?: string;   // CRYPTO withdrawal
   // Transaction type + Sending Account (mirrors the merchant Deposit Request).
   txnMethod?: string;
@@ -286,6 +291,22 @@ export interface AgentMemberSummary {
   settlementCount?: number; totalSettlements?: number; settlementCommission?: number;
   availableBalance?: number;
   lastTransactionDate?: string | null;
+}
+
+/** What one agent currently holds, and the ceiling it puts on a withdrawal. */
+export interface AgentBalance {
+  agentMasterId: number;
+  agentId: string;
+  agentName: string;
+  /** Completed-only balance held by the agent. */
+  available: number;
+  /** `available` less the agent's in-flight withdrawals/settlements — what the server validates. */
+  spendable: number;
+  withdrawalFeePct: number;
+  /** The fee taken off `spendable` to reach `maxWithdrawable`. */
+  withdrawalFee: number;
+  /** Available Agent Balance − Withdrawal Fee. */
+  maxWithdrawable: number;
 }
 
 export interface AgentPerfRow {
@@ -382,8 +403,17 @@ export const agentTxnsAPI = {
   managerReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
   /** Submit Payment Details (creator, after approval) — method-specific, completes the withdrawal. */
+  /** Submit Payment Details — saves the proof + payment information ONLY. The status is left
+   *  exactly where the approval workflow put it; `completeWithdrawal` is the explicit step that
+   *  completes the transaction. */
   payout: async (id: number, body: { noteNumber?: string; tokenDetails?: string; walletAddress?: string; txHash?: string; slipImage?: string; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
+  /** Complete an approved withdrawal whose payment details are already on the record. */
+  completeWithdrawal: async (id: number) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/complete`, {})).data,
+  /** What the selected agent currently holds + the most a member may withdraw from it. */
+  agentBalance: async (agentMasterId: number) =>
+    (await api.get<AgentBalance>(`/api/agent-txns/agent/${agentMasterId}/balance`)).data,
   // ── Settlement chain: Requested → Accepted → Proof Uploaded → Settled (payment is offline) ──
   settlementAccept: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/settlement/accept`, { remark })).data,

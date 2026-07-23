@@ -850,6 +850,10 @@ class AgentTransaction(Base):
     # Nullable: a CASH/CRYPTO deposit has no token at creation — it is captured at Submit Account.
     token_details: Mapped[Optional[str]] = mapped_column(String(48), nullable=True)
     note_number: Mapped[Optional[str]] = mapped_column(String(24), unique=True, index=True, nullable=True)
+    # The Reference Number the MEMBER supplies during a withdrawal, captured on the request form
+    # alongside the Unique Note Number. Distinct from `reference_number` above, which is the
+    # system-generated serial — this one is the member's own reference and is not unique.
+    member_reference: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)   # max 100 chars
     instructions: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
 

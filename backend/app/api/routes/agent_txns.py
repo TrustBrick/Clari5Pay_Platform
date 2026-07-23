@@ -235,6 +235,42 @@ async def _next_serial(db: AsyncSession, model_col, prefix: str) -> str:
     return f"{prefix}{maxn + 1:06d}"
 
 
+def _agent_serial(agent: AgentMaster) -> int:
+    """The Agent's numeric ID — the digits of its AGT… serial (AGT000015 → 15), falling back to
+    the row id if an agent predates the serial format."""
+    m = re.search(r"(\d+)$", str(agent.agent_id or ""))
+    return int(m.group(1)) if m else int(agent.id)
+
+
+async def _next_agent_txn_seq(db: AsyncSession, agent_master_id: int) -> int:
+    """How many transactions this agent has created so far, + 1 — the per-agent running counter
+    that ends every transaction code (…-01, …-02, …). Maintained SEPARATELY for each agent and
+    shared across its Deposits, Withdrawals and Settlements, so it is that agent's total.
+
+    Split children are excluded: they are not requests an operator created, and they take their
+    code from the parent (``<parent code>-01``), which is why their reference carries a '-'.
+    """
+    n = (await db.execute(
+        select(func.count()).select_from(AgentTransaction).where(
+            AgentTransaction.agent_master_id == agent_master_id,
+            AgentTransaction.reference_number.notlike("%-%"),
+        )
+    )).scalar() or 0
+    return int(n) + 1
+
+
+async def _transaction_code(db: AsyncSession, agent: AgentMaster, code_letter: str) -> str:
+    """The agent transaction code — ``<agent code>-<leg>-<agent id>-<agent sequence>``.
+
+    e.g. BBO-D-000001-02 = the 2nd transaction created by Agent 1 (BBO), a Deposit. The first
+    numeric block identifies the AGENT (000001, 000002, 000015 …); the last is that agent's own
+    transaction count, so every agent numbers its transactions from 01 independently. The same
+    format applies to Deposits (D), Withdrawals (W) and Settlements (S).
+    """
+    seq = await _next_agent_txn_seq(db, agent.id)
+    return f"{agent.transaction_code}-{code_letter}-{_agent_serial(agent):06d}-{seq:02d}"
+
+
 def _member_account_row(a: AgentMemberBankAccount) -> dict:
     return {
         "id": a.id, "membershipId": a.membership_id, "memberName": a.member_name,
@@ -390,6 +426,9 @@ def _row(t: AgentTransaction) -> dict:
         "country": t.txn_country, "state": t.txn_state, "location": t.txn_location,
         "mobile": t.mobile, "mobileCode": t.mobile_code,
         "tokenDetails": t.token_details, "noteNumber": t.note_number,
+        # The member's own Reference Number (captured on the withdrawal request), NOT the system
+        # serial in `referenceNumber` above.
+        "memberReference": t.member_reference,
         "notes": t.notes, "instructions": t.instructions,
         "status": t.status,
         # Transaction type + Sending Account (shown in Transaction Details / All Transactions /
@@ -476,6 +515,27 @@ def _leg_rate(agent: AgentMaster | None, txn_type: str) -> float:
     return (pct or 0.0) / 100.0
 
 
+def _is_split_child(t: AgentTransaction) -> bool:
+    """A child deposit produced by splitting a Cash Deposit (see distribute_deposit).
+
+    ``linked_deposit_id`` on a DEPOSIT is only ever set by the split, so it identifies a child
+    exactly (on a WITHDRAWAL the same column means something else — the deposit whose agent was
+    auto-fetched — hence the txn_type guard).
+    """
+    return t.txn_type == "DEPOSIT" and t.linked_deposit_id is not None
+
+
+def _txn_rate(t: AgentTransaction, agent: AgentMaster | None) -> float:
+    """The commission rate that applies to ONE transaction.
+
+    Identical to _leg_rate for every ordinary transaction. A split child charges NOTHING: the
+    parent Cash Deposit already had the agent's Pay-In commission deducted at the deposit, and the
+    split only allocates what remained. Charging the leg fee again on each child was deducting the
+    same commission twice — once from the parent's distributable amount and once from every child.
+    """
+    return 0.0 if _is_split_child(t) else _leg_rate(agent, t.txn_type)
+
+
 # An agent's Category decides how it settles, so the Settlement Method follows from it rather than
 # being picked by a user: a Cash agent settles in cash, a Bank Transfer agent by bank transfer, a
 # Crypto agent in crypto. Mirrors categoryForMethod() on the frontend, inverted.
@@ -495,7 +555,7 @@ def _settlement_method_for(agent: AgentMaster) -> str:
 def _signed_leg(t: AgentTransaction, agent: AgentMaster | None) -> float:
     """A transaction's effect on the member balance: deposit credits net, withdrawal/settlement
     debit gross + their own commission."""
-    r = _leg_rate(agent, t.txn_type)
+    r = _txn_rate(t, agent)
     amt = t.amount or 0.0
     if t.txn_type == "DEPOSIT":
         return amt * (1 - r)
@@ -506,7 +566,7 @@ def _completion_note(t: AgentTransaction, agent: AgentMaster | None, actor: User
     """Audit line for a completed leg — captures the amount, this leg's commission, the member's
     Available Balance before → after, the Membership ID, the Agent ID and who acted (the timestamp
     is on the audit row itself). Written into the existing audit note (no schema change)."""
-    rate = _leg_rate(agent, t.txn_type)
+    rate = _txn_rate(t, agent)
     commission = round((t.amount or 0.0) * rate, 2)
     after = round(before + _signed_leg(t, agent), 2)
     leg = {"DEPOSIT": "Deposit", "WITHDRAWAL": "Withdrawal", "SETTLEMENT": "Settlement"}.get(t.txn_type, t.txn_type)
@@ -549,6 +609,45 @@ async def _member_balance(db: AsyncSession, business: str, membership_id: str) -
     return {"available": available, "spendable": round(available - reserved, 2)}
 
 
+async def _agent_balance(db: AsyncSession, business: str, agent_master_id: int) -> dict:
+    """Available + spendable balance held BY ONE AGENT, in the same completed-only, per-leg terms
+    as _member_balance — just scoped to the agent rather than the member.
+
+    This is the figure a withdrawal is validated against: a member may withdraw up to what the
+    selected agent currently holds, net of the agent's withdrawal fee. (It replaces the old
+    per-member limit, which capped a withdrawal at the member's own prior deposits.)
+    `spendable` additionally reserves the agent's in-flight withdrawals/settlements, so two
+    concurrent requests cannot each pass and together overdraw the agent.
+    """
+    rows = (await db.execute(select(AgentTransaction).where(
+        AgentTransaction.merchant_business == business,
+        AgentTransaction.agent_master_id == agent_master_id))).scalars().all()
+    if not rows:
+        return {"available": 0.0, "spendable": 0.0}
+    agent = (await db.execute(select(AgentMaster).where(
+        AgentMaster.id == agent_master_id))).scalar_one_or_none()
+
+    available = 0.0
+    reserved = 0.0
+    for t in rows:
+        if t.status in COMPLETED_STATUSES:
+            available += _signed_leg(t, agent)
+        elif t.status not in REJECTED_STATUSES and t.txn_type in ("WITHDRAWAL", "SETTLEMENT"):
+            reserved += -_signed_leg(t, agent)     # _signed_leg is negative for these
+    available = round(available, 2)
+    return {"available": available, "spendable": round(available - reserved, 2)}
+
+
+def _max_withdrawable(available: float, rate: float) -> float:
+    """The largest withdrawal an available balance covers once the withdrawal fee is taken off.
+
+    A withdrawal debits amount + its own commission (_signed_leg), so the amount that exactly
+    consumes `available` is available ÷ (1 + rate) — i.e. the available balance less the
+    withdrawal fee charged on it. Negative balances floor at zero.
+    """
+    return round(max(0.0, available) / (1 + rate), 2)
+
+
 async def _member_summary(db: AsyncSession, business: str, membership_id: str) -> dict:
     """Full financial summary for one Membership ID — the Balance Enquiry payload. Reuses the same
     completed-only, per-leg logic as _member_balance (deposit net of Pay-In, withdrawal/settlement
@@ -574,7 +673,7 @@ async def _member_summary(db: AsyncSession, business: str, membership_id: str) -
             amt = t.amount or 0.0
             agg[t.txn_type][0] += 1
             agg[t.txn_type][1] += amt
-            agg[t.txn_type][2] += round(amt * _leg_rate(agents.get(t.agent_master_id), t.txn_type), 2)
+            agg[t.txn_type][2] += round(amt * _txn_rate(t, agents.get(t.agent_master_id)), 2)
     dep_n, dep_amt, dep_com = agg["DEPOSIT"]
     wd_n, wd_amt, wd_com = agg["WITHDRAWAL"]
     st_n, st_amt, st_com = agg["SETTLEMENT"]
@@ -613,7 +712,7 @@ async def _agent_performance(db: AsyncSession, business: str) -> dict:
             amt = t.amount or 0.0
             leg[0] += 1
             leg[1] += amt
-            leg[2] += round(amt * _leg_rate(_agent_or(agents, t.agent_master_id), t.txn_type), 2)
+            leg[2] += round(amt * _txn_rate(t, _agent_or(agents, t.agent_master_id)), 2)
 
     rows = []
     for a in agents:
@@ -700,7 +799,7 @@ async def _agent_profile(db: AsyncSession, business: str, agent_master_id: int) 
             amt = t.amount or 0.0
             leg[t.txn_type][0] += 1
             leg[t.txn_type][1] += amt
-            leg[t.txn_type][2] += round(amt * _leg_rate(agent, t.txn_type), 2)
+            leg[t.txn_type][2] += round(amt * _txn_rate(t, agent), 2)
             key = {"DEPOSIT": "deposits", "WITHDRAWAL": "withdrawals", "SETTLEMENT": "settlements"}[t.txn_type]
             m[key] += amt
     dep_c, dep_a, dep_com = leg["DEPOSIT"]
@@ -760,6 +859,9 @@ class _Base(BaseModel):
     # generated values.
     tokenDetails: str | None = None
     noteNumber: str | None = None
+    # The Reference Number the MEMBER supplies during the withdrawal, typed in by the operator.
+    # Mandatory on a WITHDRAWAL (with noteNumber); unused by deposits/settlements.
+    memberReference: str | None = None
     walletAddress: str | None = None         # CRYPTO: replaces token/note on a withdrawal
     txnMethod: str | None = None            # CASH | UPI | BANK | IMPS | NEFT | RTGS | CRYPTO
     senderUpiId: str | None = None          # UPI the payment is sent from
@@ -798,11 +900,13 @@ class AgentReviewAction(BaseModel):
 
 
 class AgentPaymentDetails(BaseModel):
-    """Method-specific execution details the CREATING operator submits AFTER approval, which
-    completes the withdrawal: CASH → tokenDetails; CRYPTO → walletAddress (+ optional txHash);
-    BANK → slipImage + utr (reference); UPI → utr + slipImage (screenshot). The Unique Note
-    Number (mandatory on every withdrawal, exactly as at the original request) is captured here
-    too, since the approve-first create step no longer collects it."""
+    """Method-specific execution details the CREATING operator submits AFTER approval: CASH →
+    tokenDetails; CRYPTO → walletAddress (+ optional txHash); BANK → slipImage + utr (reference);
+    UPI → utr + slipImage (screenshot).
+
+    Submitting these SAVES the payment information; it does not complete the withdrawal (see
+    /payout vs /complete). The Unique Note Number is captured on the request form now — it stays
+    accepted here so a legacy request, or a correction, can still set it."""
     noteNumber: str | None = None
     tokenDetails: str | None = None
     walletAddress: str | None = None
@@ -878,6 +982,15 @@ def _validate_common(body: _Base, txn_type: str) -> None:
     # rejected a Bank Transfer (or UPI/Cash) withdrawal at creation for missing "Token Details".
     # Tokens belong to CASH and a wallet to CRYPTO — never to a bank transfer — and none of them
     # exist yet at creation, so the create step enforces none of them.
+    #
+    # The two EXCEPTIONS are the Unique Note Number and the Reference Number on a WITHDRAWAL: the
+    # member hands both over during the withdrawal, so they exist before the request is raised and
+    # are captured here rather than at the post-approval payment step.
+    if txn_type == "WITHDRAWAL":
+        if not (body.noteNumber or "").strip():
+            raise HTTPException(status_code=400, detail="Unique Note Number is required.")
+        if not (body.memberReference or "").strip():
+            raise HTTPException(status_code=400, detail="Reference Number is required.")
     if txn_type == "SETTLEMENT" and method and method not in SETTLEMENT_METHODS:
         raise HTTPException(status_code=400, detail="Settlement method must be Cash, Bank Transfer or Crypto.")
     # A deposit names the Sending Account it comes FROM (same rule the merchant form applies). A
@@ -900,17 +1013,21 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     agent = await _get_agent(db, business, body.agentMasterId)
     _require_agent_serves_method(agent, method)
 
-    # A withdrawal or settlement can only draw what the member actually has. The member's Available
-    # Balance (built from completed agent deposits, net of every leg's commission) must cover the
-    # amount PLUS this leg's commission, on the same completed-only basis the Merchant module uses.
+    # A withdrawal draws on what the SELECTED AGENT currently holds — not on the member's own
+    # prior transactions. A member may withdraw up to the agent's Available Balance after the
+    # agent's configured withdrawal fee, so the amount PLUS this leg's commission must fit inside
+    # it (same completed-only basis every other figure uses). The member's own history no longer
+    # caps the withdrawal.
     if txn_type == "WITHDRAWAL":
-        bal = await _member_balance(db, business, body.membershipId)
-        required = (body.amount or 0.0) * (1 + _leg_rate(agent, txn_type))
+        rate = _leg_rate(agent, txn_type)
+        bal = await _agent_balance(db, business, agent.id)
+        required = (body.amount or 0.0) * (1 + rate)
         if required > bal["spendable"] + 1e-6:
             raise HTTPException(
                 status_code=400,
-                detail=(f"Insufficient Available Balance.\n"
-                        f"Available Balance: ₹{bal['spendable']:,.2f}\n"
+                detail=(f"Insufficient Agent Balance.\n"
+                        f"Available with {agent.agent_id}: ₹{bal['spendable']:,.2f}\n"
+                        f"Maximum Withdrawable: ₹{_max_withdrawable(bal['spendable'], rate):,.2f}\n"
                         f"Requested Amount + Commission: ₹{required:,.2f}"),
             )
 
@@ -926,7 +1043,8 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
             AgentTransaction.note_number == note_no))).scalars().first()
         if clash:
             raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
-    txn_code = f"{agent.transaction_code}-{code_letter}-{ref[len(prefix):]}"
+    member_ref = (body.memberReference or "").strip() or None
+    txn_code = await _transaction_code(db, agent, code_letter)
 
     # Membership name: use the entered value, else auto-fill from a prior agent transaction.
     membership_name = (body.membershipName or "").strip()
@@ -963,7 +1081,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         amount=round(body.amount, 2),
         txn_country=body.country, txn_state=body.state, txn_location=body.location,
         mobile=body.mobile, mobile_code=(body.mobileCode or None),
-        token_details=entered_token, note_number=note_no,
+        token_details=entered_token, note_number=note_no, member_reference=member_ref,
         wallet_address=((body.walletAddress or '').strip() or None),
         notes=(body.notes or None), instructions=(body.instructions.upper() if body.instructions else None),
         # Transaction type + Sending Account, captured exactly like the merchant Deposit Request.
@@ -1381,6 +1499,29 @@ async def balance_enquiry(membership_id: str, db: AsyncSession = Depends(get_db)
     return await _member_summary(db, _business(user), membership_id.strip())
 
 
+@router.get("/agent/{agent_master_id}/balance")
+async def agent_balance(agent_master_id: int, db: AsyncSession = Depends(get_db),
+                        user: User = Depends(get_current_agent_operator)):
+    """What the selected agent currently holds, and the most a member may withdraw from it.
+
+    Drives the Agent Withdrawal Request form: a member may withdraw up to the agent's Available
+    Balance after the agent's configured withdrawal fee. Same completed-only, per-leg calculation
+    as every other balance; `spendable` reserves the agent's in-flight withdrawals/settlements and
+    is what the create endpoint validates against, so the form shows the figure the server enforces.
+    """
+    business = _business(user)
+    agent = await _get_agent(db, business, agent_master_id)
+    bal = await _agent_balance(db, business, agent_master_id)
+    rate = _leg_rate(agent, "WITHDRAWAL")
+    return {
+        "agentMasterId": agent.id, "agentId": agent.agent_id, "agentName": agent.full_name,
+        "available": bal["available"], "spendable": bal["spendable"],
+        "withdrawalFeePct": round(rate * 100, 4),
+        "withdrawalFee": round(bal["spendable"] - _max_withdrawable(bal["spendable"], rate), 2),
+        "maxWithdrawable": _max_withdrawable(bal["spendable"], rate),
+    }
+
+
 @router.get("/{txn_id}/commission")
 async def txn_commission(txn_id: int, db: AsyncSession = Depends(get_db),
                          user: User = Depends(get_current_agent_operator)):
@@ -1394,7 +1535,7 @@ async def txn_commission(txn_id: int, db: AsyncSession = Depends(get_db),
     if t is None:
         raise HTTPException(status_code=404, detail="Agent transaction not found.")
     agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
-    rate = _leg_rate(agent, t.txn_type)
+    rate = _txn_rate(t, agent)
     amt = t.amount or 0.0
     commission = round(amt * rate, 2)
     # Deposit credits net (amount − commission); withdrawal/settlement deduct amount + commission.
@@ -1483,12 +1624,8 @@ async def manager_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession 
     return _row(t)
 
 
-@router.post("/{txn_id}/payout")
-async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSession = Depends(get_db),
-                            user: User = Depends(get_current_agent_operator)):
-    """Submit Payment Details — the CREATING operator, AFTER approval, submits the method-specific
-    execution details, which completes the withdrawal (→ COMPLETED; the member's balance is deducted
-    then, and the completion is audited). Managers/Supervisors do not perform this step."""
+async def _load_own_withdrawal_for_payment(db: AsyncSession, user: User, txn_id: int) -> AgentTransaction:
+    """The withdrawal whose payment details / completion the CREATING operator is acting on."""
     t = await _load_own(db, _business(user), txn_id)
     if t.txn_type == "SETTLEMENT":
         raise HTTPException(
@@ -1498,27 +1635,58 @@ async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSes
     if t.txn_type != "WITHDRAWAL":
         raise HTTPException(status_code=400, detail="This action applies to Agent Withdrawals only.")
     _require(user, ("DEO", "WITHDRAWAL_OPERATOR"), "pay Agent Withdrawals")
-    # Only the operator who CREATED the request may submit its payment details.
+    # Only the operator who CREATED the request may submit its payment details / complete it.
     if t.created_by_id and user.id != t.created_by_id:
         raise HTTPException(status_code=403,
                             detail="Only the operator who created this withdrawal can submit its payment details.")
+    return t
+
+
+def _missing_payment_detail(t: AgentTransaction) -> str | None:
+    """Which method-specific payment detail is still missing, as a message — None when the record
+    holds everything its Withdrawal Type needs. The same rule the Submit Payment Details popup
+    applies, expressed against the STORED row so it can also gate completion."""
+    method = str(t.txn_method or "").upper()
+    if method in TOKEN_METHODS:                        # CASH → Token Number
+        return None if (t.token_details or "").strip() else "Token Number is required."
+    if method in WALLET_METHODS:                       # CRYPTO → Wallet Address
+        return None if (t.wallet_address or "").strip() else "Wallet Address is required."
+    if not t.slip_image:                               # BANK → Slip; UPI → Screenshot
+        return "Payment slip image is required." if method == "BANK" else "Payment screenshot is required."
+    if not (t.deposit_utr or "").strip():
+        return "Reference Number is required." if method == "BANK" else "UTR Number is required."
+    return None
+
+
+@router.post("/{txn_id}/payout")
+async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_agent_operator)):
+    """Submit Payment Details — the CREATING operator records the method-specific execution
+    details and uploads the payment proof AFTER approval.
+
+    This is a DATA UPDATE ONLY: it saves the file, saves the payment details and updates the
+    payment information, and deliberately leaves the transaction's status exactly where the
+    approval workflow put it. Uploading proof used to flip the row straight to COMPLETED, which
+    moved the money as a side effect of an upload; completing is now the separate, explicit
+    /complete step below, so a status only ever changes through the workflow. It may be called
+    again to correct a detail while the withdrawal is still awaiting completion.
+    """
+    t = await _load_own_withdrawal_for_payment(db, user, txn_id)
     # Payment details are submitted only AFTER the chosen approver has approved the request.
     _require_status(t, ST_MANAGER_APPROVED, "payment details")
     method = str(t.txn_method or "").upper()
-    # Balance BEFORE this leg completes (still in-flight here, so excluded), for the audit line.
-    _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
-    _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
-    # Unique Note Number — mandatory on EVERY withdrawal method, exactly as it was at the original
-    # request; the approve-first create no longer collects it, so it is captured here. Same
-    # uniqueness rule as elsewhere (excluding this transaction's own row).
+    # Unique Note Number — captured on the Create Agent Withdrawal Request form now (the member
+    # supplies it during the withdrawal). It stays accepted here so a legacy request raised before
+    # that change, or a correction, can still set it; the uniqueness rule is unchanged.
     note = (body.noteNumber or "").strip()
-    if not note:
+    if not note and not (t.note_number or "").strip():
         raise HTTPException(status_code=400, detail="Unique Note Number is required.")
-    clash = (await db.execute(select(AgentTransaction.id).where(
-        AgentTransaction.note_number == note, AgentTransaction.id != t.id))).scalars().first()
-    if clash:
-        raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
-    t.note_number = note
+    if note and note != (t.note_number or ""):
+        clash = (await db.execute(select(AgentTransaction.id).where(
+            AgentTransaction.note_number == note, AgentTransaction.id != t.id))).scalars().first()
+        if clash:
+            raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
+        t.note_number = note
     # Method-specific execution details — mandatory ones enforced per Withdrawal Type.
     if method in TOKEN_METHODS:                        # CASH → Token Number
         if not (body.tokenDetails or "").strip():
@@ -1543,9 +1711,38 @@ async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSes
         t.deposit_utr = body.utr.strip()
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
-    t.status = ST_COMPLETED
-    t.completed_at = t.slip_submitted_at
+    # NOTE: t.status is intentionally NOT touched here.
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "PAYMENT_DETAILS_SUBMITTED", user,
+               note=f"Payment details saved by {user.username} — status unchanged, awaiting completion")
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
+@router.post("/{txn_id}/complete")
+async def complete_withdrawal(txn_id: int, db: AsyncSession = Depends(get_db),
+                              user: User = Depends(get_current_agent_operator)):
+    """Complete an approved withdrawal whose payment details are on the record → COMPLETED.
+
+    The explicit act that moves the money (the member's balance is deducted here and the
+    completion is audited), separated from the proof upload so that uploading a file can never
+    change a status on its own. Only reachable after the chosen approver approved the request, so
+    the approval workflow still owns every transition into a final state.
+    """
+    t = await _load_own_withdrawal_for_payment(db, user, txn_id)
+    _require_status(t, ST_MANAGER_APPROVED, "completion")
+    missing = _missing_payment_detail(t)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Submit the payment details first — {missing}")
+    if not (t.note_number or "").strip():
+        raise HTTPException(status_code=400, detail="Submit the payment details first — Unique Note Number is required.")
+    # Balance BEFORE this leg completes (still in-flight here, so excluded), for the audit line.
+    _before = (await _member_balance(db, _business(user), t.membership_id))["available"]
+    _agent = (await db.execute(select(AgentMaster).where(AgentMaster.id == t.agent_master_id))).scalar_one_or_none()
+    t.status = ST_COMPLETED
+    t.completed_at = datetime.utcnow()
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, t.completed_at
     await _log(db, t, "COMPLETED", user, new_amount=t.amount,
                note=_completion_note(t, _agent, user, _before))
     await db.commit()
@@ -1697,7 +1894,7 @@ async def list_txns(status: str | None = None, txn_type: str | None = None, sear
         AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()} if rows else {}
     out = []
     for r in rows:
-        rate = _leg_rate(agents.get(r.agent_master_id), r.txn_type)
+        rate = _txn_rate(r, agents.get(r.agent_master_id))
         amt = r.amount or 0.0
         commission = round(amt * rate, 2)
         d = _row(r)
@@ -1787,7 +1984,7 @@ async def list_txns_paged(status: str | None = None, status_not: str | None = No
         AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()} if rows else {}
     items = []
     for r in rows:
-        rate = _leg_rate(agents.get(r.agent_master_id), r.txn_type)
+        rate = _txn_rate(r, agents.get(r.agent_master_id))
         amt = r.amount or 0.0
         commission = round(amt * rate, 2)
         d = _row(r)
@@ -1977,8 +2174,13 @@ async def distribute_deposit(txn_id: int, body: AgentDistribute, db: AsyncSessio
                              user: User = Depends(get_current_agent_operator)):
     """Split ONE initialised Cash Deposit among several members. The original becomes a non-crediting
     CONTAINER (DISTRIBUTED); each member gets an auto-completed child deposit (DEPOSITED) that credits
-    only that member. Σ children must equal the parent amount. Commission reuses the agent's own
-    pay-in fee (_leg_rate) — no merchant-fee coupling. Everything stays in the isolated agent ledger.
+    only that member. Everything stays in the isolated agent ledger.
+
+    COMMISSION IS NOT CHARGED AGAIN HERE. The agent's Pay-In commission was already deducted on the
+    deposit itself, so the split only allocates what remained: Σ children must equal the parent's
+    DISTRIBUTABLE amount (gross − the parent's commission), and each child credits its member the
+    full amount allotted to it. Previously the children were charged the pay-in fee a second time,
+    so the same commission came off twice.
     """
     _require(user, MANAGE_ROLES, "distribute Agent Cash Deposits")
     business = _business(user)
@@ -2009,17 +2211,27 @@ async def distribute_deposit(txn_id: int, body: AgentDistribute, db: AsyncSessio
             raise HTTPException(status_code=400, detail=f"Enter a valid deposit amount for member {mid}.")
         cleaned.append((mid, (m.membershipName or "").strip() or None, amt))
 
+    agent = await _get_agent(db, business, t.agent_master_id)
+    # The commission was taken on the deposit, so only the REMAINING balance is allocated. The
+    # children carry no further commission (see _txn_rate), which is why Σ children is checked
+    # against the distributable amount rather than the gross.
     original = round(t.amount or 0.0, 2)
+    commission = round(original * _leg_rate(agent, "DEPOSIT"), 2)
+    distributable = round(original - commission, 2)
     total = round(sum(a for _, _, a in cleaned), 2)
-    if total - original > 0.01:
-        raise HTTPException(status_code=400, detail="Total distributed amount cannot exceed the original deposit amount.")
-    if abs(total - original) > 0.01:
+    if total - distributable > 0.01:
         raise HTTPException(
             status_code=400,
-            detail=f"Total distributed (₹{total:,.2f}) must equal the original deposit amount (₹{original:,.2f}).",
+            detail=(f"Total distributed amount cannot exceed the distributable amount "
+                    f"(₹{distributable:,.2f} = ₹{original:,.2f} less ₹{commission:,.2f} commission already deducted)."),
+        )
+    if abs(total - distributable) > 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Total distributed (₹{total:,.2f}) must equal the distributable amount "
+                    f"(₹{distributable:,.2f} = ₹{original:,.2f} less ₹{commission:,.2f} commission already deducted)."),
         )
 
-    agent = await _get_agent(db, business, t.agent_master_id)
     now = datetime.utcnow()
     children: list[AgentTransaction] = []
     for i, (mid, name, amt) in enumerate(cleaned, start=1):
@@ -2062,6 +2274,8 @@ async def distribute_deposit(txn_id: int, body: AgentDistribute, db: AsyncSessio
     refs = ", ".join(c.reference_number for c in children)
     await _log(db, t, "DISTRIBUTED", user, old_amount=original, new_amount=total,
                note=(f"Cash deposit distributed across {len(children)} member(s): {refs}. "
+                     f"Commission ₹{commission:,.2f} was already deducted on the deposit and is not "
+                     f"charged again; ₹{distributable:,.2f} allocated in full. "
                      f"Parent is a non-crediting container."))
     await db.commit()
     await db.refresh(t)
@@ -2150,7 +2364,10 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
     approved_st = [t for t in approved if t.txn_type == "SETTLEMENT"]
 
     def _commission(rows, table):
-        return sum(t.amount * table.get(t.agent_master_id, 0.0) / 100 for t in rows)
+        # A split child charges nothing — its parent Cash Deposit already collected the commission
+        # (see _txn_rate). Anything else uses the agent's own fee for that leg.
+        return sum(0.0 if _is_split_child(t) else t.amount * table.get(t.agent_master_id, 0.0) / 100
+                   for t in rows)
 
     gross_amount = sum(t.amount for t in approved_dep)
     total_withdrawal_amount = sum(t.amount for t in approved_wd)
