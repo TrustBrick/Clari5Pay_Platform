@@ -1797,9 +1797,14 @@ const timelineSteps = (row: AgentTxnRow): TlStep[] => {
     const sub: TlStep = cash ? { key: 'TOKEN_SUBMITTED', label: 'Token Submitted' }
       : crypto ? { key: 'WALLET_SUBMITTED', label: 'Wallet Submitted' }
       : { key: 'ACCOUNT_SUBMITTED', label: 'Account Submitted' };
+    // A deposit may be sent to a Supervisor OR a Manager (APPROVER_ROLES), so the review step is
+    // named after whoever actually owns it — never a hardcoded "Supervisor". Legacy rows with no
+    // recorded approver fall back to the deposit gate's Supervisor label, so nothing regresses.
+    const who = roleWord(row.approverRole);
     return [{ key: req, label: 'Deposit Created' }, sub,
-      { key: 'SLIP_SUBMITTED', label: 'Supervisor Review' },
-      { key: 'SUPERVISOR_APPROVED', label: 'Approved' }, { key: 'DEPOSITED', label: 'Deposited' }];
+      { key: 'SLIP_SUBMITTED', label: who ? `${who} Review` : 'Supervisor Review' },
+      { key: 'SUPERVISOR_APPROVED', label: who ? `Approved by ${who}` : 'Approved' },
+      { key: 'DEPOSITED', label: 'Deposited' }];
   }
   if (row.type === 'WITHDRAWAL') {
     if (cash || crypto) return [

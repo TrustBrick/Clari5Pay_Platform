@@ -191,6 +191,24 @@ export const reviewerRoleCode = (
   return gateReviewsThisType && actual ? actual : gate;
 };
 
+// Display label for an audit-log action CODE (e.g. "SUPERVISOR_APPROVED"). The review-gate codes —
+// <gate>_APPROVED | _REJECTED | _RESUBMITTED — store the GATE the request passed through, but under
+// "Send To Approval" the person who actually acted may hold a different role (a Manager can approve a
+// deposit). Those codes are relabelled to the actual approver's role via reviewerRoleCode, so the
+// history reads "Manager Approved" when a Manager approved it — never hardcoded. This also resolves
+// historical rows already stored with the gate name, so no data backfill is needed for display.
+// Every other action code is returned unchanged, so no unrelated audit row's wording shifts.
+const REVIEW_AUDIT_ACTION = /^(SUPERVISOR|MANAGER)_(APPROVED|REJECTED|RESUBMITTED)$/;
+export const auditActionLabel = (action?: string | null, type?: string | null, approverRole?: string | null): string => {
+  const a = String(action || '');
+  const m = a.match(REVIEW_AUDIT_ACTION);
+  if (!m) return a;
+  const gate = m[1] as 'SUPERVISOR' | 'MANAGER';
+  const role = reviewerRoleCode(type, approverRole, gate);
+  const decision = m[2].charAt(0) + m[2].slice(1).toLowerCase();
+  return `${merchantRoleLabel(role) || gate} ${decision}`;
+};
+
 // Approval-record / remarks display: "Full Name (Role • username)", e.g.
 // "BELLAGIO (Supervisor • harsha)". Role is resolved via MERCHANT_ROLE_LABELS (never
 // hardcoded); `fallback` (e.g. "Merchant User") covers a missing role. The username is the

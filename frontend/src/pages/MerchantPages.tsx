@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
@@ -1593,7 +1593,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
       <DetailSection title="Audit History">
         {audit.length === 0 ? <p style={{ fontSize: 12, color: T.textMuted, margin: 0 }}>No audit entries.</p> : audit.map(a => (
           <div key={a.id} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${T.borderLight}`, fontSize: 12 }}>
-            <span style={{ fontWeight: 700, color: T.textMain, minWidth: 150 }}>{a.action}</span>
+            <span style={{ fontWeight: 700, color: T.textMain, minWidth: 150 }}>{auditActionLabel(a.action, d.type, d.approverRole)}</span>
             <span style={{ color: T.textMuted, flex: 1 }}>{clientAuditActor(a.role, a.username)}{a.reason ? ` — ${a.reason}` : ''}</span>
             <span style={{ color: T.textMuted, whiteSpace: 'nowrap' }}>{formatDateTime(a.createdAt)}{a.ip && !isInternalRole(a.role) ? ` · ${a.ip}` : ''}</span>
           </div>

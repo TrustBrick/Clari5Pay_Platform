@@ -2889,9 +2889,14 @@ async def _reviewer_action(
     else:
         raise HTTPException(status_code=400, detail="Unknown review decision.")
 
-    await log_event(db, f"{role}_{action}",
+    # Record the audit/log action under the ACTOR's real role, not the review gate. `role` names the
+    # gate ("SUPERVISOR" for a deposit), but under "Send To Approval" the sole chosen approver may
+    # hold a different role — a Manager can approve a deposit — and keying the code to the gate made
+    # the Audit History / Audit Logs read "SUPERVISOR_APPROVED" for a Manager's approval. actor_role
+    # is who actually acted, so the stored code now agrees with the Remarks and Approval Record.
+    await log_event(db, f"{actor_role}_{action}",
                     f"{tx.ref}: {action.lower()} by {actor_label} {reviewer.name} — {remark}", actor=reviewer)
-    await record_audit(db, f"{role}_{action}", actor=reviewer, entity_type=tx.type.value,
+    await record_audit(db, f"{actor_role}_{action}", actor=reviewer, entity_type=tx.type.value,
                        entity_id=tx.ref, new=tx.status.value, reason=remark, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
     return _t(tx)

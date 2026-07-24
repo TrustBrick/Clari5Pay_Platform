@@ -214,6 +214,24 @@ APPROVER_ROLES = {
     "WITHDRAWAL": ("MANAGER",),
 }
 
+# Display word for an approver's role, used in the audit-note prose so a stored line names whoever
+# the request was actually sent to — never a hardcoded "Supervisor". A deposit may go to either
+# review role, so the note has to follow approver_role, not the gate.
+_ROLE_WORD = {"SUPERVISOR": "Supervisor", "MANAGER": "Manager", "ADMIN": "Admin", "SUPER_ADMIN": "Super Admin"}
+
+
+def _role_word(role: str | None) -> str:
+    return _ROLE_WORD.get(str(role or "").upper(), "")
+
+
+def _sent_for_approval_note(approver_name: str | None, approver_role: str | None) -> str:
+    """"Sent to <Role> <Name> for approval" — the role prefix identifies which approver was chosen,
+    so a deposit sent to a Manager never reads as a Supervisor's. Falls back gracefully when either
+    the name or the role is missing (legacy / API rows)."""
+    word = _role_word(approver_role)
+    who = " ".join(p for p in (word, (approver_name or "").strip()) if p) or "an approver"
+    return f"Sent to {who} for approval"
+
 
 def _require_sole_approver(user: User, t: AgentTransaction) -> None:
     """The chosen Authorized Approver is the SOLE reviewer of a request (deposit or withdrawal):
@@ -1171,7 +1189,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     await _log(db, t, "CREATED", user, new_amount=t.amount, note=f"{txn_type.title()} request created")
     if t.sent_for_approval:
         await _log(db, t, "SENT_FOR_APPROVAL", user, approver_name=approver_name,
-                   note=f"Sent to {approver_name or 'an approver'} for approval")
+                   note=_sent_for_approval_note(approver_name, approver_role))
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -1438,10 +1456,13 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     if body.approverUserId is not None:
         t.approver_user_id, t.approver_name, t.approver_role = await _resolve_approver(db, business, body.approverUserId, "DEPOSIT")
         t.sent_for_approval = True
-    await _log(db, t, "SLIP_SUBMITTED", user, note="Slip submitted — awaiting Supervisor approval")
+    # The deposit gate is Supervisor by default, but a Manager may be the chosen approver — name the
+    # role the request is actually waiting on, resolved from approver_role (never hardcoded).
+    _await = _role_word(t.approver_role) or "Supervisor"
+    await _log(db, t, "SLIP_SUBMITTED", user, note=f"Slip submitted — awaiting {_await} approval")
     if t.approver_name:
         await _log(db, t, "SENT_FOR_APPROVAL", user, approver_name=t.approver_name,
-                   note=f"Sent to {t.approver_name} for approval")
+                   note=_sent_for_approval_note(t.approver_name, t.approver_role))
     await db.commit()
     await db.refresh(t)
     return _row(t)
@@ -2196,7 +2217,7 @@ async def manage_txn(txn_id: int, body: AgentManage, db: AsyncSession = Depends(
                        note=f"Amount changed — approval restarted at {restarted.replace('_', ' ').title()}")
     if body.sentForApproval:
         await _log(db, t, "SENT_FOR_APPROVAL", user, approver_name=approver_name,
-                   note=f"Sent to {approver_name or 'an approver'} for approval")
+                   note=_sent_for_approval_note(approver_name, approver_role))
     await db.commit()
     await db.refresh(t)
     return _row(t)
