@@ -94,6 +94,9 @@ export interface AadhaarStatusResult {
   error?: string;
   message?: string | null;
   details?: AadhaarDetails | null;
+  referenceId?: string | null;
+  /** Internal name-match percentage (0–100), or null when none was calculated. Debug use only. */
+  matchScore?: number | null;
 }
 
 // Aadhaar getAadhaarDetails response shape.
@@ -111,10 +114,15 @@ export interface AadhaarDetails {
   [k: string]: unknown;
 }
 
+// `referenceId` / `matchScore` are additive fields carried on the success response so the browser
+// can log the internal name-match percentage for debugging (see KYCPage). `matchScore` is the
+// exact value the backend calculated (0–100), or null when no name comparison was possible.
 export interface PanVerifyResult {
   id: number;
   status: string;
   validPan: boolean;
+  referenceId?: string | null;
+  matchScore?: number | null;
   result?: Record<string, unknown>;
   raw?: Record<string, unknown>;
 }
@@ -123,6 +131,8 @@ export interface PassportVerifyResult {
   id: number;
   status: string;
   validPassport: boolean;
+  referenceId?: string | null;
+  matchScore?: number | null;
   result?: Record<string, unknown>;
   raw?: Record<string, unknown>;
 }
@@ -131,6 +141,8 @@ export interface OcrVerifyResult {
   id: number;
   status: string;
   verified: boolean;
+  referenceId?: string | null;
+  matchScore?: number | null;
   raw?: Record<string, unknown>;
 }
 
@@ -221,11 +233,28 @@ export const KYC_VALIDATION = {
 export const OCR_ACCEPT = '.jpg,.jpeg,.png,.pdf';
 export const OCR_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
+// A verify endpoint's error `detail` is either a plain string (validation / legacy errors) or a
+// structured object { message, referenceId, matchScore } on a failed verification (so the browser
+// can still log the reference id). This type covers both shapes.
+type KycErrorDetail = string | { message?: string; referenceId?: string | null; matchScore?: number | null };
+
 /** Turn an axios error into a human-readable message for the KYC UI. */
 export const kycErrorMessage = (err: unknown, fallback: string): string => {
-  const e = err as { response?: { data?: { detail?: string }; status?: number }; code?: string };
-  if (e?.response?.data?.detail) return e.response.data.detail;
+  const e = err as { response?: { data?: { detail?: KycErrorDetail }; status?: number }; code?: string };
+  const detail = e?.response?.data?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (detail && typeof detail === 'object' && detail.message) return detail.message;
   if (e?.code === 'ECONNABORTED') return 'API Timeout — please try again.';
   if (e?.response?.status === 503) return 'Service Unavailable — please try again later.';
   return fallback;
+};
+
+/**
+ * The generated Reference ID carried on a failed verification's structured error detail, or null
+ * when it is not available (a string-detail validation error, a network failure, etc.). Debug use
+ * only — feeds the KYC console logging.
+ */
+export const kycErrorReferenceId = (err: unknown): string | null => {
+  const detail = (err as { response?: { data?: { detail?: KycErrorDetail } } })?.response?.data?.detail;
+  return detail && typeof detail === 'object' ? detail.referenceId ?? null : null;
 };

@@ -6,9 +6,28 @@ import { Icon, isIconName } from '../components/Icon';
 import { useToast } from '../context/ToastContext';
 import { fileToDataUrl } from '../utils/helpers';
 import {
-  kycAPI, KYC_VALIDATION, OCR_MAX_BYTES, kycErrorMessage,
+  kycAPI, KYC_VALIDATION, OCR_MAX_BYTES, kycErrorMessage, kycErrorReferenceId,
   type KycHistoryItem, type KycHistoryDetail, type AadhaarDetails,
 } from '../services/kyc';
+
+// ─── Debug console logging (temporary — verification only) ─────────────────────
+// Log the internal name-match percentage against its Reference ID after every completed KYC
+// verification, so results can be cross-checked during testing. Console-only: nothing is stored,
+// sent to the backend, shown in the UI, or included in any report. The score is the exact value
+// the backend calculated — it is NOT recalculated here and is logged regardless of the status the
+// UI displays (e.g. PAN/Passport always read "Not Matched" in the table but the real % is logged).
+const logKycMatch = (referenceId?: string | null, matchScore?: number | null): void => {
+  const ref = referenceId || 'N/A';
+  const pct = matchScore == null ? 'N/A' : `${matchScore}%`;
+  // eslint-disable-next-line no-console
+  console.log(`Reference ID: ${ref} | Matching Percentage: ${pct}`);
+};
+
+// A verification that failed before any percentage could be calculated.
+const logKycMatchFailed = (referenceId?: string | null): void => {
+  // eslint-disable-next-line no-console
+  console.log(`Reference ID: ${referenceId || 'N/A'} | Matching Percentage: N/A | Verification Failed`);
+};
 
 // ─── Merchant Portal → KYC Update ──────────────────────────────────────────────
 // Identity-verification workspace. Aadhaar, PAN, Passport and OCR are live, membership-driven
@@ -303,10 +322,12 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
     setVerifyingImg(true); setImgResult(null);
     try {
       const r = await kycAPI.verifyAadhaarImage(m.memberId.trim(), img.dataUrl, m.memberName.trim());
+      logKycMatch(r.referenceId, r.matchScore);   // debug console log (see logKycMatch)
       setImgResult({ verified: r.verified });
       showToast(r.verified ? 'Aadhaar verified successfully.' : 'Aadhaar verification completed.', 'success');
       onDone(r.verified);
     } catch (e) {
+      logKycMatchFailed(kycErrorReferenceId(e));   // debug console log — failed verification
       showToast(kycErrorMessage(e, 'Aadhaar verification failed.'), 'error');
       onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
     } finally { setVerifyingImg(false); }
@@ -333,8 +354,13 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
       const r = await kycAPI.getAadhaarStatus(historyId);
       setStatus(r.status);
       if (r.pending) showToast('Verification is still under process.', 'info');
-      else if (r.status === 'SUCCESS') showToast('Aadhaar verified successfully.', 'success');
-      else showToast(r.error || 'Aadhaar verification failed.', 'error');
+      else if (r.status === 'SUCCESS') {
+        logKycMatch(r.referenceId ?? referenceId, r.matchScore);   // debug console log — verification completed
+        showToast('Aadhaar verified successfully.', 'success');
+      } else {
+        logKycMatchFailed(r.referenceId ?? referenceId);           // debug console log — failed verification
+        showToast(r.error || 'Aadhaar verification failed.', 'error');
+      }
       onDone(r.status === 'SUCCESS');
     } catch (e) {
       showToast(kycErrorMessage(e, 'Could not check the verification status.'), 'error');
@@ -417,13 +443,15 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
     setVerifying(true);
     try {
       // Reaching here means the provider replied success — a failure raises (backend 502).
-      await kycAPI.verifyPanMembership(m.memberId.trim(),
+      const r = await kycAPI.verifyPanMembership(m.memberId.trim(),
         mode === 'id'
           ? { pan: pan.toUpperCase().trim(), memberName: m.memberName.trim() }
           : { image: img.dataUrl, memberName: m.memberName.trim() });
+      logKycMatch(r.referenceId, r.matchScore);   // debug console log (see logKycMatch)
       showToast('PAN verified successfully.', 'success');
       onDone(true);
     } catch (e) {
+      logKycMatchFailed(kycErrorReferenceId(e));   // debug console log — failed verification
       showToast(kycErrorMessage(e, 'PAN verification failed.'), 'error');
       onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
     } finally { setVerifying(false); }
@@ -465,13 +493,15 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
     setVerifying(true);
     try {
       // Reaching here means the provider replied success — a failure raises (backend 502).
-      await kycAPI.verifyPassportMembership(m.memberId.trim(),
+      const r = await kycAPI.verifyPassportMembership(m.memberId.trim(),
         mode === 'id'
           ? { passportNumber: num.toUpperCase().trim(), dateOfBirth: dob || undefined, memberName: m.memberName.trim() }
           : { frontImage: front.dataUrl, backImage: back.dataUrl, memberName: m.memberName.trim() });
+      logKycMatch(r.referenceId, r.matchScore);   // debug console log (see logKycMatch)
       showToast('Passport verified successfully.', 'success');
       onDone(true);
     } catch (e) {
+      logKycMatchFailed(kycErrorReferenceId(e));   // debug console log — failed verification
       showToast(kycErrorMessage(e, 'Passport verification failed.'), 'error');
       onDone(false);   // a FAILED attempt is still persisted — refresh, but stay on the form
     } finally { setVerifying(false); }

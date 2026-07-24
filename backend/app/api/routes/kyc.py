@@ -614,7 +614,8 @@ async def aadhaar_status(
         # Name match: compare the member's registered name with the official Aadhaar name.
         _apply_name_match(row, data, row.member_name)
         db.add(row)
-        return {"pending": False, "status": "SUCCESS", "details": data, "photo": row.aadhaar_photo}
+        return {"pending": False, "status": "SUCCESS", "details": data, "photo": row.aadhaar_photo,
+                "referenceId": row.reference_id, "matchScore": row.match_score}
 
     # The provider signals "not yet done" as status=failed + error="Validation Pending" (or
     # similar). Treat any pending/processing marker as still-in-progress, not a hard failure,
@@ -628,7 +629,8 @@ async def aadhaar_status(
     row.error_message = err_text or "Aadhaar verification failed."
     row.response_json = json.dumps(data)
     db.add(row)
-    return {"pending": False, "status": "FAILED", "error": row.error_message, "details": data}
+    return {"pending": False, "status": "FAILED", "error": row.error_message, "details": data,
+            "referenceId": row.reference_id, "matchScore": None}
 
 
 @router.post("/aadhaar/verify-image")
@@ -677,13 +679,19 @@ async def aadhaar_verify_image(
     await db.refresh(row)
 
     if not ok:
-        # Persist the FAILED record before raising (get_db rolls back on exception).
+        # Persist the FAILED record before raising (get_db rolls back on exception). The detail is
+        # a structured object so the browser can log the reference id even on a failed attempt
+        # (see the debug console logging in KYCPage) — the human message is preserved under
+        # `message`, which kycErrorMessage still surfaces unchanged.
         await db.commit()
-        raise HTTPException(status_code=502, detail=error_message)
+        raise HTTPException(status_code=502, detail={
+            "message": error_message, "referenceId": row.reference_id, "matchScore": None,
+        })
 
     # Name match: compare the member's registered name with the official name extracted from the doc.
     _apply_name_match(row, data, member_name)
-    return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")), "raw": data}
+    return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")),
+            "referenceId": row.reference_id, "matchScore": row.match_score, "raw": data}
 
 
 @router.post("/pan/verify-membership")
@@ -735,13 +743,18 @@ async def pan_verify_membership(
     await db.refresh(row)
 
     if not ok:
-        # Persist the FAILED record before raising (get_db rolls back on exception).
+        # Persist the FAILED record before raising (get_db rolls back on exception). Structured
+        # detail carries the reference id for the browser's debug console log; `message` is the
+        # unchanged human error kycErrorMessage surfaces.
         await db.commit()
-        raise HTTPException(status_code=502, detail=error_message)
+        raise HTTPException(status_code=502, detail={
+            "message": error_message, "referenceId": row.reference_id, "matchScore": None,
+        })
 
     # Name match: compare the member's registered name with the official PAN name.
     _apply_name_match(row, data, member_name)
-    return {"id": row.id, "status": row.verification_status, "validPan": valid_pan, "result": result, "raw": data}
+    return {"id": row.id, "status": row.verification_status, "validPan": valid_pan,
+            "referenceId": row.reference_id, "matchScore": row.match_score, "result": result, "raw": data}
 
 
 @router.post("/passport/verify-membership")
@@ -801,13 +814,18 @@ async def passport_verify_membership(
     await db.refresh(row)
 
     if not ok:
-        # Persist the FAILED record before raising (get_db rolls back on exception).
+        # Persist the FAILED record before raising (get_db rolls back on exception). Structured
+        # detail carries the reference id for the browser's debug console log; `message` is the
+        # unchanged human error kycErrorMessage surfaces.
         await db.commit()
-        raise HTTPException(status_code=502, detail=error_message)
+        raise HTTPException(status_code=502, detail={
+            "message": error_message, "referenceId": row.reference_id, "matchScore": None,
+        })
 
     # Name match: compare the member's registered name with the official passport name.
     _apply_name_match(row, data, member_name)
-    return {"id": row.id, "status": row.verification_status, "validPassport": valid_passport, "result": result, "raw": data}
+    return {"id": row.id, "status": row.verification_status, "validPassport": valid_passport,
+            "referenceId": row.reference_id, "matchScore": row.match_score, "result": result, "raw": data}
 
 
 @router.post("/ocr/verify-membership")
@@ -864,13 +882,18 @@ async def ocr_verify_membership(
     await db.refresh(row)
 
     if not ok:
-        # Persist the FAILED record before raising (get_db rolls back on exception).
+        # Persist the FAILED record before raising (get_db rolls back on exception). Structured
+        # detail carries the reference id for the browser's debug console log; `message` is the
+        # unchanged human error kycErrorMessage surfaces.
         await db.commit()
-        raise HTTPException(status_code=502, detail=error_message)
+        raise HTTPException(status_code=502, detail={
+            "message": error_message, "referenceId": row.reference_id, "matchScore": None,
+        })
 
     # Name match: compare the member's registered name with the official name extracted from the doc.
     _apply_name_match(row, data, member_name)
-    return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")), "raw": data}
+    return {"id": row.id, "status": row.verification_status, "verified": bool(data.get("verified")),
+            "referenceId": row.reference_id, "matchScore": row.match_score, "raw": data}
 
 
 # ─── Server-side pagination (Verification History) ────────────────────────────
