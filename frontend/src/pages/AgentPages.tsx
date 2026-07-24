@@ -142,6 +142,32 @@ const Checkbox: React.FC<{ label: string; hint?: string; checked: boolean; onCha
 
 const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0 20px' };
 
+/**
+ * Agent form layout — explicit column counts, so a row holds exactly the fields it is meant to.
+ *
+ * `auto-fit` was picking the column count from the container width, which left orphans (a 4-field
+ * group rendering 3 + 1) and made the form read as unorganised. These classes fix the count per
+ * row instead and step down at the breakpoints: 3-4 columns on desktop, 2 on tablet, 1 on mobile.
+ * Media queries need real CSS, hence a style element rather than inline styles.
+ *
+ * Purely structural: no colour, type, border or spacing token is introduced — the column gap and
+ * the per-field bottom margin are the ones the form already used.
+ */
+const AGENT_FORM_CSS = `
+.agf-sec { margin-bottom: 28px; }
+.agf-sec:last-of-type { margin-bottom: 20px; }
+.agf-g { display: grid; column-gap: 20px; }
+.agf-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.agf-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.agf-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .agf-3, .agf-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .agf-2, .agf-3, .agf-4 { grid-template-columns: minmax(0, 1fr); }
+}
+`;
+
 // ── Form (Create / Edit) ────────────────────────────────────────────────────────
 type FormState = {
   fullName: string; country: string; state: string; location: string;
@@ -247,7 +273,9 @@ const AgentForm: React.FC<{
   };
 
   return (
-    <Card style={{ maxWidth: 860, margin: '0 auto' }}>
+    // Wider than the read-only view (860): the four-across rows need the room, and the extra width
+    // is what removes a screen of scrolling without shrinking any field.
+    <Card style={{ maxWidth: 960, margin: '0 auto' }}>
       <div style={{ padding: '20px 24px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: T.textMain }}>
           {mode === 'create' ? 'Create Agent' : `Edit Agent · ${initial?.agentId}`}
@@ -255,92 +283,121 @@ const AgentForm: React.FC<{
         <Btn variant="secondary" size="sm" onClick={onCancel}>← Back</Btn>
       </div>
       <div style={{ padding: '22px 24px' }}>
+        <style>{AGENT_FORM_CSS}</style>
         {error && (
           <div style={{ background: T.dangerBg, color: T.danger, borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 600, marginBottom: 18 }}>
             {error}
           </div>
         )}
 
-        <Section title="Basic Information">
-          <Input label="Agent ID" value={mode === 'edit' ? initial!.agentId : 'Auto-generated on save'} onChange={() => {}} readOnly hint="System generated — cannot be edited." />
-          <div style={grid2}>
-            <Input label="Full Name" value={form.fullName} onChange={(e) => set('fullName', e.target.value)} required />
-            <SearchSelect label="Country" value={form.country} required options={COUNTRY_OPTIONS} placeholder="Type to search…"
-              onChange={(c) => setForm((f) => ({ ...f, country: c, currency: COUNTRY_CURRENCY[c] || f.currency }))} />
-            <SearchSelect label="State" value={form.state} onChange={(v) => set('state', v)} required options={STATE_OPTIONS} placeholder="Type to search…" />
-            <Input label="Location" value={form.location} onChange={(e) => set('location', e.target.value)} required />
-          </div>
-        </Section>
+        {/* Agent Information — who the agent is and where they operate. Identity on the first row,
+            the location trio on the second, so neither row is left with an orphan field. */}
+        <div className="agf-sec">
+          <Section title="Agent Information">
+            <div className="agf-g agf-2">
+              <Input label="Agent ID" value={mode === 'edit' ? initial!.agentId : 'Auto-generated on save'} onChange={() => {}} readOnly hint="System generated — cannot be edited." />
+              <Input label="Full Name" value={form.fullName} onChange={(e) => set('fullName', e.target.value)} required />
+            </div>
+            <div className="agf-g agf-3">
+              <SearchSelect label="Country" value={form.country} required options={COUNTRY_OPTIONS} placeholder="Type to search…"
+                onChange={(c) => setForm((f) => ({ ...f, country: c, currency: COUNTRY_CURRENCY[c] || f.currency }))} />
+              <SearchSelect label="State" value={form.state} onChange={(v) => set('state', v)} required options={STATE_OPTIONS} placeholder="Type to search…" />
+              <Input label="Location" value={form.location} onChange={(e) => set('location', e.target.value)} required />
+            </div>
+          </Section>
+        </div>
 
-        <Section title="Contact Information">
-          <div style={grid2}>
-            <PhoneField code={form.mobileCode} onCode={(v) => set('mobileCode', v)} value={form.mobile}
-              onValue={(v) => set('mobile', v)} codeOptions={DIAL_OPTIONS} required />
-            <Input label="Email Address" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} required hint="e.g. name@example.com" />
-          </div>
-        </Section>
+        {/* Contact Information — one row. PhoneField already pairs the dial code with the number. */}
+        <div className="agf-sec">
+          <Section title="Contact Information">
+            <div className="agf-g agf-2">
+              <PhoneField code={form.mobileCode} onCode={(v) => set('mobileCode', v)} value={form.mobile}
+                onValue={(v) => set('mobile', v)} codeOptions={DIAL_OPTIONS} required />
+              <Input label="Email Address" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} required hint="e.g. name@example.com" />
+            </div>
+          </Section>
+        </div>
 
-        <Section title="Business Information">
-          <div style={grid2}>
-            <Sel label="Currency" value={form.currency} onChange={(e) => set('currency', e.target.value)} required options={CURRENCY_OPTIONS} />
-            {/* Auto-populated from Country; still editable for unmapped countries. */}
-            <Input label="Date of Creation" type="date" value={form.dateOfCreation} onChange={(e) => set('dateOfCreation', e.target.value)} readOnly={mode === 'edit'} />
-            <Sel label="Reference" value={form.reference} onChange={(e) => set('reference', e.target.value)} options={REFERENCE_OPTIONS} />
-            <Input label="Pay-In Fee %" type="number" inputMode="decimal" value={form.payInFee} onChange={(e) => set('payInFee', e.target.value)} required hint="Charged on deposits" />
-            <Input label="Pay-Out Fee %" type="number" inputMode="decimal" value={form.payOutFee} onChange={(e) => set('payOutFee', e.target.value)} required hint="Charged on withdrawals" />
-            <Input label="Settlement Fee %" type="number" inputMode="decimal" value={form.settlementFee} onChange={(e) => set('settlementFee', e.target.value)} required hint="Charged on settlements" />
-            <Input
-              label="Unique Transaction Code"
-              value={form.transactionCode}
-              onChange={(e) => set('transactionCode', e.target.value.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase())}
-              required={mode === 'create'}
-              readOnly={mode === 'edit'}
-              hint={mode === 'edit' ? 'Cannot be edited.' : 'Exactly 3 letters (A–Z), no numbers.'}
-            />
-            <Sel label="Category" value={form.category} onChange={(e) => set('category', e.target.value as AgentCategory)} required options={CATEGORY_OPTIONS} />
-          </div>
-        </Section>
+        {/* Business Information — the agent's commercial terms: how it trades on the first row, what
+            it charges on the second. The three fees sit together at equal width so they compare. */}
+        <div className="agf-sec">
+          <Section title="Business Information">
+            <div className="agf-g agf-4">
+              {/* Currency is auto-populated from Country; still editable for unmapped countries. */}
+              <Sel label="Currency" value={form.currency} onChange={(e) => set('currency', e.target.value)} required options={CURRENCY_OPTIONS} />
+              <Sel label="Category" value={form.category} onChange={(e) => set('category', e.target.value as AgentCategory)} required options={CATEGORY_OPTIONS} />
+              <Input label="Date of Creation" type="date" value={form.dateOfCreation} onChange={(e) => set('dateOfCreation', e.target.value)} readOnly={mode === 'edit'} />
+              <Sel label="Reference" value={form.reference} onChange={(e) => set('reference', e.target.value)} options={REFERENCE_OPTIONS} />
+            </div>
+            <div className="agf-g agf-3">
+              <Input label="Pay-In Fee %" type="number" inputMode="decimal" value={form.payInFee} onChange={(e) => set('payInFee', e.target.value)} required hint="Charged on deposits" />
+              <Input label="Pay-Out Fee %" type="number" inputMode="decimal" value={form.payOutFee} onChange={(e) => set('payOutFee', e.target.value)} required hint="Charged on withdrawals" />
+              <Input label="Settlement Fee %" type="number" inputMode="decimal" value={form.settlementFee} onChange={(e) => set('settlementFee', e.target.value)} required hint="Charged on settlements" />
+            </div>
+          </Section>
+        </div>
 
-        {/* Reference codes — one per leg. Each becomes the prefix of every reference number and
-            transaction code that leg issues for this agent (DEP000001, WIT000001, SET000001 …),
-            and each leg then numbers independently. Editable after creation, unlike the agent's
-            own Transaction Code: changing one only affects transactions created afterwards. */}
-        <Section title="Reference Code Configuration">
-          <div style={grid2}>
-            {([['Deposit Code', 'depositCode', 'DEP', 'Prefixes this agent’s deposit references'],
-               ['Withdrawal Code', 'withdrawalCode', 'WIT', 'Prefixes this agent’s withdrawal references'],
-               ['Settlement Code', 'settlementCode', 'SET', 'Prefixes this agent’s settlement references']] as const)
-              .map(([label, key, example, hint]) => (
-                <Input
-                  key={key}
-                  label={label}
-                  value={form[key]}
-                  onChange={(e) => set(key, e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 3).toUpperCase())}
-                  required
-                  placeholder={example}
-                  hint={`${hint} — up to 3 letters or numbers, e.g. ${example}.`}
-                />
-              ))}
-          </div>
-        </Section>
+        {/* Transaction Configuration — every code that ends up on this agent's transactions, in one
+            place. The three per-leg codes prefix that leg's reference numbers and transaction codes
+            (DEP000001, WIT000001, SET000001 …), each leg numbering independently; the Unique
+            Transaction Code is the agent's own 3-letter identifier and cannot be edited later. */}
+        <div className="agf-sec">
+          <Section title="Transaction Configuration">
+            <div className="agf-g agf-4">
+              {([['Deposit Code', 'depositCode', 'DEP', 'Prefixes deposit references'],
+                 ['Withdrawal Code', 'withdrawalCode', 'WIT', 'Prefixes withdrawal references'],
+                 ['Settlement Code', 'settlementCode', 'SET', 'Prefixes settlement references']] as const)
+                .map(([label, key, example, hint]) => (
+                  <Input
+                    key={key}
+                    label={label}
+                    value={form[key]}
+                    onChange={(e) => set(key, e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 3).toUpperCase())}
+                    required
+                    placeholder={example}
+                    hint={`${hint} — up to 3 letters or numbers, e.g. ${example}.`}
+                  />
+                ))}
+              <Input
+                label="Unique Transaction Code"
+                value={form.transactionCode}
+                onChange={(e) => set('transactionCode', e.target.value.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase())}
+                required={mode === 'create'}
+                readOnly={mode === 'edit'}
+                hint={mode === 'edit' ? 'Cannot be edited.' : 'Exactly 3 letters (A–Z), no numbers.'}
+              />
+            </div>
+          </Section>
+        </div>
 
-        <Section title="Additional Information">
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes</label>
-            <textarea value={form.notes} onChange={(e) => set('notes', e.target.value)} rows={3}
-              style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
-          </div>
-          <Checkbox label="Perform Risk Analysis" checked={form.riskAnalysis} onChange={(v) => set('riskAnalysis', v)} />
-          {mode === 'create' && (
-            <p style={{ margin: '0 0 14px', fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
-              Agents created by a <b>Supervisor</b> require Manager approval before they become active. Agents created by a <b>Manager</b> are active immediately.
-            </p>
-          )}
-          {mode === 'edit' && (
-            <Sel label="Status" value={form.status} onChange={(e) => set('status', e.target.value as AgentStatus)} style={{ maxWidth: 260 }}
-              options={[{ value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} />
-          )}
-        </Section>
+        {/* Additional Information — Notes takes the full width; it is free text, not a field pair. */}
+        <div className="agf-sec">
+          <Section title="Additional Information">
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes</label>
+              <textarea value={form.notes} onChange={(e) => set('notes', e.target.value)} rows={3}
+                style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical' }} />
+            </div>
+            {mode === 'edit' && (
+              <div className="agf-g agf-3" style={{ marginTop: 16 }}>
+                <Sel label="Status" value={form.status} onChange={(e) => set('status', e.target.value as AgentStatus)}
+                  options={[{ value: 'ACTIVE', label: 'Active' }, { value: 'INACTIVE', label: 'Inactive' }]} />
+              </div>
+            )}
+          </Section>
+        </div>
+
+        {/* Risk Analysis — its own compact section, with the approval note kept directly beneath. */}
+        <div className="agf-sec">
+          <Section title="Risk Analysis">
+            <Checkbox label="Perform Risk Analysis" checked={form.riskAnalysis} onChange={(v) => set('riskAnalysis', v)} />
+            {mode === 'create' && (
+              <p style={{ margin: 0, fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+                Agents created by a <b>Supervisor</b> require Manager approval before they become active. Agents created by a <b>Manager</b> are active immediately.
+              </p>
+            )}
+          </Section>
+        </div>
 
         <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', borderTop: `1px solid ${T.border}`, paddingTop: 18 }}>
           <Btn variant="secondary" onClick={onCancel} disabled={saving}>Cancel</Btn>
