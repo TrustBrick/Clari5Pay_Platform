@@ -141,25 +141,30 @@ OCR_MATCH_THRESHOLD = 100
 def _display_status(row: KycVerificationHistory) -> str | None:
     """The status shown in the Verification History "Status" column.
 
-    Keyed off the verification METHOD (not the document type):
+    Keyed off the verification METHOD:
+      * DigiLocker (Aadhaar) — UNCHANGED from before: the name-match status (VERIFIED /
+          MANUAL_REVIEW / NOT_VERIFIED), or the raw API state while still PENDING / FAILED.
       * Image Upload / OCR — the name is read from the document, so the match matters:
-          success + match score == 100 → Success – Matched
-          success + score  < 100       → Success – Not Matched
-      * ID Number / DigiLocker — a retrieved record is always Success – Not Matched (the match
-          percentage is deliberately NOT applied to these).
-      * Any FAILED verification (the id / document does not exist) → Failed – Doesn't Exist.
-      * A DigiLocker Aadhaar still awaiting completion → Pending.
+          success + match score == 100 → Success – Matched; success + score < 100 →
+          Success – Not Matched.
+      * ID Number (PAN number, Passport File Number) — a retrieved record is always
+          Success – Not Matched (the match percentage is deliberately NOT applied).
+      * Any FAILED image/ID verification (the id / document does not exist) → Failed – Doesn't Exist.
     """
+    method = str(row.verification_method or "")
+    if method == METHOD_DIGILOCKER:
+        return row.match_status or row.verification_status   # unchanged (Verified / Not Verified / …)
+
     vstatus = str(row.verification_status or "")
     if vstatus == "PENDING":
-        return "PENDING"                       # DigiLocker link generated, not yet completed
+        return "PENDING"
     if vstatus != "SUCCESS":
         return STATUS_FAILED_NOT_EXIST         # FAILED → the id / document does not exist
 
-    if str(row.verification_method or "") == METHOD_IMAGE:
+    if method == METHOD_IMAGE:
         return (STATUS_SUCCESS_MATCHED if (row.match_score or 0) >= OCR_MATCH_THRESHOLD
                 else STATUS_SUCCESS_NOT_MATCHED)
-    return STATUS_SUCCESS_NOT_MATCHED          # ID Number / DigiLocker
+    return STATUS_SUCCESS_NOT_MATCHED          # ID Number
 
 
 def _history_summary(row: KycVerificationHistory) -> dict:
@@ -489,6 +494,16 @@ class OcrVerifyRequest(BaseModel):
 
 # OCR doc_type codes accepted by the General-Document API (dropdown → payload value).
 OCR_DOC_TYPES = {"passport", "pan_card", "aadhaar_card", "driving_licence", "voter_card"}
+
+# Reference-id prefix per OCR document type — an OCR/image verification of a PAN card gets a
+# "PAN…" reference (shares the PAN sequence), an Aadhaar card an "AADHAAR…" one, and so on.
+OCR_REF_PREFIX = {
+    "pan_card": "PAN",
+    "aadhaar_card": "AADHAAR",
+    "passport": "PASSPORT",
+    "driving_licence": "DL",
+    "voter_card": "VOTER",
+}
 
 
 @router.get("/member/{membership_id}")
@@ -837,7 +852,7 @@ async def ocr_verify_membership(
     if approx_bytes > OCR_MAX_BYTES:
         raise HTTPException(status_code=400, detail="File too large — maximum size is 10 MB.")
 
-    reference_id = await _gen_reference(db, "OCR")
+    reference_id = await _gen_reference(db, OCR_REF_PREFIX.get(doc_type, "OCR"))
     # The provider takes the raw base64 (strip any data-URL prefix). We persist the complete
     # request exactly as sent (the platform already stores uploads as DB data-URLs), so no
     # information is discarded; API logs mask the source (see kyc_service._mask_payload).
