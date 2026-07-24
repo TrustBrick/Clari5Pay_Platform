@@ -159,7 +159,6 @@ const useMemberLookup = () => {
   const [memberId, setMemberId] = useState('');
   const [memberName, setMemberName] = useState('');
   const [known, setKnown] = useState(false);          // on record → name is authoritative
-  const [kyc, setKyc] = useState<KycHistoryItem[]>([]);
   const [checked, setChecked] = useState(false);      // a lookup has completed for this ID
   const [error, setError] = useState('');
   const [looking, setLooking] = useState(false);
@@ -167,41 +166,22 @@ const useMemberLookup = () => {
   const lookup = useCallback(async (raw: string) => {
     const id = raw.trim();
     setError('');
-    if (!id) { setMemberName(''); setKnown(false); setKyc([]); setChecked(false); return; }
+    if (!id) { setMemberName(''); setKnown(false); setChecked(false); return; }
     setLooking(true);
     try {
       const r = await kycAPI.lookupMember(id);
       setKnown(Boolean(r.exists));
-      setKyc(r.kyc || []);
       setChecked(true);
       if (r.exists) setMemberName(r.memberName || '');   // authoritative — never overwritten by hand
     } catch (e) {
       setError(kycErrorMessage(e, 'Could not look up this Membership ID.'));
-      setKnown(false); setKyc([]); setChecked(false);
+      setKnown(false); setChecked(false);
     } finally { setLooking(false); }
   }, []);
 
-  const reset = () => { setMemberId(''); setMemberName(''); setKnown(false); setKyc([]); setChecked(false); setError(''); };
-  return { memberId, setMemberId, memberName, setMemberName, known, kyc, checked, error, looking, lookup, reset };
+  const reset = () => { setMemberId(''); setMemberName(''); setKnown(false); setChecked(false); setError(''); };
+  return { memberId, setMemberId, memberName, setMemberName, known, checked, error, looking, lookup, reset };
 };
-
-// KYC already stored against this Membership ID — auto-fetched with the name.
-const KycOnRecord: React.FC<{ rows: KycHistoryItem[] }> = ({ rows }) => (
-  <div style={{ margin: '-4px 0 14px', padding: '10px 12px', borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-    <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-      KYC on record ({rows.length})
-    </p>
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-      {rows.slice(0, 6).map((r) => (
-        <span key={r.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: T.textMain, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 20, padding: '3px 10px' }}>
-          {r.verificationType}
-          <StatusPill status={r.status} />
-        </span>
-      ))}
-      {rows.length > 6 && <span style={{ fontSize: 11.5, color: T.textMuted, alignSelf: 'center' }}>+{rows.length - 6} more</span>}
-    </div>
-  </div>
-);
 
 const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({ m }) => (
   <>
@@ -227,7 +207,6 @@ const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({
         : m.checked ? 'New Membership ID — the name you enter is saved against it for future lookups'
         : undefined}
     />
-    {m.kyc.length > 0 && <KycOnRecord rows={m.kyc} />}
   </>
 );
 
@@ -611,6 +590,35 @@ const findXml = (node: unknown, depth = 0): string | null => {
   return null;
 };
 
+// API-response header — the provider's OWN status + envelope fields, shown as the first rows of
+// the details card (distinct from our derived status in the modal header). "Status" is always
+// rendered first so the API status is the top row.
+const ApiResponseSection: React.FC<{ response: Record<string, unknown> | null | undefined }> = ({ response }) => {
+  const r = (response || {}) as Record<string, unknown>;
+  return (
+    <Section title="API Response">
+      <KVGrid rows={[
+        ['Status', r.status != null ? String(r.status) : '—'],
+        ['Message', r.message as React.ReactNode],
+        ['Reference ID', r.reference_id as React.ReactNode],
+        ['Transaction ID', r.transaction_id as React.ReactNode],
+        ['Response Timestamp', r.response_time_stamp as React.ReactNode],
+      ]} />
+    </Section>
+  );
+};
+
+// Every scalar the provider returned, flattened — so the details view hides nothing.
+const AllFieldsSection: React.FC<{ response: unknown }> = ({ response }) => {
+  const rows = flattenResponse(response);
+  if (!rows.length) return null;
+  return (
+    <Section title={`All Response Fields (${rows.length})`}>
+      <KVGrid rows={rows.map(([k, v]) => [k, v] as [string, React.ReactNode])} />
+    </Section>
+  );
+};
+
 const AadhaarDetailsBody: React.FC<{ data: AadhaarDetails; photo?: string | null; record?: KycHistoryDetail | null }> = ({ data: raw, photo: serverPhoto, record }) => {
   const data = pickAadhaarData(raw);
   const split = (data.split_address || {}) as Record<string, string>;
@@ -626,6 +634,7 @@ const AadhaarDetailsBody: React.FC<{ data: AadhaarDetails; photo?: string | null
   });
   return (
     <>
+      <ApiResponseSection response={raw as Record<string, unknown>} />
       <Section title="Basic Information">
         <KVGrid rows={[
           ['Name', data.name], ['UID', data.uid], ['Date of Birth', data.dob], ['Gender', data.gender],
@@ -683,6 +692,7 @@ const PanDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ respo
   const match = (result.data_match || {}) as Record<string, unknown>;
   return (
     <>
+      <ApiResponseSection response={response} />
       <Section title="Extracted Data"><ObjectGrid obj={extracted} /></Section>
       <Section title="Validated Data"><ObjectGrid obj={validated} /></Section>
       <Section title="Data Match">
@@ -691,6 +701,7 @@ const PanDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ respo
           <div style={{ marginTop: 10, fontSize: 12, color: T.textMuted }}>Aggregate Match: <strong style={{ color: T.textMain }}>{String(result.data_match_aggregate)}</strong></div>
         )}
       </Section>
+      <AllFieldsSection response={response} />
     </>
   );
 };
@@ -706,6 +717,7 @@ const PassportDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ 
   const match = (result.data_match || {}) as Record<string, unknown>;
   return (
     <>
+      <ApiResponseSection response={response} />
       <Section title="Passport Information">
         <ObjectGrid obj={extracted} />
         {photo && <img src={photo} alt="Passport photo" style={{ marginTop: 12, width: 110, height: 140, objectFit: 'cover', borderRadius: 10, border: `1px solid ${T.border}` }} />}
@@ -717,6 +729,7 @@ const PassportDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ 
           <div style={{ marginTop: 10, fontSize: 12, color: T.textMuted }}>Aggregate Match: <strong style={{ color: T.textMain }}>{String(result.data_match_aggregate)}</strong></div>
         )}
       </Section>
+      <AllFieldsSection response={response} />
     </>
   );
 };
@@ -757,6 +770,7 @@ const OcrDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ respo
   const has = (o: Record<string, unknown>) => o && Object.keys(o).length > 0;
   return (
     <>
+      <ApiResponseSection response={r} />
       <Section title="Document Details">
         <KVGrid rows={[
           ['Document Type', r.document_type ? prettify(String(r.document_type)) : undefined],
@@ -769,6 +783,7 @@ const OcrDetailsBody: React.FC<{ response: Record<string, unknown> }> = ({ respo
       {/* Any remaining scalar keys inside result that aren't the nested objects above. */}
       {has(result) && <Section title="Verification Result"><ObjectGrid obj={result} /></Section>}
       {has(graphic) && <Section title="Graphic Fields"><GraphicGrid obj={graphic} /></Section>}
+      <AllFieldsSection response={r} />
       <Section title="Verification Summary">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 12, fontWeight: 700, color: T.textMuted }}>Verified</span>

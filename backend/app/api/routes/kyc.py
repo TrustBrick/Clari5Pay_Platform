@@ -23,7 +23,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_kyc_user, get_current_kyc_verifier
@@ -112,13 +112,18 @@ def _actor_name(user: User) -> str:
     return (user.full_name or user.name or user.username or "").strip() or user.username
 
 
-def _gen_reference(prefix: str) -> str:
-    """`<PREFIX>` + a numeric value (e.g. AADHAAR123456789 / PAN123456789).
+async def _gen_reference(db: AsyncSession, prefix: str) -> str:
+    """Sequential reference id per verification type: ``PAN000001``, ``AADHAAR000001``,
+    ``PASSPORT000001``, … incrementing by one on each verification.
 
-    The provider rejects reused reference ids, so we combine the current epoch-ms with a
-    random tail to make collisions effectively impossible while keeping it purely numeric.
+    Backed by a dedicated Postgres sequence per prefix (created on first use, idempotent). The
+    sequence only ever advances — even across a data reset — so every reference id stays unique,
+    which the provider requires (it rejects a reused reference id).
     """
-    return f"{prefix}{int(datetime.utcnow().timestamp() * 1000)}{random.randint(1000, 9999)}"
+    seq = f"kyc_{prefix.lower()}_ref_seq"
+    await db.execute(text(f'CREATE SEQUENCE IF NOT EXISTS "{seq}" START WITH 1'))
+    n = (await db.execute(text(f"SELECT nextval('{seq}')"))).scalar()
+    return f"{prefix}{int(n):06d}"
 
 
 # ── Verification-status labels ────────────────────────────────────────────────
@@ -129,41 +134,32 @@ STATUS_SUCCESS_MATCHED = "SUCCESS_MATCHED"          # "Success – Matched"
 STATUS_SUCCESS_NOT_MATCHED = "SUCCESS_NOT_MATCHED"  # "Success – Not Matched"
 STATUS_FAILED_NOT_EXIST = "FAILED_NOT_EXIST"        # "Failed – Doesn't Exist"
 
-# OCR: at or above this name-match percentage the document counts as matched.
-OCR_MATCH_THRESHOLD = 75
+# Image-upload (OCR) verifications count as matched only at a PERFECT name match.
+OCR_MATCH_THRESHOLD = 100
 
 
 def _display_status(row: KycVerificationHistory) -> str | None:
-    """The status shown for a verification record.
+    """The status shown in the Verification History "Status" column.
 
-    Per verification type:
-      * OCR      — data retrieved and match ≥ 75% → Success – Matched; retrieved but below 75% →
-                   Success – Not Matched; nothing retrieved (the document/details do not exist) →
-                   Failed – Doesn't Exist.
-      * PAN      — data retrieved → always Success – Not Matched (match percentage is deliberately
-                   NOT used for PAN, whatever it scored).
-      * PASSPORT — same rule as PAN.
-      * AADHAAR  — untouched: the name-match status (VERIFIED / MANUAL_REVIEW / NOT_VERIFIED), or
-                   the raw API state while it is still PENDING / has FAILED.
+    Keyed off the verification METHOD (not the document type):
+      * Image Upload / OCR — the name is read from the document, so the match matters:
+          success + match score == 100 → Success – Matched
+          success + score  < 100       → Success – Not Matched
+      * ID Number / DigiLocker — a retrieved record is always Success – Not Matched (the match
+          percentage is deliberately NOT applied to these).
+      * Any FAILED verification (the id / document does not exist) → Failed – Doesn't Exist.
+      * A DigiLocker Aadhaar still awaiting completion → Pending.
     """
-    vtype = str(row.verification_type or "").upper()
-    stored = row.match_status or row.verification_status
-    succeeded = row.verification_status == "SUCCESS"
+    vstatus = str(row.verification_status or "")
+    if vstatus == "PENDING":
+        return "PENDING"                       # DigiLocker link generated, not yet completed
+    if vstatus != "SUCCESS":
+        return STATUS_FAILED_NOT_EXIST         # FAILED → the id / document does not exist
 
-    if vtype in ("PAN", "PASSPORT"):
-        # Match percentage is ignored for these two — a retrieved document is always reported as
-        # Success – Not Matched. A failure keeps whatever the API reported.
-        return STATUS_SUCCESS_NOT_MATCHED if succeeded else stored
-
-    if vtype == "OCR":
-        if succeeded:
-            return (STATUS_SUCCESS_MATCHED if (row.match_score or 0) >= OCR_MATCH_THRESHOLD
-                    else STATUS_SUCCESS_NOT_MATCHED)
-        if row.verification_status == "FAILED":
-            return STATUS_FAILED_NOT_EXIST
-        return stored
-
-    return stored   # AADHAAR (and any future type) — unchanged
+    if str(row.verification_method or "") == METHOD_IMAGE:
+        return (STATUS_SUCCESS_MATCHED if (row.match_score or 0) >= OCR_MATCH_THRESHOLD
+                else STATUS_SUCCESS_NOT_MATCHED)
+    return STATUS_SUCCESS_NOT_MATCHED          # ID Number / DigiLocker
 
 
 def _history_summary(row: KycVerificationHistory) -> dict:
@@ -503,26 +499,19 @@ async def kyc_member_lookup(
 ):
     """Look up a Membership ID within the caller's business pool.
 
-    Deliberately never 404s. A known id returns its authoritative Member Name plus the KYC already
-    on record for it, so the page can auto-fill both without a second call. An unknown id returns
-    ``exists: false`` and the operator names it by hand — the verification then persists id + name,
-    and the next lookup for that id auto-fills.
+    Deliberately never 404s. A known id returns its authoritative Member Name so the page can
+    auto-fill it; an unknown id returns ``exists: false`` and the operator names it by hand — the
+    verification then persists id + name, and the next lookup for that id auto-fills. Prior KYC
+    records for the id are NOT returned — the operator starts each verification fresh.
     """
     mid = normalize_member_id(membership_id)
     if not mid:
         raise HTTPException(status_code=400, detail="Membership ID is required.")
     name = await _on_record_name(db, user, mid)
-    rows = (await db.execute(
-        select(KycVerificationHistory).where(
-            KycVerificationHistory.merchant_business == user.name,
-            KycVerificationHistory.membership_id == mid,
-        ).order_by(KycVerificationHistory.id.desc())
-    )).scalars().all()
     return {
         "membershipId": mid,
         "memberName": name,
         "exists": bool(name),
-        "kyc": [_history_summary(r) for r in rows],
     }
 
 
@@ -534,7 +523,7 @@ async def aadhaar_generate_link(
 ):
     """Generate a DigiLocker Aadhaar verification link for a member and record the attempt."""
     mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
-    reference_id = _gen_reference("AADHAAR")
+    reference_id = await _gen_reference(db, "AADHAAR")
     request_payload = {"reference_id": reference_id, "source": "AADHAAR"}
     data, http_status = await kyc_service.melento_generate_aadhaar_url(reference_id)
 
@@ -645,7 +634,7 @@ async def aadhaar_verify_image(
     mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
     b64 = _image_b64(body.image, "Aadhaar card image")
 
-    reference_id = _gen_reference("AADHAAR")
+    reference_id = await _gen_reference(db, "AADHAAR")
     request_payload = {"reference_id": reference_id, "source": b64, "verification": True, "doc_type": "aadhaar_card"}
     data, http_status = await kyc_service.melento_ocr_verify(reference_id, b64, "aadhaar_card", True)
 
@@ -703,7 +692,7 @@ async def pan_verify_membership(
     """Verify a PAN for a member (by PAN number OR uploaded card image) and record it."""
     mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
 
-    reference_id = _gen_reference("PAN")
+    reference_id = await _gen_reference(db, "PAN")
     if body.image:
         # Image Upload → source_type "base64", source is the raw base64 PAN-card image.
         source = _image_b64(body.image, "PAN card image")
@@ -766,7 +755,7 @@ async def passport_verify_membership(
     """Verify a passport for a member (by File Number OR front+back card images) and record it."""
     mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
 
-    reference_id = _gen_reference("PASSPORT")
+    reference_id = await _gen_reference(db, "PASSPORT")
     dob = (body.dateOfBirth or "").strip() or None
     if body.frontImage or body.backImage:
         # Image Upload → both pages are mandatory; source is [front_b64, back_b64].
@@ -848,7 +837,7 @@ async def ocr_verify_membership(
     if approx_bytes > OCR_MAX_BYTES:
         raise HTTPException(status_code=400, detail="File too large — maximum size is 10 MB.")
 
-    reference_id = _gen_reference("OCR")
+    reference_id = await _gen_reference(db, "OCR")
     # The provider takes the raw base64 (strip any data-URL prefix). We persist the complete
     # request exactly as sent (the platform already stores uploads as DB data-URLs), so no
     # information is discarded; API logs mask the source (see kyc_service._mask_payload).
