@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl, reviewerRoleCode } from '../utils/helpers';
+import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl, reviewerRoleCode, formatDateTimeIST } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect, Pager } from '../components/UI';
 import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
 import { usePoll, useDebouncedValue, useActivitySignal } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
-import { Icon } from '../components/Icon';
+import { Icon, type IconName } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { today } from '../utils/helpers';
@@ -300,38 +300,82 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
   );
 };
 
-// ─── Agent Dashboard — Agent performance & earnings (isolated ledger, completed-only) ─────────
-// Shows AGENT financial performance: overall amounts/commissions, per-agent breakdown, rankings and
-// highs, plus operational counts. NO member/membership balances and NO merchant data. Commission per leg from each agent's own fee — the same calculation everywhere.
 // ─── Agent Dashboard — three-section executive overview (isolated ledger, completed-only) ─────
 // Operational counts, a financial summary, and a transparent Balance Overview. NO performance
 // table / rankings / highs / recent list — detailed analytics live in Agents, All Transactions
 // and Reports. Same per-leg calculation as everywhere; no merchant data.
-const FinCard: React.FC<{ title: string; accent: string; a: [string, number]; b: [string, number]; bMoney?: boolean; strong?: boolean }> =
-  ({ title, accent, a, b, bMoney = true, strong }) => (
-  <Card style={{ padding: '18px 20px', borderTop: `4px solid ${accent}` }}>
-    <p style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}>{title}</p>
-    <p style={{ margin: '0 0 3px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{a[0]}</p>
-    <p style={{ margin: '0 0 12px', fontSize: 22, fontWeight: 800, color: strong ? accent : T.textMain }}>{fmt(a[1])}</p>
-    <p style={{ margin: '0 0 3px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{b[0]}</p>
-    <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: bMoney ? T.warning : T.blue }}>{bMoney ? fmt(b[1]) : b[1]}</p>
+// ── Dashboard surface ────────────────────────────────────────────────────────
+// One card treatment for the whole page: neutral hairline, soft shadow, identical radius and
+// padding, and full height so every card in a row lines up whatever it holds. The colour lives on
+// the figures, never on the card — a border per metric turned the page into a colour chart and made
+// the numbers themselves harder to pick out. `T.border` is the theme's own hairline (#283342 in
+// dark, #e2e8f0 in light), so this reads the same in both themes rather than only the dark one.
+const DASH_CARD: React.CSSProperties = {
+  padding: 20,
+  height: '100%',
+  border: `1px solid ${T.border}`,
+  boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+  boxSizing: 'border-box',
+};
+// A figure worth reading is coloured; a zero is not news, so it stays muted.
+const figure = (value: number, color: string) => (value ? color : T.textMuted);
+// The icon sits in a quiet chip so it labels the card without competing with the number.
+const DashIcon: React.FC<{ name: IconName; color: string }> = ({ name, color }) => (
+  <span style={{
+    width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    background: T.canvas, border: `1px solid ${T.border}`,
+  }}>
+    <Icon name={name} size={17} color={color} />
+  </span>
+);
+
+const FinCard: React.FC<{ title: string; icon: IconName; accent: string; a: [string, number]; b: [string, number]; bMoney?: boolean }> =
+  ({ title, icon, accent, a, b, bMoney = true }) => (
+  <Card style={DASH_CARD}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+      <DashIcon name={icon} color={accent} />
+      <p style={{ margin: 0, fontSize: 13.5, fontWeight: 600, color: T.textMain }}>{title}</p>
+    </div>
+    <p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{a[0]}</p>
+    <p style={{ margin: '0 0 16px', fontSize: 25, fontWeight: 800, color: figure(a[1], accent), letterSpacing: '-0.01em' }}>{fmt(a[1])}</p>
+    <p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{b[0]}</p>
+    {/* Secondary financial values read blue; a plain count is not a financial value, so it stays neutral. */}
+    <p style={{ margin: 0, fontSize: 16, fontWeight: 700, color: bMoney ? figure(b[1], T.blue) : figure(b[1], T.textMain) }}>{bMoney ? fmt(b[1]) : b[1]}</p>
   </Card>
 );
 // A single value tile in the Balance Overview flow.
-const BoTile: React.FC<{ label: string; sub: string; value: number; color: string; big?: boolean }> = ({ label, sub, value, color, big }) => (
-  <Card style={{ padding: '16px 18px', borderTop: `3px solid ${color}`, flex: '1 1 200px', minWidth: 180 }}>
-    <p style={{ margin: '0 0 3px', fontSize: 11, fontWeight: 800, color: T.textMain }}>{label}</p>
-    <p style={{ margin: '0 0 8px', fontSize: 10.5, color: T.textMuted }}>{sub}</p>
-    <p style={{ margin: 0, fontSize: big ? 24 : 18, fontWeight: 800, color }}>{fmt(value)}</p>
+const BoTile: React.FC<{ label: string; sub: string; value: number; color: string; icon: IconName; big?: boolean }> = ({ label, sub, value, color, icon, big }) => (
+  <Card style={{ ...DASH_CARD, flex: '1 1 210px', minWidth: 190 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+      <DashIcon name={icon} color={color} />
+      <p style={{ margin: 0, fontSize: 12.5, fontWeight: 600, color: T.textMain, lineHeight: 1.3 }}>{label}</p>
+    </div>
+    <p style={{ margin: '0 0 10px', fontSize: 11, color: T.textMuted, lineHeight: 1.45 }}>{sub}</p>
+    <p style={{ margin: 0, fontSize: big ? 27 : 21, fontWeight: 800, color: figure(value, color), letterSpacing: '-0.01em' }}>{fmt(value)}</p>
   </Card>
+);
+// The operator between two Balance Overview tiles — larger and centred against the tiles it joins.
+const BoOp: React.FC<{ symbol: string }> = ({ symbol }) => (
+  <span style={{ fontSize: 30, fontWeight: 700, color: T.textMuted, alignSelf: 'center', padding: '0 6px', lineHeight: 1 }}>{symbol}</span>
+);
+// One heading treatment for all three sections.
+const DashSection: React.FC<{ title: string; note?: string }> = ({ title, note }) => (
+  <p style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 800, color: T.textMain, letterSpacing: '-0.01em' }}>
+    {title}{note && <span style={{ fontWeight: 500, color: T.textMuted }}> · {note}</span>}
+  </p>
 );
 
 export const AgentDashboardPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
   const { showToast } = useToast();
   const [data, setData] = useState<AgentOverview | null>(null);
   const [perf, setPerf] = useState<AgentPerformance | null>(null);
+  // Timestamp of the latest successful refresh — shown in the Last Updated footer. Set only when
+  // the overview actually resolves, so a failed poll never advances it.
+  const [refreshedAt, setRefreshedAt] = useState<string | null>(null);
   const load = useCallback(() => {
-    agentTxnsAPI.overview().then(setData).catch(() => showToast('Failed to load the Agent Dashboard', 'error'));
+    agentTxnsAPI.overview().then(d => { setData(d); setRefreshedAt(new Date().toISOString()); })
+      .catch(() => showToast('Failed to load the Agent Dashboard', 'error'));
     agentTxnsAPI.performance().then(setPerf).catch(() => {});
   }, [showToast]);
   useEffect(() => { load(); }, [load]);
@@ -344,56 +388,66 @@ export const AgentDashboardPage: React.FC<{ user: User; onNavigate?: (p: string)
   const totalSettlements = Math.round((o.totalSettlementAmount + o.totalSettlementCommission) * 100) / 100;
   const available = Math.round((netDeposits - totalWithdrawals - totalSettlements) * 100) / 100;
 
-  const opsCards: Array<[string, number, string]> = [
-    ['Total Deposit Requests', c.depositCount, T.success],
-    ['Total Withdrawal Requests', c.withdrawalCount, T.danger],
-    ['Total Settlement Requests', c.settlementCount, '#7c3aed'],
-    ['Pending Requests', c.pending, T.warning],
-    ['Completed Requests', c.completed, T.success],
-    ['Rejected Requests', c.rejected, T.danger],
+  // [label, value, value-colour, icon]. Colour lands on the number only (see figure()); a count of
+  // zero stays muted. Settlement keeps the module's established purple; every other colour follows
+  // the dashboard key — green deposits/completed, red withdrawals/rejected, orange pending.
+  const opsCards: Array<[string, number, string, IconName]> = [
+    ['Total Deposit Requests', c.depositCount, T.success, 'total-deposits'],
+    ['Total Withdrawal Requests', c.withdrawalCount, T.danger, 'total-withdrawals'],
+    ['Total Settlement Requests', c.settlementCount, '#7c3aed', 'total-settlements'],
+    ['Pending Requests', c.pending, T.warning, 'pending-requests'],
+    ['Completed Requests', c.completed, T.success, 'completed-requests'],
+    ['Rejected Requests', c.rejected, T.danger, 'transaction-rejected'],
   ];
-  const op = <span style={{ fontSize: 26, fontWeight: 800, color: T.textMuted, alignSelf: 'center', padding: '0 4px' }}>−</span>;
 
   return (
-    <div style={{ maxWidth: 1100 }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Dashboard</h1>
-        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Agent operational status, financial summary and available balance — completed transactions.</p>
+    <div style={{ maxWidth: 1280 }}>
+      <div style={{ marginBottom: 28 }}>
+        <h1 style={{ margin: '0 0 5px', fontSize: 26, fontWeight: 800, color: T.textMain, letterSpacing: '-0.02em' }}>Dashboard</h1>
+        <p style={{ margin: 0, fontSize: 13.5, color: T.textMuted }}>Agent operational status, financial summary and available balance — completed transactions.</p>
       </div>
 
       {/* Section 1 — Operational Summary (counts only) */}
-      <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Operational Summary</p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 14, marginBottom: 26 }}>
-        {opsCards.map(([label, value, color]) => (
-          <Card key={label} style={{ padding: '16px 18px', borderTop: `3px solid ${color}` }}>
-            <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
-            <p style={{ margin: 0, fontSize: 26, fontWeight: 800, color }}>{value}</p>
+      <DashSection title="Operational Summary" />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 16, marginBottom: 36 }}>
+        {opsCards.map(([label, value, color, icon]) => (
+          <Card key={label} style={DASH_CARD}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <DashIcon name={icon} color={color} />
+              <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', lineHeight: 1.3 }}>{label}</p>
+            </div>
+            <p style={{ margin: 0, fontSize: 30, fontWeight: 800, color: figure(value, color), letterSpacing: '-0.02em' }}>{value}</p>
           </Card>
         ))}
       </div>
 
       {/* Section 2 — Financial Summary (4 cards) */}
-      <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Financial Summary <span style={{ fontWeight: 600, color: T.textMuted }}>· completed transactions</span></p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(230px,1fr))', gap: 14, marginBottom: 26 }}>
-        <FinCard title="Total Deposits" accent={T.success} a={['Gross Deposit Amount', o.totalDepositAmount]} b={['Deposit Commission', o.totalDepositCommission]} />
-        <FinCard title="Total Withdrawals" accent={T.danger} a={['Gross Withdrawal Amount', o.totalWithdrawalAmount]} b={['Withdrawal Commission', o.totalWithdrawalCommission]} />
-        <FinCard title="Total Settlements" accent={'#7c3aed'} a={['Gross Settlement Amount', o.totalSettlementAmount]} b={['Settlement Commission', o.totalSettlementCommission]} />
-        <FinCard title="Total Commission Earned" accent={T.blue} a={['Total Commission Earned', o.totalCommission]} b={['Total Completed Transactions', o.totalTransactions]} bMoney={false} strong />
+      <DashSection title="Financial Summary" note="completed transactions" />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 16, marginBottom: 36 }}>
+        <FinCard title="Total Deposits" icon="total-deposits" accent={T.success} a={['Gross Deposit Amount', o.totalDepositAmount]} b={['Deposit Commission', o.totalDepositCommission]} />
+        <FinCard title="Total Withdrawals" icon="total-withdrawals" accent={T.danger} a={['Gross Withdrawal Amount', o.totalWithdrawalAmount]} b={['Withdrawal Commission', o.totalWithdrawalCommission]} />
+        <FinCard title="Total Settlements" icon="total-settlements" accent={'#7c3aed'} a={['Gross Settlement Amount', o.totalSettlementAmount]} b={['Settlement Commission', o.totalSettlementCommission]} />
+        <FinCard title="Total Commission Earned" icon="available-balance" accent={T.blue} a={['Total Commission Earned', o.totalCommission]} b={['Total Completed Transactions', o.totalTransactions]} bMoney={false} />
       </div>
 
       {/* Section 3 — Balance Overview (transparent calculation) */}
-      <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Balance Overview</p>
-      <Card style={{ padding: 18 }}>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'stretch', flexWrap: 'wrap' }}>
-          <BoTile label="Total Net Deposits" sub="Deposit Amount − Deposit Commission" value={netDeposits} color={T.success} />
-          {op}
-          <BoTile label="Total Withdrawals" sub="Withdrawal Amount + Commission" value={totalWithdrawals} color={T.danger} />
-          {op}
-          <BoTile label="Total Settlements" sub="Settlement Amount + Commission" value={totalSettlements} color={'#7c3aed'} />
-          <span style={{ fontSize: 26, fontWeight: 800, color: T.textMuted, alignSelf: 'center', padding: '0 4px' }}>=</span>
-          <BoTile label="Current Available Balance" sub="Across all completed agent transactions" value={available} color={T.success} big />
+      <DashSection title="Balance Overview" />
+      <Card style={{ padding: 22 }}>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', flexWrap: 'wrap' }}>
+          <BoTile label="Total Net Deposits" sub="Deposit Amount − Deposit Commission" value={netDeposits} color={T.success} icon="deposits-received" />
+          <BoOp symbol="−" />
+          <BoTile label="Total Withdrawals" sub="Withdrawal Amount + Commission" value={totalWithdrawals} color={T.danger} icon="total-withdrawals" />
+          <BoOp symbol="−" />
+          <BoTile label="Total Settlements" sub="Settlement Amount + Commission" value={totalSettlements} color={'#7c3aed'} icon="total-settlements" />
+          <BoOp symbol="=" />
+          <BoTile label="Current Available Balance" sub="Across all completed agent transactions" value={available} color={T.success} icon="available-balance" big />
         </div>
       </Card>
+
+      {/* Last Updated — the moment the dashboard data was last refreshed (IST). */}
+      <p style={{ margin: '20px 0 0', fontSize: 12, color: T.textMuted, textAlign: 'right' }}>
+        Last Updated: <span style={{ fontWeight: 700, color: T.textMain }}>{refreshedAt ? formatDateTimeIST(refreshedAt) : '—'}</span>
+      </p>
     </div>
   );
 };
