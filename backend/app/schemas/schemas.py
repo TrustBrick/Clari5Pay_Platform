@@ -399,7 +399,10 @@ class AgentCreate(BaseModel):
     payInFee: float
     payOutFee: float
     settlementFee: float
-    transactionCode: str                          # exactly 3 alphanumeric chars
+    # No longer collected by the Create Agent form — the per-leg codes below are what prefix an
+    # agent's transactions. Optional so the form can omit it; the route derives a free one, since
+    # the column is NOT NULL and unique within the business. A caller that sends one still sets it.
+    transactionCode: Optional[str] = None         # exactly 3 alphabetic chars when supplied
     # Reference-code prefixes for this agent's three legs (e.g. DEP / WIT / SET). Mandatory: every
     # reference number and transaction code the agent's transactions get is built from them, and
     # each leg then numbers independently. Up to 3 alphanumeric chars, stored uppercased.

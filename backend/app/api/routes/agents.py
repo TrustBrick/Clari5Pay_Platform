@@ -10,6 +10,8 @@ matching the demo-gated Merchant-portal menu; on Production every path here is a
 """
 import re
 from datetime import date, datetime
+from itertools import product
+from string import ascii_uppercase
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +48,34 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 def _business(user: User) -> str:
     """The agent pool this user belongs to (shared across the same business name)."""
     return user.name
+
+
+async def _auto_transaction_code(db: AsyncSession, business: str, full_name: str) -> str:
+    """A free 3-letter Transaction Code for an agent whose creator was not asked for one.
+
+    The Create Agent form no longer collects it — the per-leg Deposit/Withdrawal/Settlement codes
+    are what prefix transactions now — but the column is NOT NULL and still has to stay unique
+    within the business, so one is derived here instead of being shown to the user. The agent's own
+    initials are tried first (a code that means something beats an opaque one), then AAA, AAB, … so
+    a name that yields nothing usable, or whose code is taken, still resolves.
+
+    One query, not one per candidate: the whole business's codes come back as a set and the search
+    runs in memory.
+    """
+    taken = {str(c or "").upper() for c in (await db.execute(
+        select(AgentMaster.transaction_code).where(AgentMaster.merchant_business == business)
+    )).scalars().all()}
+    letters = [ch for ch in (full_name or "").upper() if ch.isalpha()]
+    if len(letters) >= 3:
+        preferred = "".join(letters[:3])
+        if preferred not in taken:
+            return preferred
+    for combo in product(ascii_uppercase, repeat=3):
+        candidate = "".join(combo)
+        if candidate not in taken:
+            return candidate
+    # 17,576 codes are all taken within one business — not reachable in practice.
+    raise HTTPException(status_code=409, detail="No Transaction Code is available for this business.")
 
 
 async def _next_agent_id(db: AsyncSession) -> str:
@@ -187,7 +217,10 @@ async def create_agent(
         raise HTTPException(status_code=400, detail="Enter a valid email address.")
     if category not in CATEGORIES:
         raise HTTPException(status_code=400, detail="Category must be Cash, Bank Transfer or Crypto.")
-    if not _CODE_RE.match(code):
+    # The Transaction Code is no longer asked for on the form, so an absent one is normal and is
+    # filled in below. A caller that still sends one keeps the original rules — the field stayed on
+    # the API rather than being dropped, so nothing integrating with it breaks.
+    if code and not _CODE_RE.match(code):
         raise HTTPException(status_code=400, detail="Transaction Code must be exactly 3 alphabetic characters.")
     # The three per-leg reference codes are mandatory and stored uppercased. They are deliberately
     # NOT checked for duplicates across agents: reference numbers are issued as max(existing for
@@ -214,8 +247,12 @@ async def create_agent(
         raise HTTPException(status_code=409, detail="An agent with this mobile number already exists.")
     if await _duplicate(db, business, field=AgentMaster.email, value=email):
         raise HTTPException(status_code=409, detail="An agent with this email address already exists.")
-    if await _duplicate(db, business, field=AgentMaster.transaction_code, value=code):
+    if code and await _duplicate(db, business, field=AgentMaster.transaction_code, value=code):
         raise HTTPException(status_code=409, detail="This Transaction Code is already in use.")
+    # Not supplied → derive a free one. Done after the duplicate checks so it cannot pick a code
+    # that a request rejected moments later anyway.
+    if not code:
+        code = await _auto_transaction_code(db, business, full_name)
 
     doc = date.today()
     if data.dateOfCreation:

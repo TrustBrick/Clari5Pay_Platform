@@ -691,7 +691,10 @@ export interface AgentQuery {
 export interface AgentCreatePayload {
   fullName: string; country: string; state: string; location: string;
   mobile?: string; mobileCode?: string; email?: string; currency: string; dateOfCreation?: string;
-  reference?: string; payInFee: number; payOutFee: number; settlementFee: number; transactionCode: string; category: string;
+  reference?: string; payInFee: number; payOutFee: number; settlementFee: number; category: string;
+  /** No longer collected by the form — the server derives a free code when this is omitted.
+   *  Still accepted so an existing integration that sends one keeps working. */
+  transactionCode?: string;
   // Per-leg reference-code prefixes (e.g. DEP / WIT / SET). Mandatory on create; editable after,
   // so agents seeded with the legacy AGD/AGW/AGS prefixes can be given real ones.
   depositCode: string; withdrawalCode: string; settlementCode: string;

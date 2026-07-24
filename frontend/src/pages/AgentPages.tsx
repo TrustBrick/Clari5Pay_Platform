@@ -171,7 +171,9 @@ const AGENT_FORM_CSS = `
 type FormState = {
   fullName: string; country: string; state: string; location: string;
   mobile: string; mobileCode: string; email: string; currency: string; dateOfCreation: string;
-  reference: string; payInFee: string; payOutFee: string; settlementFee: string; transactionCode: string; category: AgentCategory;
+  reference: string; payInFee: string; payOutFee: string; settlementFee: string; category: AgentCategory;
+  // Not shown on the form. Kept in state and still sent on create so the stored date remains the
+  // one the user's own calendar day produces, exactly as before the field was hidden.
   // Reference-code prefixes for this agent's three legs — every reference number and transaction
   // code its transactions get is built from the code matching the leg.
   depositCode: string; withdrawalCode: string; settlementCode: string;
@@ -181,7 +183,7 @@ type FormState = {
 const blankForm = (): FormState => ({
   fullName: '', country: '', state: '', location: '', mobile: '', mobileCode: '+91', email: '',
   currency: 'INR', dateOfCreation: todayISO(), reference: '', payInFee: '', payOutFee: '', settlementFee: '',
-  transactionCode: '', category: 'CASH', notes: '', riskAnalysis: false,
+  category: 'CASH', notes: '', riskAnalysis: false,
   depositCode: '', withdrawalCode: '', settlementCode: '',
   status: 'ACTIVE',
 });
@@ -202,7 +204,7 @@ const AgentForm: React.FC<{
         reference: initial.reference || '',
         payInFee: String(initial.payInFee ?? ''), payOutFee: String(initial.payOutFee ?? ''),
         settlementFee: String(initial.settlementFee ?? ''),
-        transactionCode: initial.transactionCode, category: initial.category,
+        category: initial.category,
         depositCode: initial.depositCode || '', withdrawalCode: initial.withdrawalCode || '',
         settlementCode: initial.settlementCode || '',
         notes: initial.notes || '', riskAnalysis: initial.riskAnalysis,
@@ -230,7 +232,6 @@ const AgentForm: React.FC<{
       if (v === '' || isNaN(Number(v))) return `${label} is required.`;
       if (Number(v) < 0) return `${label} cannot be negative.`;
     }
-    if (mode === 'create' && !/^[A-Za-z]{3}$/.test(form.transactionCode)) return 'Transaction Code must be exactly 3 alphabetic characters (A–Z).';
     // Each leg's reference code is mandatory — it prefixes every reference number and transaction
     // code that leg ever issues for this agent.
     for (const [label, v] of [['Deposit Code', form.depositCode], ['Withdrawal Code', form.withdrawalCode],
@@ -258,10 +259,10 @@ const AgentForm: React.FC<{
         settlementCode: form.settlementCode.toUpperCase(),
       };
       const saved = mode === 'create'
-        ? await agentAPI.create({
-            ...base, transactionCode: form.transactionCode.toUpperCase(),
-            dateOfCreation: form.dateOfCreation,
-          })
+        // No transactionCode: it is not collected any more, and the server derives a free one.
+        // dateOfCreation is still sent though it is not shown, so the stored date stays the
+        // creator's own calendar day rather than the server's.
+        ? await agentAPI.create({ ...base, dateOfCreation: form.dateOfCreation })
         : await agentAPI.update(initial!.id, { ...base, status: form.status });
       onSaved(saved);
     } catch (e) {
@@ -321,11 +322,12 @@ const AgentForm: React.FC<{
             it charges on the second. The three fees sit together at equal width so they compare. */}
         <div className="agf-sec">
           <Section title="Business Information">
-            <div className="agf-g agf-4">
+            {/* Date of Creation is not shown: it is set automatically when the agent is saved.
+                It stays in the record for reports, audit and the read-only Agent view. */}
+            <div className="agf-g agf-3">
               {/* Currency is auto-populated from Country; still editable for unmapped countries. */}
               <Sel label="Currency" value={form.currency} onChange={(e) => set('currency', e.target.value)} required options={CURRENCY_OPTIONS} />
               <Sel label="Category" value={form.category} onChange={(e) => set('category', e.target.value as AgentCategory)} required options={CATEGORY_OPTIONS} />
-              <Input label="Date of Creation" type="date" value={form.dateOfCreation} onChange={(e) => set('dateOfCreation', e.target.value)} readOnly={mode === 'edit'} />
               <Sel label="Reference" value={form.reference} onChange={(e) => set('reference', e.target.value)} options={REFERENCE_OPTIONS} />
             </div>
             <div className="agf-g agf-3">
@@ -336,13 +338,14 @@ const AgentForm: React.FC<{
           </Section>
         </div>
 
-        {/* Transaction Configuration — every code that ends up on this agent's transactions, in one
-            place. The three per-leg codes prefix that leg's reference numbers and transaction codes
-            (DEP000001, WIT000001, SET000001 …), each leg numbering independently; the Unique
-            Transaction Code is the agent's own 3-letter identifier and cannot be edited later. */}
+        {/* Transaction Configuration — the codes that prefix this agent's reference numbers and
+            transaction codes (DEP000001, WIT000001, SET000001 …), each leg numbering
+            independently. The agent's own Unique Transaction Code is no longer collected here:
+            nothing on a transaction is built from it any more, so the server assigns a free one
+            and it remains visible on the read-only Agent view. */}
         <div className="agf-sec">
           <Section title="Transaction Configuration">
-            <div className="agf-g agf-4">
+            <div className="agf-g agf-3">
               {([['Deposit Code', 'depositCode', 'DEP', 'Prefixes deposit references'],
                  ['Withdrawal Code', 'withdrawalCode', 'WIT', 'Prefixes withdrawal references'],
                  ['Settlement Code', 'settlementCode', 'SET', 'Prefixes settlement references']] as const)
@@ -357,14 +360,6 @@ const AgentForm: React.FC<{
                     hint={`${hint} — up to 3 letters or numbers, e.g. ${example}.`}
                   />
                 ))}
-              <Input
-                label="Unique Transaction Code"
-                value={form.transactionCode}
-                onChange={(e) => set('transactionCode', e.target.value.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase())}
-                required={mode === 'create'}
-                readOnly={mode === 'edit'}
-                hint={mode === 'edit' ? 'Cannot be edited.' : 'Exactly 3 letters (A–Z), no numbers.'}
-              />
             </div>
           </Section>
         </div>
