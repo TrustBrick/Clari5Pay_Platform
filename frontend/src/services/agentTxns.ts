@@ -286,17 +286,6 @@ export interface AgentTxnPagedQuery extends AgentTxnQuery {
   page?: number; page_size?: number;
 }
 
-export interface AgentMemberSummary {
-  found: boolean;
-  membershipId?: string;
-  memberName?: string | null;
-  depositCount?: number; totalDeposits?: number; depositCommission?: number;
-  withdrawalCount?: number; totalWithdrawals?: number; withdrawalCommission?: number;
-  settlementCount?: number; totalSettlements?: number; settlementCommission?: number;
-  availableBalance?: number;
-  lastTransactionDate?: string | null;
-}
-
 /** What one agent currently holds, and the ceiling it puts on a withdrawal. */
 export interface AgentBalance {
   agentMasterId: number;

@@ -302,12 +302,11 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
 
 // ─── Agent Dashboard — Agent performance & earnings (isolated ledger, completed-only) ─────────
 // Shows AGENT financial performance: overall amounts/commissions, per-agent breakdown, rankings and
-// highs, plus operational counts. NO member/membership balances (those live on Balance Enquiry) and
-// NO merchant data. Commission per leg from each agent's own fee — the same calculation everywhere.
+// highs, plus operational counts. NO member/membership balances and NO merchant data. Commission per leg from each agent's own fee — the same calculation everywhere.
 // ─── Agent Dashboard — three-section executive overview (isolated ledger, completed-only) ─────
 // Operational counts, a financial summary, and a transparent Balance Overview. NO performance
-// table / rankings / highs / recent list — detailed analytics live in Agents, All Transactions,
-// Reports and Balance Enquiry. Same per-leg calculation as everywhere; no merchant data.
+// table / rankings / highs / recent list — detailed analytics live in Agents, All Transactions
+// and Reports. Same per-leg calculation as everywhere; no merchant data.
 const FinCard: React.FC<{ title: string; accent: string; a: [string, number]; b: [string, number]; bMoney?: boolean; strong?: boolean }> =
   ({ title, accent, a, b, bMoney = true, strong }) => (
   <Card style={{ padding: '18px 20px', borderTop: `4px solid ${accent}` }}>

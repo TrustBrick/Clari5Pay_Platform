@@ -720,53 +720,11 @@ def _max_withdrawable(available: float, rate: float) -> float:
     return round(max(0.0, available) / (1 + rate), 2)
 
 
-async def _member_summary(db: AsyncSession, business: str, membership_id: str) -> dict:
-    """Full financial summary for one Membership ID — the Balance Enquiry payload. Reuses the same
-    completed-only, per-leg logic as _member_balance (deposit net of Pay-In, withdrawal/settlement
-    plus their Pay-Out/Settlement commission), just broken out per component. `found` distinguishes
-    an unknown membership from a known one with no completed transactions (all zeros)."""
-    mid = (membership_id or "").strip()
-    rows = (await db.execute(select(AgentTransaction).where(
-        AgentTransaction.merchant_business == business,
-        AgentTransaction.membership_id == mid))).scalars().all() if mid else []
-    if not rows:
-        return {"found": False}
-    agents = {a.id: a for a in (await db.execute(select(AgentMaster).where(
-        AgentMaster.id.in_({r.agent_master_id for r in rows})))).scalars().all()}
-
-    agg = {"DEPOSIT": [0, 0.0, 0.0], "WITHDRAWAL": [0, 0.0, 0.0], "SETTLEMENT": [0, 0.0, 0.0]}  # [count, amount, commission]
-    member_name = None
-    last_dt = None
-    for t in rows:
-        member_name = member_name or t.membership_name
-        if t.created_at and (last_dt is None or t.created_at > last_dt):
-            last_dt = t.created_at
-        if t.status in COMPLETED_STATUSES and t.txn_type in agg:
-            amt = t.amount or 0.0
-            agg[t.txn_type][0] += 1
-            agg[t.txn_type][1] += amt
-            agg[t.txn_type][2] += round(amt * _txn_rate(t, agents.get(t.agent_master_id)), 2)
-    dep_n, dep_amt, dep_com = agg["DEPOSIT"]
-    wd_n, wd_amt, wd_com = agg["WITHDRAWAL"]
-    st_n, st_amt, st_com = agg["SETTLEMENT"]
-    available = round((dep_amt - dep_com) - (wd_amt + wd_com) - (st_amt + st_com), 2)
-    _, l_date, l_time = _ist_parts(last_dt)
-    return {
-        "found": True,
-        "membershipId": mid, "memberName": member_name,
-        "depositCount": dep_n, "totalDeposits": round(dep_amt, 2), "depositCommission": round(dep_com, 2),
-        "withdrawalCount": wd_n, "totalWithdrawals": round(wd_amt, 2), "withdrawalCommission": round(wd_com, 2),
-        "settlementCount": st_n, "totalSettlements": round(st_amt, 2), "settlementCommission": round(st_com, 2),
-        "availableBalance": available,
-        "lastTransactionDate": f"{l_date} {l_time}".strip() if last_dt else None,
-    }
-
-
 async def _agent_performance(db: AsyncSession, business: str) -> dict:
     """Agent financial performance for the Agent Dashboard — overall totals, a per-agent breakdown,
     rankings and single-agent highs. Completed-only (COMPLETED_STATUSES), commission per leg from
     each agent's own Pay-In / Pay-Out / Settlement fee — the SAME calculation as everywhere else, no
-    new formula. This is AGENT performance; member balances live only on Balance Enquiry."""
+    new formula. This is AGENT performance, not a per-member balance."""
     agents = (await db.execute(select(AgentMaster).where(
         AgentMaster.merchant_business == business).order_by(AgentMaster.id))).scalars().all()
     txns = (await db.execute(select(AgentTransaction).where(
@@ -1593,15 +1551,6 @@ async def member_accounts(membership_id: str, db: AsyncSession = Depends(get_db)
     return [_member_account_row(a) for a in rows]
 
 
-@router.get("/balance-enquiry/{membership_id}")
-async def balance_enquiry(membership_id: str, db: AsyncSession = Depends(get_db),
-                          user: User = Depends(get_current_agent_operator)):
-    """Read-only financial summary for a Membership ID (Balance Enquiry). Uses the same completed-
-    only, per-leg agent calculation as every other balance figure. Access is the standard agent
-    operator/manager gate — no new permission. `found:false` when the membership is unknown."""
-    return await _member_summary(db, _business(user), membership_id.strip())
-
-
 @router.get("/agent/{agent_master_id}/balance")
 async def agent_balance(agent_master_id: int, db: AsyncSession = Depends(get_db),
                         user: User = Depends(get_current_agent_operator)):
@@ -1665,7 +1614,7 @@ async def agent_performance(db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_agent_operator)):
     """Agent financial performance for the Agent Dashboard — overall totals, per-agent breakdown,
     rankings and single-agent highs. Completed-only; commission per leg from each agent's own fee.
-    AGENT performance only — no member/membership balances (those live on Balance Enquiry)."""
+    AGENT performance only — no member/membership balances."""
     return await _agent_performance(db, _business(user))
 
 
