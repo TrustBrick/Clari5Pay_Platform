@@ -43,9 +43,21 @@ export interface KycHistoryItem {
   documentType?: string | null;     // OCR doc_type (passport / pan_card / …)
   referenceId?: string | null;
   transactionId?: string | null;
-  status: 'PENDING' | 'SUCCESS' | 'FAILED' | string;
+  /**
+   * Display status, derived server-side. Aadhaar keeps the name-match statuses
+   * (VERIFIED / MANUAL_REVIEW / NOT_VERIFIED) and the raw API states; PAN, Passport and OCR use
+   * the SUCCESS_MATCHED / SUCCESS_NOT_MATCHED / FAILED_NOT_EXIST codes.
+   */
+  status: 'PENDING' | 'SUCCESS' | 'FAILED'
+    | 'SUCCESS_MATCHED' | 'SUCCESS_NOT_MATCHED' | 'FAILED_NOT_EXIST' | string;
   createdBy?: string | null;
   createdAt?: string | null;
+}
+
+/** KYC dashboard headline counter (summary card). */
+export interface KycStats {
+  /** Verifications that completed successfully for the caller's business pool. */
+  totalCompleted: number;
 }
 
 export interface KycHistoryDetail extends KycHistoryItem {
@@ -177,6 +189,11 @@ export const kycAPI = {
 
   getHistoryDetail: async (id: number): Promise<KycHistoryDetail> =>
     (await api.get<KycHistoryDetail>(`/api/kyc/history/${id}`)).data,
+
+  // Headline counter for the dashboard summary card — counted in the database, so it reflects the
+  // whole history rather than the page currently on screen.
+  getStats: async (): Promise<KycStats> =>
+    (await api.get<KycStats>('/api/kyc/stats')).data,
 
   // ── Legacy placeholder seams (still used by the Passport / OCR cards) ──
   verifyAadhaar: async (aadhaarNumber: string): Promise<AadhaarResult> =>

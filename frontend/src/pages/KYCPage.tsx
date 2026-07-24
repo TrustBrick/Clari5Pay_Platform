@@ -11,9 +11,14 @@ import {
 } from '../services/kyc';
 
 // ─── Merchant Portal → KYC Update ──────────────────────────────────────────────
-// Identity-verification workspace for Supervisor / Manager roles. Aadhaar, PAN, Passport and OCR
-// are live, membership-driven flows backed by the Melento.ai staging APIs — every request/response
-// is persisted server-side and shown in the Verification History table.
+// Identity-verification workspace. Aadhaar, PAN, Passport and OCR are live, membership-driven
+// flows backed by the Melento.ai staging APIs — every request/response is persisted server-side
+// and shown in the Verification History table.
+//
+// Roles: the Data Operator (DEO) performs the verifications; Supervisor and Manager have
+// read-only access — Verification History and each record's details, with the verification cards
+// hidden. The same split is enforced server-side (get_current_kyc_verifier), so hiding the cards
+// is a UI courtesy, not the security boundary.
 
 type ViewKey = 'home' | 'aadhaar' | 'pan' | 'passport';
 
@@ -91,8 +96,9 @@ const Spinner: React.FC = () => (
   <span style={{ width: 14, height: 14, border: `2px solid rgba(255,255,255,0.5)`, borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block', animation: 'kycspin 0.7s linear infinite' }} />
 );
 
-// Coloured status pill. Successful verifications carry a name-match status (VERIFIED /
-// MANUAL_REVIEW / NOT_VERIFIED); records still in flight or errored fall back to the API state.
+// Coloured status pill. Aadhaar records carry a name-match status (VERIFIED / MANUAL_REVIEW /
+// NOT_VERIFIED); PAN, Passport and OCR carry the Success/Failed labels the backend derives
+// (see _display_status). Records still in flight or errored fall back to the raw API state.
 const StatusPill: React.FC<{ status?: string | null }> = ({ status }) => {
   const s = String(status || '').toUpperCase();
   const map: Record<string, { c: string; bg: string; label: string }> = {
@@ -102,6 +108,10 @@ const StatusPill: React.FC<{ status?: string | null }> = ({ status }) => {
     SUCCESS: { c: T.success, bg: T.successBg, label: 'Verified' },
     PENDING: { c: T.warning, bg: T.warningBg, label: 'Pending' },
     FAILED:  { c: T.danger,  bg: T.dangerBg,  label: 'Failed' },
+    // PAN / Passport / OCR — the document was retrieved (Success) or does not exist (Failed).
+    SUCCESS_MATCHED:     { c: T.success, bg: T.successBg, label: 'Success – Matched' },
+    SUCCESS_NOT_MATCHED: { c: T.warning, bg: T.warningBg, label: 'Success – Not Matched' },
+    FAILED_NOT_EXIST:    { c: T.danger,  bg: T.dangerBg,  label: 'Failed – Doesn’t Exist' },
   };
   const m = map[s] || { c: T.textMuted, bg: T.borderLight, label: status || '—' };
   return <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 20, color: m.c, background: m.bg, whiteSpace: 'nowrap' }}>{m.label}</span>;
@@ -884,12 +894,30 @@ const HistoryTable: React.FC<{
   </Card>
 );
 
+// ─── Total KYCs summary card ───────────────────────────────────────────────────
+// Compact headline counter pinned to the page header's right edge. The count is a database COUNT
+// over the whole history (not the page on screen), so it is unaffected by paging.
+const TotalKycCard: React.FC<{ total: number | null }> = ({ total }) => (
+  <Card style={{ padding: '10px 16px', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, minWidth: 104 }}>
+    <span style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>Total KYCs</span>
+    <span style={{ fontSize: 20, fontWeight: 800, color: T.textMain, lineHeight: 1.1 }}>{total == null ? '—' : total.toLocaleString('en-IN')}</span>
+  </Card>
+);
+
 // ─── Page root ─────────────────────────────────────────────────────────────────
+// Roles inside the module: the Data Operator (DEO) runs the verifications; Supervisor and Manager
+// are read-only and see the Verification History alone (the backend enforces the same split — see
+// get_current_kyc_verifier).
+const CAN_VERIFY_ROLES = ['DEO'];
+
 export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
+  const canVerify = CAN_VERIFY_ROLES.includes(String(user.merchantRole || '').toUpperCase());
   const [view, setView] = useState<ViewKey>('home');
   const [history, setHistory] = useState<KycHistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [detailItem, setDetailItem] = useState<KycHistoryItem | null>(null);
+  // Completed-KYC counter behind the summary card. null until the first load resolves.
+  const [totalCompleted, setTotalCompleted] = useState<number | null>(null);
   // Server-side pagination state. Only ONE page of rows is ever in the browser; `total` /
   // `totalPages` come from the backend's COUNT over the whole history.
   const [page, setPage] = useState(1);
@@ -913,15 +941,28 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
     finally { setLoadingHistory(false); }
   }, [page, pageSize]);
 
+  // Completed-KYC count for the summary card. Deliberately NOT part of loadHistory: paging cannot
+  // change the count, so it is refetched only when a verification actually resolves.
+  const loadStats = useCallback(async () => {
+    try { setTotalCompleted((await kycAPI.getStats()).totalCompleted); }
+    catch { /* leave the last known figure on a transient error */ }
+  }, []);
+
   // Refetch when the page or page size changes — and only then.
   useEffect(() => { loadHistory(); }, [page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadStats(); }, [loadStats]);
 
   // A new verification is the newest row, so it lands on page 1 — go there and refetch. Guarded so
   // we fire exactly one request either way (changing `page` already triggers the effect above).
   const refresh = useCallback(() => {
     if (page === 1) loadHistory({ page: 1 });
     else setPage(1);
-  }, [page, loadHistory]);
+    loadStats();
+  }, [page, loadHistory, loadStats]);
+
+  // A pending DigiLocker record resolving inside the details popup both adds a row and moves the
+  // completed count, so that path refreshes the pair together.
+  const refreshRecord = useCallback(() => { loadHistory(); loadStats(); }, [loadHistory, loadStats]);
 
   const back = () => { setView('home'); refresh(); };
   const flowProps: FlowProps = {
@@ -932,35 +973,48 @@ export const KYCPage: React.FC<{ user: User }> = ({ user }) => {
   return (
     <div>
       <style>{`@keyframes kycspin{to{transform:rotate(360deg)}}`}</style>
-      <div style={{ marginBottom: 18 }}>
-        <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>KYC Verification Dashboard</h1>
-        <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Verify customer identity documents securely. Available to Supervisor and Manager roles.</p>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 18 }}>
+        <div>
+          <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>KYC Verification Dashboard</h1>
+          <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>
+            {canVerify
+              ? 'Verify customer identity documents securely.'
+              : 'Review the KYC verifications recorded for your business. Verification is performed by the Data Operator.'}
+          </p>
+        </div>
+        <TotalKycCard total={totalCompleted} />
       </div>
 
       {view === 'home' && (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 16 }}>
-            {CARDS.map(c => (
-              <Card key={c.key} className="c5-hover-lift" onClick={() => setView(c.key)}
-                style={{ padding: 20, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div style={{ width: 48, height: 48, borderRadius: 14, overflow: 'hidden', background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}><KycIcon view={c.key} emoji={c.icon} /></div>
-                <div style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{c.title}</div>
-                <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, flex: 1 }}>{c.desc}</div>
-                <Btn size="sm" full onClick={() => setView(c.key)}>{`Verify ${TYPE_LABEL[c.key]}`}</Btn>
-              </Card>
-            ))}
-          </div>
+          {/* Verification cards — Data Operator only. Supervisor and Manager are read-only and see
+              the Verification History alone. */}
+          {canVerify && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 16 }}>
+              {CARDS.map(c => (
+                <Card key={c.key} className="c5-hover-lift" onClick={() => setView(c.key)}
+                  style={{ padding: 20, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div style={{ width: 48, height: 48, borderRadius: 14, overflow: 'hidden', background: `${T.blue}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}><KycIcon view={c.key} emoji={c.icon} /></div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: T.textMain }}>{c.title}</div>
+                  <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5, flex: 1 }}>{c.desc}</div>
+                  <Btn size="sm" full onClick={() => setView(c.key)}>{`Verify ${TYPE_LABEL[c.key]}`}</Btn>
+                </Card>
+              ))}
+            </div>
+          )}
           <HistoryTable rows={history} loading={loadingHistory} onView={setDetailItem}
             page={page} pageSize={pageSize} total={total} totalPages={totalPages}
             onPage={setPage} onPageSize={n => { setPageSize(n); setPage(1); }} />
         </>
       )}
 
-      {view === 'aadhaar' && <AadhaarView {...flowProps} />}
-      {view === 'pan' && <PanView {...flowProps} />}
-      {view === 'passport' && <PassportView {...flowProps} />}
+      {/* The verification views are unreachable without the cards, but the role is re-checked here
+          so a stale `view` can never render a form for a read-only role. */}
+      {canVerify && view === 'aadhaar' && <AadhaarView {...flowProps} />}
+      {canVerify && view === 'pan' && <PanView {...flowProps} />}
+      {canVerify && view === 'passport' && <PassportView {...flowProps} />}
 
-      {detailItem && <ViewDetailsModal item={detailItem} onClose={() => setDetailItem(null)} onRefresh={loadHistory} />}
+      {detailItem && <ViewDetailsModal item={detailItem} onClose={() => setDetailItem(null)} onRefresh={refreshRecord} />}
     </div>
   );
 };

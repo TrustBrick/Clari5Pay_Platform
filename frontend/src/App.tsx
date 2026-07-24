@@ -59,8 +59,9 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (role === 'ADMIN') return page.startsWith('admin-');
   // MERCHANT — no admin/SA pages.
   if (page.startsWith('sa-') || page.startsWith('admin-')) return false;
-  // KYC Update is restricted to the Supervisor and Manager merchant roles.
-  if (page === 'kyc') return ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
+  // KYC Update is restricted to the Data Operator, Supervisor and Manager merchant roles. The
+  // Data Operator performs the verifications; Supervisor and Manager are read-only (see KYCPage).
+  if (page === 'kyc') return ['DEO', 'SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   // Agent Management — Supervisor & Manager only, and Demo-gated until the module is complete
   // (mirrors the nav.ts demo gate).
   if (['agents', 'agent-accounts', 'agent-transactions', 'agent-unassigned', 'agent-audit', 'agent-reports'].includes(page))

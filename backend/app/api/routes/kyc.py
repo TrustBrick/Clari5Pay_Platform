@@ -1,10 +1,13 @@
 """Merchant KYC Update module — Aadhaar / PAN / Passport / OCR / DigiLocker verification.
 
-Access is restricted to MERCHANT users with a Supervisor or Manager role (enforced by
-``get_current_kyc_user``). Every endpoint validates its input server-side, then delegates
-to the ``app.services.kyc`` seam. Until the Melento.ai / DigiLocker credentials are supplied
-via env, the seam raises ``KYCNotConfigured`` and we return a clear 503 — the UI handles it
-gracefully. No existing schema, route, or data is touched by this module.
+Access is restricted to MERCHANT users with a Data Operator, Supervisor or Manager role
+(enforced by ``get_current_kyc_user``). Within the module the roles differ: the Data Operator
+RUNS verifications (``get_current_kyc_verifier``), while Supervisor and Manager are read-only —
+they see the Verification History and each record's details, nothing more. Every endpoint
+validates its input server-side, then delegates to the ``app.services.kyc`` seam. Until the
+Melento.ai / DigiLocker credentials are supplied via env, the seam raises ``KYCNotConfigured``
+and we return a clear 503 — the UI handles it gracefully. No existing schema, route, or data is
+touched by this module.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_kyc_user
+from app.core.deps import get_current_kyc_user, get_current_kyc_verifier
 from app.db.session import get_db
 from app.models.models import KycVerificationHistory, User
 from app.services import kyc as kyc_service
@@ -66,7 +69,7 @@ def _unavailable(exc: kyc_service.KYCNotConfigured) -> HTTPException:
 
 
 @router.post("/aadhaar/verify")
-async def aadhaar_verify(body: AadhaarRequest, _: User = Depends(get_current_kyc_user)):
+async def aadhaar_verify(body: AadhaarRequest, _: User = Depends(get_current_kyc_verifier)):
     number = body.aadhaarNumber.replace(" ", "").strip()
     if not AADHAAR_RE.match(number):
         raise HTTPException(status_code=400, detail="Invalid Aadhaar Number — must be exactly 12 digits.")
@@ -77,7 +80,7 @@ async def aadhaar_verify(body: AadhaarRequest, _: User = Depends(get_current_kyc
 
 
 @router.post("/pan/verify")
-async def pan_verify(body: PanRequest, _: User = Depends(get_current_kyc_user)):
+async def pan_verify(body: PanRequest, _: User = Depends(get_current_kyc_verifier)):
     number = body.panNumber.upper().strip()
     if not PAN_RE.match(number):
         raise HTTPException(status_code=400, detail="Invalid PAN Number — expected format ABCDE1234F.")
@@ -88,7 +91,7 @@ async def pan_verify(body: PanRequest, _: User = Depends(get_current_kyc_user)):
 
 
 @router.post("/digilocker/verify")
-async def digilocker_verify(_: User = Depends(get_current_kyc_user)):
+async def digilocker_verify(_: User = Depends(get_current_kyc_verifier)):
     """Verify Aadhaar via DigiLocker — the customer authenticates with DigiLocker and the
     verified Aadhaar document is retrieved (no manual Aadhaar entry). Returns the same
     Aadhaar result shape as /aadhaar/verify so the UI renders one unified details card."""
@@ -118,13 +121,57 @@ def _gen_reference(prefix: str) -> str:
     return f"{prefix}{int(datetime.utcnow().timestamp() * 1000)}{random.randint(1000, 9999)}"
 
 
+# ── Verification-status labels ────────────────────────────────────────────────
+# Codes the "Status" column renders (the UI maps each to its human label). They are DERIVED at
+# read time from what is already stored — nothing new is persisted and no existing row is
+# rewritten, so history stays exactly as the provider reported it.
+STATUS_SUCCESS_MATCHED = "SUCCESS_MATCHED"          # "Success – Matched"
+STATUS_SUCCESS_NOT_MATCHED = "SUCCESS_NOT_MATCHED"  # "Success – Not Matched"
+STATUS_FAILED_NOT_EXIST = "FAILED_NOT_EXIST"        # "Failed – Doesn't Exist"
+
+# OCR: at or above this name-match percentage the document counts as matched.
+OCR_MATCH_THRESHOLD = 75
+
+
+def _display_status(row: KycVerificationHistory) -> str | None:
+    """The status shown for a verification record.
+
+    Per verification type:
+      * OCR      — data retrieved and match ≥ 75% → Success – Matched; retrieved but below 75% →
+                   Success – Not Matched; nothing retrieved (the document/details do not exist) →
+                   Failed – Doesn't Exist.
+      * PAN      — data retrieved → always Success – Not Matched (match percentage is deliberately
+                   NOT used for PAN, whatever it scored).
+      * PASSPORT — same rule as PAN.
+      * AADHAAR  — untouched: the name-match status (VERIFIED / MANUAL_REVIEW / NOT_VERIFIED), or
+                   the raw API state while it is still PENDING / has FAILED.
+    """
+    vtype = str(row.verification_type or "").upper()
+    stored = row.match_status or row.verification_status
+    succeeded = row.verification_status == "SUCCESS"
+
+    if vtype in ("PAN", "PASSPORT"):
+        # Match percentage is ignored for these two — a retrieved document is always reported as
+        # Success – Not Matched. A failure keeps whatever the API reported.
+        return STATUS_SUCCESS_NOT_MATCHED if succeeded else stored
+
+    if vtype == "OCR":
+        if succeeded:
+            return (STATUS_SUCCESS_MATCHED if (row.match_score or 0) >= OCR_MATCH_THRESHOLD
+                    else STATUS_SUCCESS_NOT_MATCHED)
+        if row.verification_status == "FAILED":
+            return STATUS_FAILED_NOT_EXIST
+        return stored
+
+    return stored   # AADHAAR (and any future type) — unchanged
+
+
 def _history_summary(row: KycVerificationHistory) -> dict:
     """List-shape row (omits the large request/response JSON blobs).
 
-    The "Status" column shows the name-match status (VERIFIED / MANUAL_REVIEW / NOT_VERIFIED) once
-    a verification has completed and a name comparison was possible; otherwise it falls back to the
-    raw API state (PENDING while DigiLocker is awaited, FAILED on an API error). The numeric
-    match_score is intentionally NOT exposed — only the status is shown.
+    The "Status" column shows the derived display status (see ``_display_status``): the name-match
+    status for Aadhaar, and the PAN / Passport / OCR labels for the rest. The numeric match_score
+    is intentionally NOT exposed — only the status is shown.
     """
     return {
         "id": row.id,
@@ -135,7 +182,7 @@ def _history_summary(row: KycVerificationHistory) -> dict:
         "documentType": row.document_type,
         "referenceId": row.reference_id,
         "transactionId": row.transaction_id,
-        "status": row.match_status or row.verification_status,
+        "status": _display_status(row),
         "createdBy": row.created_by,
         "createdAt": (row.created_at.isoformat() + "Z") if row.created_at else None,
     }
@@ -483,7 +530,7 @@ async def kyc_member_lookup(
 async def aadhaar_generate_link(
     body: MembershipRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
+    user: User = Depends(get_current_kyc_verifier),
 ):
     """Generate a DigiLocker Aadhaar verification link for a member and record the attempt."""
     mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
@@ -588,7 +635,7 @@ async def aadhaar_status(
 async def aadhaar_verify_image(
     body: AadhaarImageRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
+    user: User = Depends(get_current_kyc_verifier),
 ):
     """Verify Aadhaar from an uploaded card image via the General-Document (OCR) API — an
     alternative to the DigiLocker flow. Always sends verification=true and doc_type=aadhaar_card
@@ -643,7 +690,7 @@ async def aadhaar_verify_image(
 async def pan_verify_membership(
     body: PanVerifyRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
+    user: User = Depends(get_current_kyc_verifier),
 ):
     """Verify a PAN for a member (by PAN number OR uploaded card image) and record it."""
     mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
@@ -701,7 +748,7 @@ async def pan_verify_membership(
 async def passport_verify_membership(
     body: PassportVerifyRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
+    user: User = Depends(get_current_kyc_verifier),
 ):
     """Verify a passport for a member (by File Number OR front+back card images) and record it."""
     mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
@@ -767,7 +814,7 @@ async def passport_verify_membership(
 async def ocr_verify_membership(
     body: OcrVerifyRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_kyc_user),
+    user: User = Depends(get_current_kyc_verifier),
 ):
     """Run General-Document (OCR) verification for a member and record the request/response."""
     mid, member_name = await _resolve_subject(db, user, body.membershipId, body.memberName)
@@ -832,6 +879,27 @@ async def ocr_verify_membership(
 # the LIMIT/OFFSET all run in Postgres over the full history, so the browser only ever receives
 # the rows it is about to draw.
 _PAGE_SIZES = (10, 25, 50, 100)
+
+
+@router.get("/stats")
+async def kyc_stats(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_kyc_user),
+):
+    """Headline counter for the KYC dashboard's summary card.
+
+    ``totalCompleted`` is the number of verifications that actually COMPLETED for the caller's
+    business pool — i.e. the provider returned a result. Attempts still awaiting DigiLocker
+    (PENDING) and attempts the provider rejected (FAILED) are not completed KYCs and are excluded.
+    Same tenancy predicate as the history feed, so the card can never count another merchant's rows.
+    """
+    total_completed = int((await db.execute(
+        select(func.count()).select_from(KycVerificationHistory).where(
+            KycVerificationHistory.merchant_business == user.name,
+            KycVerificationHistory.verification_status == "SUCCESS",
+        )
+    )).scalar() or 0)
+    return {"totalCompleted": total_completed}
 
 
 @router.get("/history")

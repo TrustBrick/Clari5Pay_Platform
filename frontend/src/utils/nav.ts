@@ -131,7 +131,7 @@ export const PAGE_TITLES: Record<string, string> = {
 // Maintain Profile + Profile collapse to a single Profile link.
 // Customer Support is available to every merchant role (default for all merchants).
 export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
-  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'agent-mgmt', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'agent-mgmt', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'agent-mgmt', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'agent-mgmt', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   SUPERVISOR: ['dashboard', 'approvals', 'settlement', 'transactions', 'agent-mgmt', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
@@ -189,8 +189,8 @@ export const navForUser = (user: User): NavItem[] => {
   // Applied to every merchant menu via this single gate.
   const demoOnly = new Set(['kyc', 'agent-mgmt']);
   const gate = (items: NavItem[]): NavItem[] => (IS_DEMO ? items : items.filter((i) => !demoOnly.has(i.key)));
-  // Role-less merchant: full menu minus Settlement Requests (Supervisor-only), KYC Update and
-  // Agent Management (both Supervisor/Manager-only).
+  // Role-less merchant: full menu minus Settlement Requests (Supervisor-only), KYC Update
+  // (Data Operator / Supervisor / Manager only) and Agent Management (Supervisor/Manager-only).
   if (!allowed) return gate(base.filter((i) => i.key !== 'settlement' && i.key !== 'kyc' && i.key !== 'agent-mgmt'));
   const byKey = new Map(base.map((i) => [i.key, i]));
   return gate(allowed.map((k) => {
