@@ -155,7 +155,6 @@ const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repe
  */
 const AGENT_FORM_CSS = `
 .agf-sec { margin-bottom: 28px; }
-.agf-sec:last-of-type { margin-bottom: 20px; }
 .agf-g { display: grid; column-gap: 20px; }
 .agf-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .agf-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -273,16 +272,16 @@ const AgentForm: React.FC<{
   };
 
   return (
-    // Wider than the read-only view (860): the four-across rows need the room, and the extra width
-    // is what removes a screen of scrolling without shrinking any field.
-    <Card style={{ maxWidth: 960, margin: '0 auto' }}>
-      <div style={{ padding: '20px 24px', borderBottom: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: T.textMain }}>
-          {mode === 'create' ? 'Create Agent' : `Edit Agent · ${initial?.agentId}`}
-        </h2>
-        <Btn variant="secondary" size="sm" onClick={onCancel}>← Back</Btn>
-      </div>
-      <div style={{ padding: '22px 24px' }}>
+    // Opens over the Agents list rather than replacing it, so the list stays in view and closing
+    // the form returns to it with no navigation. `xl` (1040) gives the four-across rows more room
+    // than the page ever did; the Modal supplies the title, the close control and the scroll.
+    <Modal
+      xl
+      icon="agent"
+      title={mode === 'create' ? 'Create Agent' : `Edit Agent · ${initial?.agentId}`}
+      onClose={onCancel}
+    >
+      <div>
         <style>{AGENT_FORM_CSS}</style>
         {error && (
           <div style={{ background: T.dangerBg, color: T.danger, borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 600, marginBottom: 18 }}>
@@ -404,7 +403,7 @@ const AgentForm: React.FC<{
           <Btn variant="primary" onClick={submit} disabled={saving}>{saving ? 'Saving…' : mode === 'create' ? 'Create Agent' : 'Save Changes'}</Btn>
         </div>
       </div>
-    </Card>
+    </Modal>
   );
 };
 
@@ -552,10 +551,10 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ user, onNavigate }) => {
     finally { setBusyId(null); }
   };
 
-  if (mode.screen === 'create')
-    return <AgentForm mode="create" onCancel={() => setMode({ screen: 'list' })} onSaved={(a) => { setAgents((l) => [a, ...l]); setMode({ screen: 'list' }); flash(a.approvalStatus === 'PENDING' ? `Agent ${a.agentId} submitted for Manager approval.` : `Agent ${a.agentId} created and active.`); }} />;
-  if (mode.screen === 'edit')
-    return <AgentForm mode="edit" initial={mode.agent} onCancel={() => setMode({ screen: 'list' })} onSaved={(a) => { setAgents((l) => l.map((x) => (x.id === a.id ? a : x))); setMode({ screen: 'list' }); flash(`Agent ${a.agentId} updated.`); }} />;
+  // The form is a popup over this page, so it is rendered at the end of the list markup rather
+  // than returned in its place — the list stays on screen behind it and closing needs no
+  // navigation. The read-only view is still its own screen; opening Edit from there closes it and
+  // brings up the popup over the list, which is where Cancel already returned to.
   if (mode.screen === 'view')
     return <AgentView agent={mode.agent} onBack={() => setMode({ screen: 'list' })} onEdit={() => setMode({ screen: 'edit', agent: mode.agent })} />;
 
@@ -668,6 +667,32 @@ export const AgentsPage: React.FC<AgentPageProps> = ({ user, onNavigate }) => {
       </Card>
 
       {profileId != null && <AgentProfileModal agentMasterId={profileId} onClose={() => setProfileId(null)} />}
+
+      {/* Create / Edit Agent — a popup over this list. Same component, same handlers as when it
+          was a full screen; only where it renders changed. */}
+      {mode.screen === 'create' && (
+        <AgentForm
+          mode="create"
+          onCancel={() => setMode({ screen: 'list' })}
+          onSaved={(a) => {
+            setAgents((l) => [a, ...l]);
+            setMode({ screen: 'list' });
+            flash(a.approvalStatus === 'PENDING' ? `Agent ${a.agentId} submitted for Manager approval.` : `Agent ${a.agentId} created and active.`);
+          }}
+        />
+      )}
+      {mode.screen === 'edit' && (
+        <AgentForm
+          mode="edit"
+          initial={mode.agent}
+          onCancel={() => setMode({ screen: 'list' })}
+          onSaved={(a) => {
+            setAgents((l) => l.map((x) => (x.id === a.id ? a : x)));
+            setMode({ screen: 'list' });
+            flash(`Agent ${a.agentId} updated.`);
+          }}
+        />
+      )}
 
       {toDelete && (
         <Modal title="Delete Agent" onClose={() => setToDelete(null)}>
