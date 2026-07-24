@@ -400,6 +400,12 @@ class AgentCreate(BaseModel):
     payOutFee: float
     settlementFee: float
     transactionCode: str                          # exactly 3 alphanumeric chars
+    # Reference-code prefixes for this agent's three legs (e.g. DEP / WIT / SET). Mandatory: every
+    # reference number and transaction code the agent's transactions get is built from them, and
+    # each leg then numbers independently. Up to 3 alphanumeric chars, stored uppercased.
+    depositCode: str
+    withdrawalCode: str
+    settlementCode: str
     category: str                                 # CASH | BANK_TRANSFER | CRYPTO
     notes: Optional[str] = None
     riskAnalysis: bool = False
@@ -420,6 +426,12 @@ class AgentUpdate(BaseModel):
     payInFee: Optional[float] = None
     payOutFee: Optional[float] = None
     settlementFee: Optional[float] = None
+    # Editable, unlike transactionCode: agents that predate the configuration were seeded with the
+    # legacy AGD/AGW/AGS prefixes and need a way to be given real ones. Changing a code only affects
+    # transactions created afterwards — existing references keep the code they were issued under.
+    depositCode: Optional[str] = None
+    withdrawalCode: Optional[str] = None
+    settlementCode: Optional[str] = None
     category: Optional[str] = None
     notes: Optional[str] = None
     riskAnalysis: Optional[bool] = None

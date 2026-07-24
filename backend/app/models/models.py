@@ -648,6 +648,16 @@ class AgentMaster(Base):
     # Exactly 3 alphanumeric chars, stored uppercased; unique within the business pool. Immutable
     # after creation (embedded in transaction references from Phase 4).
     transaction_code: Mapped[str] = mapped_column(String(3), nullable=False)
+    # Per-leg reference-code prefixes, configured on the agent (e.g. DEP / WIT / SET). Every
+    # reference number and transaction code this agent's transactions get is built from the code
+    # matching the leg, so each leg carries its own independent series (DEP000001, WIT000001 …).
+    # Up to 3 alphanumeric chars, stored uppercased. Nullable because agents created before the
+    # configuration existed have none; the migration seeds those with the legacy AGD/AGW/AGS
+    # prefixes so their existing numbering continues unbroken, and the generator falls back to the
+    # same values for anything still unset.
+    deposit_code: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
+    withdrawal_code: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
+    settlement_code: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
     # Canonical category: CASH | BANK_TRANSFER | CRYPTO.
     category: Mapped[str] = mapped_column(String(24), nullable=False)
 

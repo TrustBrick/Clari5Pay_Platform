@@ -28,6 +28,16 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 CATEGORIES = {"CASH", "BANK_TRANSFER", "CRYPTO"}
 STATUSES = {"ACTIVE", "INACTIVE"}
 _CODE_RE = re.compile(r"^[A-Za-z]{3}$")          # exactly 3 alphabetic characters (no digits)
+# Per-leg reference-code prefixes (Deposit / Withdrawal / Settlement): up to 3 alphanumeric chars.
+# Shorter than the agent's own Transaction Code on purpose — the requirement caps these at 3 rather
+# than fixing them at 3.
+_REF_CODE_RE = re.compile(r"^[A-Za-z0-9]{1,3}$")
+# (field label, AgentCreate/AgentUpdate attribute, AgentMaster column) for the three prefixes.
+REF_CODE_FIELDS = (
+    ("Deposit Code", "depositCode", "deposit_code"),
+    ("Withdrawal Code", "withdrawalCode", "withdrawal_code"),
+    ("Settlement Code", "settlementCode", "settlement_code"),
+)
 _MOBILE_RE = re.compile(r"^\d{10}$")             # exactly 10 digits, numbers only
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -69,6 +79,9 @@ def _serialize(a: AgentMaster) -> dict:
         "payOutFee": a.pay_out_fee or 0.0,
         "settlementFee": a.settlement_fee or 0.0,
         "transactionCode": a.transaction_code,
+        "depositCode": a.deposit_code,
+        "withdrawalCode": a.withdrawal_code,
+        "settlementCode": a.settlement_code,
         "category": a.category,
         "notes": a.notes,
         "riskAnalysis": a.risk_analysis,
@@ -176,6 +189,21 @@ async def create_agent(
         raise HTTPException(status_code=400, detail="Category must be Cash, Bank Transfer or Crypto.")
     if not _CODE_RE.match(code):
         raise HTTPException(status_code=400, detail="Transaction Code must be exactly 3 alphabetic characters.")
+    # The three per-leg reference codes are mandatory and stored uppercased. They are deliberately
+    # NOT checked for duplicates across agents: reference numbers are issued as max(existing for
+    # that prefix) + 1, so two agents sharing a code simply share one series and can never produce
+    # a duplicate reference. Requiring uniqueness would also make agents that predate the
+    # configuration unsavable, since all of them were seeded with AGD/AGW/AGS.
+    ref_codes: dict[str, str] = {}
+    for _label, _attr, _col in REF_CODE_FIELDS:
+        _val = (getattr(data, _attr, None) or "").strip().upper()
+        if not _val:
+            raise HTTPException(status_code=400, detail=f"{_label} is required.")
+        if not _REF_CODE_RE.match(_val):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{_label} must be 1 to 3 letters or numbers.")
+        ref_codes[_col] = _val
     for _label, _val in (("Pay-In Fee", data.payInFee), ("Pay-Out Fee", data.payOutFee),
                          ("Settlement Fee", data.settlementFee)):
         if _val is None or _val < 0:
@@ -219,6 +247,7 @@ async def create_agent(
         pay_out_fee=float(data.payOutFee),
         settlement_fee=float(data.settlementFee),
         transaction_code=code,
+        **ref_codes,
         category=category,
         notes=(data.notes or "").strip() or None,
         risk_analysis=bool(data.riskAnalysis),
@@ -293,6 +322,17 @@ async def update_agent(
             if _val < 0:
                 raise HTTPException(status_code=400, detail=f"{_label} cannot be negative.")
             setattr(agent, _attr, float(_val))
+    # Per-leg reference codes. Same rule as create; only the ones actually sent are touched, so a
+    # partial update never blanks the others. Existing references keep the code they were issued
+    # under — only transactions created after the change use the new one.
+    for _label, _attr, _col in REF_CODE_FIELDS:
+        _val = getattr(data, _attr, None)
+        if _val is None:
+            continue
+        _val = _val.strip().upper()
+        if not _REF_CODE_RE.match(_val):
+            raise HTTPException(status_code=400, detail=f"{_label} must be 1 to 3 letters or numbers.")
+        setattr(agent, _col, _val)
     if data.category is not None:
         cat = data.category.strip().upper()
         if cat not in CATEGORIES:

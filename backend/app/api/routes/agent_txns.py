@@ -261,7 +261,13 @@ def _ist_parts(dt: datetime | None):
 
 
 async def _next_serial(db: AsyncSession, model_col, prefix: str) -> str:
-    """Next global serial for `prefix` (e.g. AGD000001) — mirrors _next_agent_id (max()+1)."""
+    """Next serial for `prefix` (e.g. DEP000001) — mirrors _next_agent_id (max()+1).
+
+    The series belongs to the PREFIX, not to any one agent, which is what keeps the unique
+    reference_number safe when two agents are configured with the same leg code: they share one
+    series instead of both starting at 000001. Values that do not parse (a split child's
+    ``DEP000001-02``, or a longer code that merely starts with this one) are skipped, not counted.
+    """
     vals = (await db.execute(select(model_col).where(model_col.like(f"{prefix}%")))).scalars().all()
     maxn = 0
     for v in vals:
@@ -284,10 +290,11 @@ def _agent_serial(agent: AgentMaster) -> int:
     return int(m.group(1)) if m else int(agent.id)
 
 
-async def _next_agent_txn_seq(db: AsyncSession, agent_master_id: int) -> int:
-    """How many transactions this agent has created so far, + 1 — the per-agent running counter
-    that ends every transaction code (…-01, …-02, …). Maintained SEPARATELY for each agent and
-    shared across its Deposits, Withdrawals and Settlements, so it is that agent's total.
+async def _next_agent_txn_seq(db: AsyncSession, agent_master_id: int, txn_type: str) -> int:
+    """How many transactions of this TYPE this agent has created so far, + 1 — the running counter
+    that ends every transaction code (…-01, …-02, …). Maintained separately for each agent AND for
+    each of its legs, so an agent's Deposits, Withdrawals and Settlements each number from 01
+    independently — matching the per-leg reference codes, which are what now identify the type.
 
     Split children are excluded: they are not requests an operator created, and they take their
     code from the parent (``<parent code>-01``), which is why their reference carries a '-'.
@@ -295,22 +302,44 @@ async def _next_agent_txn_seq(db: AsyncSession, agent_master_id: int) -> int:
     n = (await db.execute(
         select(func.count()).select_from(AgentTransaction).where(
             AgentTransaction.agent_master_id == agent_master_id,
+            AgentTransaction.txn_type == txn_type,
             AgentTransaction.reference_number.notlike("%-%"),
         )
     )).scalar() or 0
     return int(n) + 1
 
 
-async def _transaction_code(db: AsyncSession, agent: AgentMaster, code_letter: str) -> str:
-    """The agent transaction code — ``<agent code>-<leg>-<agent id>-<agent sequence>``.
+#: Legacy reference prefixes, used for any agent whose per-leg code is still unset. Agents created
+#: before the codes existed were seeded with exactly these by the migration, so falling back to them
+#: keeps a NULL from ever producing a reference like "None000001".
+_LEGACY_REF_PREFIX = {"DEPOSIT": "AGD", "WITHDRAWAL": "AGW", "SETTLEMENT": "AGS"}
 
-    e.g. BBO-D-000001-02 = the 2nd transaction created by Agent 1 (BBO), a Deposit. The first
-    numeric block identifies the AGENT (000001, 000002, 000015 …); the last is that agent's own
-    transaction count, so every agent numbers its transactions from 01 independently. The same
-    format applies to Deposits (D), Withdrawals (W) and Settlements (S).
+
+def _ref_code(agent: AgentMaster, txn_type: str) -> str:
+    """The reference-code prefix configured on this agent for this leg (DEP / WIT / SET …).
+
+    Each leg has its own code, which is what makes the three series independent: deposits number
+    DEP000001, DEP000002 … while withdrawals number WIT000001 … at the same time. The code also
+    identifies the transaction type, which is why the code no longer carries a -D-/-W-/-S- marker.
     """
-    seq = await _next_agent_txn_seq(db, agent.id)
-    return f"{agent.transaction_code}-{code_letter}-{_agent_serial(agent):06d}-{seq:02d}"
+    configured = {
+        "DEPOSIT": agent.deposit_code,
+        "WITHDRAWAL": agent.withdrawal_code,
+        "SETTLEMENT": agent.settlement_code,
+    }.get(txn_type)
+    return (configured or "").strip().upper() or _LEGACY_REF_PREFIX.get(txn_type, "AGD")
+
+
+async def _transaction_code(db: AsyncSession, agent: AgentMaster, txn_type: str) -> str:
+    """The agent transaction code — ``<configured leg code><agent id>-<agent sequence>``.
+
+    e.g. WIT000002-07 = the 7th Withdrawal created by Agent 2, whose Withdrawal Code is WIT. The
+    leading code comes from the agent's own configuration and identifies the leg; the numeric block
+    identifies the AGENT (000002, 000015 …); the last block is that agent's count FOR THIS LEG, so
+    deposits, withdrawals and settlements each number from 01 independently.
+    """
+    seq = await _next_agent_txn_seq(db, agent.id, txn_type)
+    return f"{_ref_code(agent, txn_type)}{_agent_serial(agent):06d}-{seq:02d}"
 
 
 def _member_account_row(a: AgentMemberBankAccount) -> dict:
@@ -1042,7 +1071,8 @@ def _validate_common(body: _Base, txn_type: str) -> None:
     # across all methods is what wrongly rejected a Bank Transfer withdrawal at creation. Whatever
     # is required here must stay in step with payout_withdrawal and complete_withdrawal, or a
     # method can be created and then dead-end after approval.
-    # The Reference Number is not method-specific: the member supplies it for every withdrawal.
+    # The member's own Reference Number is no longer collected — the request form dropped it — but
+    # `member_reference` is still stored and displayed for the rows that already carry one.
     if txn_type == "WITHDRAWAL":
         if method in TOKEN_METHODS:
             if not (body.tokenDetails or "").strip():
@@ -1052,8 +1082,6 @@ def _validate_common(body: _Base, txn_type: str) -> None:
         elif method in WALLET_METHODS:
             if not (body.walletAddress or "").strip():
                 raise HTTPException(status_code=400, detail="Crypto Wallet Address is required for a crypto withdrawal.")
-        if not (body.memberReference or "").strip():
-            raise HTTPException(status_code=400, detail="Reference Number is required.")
     if txn_type == "SETTLEMENT" and method and method not in SETTLEMENT_METHODS:
         raise HTTPException(status_code=400, detail="Settlement method must be Cash, Bank Transfer or Crypto.")
     # A deposit names the Sending Account it comes FROM (same rule the merchant form applies). A
@@ -1068,7 +1096,7 @@ def _validate_common(body: _Base, txn_type: str) -> None:
 
 
 async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
-                  prefix: str, code_letter: str, linked_deposit_id: int | None,
+                  linked_deposit_id: int | None,
                   payout: AgentMemberBankAccount | None = None) -> dict:
     business = _business(user)
     _validate_common(body, txn_type)
@@ -1097,7 +1125,11 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     # Approver roles are scoped to the request type: a WITHDRAWAL accepts a Manager only.
     approver_id, approver_name, approver_role = await _resolve_approver(db, business, body.approverUserId, txn_type)
 
-    ref = await _next_serial(db, AgentTransaction.reference_number, prefix)
+    # The reference prefix is the code configured on the SELECTED AGENT for this leg, so each of an
+    # agent's three legs runs its own series (DEP000001…, WIT000001…, SET000001…). _next_serial
+    # takes max()+1 over the rows already using that prefix, so two agents sharing a code simply
+    # share one series rather than colliding on the unique reference_number.
+    ref = await _next_serial(db, AgentTransaction.reference_number, _ref_code(agent, txn_type))
     # The operator-entered note number must stay unique, so a clash is reported plainly instead
     # of surfacing as a database integrity error. A CASH/CRYPTO deposit has none yet.
     note_no = (body.noteNumber or "").strip() or None
@@ -1108,7 +1140,7 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
         if clash:
             raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
     member_ref = (body.memberReference or "").strip() or None
-    txn_code = await _transaction_code(db, agent, code_letter)
+    txn_code = await _transaction_code(db, agent, txn_type)
 
     # Membership name: use the entered value, else auto-fill from a prior agent transaction.
     membership_name = (body.membershipName or "").strip()
@@ -1288,7 +1320,7 @@ async def member_lookup(membership_id: str, db: AsyncSession = Depends(get_db),
 async def create_deposit(body: AgentDepositCreate, db: AsyncSession = Depends(get_db),
                          user: User = Depends(get_current_agent_operator)):
     _require(user, DEPOSIT_ROLES, "create Agent Deposit Requests")
-    return await _create(db, user, body, "DEPOSIT", "AGD", "D", None)
+    return await _create(db, user, body, "DEPOSIT", None)
 
 
 @router.post("/withdrawal")
@@ -1307,7 +1339,7 @@ async def create_withdrawal(body: AgentWithdrawalCreate, db: AsyncSession = Depe
     # against this membership for re-use (matched so a repeat account is never duplicated).
     membership_id = body.membershipId.strip()
     payout = await _resolve_payout_account(db, user, body, membership_id, (body.membershipName or None))
-    return await _create(db, user, body, "WITHDRAWAL", "AGW", "W", linked, payout=payout)
+    return await _create(db, user, body, "WITHDRAWAL", linked, payout=payout)
 
 
 @router.post("/settlement")
@@ -1325,7 +1357,7 @@ async def create_settlement(body: AgentSettlementCreate, db: AsyncSession = Depe
     # always agree; deriving the method from the agent here is the server-side guard that makes a
     # mismatched pair impossible even if the client sends one.
     body.txnMethod = _settlement_method_for(agent)
-    return await _create(db, user, body, "SETTLEMENT", "AGS", "S", None, payout=None)
+    return await _create(db, user, body, "SETTLEMENT", None, payout=None)
 
 
 # ── Deposit chain: Submit Account → Upload Slip → Supervisor Approval → Mark Deposit ──────

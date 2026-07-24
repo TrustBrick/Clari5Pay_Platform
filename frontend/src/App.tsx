@@ -22,7 +22,7 @@ import {
 } from './pages/AdminPages';
 import { KYCPage } from './pages/KYCPage';
 import { AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
-import { AgentDashboardPage, AgentBalanceEnquiryPage, AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage, AgentTxnReportsPage, AgentApprovalsPage, AgentAllTransactionsPage } from './pages/AgentTxnPages';
+import { AgentDashboardPage, AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage, AgentTxnReportsPage, AgentApprovalsPage, AgentAllTransactionsPage } from './pages/AgentTxnPages';
 import { RiskManagementPage } from './pages/RiskPages';
 import { ComplaintManagementPage } from './pages/ComplaintPages';
 import { ActiveUsersPage } from './pages/ActiveUsersPage';
@@ -71,7 +71,7 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   // Agent Overview and the isolated Agent Reports page are open to every agent role.
   // Agent Overview, the isolated Agent Reports and the full agent ledger are read-only views,
   // open to every agent role.
-  if (['agent-dashboard', 'agent-overview', 'agent-txn-reports', 'agent-all-txns', 'agent-balance'].includes(page))
+  if (['agent-dashboard', 'agent-overview', 'agent-txn-reports', 'agent-all-txns'].includes(page))
     return IS_DEMO && ['SUPERVISOR', 'MANAGER', 'DEO', 'DEPOSIT_OPERATOR', 'WITHDRAWAL_OPERATOR'].includes(String(user.merchantRole || '').toUpperCase());
   // Agent Deposit/Withdrawal Management (and the request forms they embed) are operator-only:
   // Supervisors and Managers are approval-only for agent payments and never create/manage these.
@@ -96,13 +96,6 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (page === 'settlement') return String(user.merchantRole || '').toUpperCase() === 'SUPERVISOR';
   return true;
 };
-
-/**
- * Pages rendered WITHOUT the sidebar navigation — only the page's own content is shown.
- * Balance Enquiry is a focused, read-only member lookup, so the module navigation is dropped and
- * the screen uses the full width; the header (and the page's own links) still navigate on.
- */
-const SIDEBARLESS_PAGES = new Set(['agent-balance']);
 
 const App: React.FC = () => {
   const { user, logout } = useAuth();
@@ -166,11 +159,6 @@ const App: React.FC = () => {
   if (PORTAL === 'app') return (<><DemoBanner /><PortalChooser /></>);
   if (!user) return (<><DemoBanner /><LoginPage /></>);
 
-  // Pages that render WITHOUT the sidebar — the screen is the whole content, so the header spans
-  // the full width and the main area loses its sidebar gutter. Balance Enquiry is a focused
-  // read-only lookup; it navigates on through the links on the page itself.
-  const hideSidebar = SIDEBARLESS_PAGES.has(activePage);
-
   const renderPage = () => {
     const props = { user, onNavigate: navigate };
     const map: Record<string, React.ReactNode> = {
@@ -195,7 +183,6 @@ const App: React.FC = () => {
         'agent-reports': <AgentReportsPage {...props} />,
         // Isolated Agent Transaction subsystem.
         'agent-overview': <AgentOverviewPage {...props} />,
-        'agent-balance': <AgentBalanceEnquiryPage {...props} />,
         'agent-txn-reports': <AgentTxnReportsPage {...props} />,
         'agent-all-txns': <AgentAllTransactionsPage {...props} />,
         'agent-deposit-req': <AgentDepositRequestPage {...props} />,
@@ -266,25 +253,24 @@ const App: React.FC = () => {
         @keyframes pulse{from{opacity:0.6;transform:scale(1);}to{opacity:1;transform:scale(1.05);}}
       `}</style>
 
-      {!hideSidebar && <Sidebar
+      <Sidebar
         user={user}
         active={activePage}
         onNav={(key) => { navigate(key); setNavTick((t) => t + 1); setSidebarOpen(false); }}
         onLogout={logout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
-      />}
+      />
 
       <Header
         user={user}
         title={PAGE_TITLES[activePage] || 'Dashboard'}
         onMenuClick={() => setSidebarOpen(o => !o)}
-        fullWidth={hideSidebar}
       />
 
       <main
         className="main-content"
-        style={{ marginLeft: hideSidebar ? 0 : 248, marginTop: 'calc(60px + var(--demo-banner-h, 0px))', minHeight: 'calc(100vh - 60px)', background: T.canvas, padding: 24, boxSizing: 'border-box' }}
+        style={{ marginLeft: 248, marginTop: 'calc(60px + var(--demo-banner-h, 0px))', minHeight: 'calc(100vh - 60px)', background: T.canvas, padding: 24, boxSizing: 'border-box' }}
       >
         {renderPage()}
       </main>

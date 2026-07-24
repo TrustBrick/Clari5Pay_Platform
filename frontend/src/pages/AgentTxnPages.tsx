@@ -20,7 +20,7 @@ import {
 import {
   agentTxnsAPI, agentTxnError, AGENT_FINAL_STATUSES, AGENT_COMPLETED_STATUSES, AGENT_SETTLEMENT_METHODS,
   type AgentOverview, type AgentFormData, type AgentFormAgent, type AgentDepositBody,
-  type AgentWithdrawalBody, type AgentMemberLookup, type AgentMemberSummary, type AgentTxnRow,
+  type AgentWithdrawalBody, type AgentMemberLookup, type AgentTxnRow,
   type AgentPerformance, type AgentProfile, type AgentTxnCommission,
   type AgentTxnAuditRow, type AgentTxnQuery, type AgentTxnPagedQuery,
   type AgentAccountOption, type AgentMemberAccount, type AgentBalance,
@@ -478,153 +478,6 @@ export const AgentProfileModal: React.FC<{ agentMasterId: number; onClose: () =>
   );
 };
 
-// ─── Balance Enquiry — read-only per-member financial summary (isolated agent ledger) ─────────
-// One labelled figure inside a summary card.
-const BeRow: React.FC<{ k: string; v: React.ReactNode; strong?: boolean; color?: string }> = ({ k, v, strong, color }) => (
-  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '7px 0', gap: 12 }}>
-    <span style={{ fontSize: 12, color: T.textMuted }}>{k}</span>
-    <span style={{ fontSize: strong ? 15 : 13, fontWeight: strong ? 800 : 700, color: color || T.textMain, whiteSpace: 'nowrap' }}>{v}</span>
-  </div>
-);
-// A Deposit / Withdrawal / Settlement summary card (count, gross, commission, net/deducted).
-const BeSummaryCard: React.FC<{ title: string; accent: string; count: number; gross: number; commission: number; lastLabel: string; lastValue: number; lastColor: string }> =
-  ({ title, accent, count, gross, commission, lastLabel, lastValue, lastColor }) => (
-  <Card style={{ padding: 16, borderTop: `3px solid ${accent}` }}>
-    <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 800, color: T.textMain }}>{title}</p>
-    <BeRow k="Total Transactions" v={count} />
-    <BeRow k="Gross Amount" v={fmt(gross)} />
-    <BeRow k="Commission" v={fmt(commission)} color={T.warning} />
-    <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 4 }}>
-      <BeRow k={lastLabel} v={fmt(lastValue)} strong color={lastColor} />
-    </div>
-  </Card>
-);
-
-export const AgentBalanceEnquiryPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = ({ onNavigate }) => {
-  const { showToast } = useToast();
-  const [query, setQuery] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<AgentMemberSummary | null>(null);
-  const [recent, setRecent] = useState<AgentTxnRow[]>([]);
-  const [searched, setSearched] = useState('');
-
-  const search = async () => {
-    const id = query.trim();
-    if (!id) { showToast('Enter a Membership ID.', 'error'); return; }
-    setBusy(true);
-    try {
-      const r = await agentTxnsAPI.balanceEnquiry(id);
-      setResult(r); setSearched(id);
-      // Recent COMPLETED transactions for exactly this member (the list carries commission fields).
-      if (r.found) {
-        const list = await agentTxnsAPI.list({ search: id });
-        setRecent(list
-          .filter(t => t.membershipId === id && (AGENT_COMPLETED_STATUSES as string[]).includes(t.status))
-          .slice(0, 10));
-      } else { setRecent([]); }
-    } catch (e) { showToast(agentTxnError(e, 'Balance enquiry failed.'), 'error'); }
-    finally { setBusy(false); }
-  };
-
-  const r = result?.found ? result : null;
-  const netDeposits = r ? (r.totalDeposits ?? 0) - (r.depositCommission ?? 0) : 0;
-  const totalWd = r ? (r.totalWithdrawals ?? 0) + (r.withdrawalCommission ?? 0) : 0;
-  const totalSt = r ? (r.totalSettlements ?? 0) + (r.settlementCommission ?? 0) : 0;
-
-  // This screen renders without the sidebar (see SIDEBARLESS_PAGES in App.tsx), so it centres in
-  // the full width and carries its own way back into the module.
-  return (
-    <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-      <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
-        <div>
-          <h1 style={{ margin: '0 0 3px', fontSize: 20, fontWeight: 800, color: T.textMain }}>Balance Enquiry</h1>
-          <p style={{ margin: 0, fontSize: 13, color: T.textMuted }}>Read-only member financial breakdown from the isolated Agent ledger — completed transactions only.</p>
-        </div>
-        <Btn size="sm" variant="ghost" onClick={() => onNavigate?.('agent-overview')}>← Back to Agent Overview</Btn>
-      </div>
-
-      {/* 1. Search */}
-      <Card style={{ padding: 18, marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}
-          onKeyDown={(e) => { if (e.key === 'Enter') search(); }}>
-          <Input label="Membership ID" value={query} onChange={e => setQuery(normalizeMemberId(e.target.value))}
-            placeholder="Enter Membership ID" style={{ marginBottom: 0, flex: '1 1 240px' }} />
-          <Btn onClick={search} disabled={busy}>{busy ? 'Searching…' : 'Search'}</Btn>
-        </div>
-      </Card>
-
-      {result && !result.found && (
-        <Card style={{ padding: 18, borderLeft: `4px solid ${T.danger}` }}>
-          <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: T.danger }}>No member found for the entered Membership ID.</p>
-          <p style={{ margin: '4px 0 0', fontSize: 12, color: T.textMuted }}>Searched: {searched}</p>
-        </Card>
-      )}
-
-      {r && (
-        <>
-          {/* 2. Member Information — no transaction totals mixed in */}
-          <Card style={{ padding: 18, marginBottom: 16 }}>
-            <p style={{ margin: '0 0 12px', fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Member Information</p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '14px 24px' }}>
-              <div><p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Membership ID</p><p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: T.textMain }}>{r.membershipId}</p></div>
-              <div><p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Member Name</p><p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: T.textMain }}>{r.memberName || '—'}</p></div>
-              <div><p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Last Transaction Date</p><p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: T.textMain }}>{r.lastTransactionDate || '—'}</p></div>
-              <div><p style={{ margin: '0 0 4px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Current Available Balance</p><p style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.success }}>{fmt(r.availableBalance ?? 0)}</p></div>
-            </div>
-          </Card>
-
-          {/* 3-5. Deposit / Withdrawal / Settlement summary cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 14, marginBottom: 16 }}>
-            <BeSummaryCard title="Deposit Summary" accent={T.success} count={r.depositCount ?? 0} gross={r.totalDeposits ?? 0} commission={r.depositCommission ?? 0} lastLabel="Net Deposited" lastValue={netDeposits} lastColor={T.success} />
-            <BeSummaryCard title="Withdrawal Summary" accent={T.danger} count={r.withdrawalCount ?? 0} gross={r.totalWithdrawals ?? 0} commission={r.withdrawalCommission ?? 0} lastLabel="Total Deducted" lastValue={totalWd} lastColor={T.danger} />
-            <BeSummaryCard title="Settlement Summary" accent={'#7c3aed'} count={r.settlementCount ?? 0} gross={r.totalSettlements ?? 0} commission={r.settlementCommission ?? 0} lastLabel="Total Deducted" lastValue={totalSt} lastColor={'#7c3aed'} />
-          </div>
-
-          {/* 6. Balance Calculation — fully transparent */}
-          <Card style={{ padding: 18, marginBottom: 16 }}>
-            <p style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 800, color: T.textMain }}>Balance Calculation</p>
-            <div style={{ maxWidth: 520 }}>
-              <BeRow k="Total Net Deposits (Gross − Commission)" v={fmt(netDeposits)} color={T.success} />
-              <BeRow k="Less Total Withdrawals (Amount + Commission)" v={`− ${fmt(totalWd)}`} color={T.danger} />
-              <BeRow k="Less Total Settlements (Amount + Commission)" v={`− ${fmt(totalSt)}`} color={'#7c3aed'} />
-              <div style={{ borderTop: `2px solid ${T.border}`, marginTop: 6, paddingTop: 4 }}>
-                <BeRow k="Current Available Balance" v={fmt(r.availableBalance ?? 0)} strong color={T.success} />
-              </div>
-            </div>
-          </Card>
-
-          {/* 7. Recent completed transactions + View All */}
-          <Card style={{ overflow: 'hidden' }}>
-            <div style={{ padding: '12px 16px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 800, color: T.textMain }}>Recent Completed Transactions</h2>
-              <Btn size="sm" variant="ghost" onClick={() => onNavigate?.('agent-all-txns')}>View All Transactions →</Btn>
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr style={{ background: T.canvas }}>{['Date & Time', 'Type', 'Reference', 'Amount', 'Commission', 'Net Amount', 'Status'].map(h => <th key={h} style={thS}>{h}</th>)}</tr></thead>
-                <tbody>
-                  {recent.length === 0 && <tr><td colSpan={7} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 22 }}>No completed transactions for this member.</td></tr>}
-                  {recent.map(t => (
-                    <tr key={t.id} style={{ background: T.surface }}>
-                      <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{t.createdDate} {t.createdTime}</td>
-                      <td style={tdS}>{t.type.charAt(0) + t.type.slice(1).toLowerCase()}</td>
-                      <td style={{ ...tdS, fontWeight: 700, color: T.blue }}>{t.referenceNumber}</td>
-                      <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{fmt(t.amount)}</td>
-                      <td style={{ ...tdS, textAlign: 'right', color: T.warning }}>{t.commissionAmount != null ? fmt(t.commissionAmount) : '—'}</td>
-                      <td style={{ ...tdS, textAlign: 'right', fontWeight: 700 }}>{t.netAmount != null ? fmt(t.netAmount) : '—'}</td>
-                      <td style={tdS}><StatusPill status={t.status} type={t.type} method={t.txnMethod} approverRole={t.approverRole} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        </>
-      )}
-    </div>
-  );
-};
-
 // ─── Reusable read-only field (auto-fetched agent details) ─────────────────────
 const ReadField: React.FC<{ label: string; value?: string | null; placeholder?: string }> = ({ label, value, placeholder = '—' }) => (
   <Input label={label} value={value || ''} onChange={() => {}} placeholder={placeholder} readOnly />
@@ -807,10 +660,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
             options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
                 ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
           <ReadField label="Agent Name" value={agent?.name} />
-          <ReadField label="Agent Country" value={agent?.country} />
-          <ReadField label="Agent State" value={agent?.state} />
           <ReadField label="Agent Location" value={agent?.location} />
-          <ReadField label="Agent Category" value={agent?.category} />
 
           <Input label="Membership ID" value={membershipId} onChange={e => setMembershipId(normalizeMemberId(e.target.value))}
             required placeholder="Enter Membership ID" hint="Uppercase letters and numbers only" />
@@ -926,10 +776,9 @@ export const AgentWithdrawalRequestPage: React.FC<{
   const [txnMethod, setTxnMethod] = useState('');
   // Supplied by the customer/agent and typed in by the operator — never generated.
   const [tokenDetails, setTokenDetails] = useState('');
-  // The member hands the Unique Note Number and their Reference Number over during the withdrawal,
-  // so both are captured here on the request — not at the post-approval payment step. Mandatory.
+  // The member hands the Unique Note Number over during the withdrawal, so it is captured here on
+  // the request rather than at the post-approval payment step. Cash only (see wantsToken).
   const [noteNumber, setNoteNumber] = useState('');
-  const [memberReference, setMemberReference] = useState('');
   const [walletAddress, setWalletAddress] = useState('');
   const [manualOverride, setManualOverride] = useState(false);
   const [looking, setLooking] = useState(false);
@@ -1046,7 +895,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
     setManualOverride(false); setAmount(''); setCountry(''); setState(''); setLocation(''); setMobile(''); setMobileCode('+91');
     setNotes(''); setInstructions(''); setApproverId('');
     setTxnMethod(''); setMemberBalance(null); setAgentBal(null);
-    setTokenDetails(''); setNoteNumber(''); setMemberReference(''); setWalletAddress('');
+    setTokenDetails(''); setNoteNumber(''); setWalletAddress('');
     setSavedAccounts([]); setPayoutDestId(''); clearPayoutFields(); payoutIfscFill.reset();
   };
 
@@ -1064,8 +913,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
     if (wantsToken && !tokenDetails.trim()) { showToast('Enter the Token Details.', 'error'); return; }
     if (wantsToken && !noteNumber.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
     if (wantsWallet && !walletAddress.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
-    // The member quotes a Reference Number on every withdrawal, whatever the method.
-    if (!isSettlement && !memberReference.trim()) { showToast('Enter the Reference Number.', 'error'); return; }
     if (notes.length > 100) { showToast(`${isSettlement ? 'Remarks' : 'Notes'} must be 100 characters or fewer.`, 'error'); return; }
     if (!isSettlement && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     if (!txnMethod) { showToast('Select a Transaction Type.', 'error'); return; }
@@ -1108,7 +955,6 @@ export const AgentWithdrawalRequestPage: React.FC<{
       // only the ones this method asks for. A hidden field is never sent.
       ...(wantsToken ? { tokenDetails: tokenDetails.trim(), noteNumber: noteNumber.trim() } : {}),
       ...(wantsWallet ? { walletAddress: walletAddress.trim() } : {}),
-      memberReference: memberReference.trim(),
       linkedDepositId: usingAuto ? autoAgent!.depositId : undefined,
       // Payout Account — only the Bank Transfer category names an account (Cash/Crypto do not). The
       // typed fields are always sent (never a saved-account id), so the backend de-dupes an unchanged
@@ -1148,7 +994,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
         <Card style={{ padding: 16, marginBottom: 18, borderLeft: `4px solid ${T.success}` }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent {NOUN} Request created</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '10px 18px' }}>
-            {([['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Unique Note Number', result.noteNumber], ['Member Reference Number', result.memberReference], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', `${result.createdDate} ${result.createdTime}`]] as Array<[string, string | null | undefined]>).filter(([, v]) => v != null && String(v).trim() !== '').map(([k, v]) => (
+            {([['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Unique Note Number', result.noteNumber], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', `${result.createdDate} ${result.createdTime}`]] as Array<[string, string | null | undefined]>).filter(([, v]) => v != null && String(v).trim() !== '').map(([k, v]) => (
               <div key={k}><div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div><div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v}</div></div>
             ))}
           </div>
@@ -1186,10 +1032,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
             options={[{ value: '', label: txnMethod ? '— Select an agent —' : '— Choose a Transaction Type first —' },
               ...agentsForMethod(fd.agents, txnMethod).map(a => ({ value: String(a.id), label: `${a.agentId} — ${a.name}` }))]} />
           <ReadField label="Agent Name" value={disp?.name} />
-          {!isSettlement && <ReadField label="Agent Country" value={disp?.country} />}
-          {!isSettlement && <ReadField label="Agent State" value={disp?.state} />}
           {!isSettlement && <ReadField label="Agent Location" value={disp?.location} />}
-          <ReadField label="Agent Category" value={disp?.category ? (CATEGORY_LABEL_A[String(disp.category).toUpperCase()] || disp.category) : undefined} />
 
           {/* A settlement is an offline merchant↔agent payment — no member on either side, so it
               captures no membership at all. */}
@@ -1205,15 +1048,13 @@ export const AgentWithdrawalRequestPage: React.FC<{
               they are captured on the request itself and carried through the whole lifecycle — but
               only the ones their Withdrawal Method actually has. Cash is collected against a token
               and a note number; crypto pays out to a wallet address; a bank transfer has neither.
-              The Reference Number is not method-specific — the member quotes one every time. */}
+              */}
           {wantsToken && <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)} required
             placeholder="As provided by the member" hint="The token the member presents at cash collection" />}
           {wantsToken && <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(normalizeNoteNumber(e.target.value))} required
             placeholder="As provided by the member" hint="Uppercase letters and numbers only; must be unique" />}
           {wantsWallet && <Input label="Crypto Wallet Address" value={walletAddress} onChange={e => setWalletAddress(e.target.value)} required
             placeholder="Destination wallet address" hint="Where the member is paid out" />}
-          {!isSettlement && <Input label="Reference Number" value={memberReference} onChange={e => setMemberReference(e.target.value)} required
-            placeholder="As provided by the member" hint="The member's own withdrawal reference" />}
         </div>
 
         {/* Agent Availability — a member may withdraw up to what the SELECTED AGENT currently holds,

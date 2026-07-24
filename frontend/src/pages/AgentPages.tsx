@@ -147,6 +147,9 @@ type FormState = {
   fullName: string; country: string; state: string; location: string;
   mobile: string; mobileCode: string; email: string; currency: string; dateOfCreation: string;
   reference: string; payInFee: string; payOutFee: string; settlementFee: string; transactionCode: string; category: AgentCategory;
+  // Reference-code prefixes for this agent's three legs — every reference number and transaction
+  // code its transactions get is built from the code matching the leg.
+  depositCode: string; withdrawalCode: string; settlementCode: string;
   notes: string; riskAnalysis: boolean; status: AgentStatus;
 };
 
@@ -154,6 +157,7 @@ const blankForm = (): FormState => ({
   fullName: '', country: '', state: '', location: '', mobile: '', mobileCode: '+91', email: '',
   currency: 'INR', dateOfCreation: todayISO(), reference: '', payInFee: '', payOutFee: '', settlementFee: '',
   transactionCode: '', category: 'CASH', notes: '', riskAnalysis: false,
+  depositCode: '', withdrawalCode: '', settlementCode: '',
   status: 'ACTIVE',
 });
 
@@ -174,6 +178,8 @@ const AgentForm: React.FC<{
         payInFee: String(initial.payInFee ?? ''), payOutFee: String(initial.payOutFee ?? ''),
         settlementFee: String(initial.settlementFee ?? ''),
         transactionCode: initial.transactionCode, category: initial.category,
+        depositCode: initial.depositCode || '', withdrawalCode: initial.withdrawalCode || '',
+        settlementCode: initial.settlementCode || '',
         notes: initial.notes || '', riskAnalysis: initial.riskAnalysis,
         status: initial.status,
       };
@@ -200,6 +206,12 @@ const AgentForm: React.FC<{
       if (Number(v) < 0) return `${label} cannot be negative.`;
     }
     if (mode === 'create' && !/^[A-Za-z]{3}$/.test(form.transactionCode)) return 'Transaction Code must be exactly 3 alphabetic characters (A–Z).';
+    // Each leg's reference code is mandatory — it prefixes every reference number and transaction
+    // code that leg ever issues for this agent.
+    for (const [label, v] of [['Deposit Code', form.depositCode], ['Withdrawal Code', form.withdrawalCode],
+                              ['Settlement Code', form.settlementCode]] as const) {
+      if (!/^[A-Za-z0-9]{1,3}$/.test(v.trim())) return `${label} is required (1 to 3 letters or numbers).`;
+    }
     return null;
   };
 
@@ -217,6 +229,8 @@ const AgentForm: React.FC<{
         settlementFee: Number(form.settlementFee),
         category: form.category, notes: form.notes.trim() || undefined,
         riskAnalysis: form.riskAnalysis,
+        depositCode: form.depositCode.toUpperCase(), withdrawalCode: form.withdrawalCode.toUpperCase(),
+        settlementCode: form.settlementCode.toUpperCase(),
       };
       const saved = mode === 'create'
         ? await agentAPI.create({
@@ -287,6 +301,29 @@ const AgentForm: React.FC<{
           </div>
         </Section>
 
+        {/* Reference codes — one per leg. Each becomes the prefix of every reference number and
+            transaction code that leg issues for this agent (DEP000001, WIT000001, SET000001 …),
+            and each leg then numbers independently. Editable after creation, unlike the agent's
+            own Transaction Code: changing one only affects transactions created afterwards. */}
+        <Section title="Reference Code Configuration">
+          <div style={grid2}>
+            {([['Deposit Code', 'depositCode', 'DEP', 'Prefixes this agent’s deposit references'],
+               ['Withdrawal Code', 'withdrawalCode', 'WIT', 'Prefixes this agent’s withdrawal references'],
+               ['Settlement Code', 'settlementCode', 'SET', 'Prefixes this agent’s settlement references']] as const)
+              .map(([label, key, example, hint]) => (
+                <Input
+                  key={key}
+                  label={label}
+                  value={form[key]}
+                  onChange={(e) => set(key, e.target.value.replace(/[^A-Za-z0-9]/g, '').slice(0, 3).toUpperCase())}
+                  required
+                  placeholder={example}
+                  hint={`${hint} — up to 3 letters or numbers, e.g. ${example}.`}
+                />
+              ))}
+          </div>
+        </Section>
+
         <Section title="Additional Information">
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Notes</label>
@@ -351,6 +388,10 @@ const AgentView: React.FC<{ agent: Agent; onBack: () => void; onEdit: () => void
           <Field label="Pay-Out Fee" value={`${agent.payOutFee ?? 0}%`} />
           <Field label="Settlement Fee" value={`${agent.settlementFee ?? 0}%`} />
           <Field label="Transaction Code" value={agent.transactionCode} />
+          {/* The prefix each leg's references and transaction codes are issued under. */}
+          <Field label="Deposit Code" value={agent.depositCode} />
+          <Field label="Withdrawal Code" value={agent.withdrawalCode} />
+          <Field label="Settlement Code" value={agent.settlementCode} />
           <Field label="Reference" value={agent.reference} />
           <Field label="Date of Creation" value={agent.dateOfCreation} />
         </div>

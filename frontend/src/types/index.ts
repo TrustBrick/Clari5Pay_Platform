@@ -390,6 +390,11 @@ export interface Agent {
   payOutFee: number;
   settlementFee: number;
   transactionCode: string;      // exactly 3 chars (immutable)
+  // Reference-code prefix per leg — every reference number and transaction code this agent's
+  // transactions get starts with the one matching the leg. Null only on agents that predate them.
+  depositCode?: string | null;
+  withdrawalCode?: string | null;
+  settlementCode?: string | null;
   category: AgentCategory;
   notes?: string | null;
   riskAnalysis: boolean;

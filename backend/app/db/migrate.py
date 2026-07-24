@@ -196,6 +196,11 @@ _NEW_COLUMNS = [
     # Member-supplied Reference Number, captured on the Create Agent Withdrawal Request form next
     # to the Unique Note Number. Not unique (unlike note_number) — it is the member's reference.
     ("agent_transaction", "member_reference", "VARCHAR(64)"),
+    # Per-leg reference-code prefixes configured on the agent (DEP / WIT / SET). Seeded below for
+    # agents that predate them.
+    ("agent_master", "deposit_code", "VARCHAR(3)"),
+    ("agent_master", "withdrawal_code", "VARCHAR(3)"),
+    ("agent_master", "settlement_code", "VARCHAR(3)"),
 ]
 
 # ── Performance indexes ──────────────────────────────────────────────────────
@@ -262,6 +267,17 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "pay_out_fee = COALESCE(pay_out_fee, fees_pct), "
             "settlement_fee = COALESCE(settlement_fee, fees_pct) "
             "WHERE pay_in_fee IS NULL OR pay_out_fee IS NULL OR settlement_fee IS NULL"
+        ))
+        # Agents created before the per-leg reference codes existed have none. Seed them with the
+        # legacy prefixes their transactions already use (AGD/AGW/AGS) rather than a new value, so
+        # their reference numbering continues from where it is instead of restarting at 000001 and
+        # colliding with rows they already own. Only NULLs are touched, so this can never overwrite
+        # a code an operator configured, and re-running it is a no-op.
+        await conn.execute(text(
+            "UPDATE agent_master SET deposit_code = COALESCE(deposit_code, 'AGD'), "
+            "withdrawal_code = COALESCE(withdrawal_code, 'AGW'), "
+            "settlement_code = COALESCE(settlement_code, 'AGS') "
+            "WHERE deposit_code IS NULL OR withdrawal_code IS NULL OR settlement_code IS NULL"
         ))
         # Backfill completed_at for agent transactions that finished before the column existed.
         # agent_transaction_audit records every workflow step with its exact timestamp, so the

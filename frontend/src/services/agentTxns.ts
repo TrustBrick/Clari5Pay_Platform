@@ -359,8 +359,6 @@ export const agentTxnsAPI = {
   formData: async () => cachedRef('agent:form-data',
     async () => (await api.get<AgentFormData>('/api/agent-txns/form-data')).data),
   member: async (id: string) => (await api.get<AgentMemberLookup>(`/api/agent-txns/member/${encodeURIComponent(id)}`)).data,
-  /** Read-only financial summary for a Membership ID (Balance Enquiry). */
-  balanceEnquiry: async (id: string) => (await api.get<AgentMemberSummary>(`/api/agent-txns/balance-enquiry/${encodeURIComponent(id)}`)).data,
   performance: async () => (await api.get<AgentPerformance>('/api/agent-txns/performance')).data,
   agentProfile: async (agentMasterId: number) => (await api.get<AgentProfile>(`/api/agent-txns/agent/${agentMasterId}/profile`)).data,
   txnCommission: async (id: number) => (await api.get<AgentTxnCommission>(`/api/agent-txns/${id}/commission`)).data,
