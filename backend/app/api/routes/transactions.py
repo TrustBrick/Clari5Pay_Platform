@@ -3,9 +3,9 @@ from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, case, func, text, literal
+from sqlalchemy import select, or_, and_, case, func, text, literal, union_all
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction
 from app.core.deps import (
     get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer,
     get_current_supervisor, get_current_manager, OVERSIGHT_MERCHANT_ROLES,
@@ -1055,6 +1055,25 @@ async def get_my_transactions_paged(
 # count, total amount, latest status). Paginating a flat list would corrupt those totals,
 # so grouping + counts + sums are computed in Postgres here and the page shows one page of
 # MEMBER GROUPS (default 10). The per-member drill-down uses /mine/member-transactions.
+def _apply_agent_date_filters(stmt, date_from=None, date_to=None, datetime_from=None, datetime_to=None):
+    """The date half of _apply_tx_filters, against the agent ledger's own timestamp.
+
+    Same IST-to-UTC handling, so a date range means the same window on both ledgers and a member
+    whose only activity falls outside it drops off this list from either side.
+    """
+    if date_from:
+        start_ist = datetime(date_from.year, date_from.month, date_from.day)
+        stmt = stmt.where(AgentTransaction.created_at >= start_ist - IST_OFFSET)
+    if date_to:
+        end_ist = datetime(date_to.year, date_to.month, date_to.day) + timedelta(days=1)
+        stmt = stmt.where(AgentTransaction.created_at < end_ist - IST_OFFSET)
+    if datetime_from:
+        stmt = stmt.where(AgentTransaction.created_at >= datetime_from.replace(tzinfo=None) - IST_OFFSET)
+    if datetime_to:
+        stmt = stmt.where(AgentTransaction.created_at <= datetime_to.replace(tzinfo=None) - IST_OFFSET)
+    return stmt
+
+
 def _member_group_key():
     """The same grouping key the UI used client-side: Membership ID, else member name,
     else the literal 'Unassigned' — computed in SQL so grouping happens in the database.
@@ -1112,26 +1131,81 @@ async def get_my_member_groups(
         requests_col = func.count()
         amount_col = func.coalesce(func.sum(Transaction.amount), 0.0)
 
-    base = select(
+    # ── One row per transaction, from BOTH ledgers, reduced to a shape the two can share ──
+    # A membership is not owned by a module: the same person may have been onboarded through the
+    # Agent module and never have had a merchant transaction, and they were invisible here. The
+    # agent ledger therefore contributes its MEMBERS to this list — but only its members. Every
+    # count and every amount on an agent row is a hard zero, so all money shown on this page is
+    # still merchant money, computed from merchant transactions exactly as before.
+    merchant_rows = select(
         grp.label("mid"),
-        func.max(Transaction.member_name).label("member_name"),
-        func.count().filter(Transaction.type.in_(dep)).label("deposit_requests"),
-        func.count().filter(Transaction.type.in_(wd)).label("withdrawal_requests"),
-        func.count().filter(Transaction.type.in_(st)).label("settlement_requests"),
-        requests_col.label("requests"),
-        amount_col.label("total_amount"),
+        Transaction.member_name.label("member_name"),
+        case((Transaction.type.in_(dep), 1), else_=0).label("is_dep"),
+        case((Transaction.type.in_(wd), 1), else_=0).label("is_wd"),
+        case((Transaction.type.in_(st), 1), else_=0).label("is_st"),
+        (case((active_cond, 1), else_=0) if active_cond is not None else literal(1)).label("is_active"),
+        Transaction.amount.label("amount"),
+        literal(1).label("from_merchant"),
     ).where(Transaction.merchant_id == current_user.id)
-    base = _apply_tx_filters(base, None, date_from, date_to, datetime_from, datetime_to)
+    merchant_rows = _apply_tx_filters(merchant_rows, None, date_from, date_to, datetime_from, datetime_to)
     if search and search.strip():
         like = f"%{search.strip()}%"
-        base = base.where(or_(
+        merchant_rows = merchant_rows.where(or_(
             Transaction.member_id.ilike(like),
             Transaction.member_name.ilike(like),
             Transaction.ref.ilike(like),
         ))
-    grouped = base.group_by(grp)
+
+    # The agent ledger stores a membership id as typed; the merchant side normalises it to
+    # uppercase on create, so upper/trim here is what makes the two group as one member instead
+    # of listing "mm01" beside "MM01".
+    agent_mid = func.coalesce(
+        func.nullif(func.upper(func.trim(AgentTransaction.membership_id)), ""),
+        literal("Unassigned"),
+    )
+    agent_rows = select(
+        agent_mid.label("mid"),
+        AgentTransaction.membership_name.label("member_name"),
+        literal(0).label("is_dep"),
+        literal(0).label("is_wd"),
+        literal(0).label("is_st"),
+        literal(0).label("is_active"),
+        literal(0.0).label("amount"),
+        literal(0).label("from_merchant"),
+    ).where(AgentTransaction.merchant_business == current_user.name)
+    agent_rows = _apply_agent_date_filters(agent_rows, date_from, date_to, datetime_from, datetime_to)
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        agent_rows = agent_rows.where(or_(
+            AgentTransaction.membership_id.ilike(like),
+            AgentTransaction.membership_name.ilike(like),
+            AgentTransaction.reference_number.ilike(like),
+        ))
+
+    u = union_all(merchant_rows, agent_rows).subquery()
+    # The merchant name stays authoritative for anyone who has merchant transactions, so this page
+    # keeps showing exactly the name it showed before; the agent name only fills in for a member
+    # the merchant ledger has never seen.
+    member_name_col = func.coalesce(
+        func.max(case((u.c.from_merchant == 1, u.c.member_name))),
+        func.max(u.c.member_name),
+    )
+    grouped = select(
+        u.c.mid.label("mid"),
+        member_name_col.label("member_name"),
+        func.sum(u.c.is_dep).label("deposit_requests"),
+        func.sum(u.c.is_wd).label("withdrawal_requests"),
+        func.sum(u.c.is_st).label("settlement_requests"),
+        func.sum(u.c.is_active).label("requests"),
+        func.coalesce(func.sum(u.c.amount), 0.0).label("total_amount"),
+    ).group_by(u.c.mid)
+    requests_col = func.sum(u.c.is_active)
+    grp_col = u.c.mid
     if active_cond is not None:
-        grouped = grouped.having(func.count().filter(active_cond) > 0)
+        # Type-scoped pages kept only members holding that type. An agent-only member holds no
+        # merchant type at all, so the second arm is what keeps them listed rather than filtered
+        # straight back out — the whole point of merging the two ledgers here.
+        grouped = grouped.having(or_(func.sum(u.c.is_active) > 0, func.sum(u.c.from_merchant) == 0))
 
     page_size = _clamp_page_size(page_size)
     page = page if page and page >= 1 else 1
@@ -1139,9 +1213,11 @@ async def get_my_member_groups(
         select(func.count()).select_from(grouped.subquery())
     )).scalar() or 0)
 
-    # Order matches today's UI: most requests first (stable tiebreak on the member key).
+    # Order matches today's UI: most requests first (stable tiebreak on the member key). An
+    # agent-only member counts zero merchant requests, so they sort to the end rather than
+    # displacing anyone already on the page.
     rows = (await db.execute(
-        grouped.order_by(requests_col.desc(), grp.asc())
+        grouped.order_by(requests_col.desc(), grp_col.asc())
         .offset((page - 1) * page_size).limit(page_size)
     )).all()
 
