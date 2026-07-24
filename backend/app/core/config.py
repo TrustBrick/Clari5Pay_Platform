@@ -148,6 +148,11 @@ class Settings(BaseSettings):
     DIGILOCKER_CLIENT_ID: str = ""
     DIGILOCKER_CLIENT_SECRET: str = ""
     DIGILOCKER_BASE_URL: str = "https://api.digitallocker.gov.in"
+    # Outbound timeouts (seconds) for the Melento verify calls. Kept short so that when the
+    # provider is unresponsive the user gets a clean "verification service unavailable" error in
+    # a few seconds instead of waiting the full retry budget. Tunable via env (no code change).
+    MELENTO_CONNECT_TIMEOUT: float = 5.0
+    MELENTO_READ_TIMEOUT: float = 15.0
 
     @property
     def email_configured(self) -> bool:
