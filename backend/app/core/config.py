@@ -152,7 +152,7 @@ class Settings(BaseSettings):
     # provider is unresponsive the user gets a clean "verification service unavailable" error in
     # a few seconds instead of waiting the full retry budget. Tunable via env (no code change).
     MELENTO_CONNECT_TIMEOUT: float = 5.0
-    MELENTO_READ_TIMEOUT: float = 15.0
+    MELENTO_READ_TIMEOUT: float = 10.0
 
     @property
     def email_configured(self) -> bool:
