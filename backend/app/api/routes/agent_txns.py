@@ -29,6 +29,10 @@ from app.models.models import (
 )
 from app.core.deps import get_current_agent_operator, agent_role_in
 from app.api.routes.system_logs import record_agent_audit
+# The one place a Membership ID is turned into a Member Name, for BOTH modules. The agent ledger
+# used to answer this from its own rows only, so a member the Merchant module already knew looked
+# brand new here and the operator had to retype the name.
+from app.services.membership import lookup_member_name
 
 router = APIRouter(prefix="/api/agent-txns", tags=["agent-transactions-ledger"])
 
@@ -1100,17 +1104,12 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     member_ref = (body.memberReference or "").strip() or None
     txn_code = await _transaction_code(db, agent, txn_type)
 
-    # Membership name: use the entered value, else auto-fill from a prior agent transaction.
-    membership_name = (body.membershipName or "").strip()
-    if not membership_name:
-        prior = (await db.execute(
-            select(AgentTransaction.membership_name).where(
-                AgentTransaction.merchant_business == business,
-                AgentTransaction.membership_id == body.membershipId.strip(),
-                AgentTransaction.membership_name.is_not(None),
-            ).order_by(AgentTransaction.id.desc())
-        )).scalars().first()
-        membership_name = prior or None
+    # Membership name. An ID already known to EITHER ledger keeps its name on record — the same
+    # "existing membership is authoritative" rule the merchant create flows apply — so the same ID
+    # can never end up stored under two spellings. Only a genuinely new ID takes the typed value,
+    # and storing it is what makes the membership exist for both modules from then on.
+    on_record = await lookup_member_name(db, user, body.membershipId)
+    membership_name = on_record or (body.membershipName or "").strip() or None
 
     # A Bank Transfer DEPOSIT registers the member's Sending Account (the account the money comes FROM
     # is the member's own), so their bank details auto-fill on the next deposit/withdrawal — the same
@@ -1244,8 +1243,13 @@ async def agent_accounts_for(agent_master_id: int, db: AsyncSession = Depends(ge
 @router.get("/member/{membership_id}")
 async def member_lookup(membership_id: str, db: AsyncSession = Depends(get_db),
                         user: User = Depends(get_current_agent_operator)):
-    """Auto-fetch (isolated): membership name from prior agent transactions, and the agent from the
-    latest agent DEPOSIT for this membership (for the Withdrawal form). Never reads merchant members."""
+    """Auto-fetch for every agent form, including Deposit Distribution.
+
+    The membership NAME comes from the shared resolver, so an ID already known to the Merchant
+    module auto-fills here instead of appearing new — the operator never retypes a name the
+    platform already holds. Everything else (the agent to link, saved payout accounts, the
+    balance) still comes from the agent ledger alone: only the member's identity is shared, no
+    merchant figures are read."""
     business = _business(user)
     rows = (await db.execute(
         select(AgentTransaction).where(
@@ -1253,7 +1257,7 @@ async def member_lookup(membership_id: str, db: AsyncSession = Depends(get_db),
             AgentTransaction.membership_id == membership_id.strip(),
         ).order_by(AgentTransaction.id.desc())
     )).scalars().all()
-    membership_name = next((r.membership_name for r in rows if r.membership_name), None)
+    membership_name = await lookup_member_name(db, user, membership_id)
     dep = next((r for r in rows if r.txn_type == "DEPOSIT"), None)
     latest_deposit = None if dep is None else {
         "agentMasterId": dep.agent_master_id, "agentCode": dep.agent_code, "agentName": dep.agent_name,
@@ -2215,16 +2219,12 @@ class AgentDistribute(BaseModel):
     members: list[_DistMember]
 
 
-async def _prior_member_name(db: AsyncSession, business: str, membership_id: str) -> str | None:
-    """Latest known name for a membership from the isolated agent ledger (same auto-fill rule the
-    create forms use). Agent memberships have no master record, so there is no status to validate."""
-    return (await db.execute(
-        select(AgentTransaction.membership_name).where(
-            AgentTransaction.merchant_business == business,
-            AgentTransaction.membership_id == membership_id,
-            AgentTransaction.membership_name.is_not(None),
-        ).order_by(AgentTransaction.id.desc())
-    )).scalars().first()
+async def _prior_member_name(db: AsyncSession, user: User, membership_id: str) -> str | None:
+    """Latest known name for a membership, from whichever ledger recorded it most recently.
+
+    Distribution rows are typed in bulk, so this is where a merchant-known member most often used
+    to come through nameless. There is still no membership master to validate a status against."""
+    return await lookup_member_name(db, user, membership_id)
 
 
 @router.post("/{txn_id}/distribute")
@@ -2293,8 +2293,11 @@ async def distribute_deposit(txn_id: int, body: AgentDistribute, db: AsyncSessio
     now = datetime.utcnow()
     children: list[AgentTransaction] = []
     for i, (mid, name, amt) in enumerate(cleaned, start=1):
-        if not name:
-            name = await _prior_member_name(db, business, mid)
+        # An ID already on record keeps its name, whichever module recorded it — a typed name only
+        # applies to a genuinely new member, so a distribution can never split one Membership ID
+        # across two spellings. Earlier children in this run are already flushed, so a member
+        # appearing twice in the same distribution resolves to the same name on both rows.
+        name = (await _prior_member_name(db, user, mid)) or name
         # Member's Available Balance BEFORE this credit (completed-only; earlier children in this same
         # run are already flushed, so a member appearing twice sees the running balance).
         before = round((await _member_balance(db, business, mid)).get("available", 0.0), 2)

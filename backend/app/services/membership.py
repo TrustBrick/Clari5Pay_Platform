@@ -15,12 +15,28 @@ Capture rule (used by every transaction type):
     the transaction "creates" the membership, so it auto-fills on every future
     transaction for the same merchant business.
 Membership IDs are matched case-insensitively and trimmed.
+
+BOTH LEDGERS COUNT. There is no member master table on this platform — a membership
+exists precisely because some transaction records it — and the platform keeps two
+separate ledgers: `transactions` (Merchant module) and `agent_transaction` (the
+isolated Agent module). A membership recorded in either one is the same membership,
+so a name is looked up across both and the most recently recorded wins. Without
+this, a member onboarded in the Merchant module looked brand new inside the Agent
+module (and vice versa), and the operator had to retype a name the platform already
+knew — which is how one Membership ID ended up with two spellings.
+
+Scope is the merchant BUSINESS either way: the merchant ledger scopes by the ids of
+every merchant user sharing the business name, the agent ledger by that same name in
+`merchant_business`. Reading the agent ledger here does not move money or figures
+between the modules — only the member's identity is shared.
 """
+from datetime import datetime
+
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Transaction, User, UserRole
+from app.models.models import AgentTransaction, Transaction, User, UserRole
 
 MEMBER_NAME_MISMATCH_MSG = "This Membership ID is already associated with another member."
 
@@ -40,23 +56,55 @@ async def _business_member_ids(db: AsyncSession, user: User) -> list[int]:
     )).scalars().all()
 
 
+async def _latest_merchant_name(db: AsyncSession, user: User, mid: str) -> tuple[str | None, datetime | None]:
+    """Newest (name, when) for this Membership ID in the MERCHANT ledger."""
+    ids = await _business_member_ids(db, user)
+    if not ids:
+        return None, None
+    row = (await db.execute(
+        select(Transaction.member_name, Transaction.created_at).where(
+            Transaction.merchant_id.in_(ids),
+            func.upper(func.trim(Transaction.member_id)) == mid,
+            Transaction.member_name.is_not(None),
+            Transaction.member_name != "",
+        ).order_by(Transaction.created_at.desc(), Transaction.id.desc()).limit(1)
+    )).first()
+    return (row[0], row[1]) if row else (None, None)
+
+
+async def _latest_agent_name(db: AsyncSession, user: User, mid: str) -> tuple[str | None, datetime | None]:
+    """Newest (name, when) for this Membership ID in the AGENT ledger.
+
+    The agent ledger stores its membership id as typed, so the comparison is upper/trimmed on both
+    sides rather than relying on the stored form.
+    """
+    row = (await db.execute(
+        select(AgentTransaction.membership_name, AgentTransaction.created_at).where(
+            AgentTransaction.merchant_business == user.name,
+            func.upper(func.trim(AgentTransaction.membership_id)) == mid,
+            AgentTransaction.membership_name.is_not(None),
+            AgentTransaction.membership_name != "",
+        ).order_by(AgentTransaction.created_at.desc(), AgentTransaction.id.desc()).limit(1)
+    )).first()
+    return (row[0], row[1]) if row else (None, None)
+
+
 async def lookup_member_name(db: AsyncSession, user: User, member_id: str | None) -> str | None:
-    """Latest Member Name on record for this Membership ID within the merchant's business
-    pool, or None if the Membership ID has never been used (i.e. a new member)."""
+    """Latest Member Name on record for this Membership ID anywhere in the business, or None if
+    the Membership ID has never been used (i.e. a genuinely new member).
+
+    Both ledgers are consulted and the most recently recorded name wins, so the Merchant module and
+    the Agent module always answer this question identically. A row with no timestamp (older data)
+    loses to one that has a timestamp, and falls back to whichever ledger produced a name at all.
+    """
     mid = normalize_member_id(member_id)
     if not mid:
         return None
-    ids = await _business_member_ids(db, user)
-    if not ids:
-        return None
-    return (await db.execute(
-        select(Transaction.member_name).where(
-            Transaction.merchant_id.in_(ids),
-            Transaction.member_id == mid,
-            Transaction.member_name.is_not(None),
-            Transaction.member_name != "",
-        ).order_by(Transaction.id.desc()).limit(1)
-    )).scalar_one_or_none()
+    m_name, m_at = await _latest_merchant_name(db, user, mid)
+    a_name, a_at = await _latest_agent_name(db, user, mid)
+    if m_name and a_name:
+        return a_name if (a_at or datetime.min) > (m_at or datetime.min) else m_name
+    return m_name or a_name
 
 
 async def resolve_member_name(db: AsyncSession, user: User,
