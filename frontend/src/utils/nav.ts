@@ -41,6 +41,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'admin-reports', icon: 'reports', label: 'Reports' },
     { key: 'admin-transactions', icon: 'transactions', label: 'All Transactions' },
     { key: 'admin-accounts', icon: 'account-management', label: 'Account Management' },
+    { key: 'kyc', icon: 'kyc', label: 'KYC Management' },
     { key: 'risk-mgmt', icon: 'risk-management', label: 'Risk Management' },
     { key: 'complaints', icon: 'complaints', label: 'Complaint Management' },
     { key: 'news', icon: 'news', label: 'News' },

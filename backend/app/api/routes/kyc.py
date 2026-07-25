@@ -23,12 +23,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_kyc_user, get_current_kyc_verifier
 from app.db.session import get_db
-from app.models.models import KycVerificationHistory, User
+from app.models.models import KycVerificationHistory, User, UserRole
 from app.services import kyc as kyc_service
 from app.services.membership import lookup_member_name, normalize_member_id
 from app.services.name_match import score_and_status
@@ -110,6 +110,17 @@ async def digilocker_verify(_: User = Depends(get_current_kyc_verifier)):
 
 def _actor_name(user: User) -> str:
     return (user.full_name or user.name or user.username or "").strip() or user.username
+
+
+def _kyc_scope(user: User):
+    """Tenancy predicate for the read paths: the caller's own merchant business, or EVERY
+    business for an Admin — read-only, system-wide oversight that matches the rest of the Admin
+    Portal (All Transactions / Account Management / Merchant Analytics are all cross-merchant).
+    Verification (write) routes are unaffected — Admins never reach them (get_current_kyc_verifier).
+    """
+    if user.role == UserRole.ADMIN:
+        return true()
+    return KycVerificationHistory.merchant_business == user.name
 
 
 async def _gen_reference(db: AsyncSession, prefix: str) -> str:
@@ -412,7 +423,7 @@ async def _member_aadhaar_photo(db: AsyncSession, user: User, mid: str) -> str |
     """
     return (await db.execute(
         select(KycVerificationHistory.aadhaar_photo).where(
-            KycVerificationHistory.merchant_business == user.name,
+            _kyc_scope(user),
             KycVerificationHistory.membership_id == mid,
             KycVerificationHistory.aadhaar_photo.is_not(None),
         ).order_by(KycVerificationHistory.id.desc()).limit(1)
@@ -600,7 +611,7 @@ async def aadhaar_status(
     row = (await db.execute(
         select(KycVerificationHistory).where(
             KycVerificationHistory.id == body.historyId,
-            KycVerificationHistory.merchant_business == user.name,
+            _kyc_scope(user),
             KycVerificationHistory.verification_type == "AADHAAR",
         )
     )).scalar_one_or_none()
@@ -927,7 +938,7 @@ async def kyc_stats(
     """
     total_completed = int((await db.execute(
         select(func.count()).select_from(KycVerificationHistory).where(
-            KycVerificationHistory.merchant_business == user.name,
+            _kyc_scope(user),
             KycVerificationHistory.verification_status == "SUCCESS",
         )
     )).scalar() or 0)
@@ -951,9 +962,7 @@ async def kyc_history(
     page = page if page >= 1 else 1
 
     # Same tenancy predicate as before — pagination never widens what the caller can see.
-    base = select(KycVerificationHistory).where(
-        KycVerificationHistory.merchant_business == user.name
-    )
+    base = select(KycVerificationHistory).where(_kyc_scope(user))
     total = int((await db.execute(
         select(func.count()).select_from(base.subquery())
     )).scalar() or 0)
@@ -981,7 +990,7 @@ async def kyc_history_detail(
     row = (await db.execute(
         select(KycVerificationHistory).where(
             KycVerificationHistory.id == history_id,
-            KycVerificationHistory.merchant_business == user.name,
+            _kyc_scope(user),
         )
     )).scalar_one_or_none()
     if row is None:
