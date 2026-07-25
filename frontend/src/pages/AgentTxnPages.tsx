@@ -183,7 +183,10 @@ const submittedStatus = (m?: string | null) =>
 // blocked) — the same rule the Merchant Deposit form applies.
 const upperAlphaNum = (raw: string) => (raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 const normalizeMemberId = upperAlphaNum;   // Membership ID: uppercase letters + digits only
-const normalizeNoteNumber = upperAlphaNum; // Unique Note Number: same rule (9ja123 → 9JA123)
+// Unique Note Number: preserved exactly as the user types it — uppercase/lowercase letters,
+// numbers, spaces and special characters are all kept, and case is never forced. Leading/trailing
+// whitespace is trimmed only at submission (see the `.trim()` calls where the value is sent).
+const normalizeNoteNumber = (raw: string) => raw ?? '';
 
 // Country / dial-code options from the shared phone-code list (same source as onboarding).
 const DIAL_OPTIONS = COUNTRY_CODES.map(c => ({ value: c.code, label: c.label }));
@@ -1106,7 +1109,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
           {wantsToken && <Input label="Token Details" value={tokenDetails} onChange={e => setTokenDetails(e.target.value)} required
             placeholder="As provided by the member" hint="The token the member presents at cash collection" />}
           {wantsToken && <Input label="Unique Note Number" value={noteNumber} onChange={e => setNoteNumber(normalizeNoteNumber(e.target.value))} required
-            placeholder="As provided by the member" hint="Uppercase letters and numbers only; must be unique" />}
+            placeholder="Example: ABC-123 / TOKEN#001" hint="Enter the Unique Note Number exactly as provided." />}
           {wantsWallet && <Input label="Crypto Wallet Address" value={walletAddress} onChange={e => setWalletAddress(e.target.value)} required
             placeholder="Destination wallet address" hint="Where the member is paid out" />}
         </div>
@@ -3068,7 +3071,7 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
             The token image is uploaded at the next step (Upload Token).
           </p>
           <Input label="Token Details" value={token} onChange={e => setToken(e.target.value)} required placeholder="As provided by the customer" />
-          <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required placeholder="As provided by the customer" hint="Uppercase letters and numbers only; must be unique" />
+          <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required placeholder="Example: ABC-123 / TOKEN#001" hint="Enter the Unique Note Number exactly as provided." />
         </>
       ) : isCrypto ? (
         <>
@@ -3200,8 +3203,8 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
           and crypto withdrawals never carry one, so the field is not shown for them at all. */}
       {isCash && <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required
         readOnly={!!noteFromRequest}
-        placeholder="As provided by the member"
-        hint={noteFromRequest ? 'Captured on the withdrawal request' : 'Uppercase letters and numbers only; must be unique'} />}
+        placeholder="Example: ABC-123 / TOKEN#001"
+        hint={noteFromRequest ? 'Captured on the withdrawal request' : 'Enter the Unique Note Number exactly as provided.'} />}
       {isCash && <Input label="Token Number" value={token} onChange={e => setToken(e.target.value)} required placeholder="Token number handed to the member" />}
       {isCryptoM && (<>
         <Input label="Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="The wallet paid out to" />

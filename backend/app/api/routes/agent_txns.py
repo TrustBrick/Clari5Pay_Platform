@@ -1097,8 +1097,10 @@ async def _create(db: AsyncSession, user: User, body: _Base, txn_type: str,
     note_no = (body.noteNumber or "").strip() or None
     entered_token = (body.tokenDetails or "").strip() or None
     if note_no:
+        # Uniqueness is case-insensitive (ABC-123 == abc-123 == AbC-123); the original casing is
+        # still stored as entered above.
         clash = (await db.execute(select(AgentTransaction.id).where(
-            AgentTransaction.note_number == note_no))).scalars().first()
+            func.lower(AgentTransaction.note_number) == note_no.lower()))).scalars().first()
         if clash:
             raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
     member_ref = (body.memberReference or "").strip() or None
@@ -1369,8 +1371,9 @@ async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession
             raise HTTPException(status_code=400, detail="Token Details are required.")
         if not note:
             raise HTTPException(status_code=400, detail="Unique Note Number is required.")
+        # Case-insensitive uniqueness; the value is persisted with its original casing.
         clash = (await db.execute(select(AgentTransaction.id).where(
-            AgentTransaction.note_number == note, AgentTransaction.id != t.id))).scalars().first()
+            func.lower(AgentTransaction.note_number) == note.lower(), AgentTransaction.id != t.id))).scalars().first()
         if clash:
             raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
         t.token_details = token
@@ -1741,8 +1744,9 @@ async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSes
     if method in TOKEN_METHODS and not note and not (t.note_number or "").strip():
         raise HTTPException(status_code=400, detail="Unique Note Number is required.")
     if note and note != (t.note_number or ""):
+        # Case-insensitive uniqueness; the original casing is preserved when stored.
         clash = (await db.execute(select(AgentTransaction.id).where(
-            AgentTransaction.note_number == note, AgentTransaction.id != t.id))).scalars().first()
+            func.lower(AgentTransaction.note_number) == note.lower(), AgentTransaction.id != t.id))).scalars().first()
         if clash:
             raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
         t.note_number = note
