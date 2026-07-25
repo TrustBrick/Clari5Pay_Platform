@@ -117,7 +117,13 @@ async def get_current_kyc_user(current_user: User = Depends(get_current_user)) -
 
     This is the READ gate: it guards the history, record detail and membership lookup. Running a
     verification additionally requires ``get_current_kyc_verifier`` below.
+
+    Admins are also allowed through — read-only, system-wide oversight of every merchant's KYC
+    history (the query scope widens for them in ``kyc.py`` via ``_kyc_scope``). They never pass
+    ``get_current_kyc_verifier``, so they can view but never run a verification.
     """
+    if current_user.role == UserRole.ADMIN:
+        return current_user
     if (
         current_user.role == UserRole.MERCHANT
         and str(current_user.merchant_role or "").upper() in KYC_MERCHANT_ROLES

@@ -54,6 +54,10 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (page === 'risk-mgmt') return true;   // Risk Management is available in all three portals
   if (page === 'news') return true;        // News is viewable in all portals (SA also manages it)
   if (page === 'complaints') return role === 'ADMIN' || role === 'SUPER_ADMIN';
+  // KYC Management is exposed to the Admin Portal as a read-only, system-wide oversight view
+  // (Admins run no verifications — the KYCPage renders read-only for a user with no merchantRole,
+  // and the backend scopes the history across all businesses; see kyc.py _kyc_scope).
+  if (page === 'kyc' && role === 'ADMIN') return true;
   if (role === 'SUPER_ADMIN') return page.startsWith('sa-');
   if (role === 'ADMIN') return page.startsWith('admin-');
   // MERCHANT — no admin/SA pages.
