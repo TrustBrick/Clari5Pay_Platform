@@ -800,6 +800,14 @@ def _status_priority_order():
     return rank.asc(), Transaction.created_at.desc()
 
 
+def _chronological_order():
+    """ORDER BY clauses: strictly newest-first by transaction timestamp, ignoring status,
+    type and reference. `created_at` is the actual creation instant (Date + Time); `id`
+    only breaks ties when two rows share the exact same timestamp, and since ids are
+    monotonic it keeps the newer row first. Spread into ``.order_by(*_chronological_order())``."""
+    return Transaction.created_at.desc(), Transaction.id.desc()
+
+
 @router.get("")
 async def get_all_transactions(
     db: AsyncSession = Depends(get_db),
@@ -1007,14 +1015,15 @@ async def get_all_transactions_paged(
     page_size: int = 10,
     cursor: str | None = None,
 ):
-    """Paginated Admin/Super Admin feed — server-side search, filter, sort and count."""
+    """Paginated Admin/Super Admin "All Transactions" feed — server-side search, filter,
+    count and strict newest-first (by transaction timestamp) ordering."""
     stmt = _apply_paged_filters(
         select(Transaction), search=search, ref=ref, member_id=member_id,
         date_from=date_from, date_to=date_to, datetime_from=datetime_from,
         datetime_to=datetime_to, status=status, type=type,
         amount_min=amount_min, amount_max=amount_max, merchant=merchant,
     )
-    return await _paged_response(db, stmt, _status_priority_order(), page, page_size,
+    return await _paged_response(db, stmt, _chronological_order(), page, page_size,
                                  cursor=cursor)
 
 
@@ -1319,14 +1328,15 @@ async def get_all_transactions_overseer_paged(
     page: int = 1,
     page_size: int = 10,
 ):
-    """Paginated system-wide oversight feed (Supervisor / Manager / Admin), business-priority order."""
+    """Paginated system-wide "All Transactions" oversight feed (Supervisor / Manager /
+    Admin), strict newest-first (by transaction timestamp) ordering."""
     stmt = _apply_paged_filters(
         select(Transaction), search=search, ref=ref, member_id=member_id,
         date_from=date_from, date_to=date_to, datetime_from=datetime_from,
         datetime_to=datetime_to, status=status, type=type,
         amount_min=amount_min, amount_max=amount_max,
     )
-    return await _paged_response(db, stmt, _status_priority_order(), page, page_size)
+    return await _paged_response(db, stmt, _chronological_order(), page, page_size)
 
 
 def _can_view_tx(tx: Transaction, user: User) -> bool:
