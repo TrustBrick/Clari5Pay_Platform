@@ -64,13 +64,30 @@ async def account_balances(
         summ["mab"] = _monthly_average_balance(biz_txns, (user.pay_in_fee or 0) / 100, (user.pay_out_fee or 0) / 100)
         bal_by_name[name] = summ
 
-    # Member → most recent receiving account (from account↔transaction links). Lets a member's
-    # withdrawals/settlements be attributed back to the account they deposit into.
-    links = (await db.execute(select(AccountTransaction).order_by(AccountTransaction.id.desc()))).scalars().all()
+    # Member → most recent receiving account. A completed withdrawal/settlement carries no
+    # admin_ref, so it is drawn from the account the member deposits into. That mapping is built
+    # from the account↔transaction links AND — so a debit is never silently dropped when a link
+    # row is missing — from the member's own deposit history (Transaction.admin_ref into a managed
+    # account). Member ids are normalised (trim + upper) so a casing/spacing mismatch between a
+    # deposit and a later withdrawal can't break the attribution.
+    def _norm(m: str | None) -> str:
+        return (m or "").strip().upper()
+
+    acct_refs = {a.reference_number for a in accounts}
     member_acct: dict[str, str] = {}
+    links = (await db.execute(select(AccountTransaction).order_by(AccountTransaction.id.desc()))).scalars().all()
     for l in links:
-        if l.member_id and l.reference_number and l.member_id not in member_acct:
-            member_acct[l.member_id] = l.reference_number
+        key = _norm(l.member_id)
+        if key and l.reference_number and key not in member_acct:
+            member_acct[key] = l.reference_number
+    # Fallback (only where a link row is absent): the managed account a member most-recently
+    # deposited into. Deposits scanned newest-first so the latest receiving account wins.
+    for t in sorted(txns, key=lambda x: (x.created_at or datetime.min), reverse=True):
+        if not t.type.value.startswith("DEPOSIT"):
+            continue
+        key = _norm(t.member_id)
+        if key and t.admin_ref in acct_refs and key not in member_acct:
+            member_acct[key] = t.admin_ref
 
     # Linked UPIs grouped by their parent account.
     upis = (await db.execute(select(AdminUpi))).scalars().all()
@@ -104,11 +121,13 @@ async def account_balances(
                 if t.admin_ref not in dep_low or t.amount < dep_low[t.admin_ref]:
                     dep_low[t.admin_ref] = t.amount
         elif ty.startswith("WITHDRAWAL"):
-            if t.status == TxStatus.COMPLETED and t.member_id in member_acct:
-                acct_wd[member_acct[t.member_id]] += t.amount
+            acct = member_acct.get(_norm(t.member_id))
+            if t.status == TxStatus.COMPLETED and acct:
+                acct_wd[acct] += t.amount
         elif ty.startswith("SETTLEMENT"):
-            if t.status == TxStatus.COMPLETED and t.member_id in member_acct:
-                acct_st[member_acct[t.member_id]] += t.amount
+            acct = member_acct.get(_norm(t.member_id))
+            if t.status == TxStatus.COMPLETED and acct:
+                acct_st[acct] += t.amount
 
     out = []
     for a in accounts:
