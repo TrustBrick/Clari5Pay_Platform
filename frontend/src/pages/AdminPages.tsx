@@ -15,7 +15,7 @@ import { useAuth } from '../context/AuthContext';
 import { usePoll, PRESENCE_POLL_MS, useActivitySignal } from '../utils/usePoll';
 import { usePresenceStream } from '../utils/sse';
 import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, telegramAPI, demoAPI, activeUsersAPI, fetchAllPages } from '../services/api';
-import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappLog, WhatsappStats, TelegramStatus } from '../services/api';
+import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappStats, TelegramStatus } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts, MerchantAnalyticsRow } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account, AccountBalance, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
@@ -2435,7 +2435,6 @@ export const WhatsAppSettingsPage: React.FC = () => {
   const [roles, setRoles] = useState<Record<string, boolean>>({});
   const [events, setEvents] = useState<Record<string, boolean>>({});
   const [stats, setStats] = useState<WhatsappStats | null>(null);
-  const [logs, setLogs] = useState<WhatsappLog[]>([]);
   const [tg, setTg] = useState<TelegramStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -2443,7 +2442,6 @@ export const WhatsAppSettingsPage: React.FC = () => {
   const load = () => {
     whatsappAPI.getSettings().then(s => { setCfg(s); setRoles(s.roles); setEvents(s.events); }).catch(() => {});
     whatsappAPI.getStats().then(setStats).catch(() => {});
-    whatsappAPI.getLogs(100).then(setLogs).catch(() => setLogs([]));
     telegramAPI.getStatus().then(setTg).catch(() => setTg(null));
   };
   useEffect(load, []);
@@ -2537,42 +2535,6 @@ export const WhatsAppSettingsPage: React.FC = () => {
         {toggleGrid(cfg?.eventKeys || Object.keys(events), events, setEvents, WA_EVENT_LABELS)}
         <div style={{ marginTop: 16 }}>
           <Btn onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save Settings'}</Btn>
-        </div>
-      </Card>
-
-      {/* Delivery Logs */}
-      <Card style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 800 }}>Delivery Logs</h3>
-          <Btn size="sm" variant="ghost" onClick={load}><Icon name="refresh" size={13} /> Refresh</Btn>
-        </div>
-        <div style={{ overflowX: 'auto', maxHeight: 460 }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: T.canvas }}>
-                {['User', 'Role', 'Phone', 'Event', 'Message ID', 'Status', 'Delivery', 'Retries', 'Sent', 'Failure'].map(h => (
-                  <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: `2px solid ${T.border}` }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {logs.length === 0 && <tr><td colSpan={10} style={{ padding: 24, textAlign: 'center', color: T.textMuted }}>No Telegram deliveries yet.</td></tr>}
-              {logs.map(l => (
-                <tr key={l.id} style={{ borderBottom: `1px solid ${T.borderLight}` }}>
-                  <td style={{ padding: '9px 12px', fontWeight: 700, color: T.textMain }}>{l.user || '—'}</td>
-                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.role || '—'}</td>
-                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.phone || '—'}</td>
-                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.type || '—'}</td>
-                  <td style={{ padding: '9px 12px', color: T.textMuted, fontFamily: 'monospace', fontSize: 11, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.messageId || ''}>{l.messageId || '—'}</td>
-                  <td style={{ padding: '9px 12px', fontWeight: 700, color: l.status === 'SENT' ? T.success : T.danger }}>{l.status}</td>
-                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.deliveryStatus || '—'}</td>
-                  <td style={{ padding: '9px 12px', color: T.textMuted }}>{l.retryCount}</td>
-                  <td style={{ padding: '9px 12px', color: T.textMuted, whiteSpace: 'nowrap' }}>{l.sentAt ? formatDateTime(l.sentAt) : '—'}</td>
-                  <td style={{ padding: '9px 12px', color: T.textMuted, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={l.failureReason || ''}>{l.failureReason || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       </Card>
     </div>
