@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { T } from '../utils/theme';
 import { Logo, Btn, Input } from '../components/UI';
 import { Icon, isIconName, type IconName } from '../components/Icon';
@@ -37,6 +37,9 @@ const LoginPage: React.FC = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  // Keyboard nav on the sign-in form: Enter on Username jumps to Password, so we
+  // need a handle on the Password field's <input> (the shared Input owns it).
+  const passwordWrapRef = useRef<HTMLDivElement>(null);
   // Forgot-password flow: email → otp → newpw → done.
   const [forgot, setForgot] = useState(false);
   const [forgotStep, setForgotStep] = useState<'username' | 'otp' | 'newpw' | 'done'>('username');
@@ -271,8 +274,12 @@ const LoginPage: React.FC = () => {
 
             {error && <div style={{ background:T.dangerBg,border:`1px solid ${T.danger}30`,borderRadius:10,padding:'10px 14px',marginBottom:16,fontSize:12,color:T.danger,fontWeight:600 }}><Icon name="warning" size={13} /> {error}</div>}
 
-            <Input label="Username" value={username} onChange={e=>setUsername(e.target.value)} placeholder="Your username" icon="user" required/>
-            <div style={{ position:'relative' }}>
+            {/* Enter on Username moves focus to Password (no submit yet). */}
+            <div onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); passwordWrapRef.current?.querySelector('input')?.focus(); } }}>
+              <Input label="Username" value={username} onChange={e=>setUsername(e.target.value)} placeholder="Your username" icon="user" required/>
+            </div>
+            {/* Enter on Password triggers Sign In — same path as the button (all validation, auth and loading state via handleLogin). */}
+            <div ref={passwordWrapRef} style={{ position:'relative' }} onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); handleLogin(); } }}>
               <Input label="Password" type={show?'text':'password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Your password" icon="password" required/>
               <span onClick={()=>setShow(!show)} style={{ position:'absolute',right:12,bottom:22,cursor:'pointer',fontSize:16,color:T.textMuted }}>{show ? <Icon name="eye-off" size={16} /> : <Icon name="view" size={16} />}</span>
             </div>
