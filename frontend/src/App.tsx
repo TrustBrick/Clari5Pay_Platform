@@ -58,8 +58,9 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   if (role === 'ADMIN') return page.startsWith('admin-');
   // MERCHANT — no admin/SA pages.
   if (page.startsWith('sa-') || page.startsWith('admin-')) return false;
-  // KYC Update is restricted to the Supervisor and Manager merchant roles.
-  if (page === 'kyc') return ['SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
+  // KYC Update is restricted to the Data Operator, Supervisor and Manager merchant roles. The
+  // Data Operator performs the verifications; Supervisor and Manager are read-only (see KYCPage).
+  if (page === 'kyc') return ['DEO', 'SUPERVISOR', 'MANAGER'].includes(String(user.merchantRole || '').toUpperCase());
   // Agent Management — Supervisor & Manager only, and Demo-gated until the module is complete
   // (mirrors the nav.ts demo gate).
   if (['agent-dashboard', 'agents', 'agent-accounts', 'agent-transactions', 'agent-unassigned', 'agent-audit', 'agent-reports'].includes(page))
@@ -80,6 +81,10 @@ const App: React.FC = () => {
   // dashboard. Still just a page key — everything downstream is unchanged.
   const [page, setPage] = useState(pageFromUrl);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Bumped on every sidebar click, including a click on the page already shown (which changes no
+  // state and so would otherwise leave that page's internal view untouched). KYC Management keys
+  // off this to drop any open verification form and land back on its dashboard.
+  const [navTick, setNavTick] = useState(0);
 
   // Navigate: set the page AND push a history entry, so Back/Forward walk the pages the user
   // actually visited. Guarded against pushing a duplicate entry for the page already shown.
@@ -142,7 +147,9 @@ const App: React.FC = () => {
       approvals: <ApprovalsPage user={user} />,
       cancel: <CancelRequestPage {...props} />,
       transactions: <TransactionHistory {...props} />,
-      kyc: <KYCPage user={user} />,
+      // Keyed by navTick so clicking "KYC Management" always remounts to the KYC dashboard,
+      // closing whichever verification form happened to be open.
+      kyc: <KYCPage key={navTick} user={user} />,
       // Agent Management — demo-gated (see pageAllowed); keys are inert on Production builds.
       ...(IS_DEMO ? {
         'agent-dashboard': <AgentDashboardPage {...props} />,
@@ -216,7 +223,7 @@ const App: React.FC = () => {
       <Sidebar
         user={user}
         active={activePage}
-        onNav={(key) => { navigate(key); setSidebarOpen(false); }}
+        onNav={(key) => { navigate(key); setNavTick((t) => t + 1); setSidebarOpen(false); }}
         onLogout={logout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}

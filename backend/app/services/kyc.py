@@ -24,7 +24,15 @@ logger = logging.getLogger("app.kyc")
 # host with api_key / api_id headers. These helpers each return (response_dict, http_status)
 # and NEVER raise — network/timeout/parse failures are normalised into an error dict so the
 # route can persist the exact outcome and surface a clean message to the UI.
-_MELENTO_TIMEOUT = 30.0
+#
+# Granular timeout: a short connect timeout fails fast when the host is unreachable, and a bounded
+# read timeout caps the wait when the provider accepts the connection but never responds (its recent
+# outage mode). With the single retry below the worst-case wait is ~2× the read timeout rather than
+# the previous ~60s, so users see the graceful error quickly. Both bounds are env-tunable.
+_MELENTO_TIMEOUT = httpx.Timeout(
+    settings.MELENTO_READ_TIMEOUT,
+    connect=settings.MELENTO_CONNECT_TIMEOUT,
+)
 
 
 def _melento_headers() -> dict:

@@ -26,7 +26,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
         { key: 'agent-reports', icon: 'reports', label: 'Reports' },
       ],
     },
-    { key: 'kyc', icon: 'kyc', label: 'KYC Update' },
+    { key: 'kyc', icon: 'kyc', label: 'KYC Management' },
     { key: 'reports', icon: 'reports', label: 'Reports' },
     { key: 'risk-mgmt', icon: 'risk-management', label: 'Risk Management' },
     { key: 'templates', icon: 'templates', label: 'All Templates View' },
@@ -89,7 +89,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'agent-unassigned': 'Unassigned Transactions',
   'agent-audit': 'Agent Audit Trail',
   'agent-reports': 'Agent Reports',
-  kyc: 'KYC Update',
+  kyc: 'KYC Management',
   reports: 'Reports',
   'risk-mgmt': 'Risk Management',
   complaints: 'Complaint Management',
@@ -124,7 +124,7 @@ export const PAGE_TITLES: Record<string, string> = {
 // Maintain Profile + Profile collapse to a single Profile link.
 // Customer Support is available to every merchant role (default for all merchants).
 export const MERCHANT_ROLE_NAV: Record<string, string[]> = {
-  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
+  DEO: ['dashboard', 'deposit', 'withdrawal', 'cancel', 'transactions', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   DEPOSIT_OPERATOR: ['dashboard', 'deposit', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   WITHDRAWAL_OPERATOR: ['dashboard', 'withdrawal', 'cancel', 'transactions', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
   SUPERVISOR: ['dashboard', 'approvals', 'settlement', 'transactions', 'agent-mgmt', 'kyc', 'reports', 'risk-mgmt', 'news', 'support', 'profile'],
@@ -141,11 +141,11 @@ export const navForUser = (user: User): NavItem[] => {
   if (user.role !== 'MERCHANT') return base;
   const role = user.merchantRole ? String(user.merchantRole).toUpperCase() : '';
   const allowed = MERCHANT_ROLE_NAV[role];
-  // KYC Update and Agent Management are Demo-only for now — the KYC / DigiLocker integrations
-  // are not configured on Production, and the Agent Management module is still being built out
-  // across phases. Hide both menus on Production; flip these to config-driven flags once ready.
+  // Agent Management is Demo-only for now — the module is still being built out across phases, so
+  // it stays hidden on Production. KYC Management is now released to Production (this branch), so
+  // it is NOT gated here; it is still access-controlled per merchant role via MERCHANT_ROLE_NAV.
   // Applied to every merchant menu via this single gate.
-  const demoOnly = new Set(['kyc', 'agent-mgmt']);
+  const demoOnly = new Set(['agent-mgmt']);
   const gate = (items: NavItem[]): NavItem[] => (IS_DEMO ? items : items.filter((i) => !demoOnly.has(i.key)));
   // Role-less merchant: full menu minus Settlement Requests (Supervisor-only), KYC Update and
   // Agent Management (both Supervisor/Manager-only).

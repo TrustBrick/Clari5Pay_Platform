@@ -558,10 +558,20 @@ class KycVerificationHistory(Base):
     document_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # OCR doc_type (passport/pan_card/…)
     transaction_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     verification_status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)  # PENDING | SUCCESS | FAILED
+    # Name-match confidence between the member's registered name and the official KYC name.
+    # match_score (0–100) is stored for audit but never shown; match_status drives the Verification
+    # History "Status" column: VERIFIED (≥85) | MANUAL_REVIEW (70–84) | NOT_VERIFIED (<70).
+    match_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    match_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     request_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # full outbound request, as sent
     response_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)    # full provider response, as received
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     generated_link: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # Aadhaar DigiLocker verification URL
+    # Aadhaar cardholder photo (JPEG data URL) extracted from the response's XML.
+    # MUST be captured at verification time: the provider returns `xml_file` as a PRESIGNED S3 URL
+    # that expires after 48h (X-Amz-Expires=172800), so it cannot be fetched later. Only ever set
+    # from an XML that parsed successfully — an invalid/absent one leaves this NULL.
+    aadhaar_photo: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     api_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True) # provider "status" field / HTTP status
     created_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)  # actor name
     # Merchant business name (scopes the history list to the caller's shared member pool).

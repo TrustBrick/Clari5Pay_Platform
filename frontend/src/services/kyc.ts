@@ -7,6 +7,7 @@
 // integration lands, only the backend service seams change — these methods and
 // their signatures stay exactly the same.
 import api from './api';
+import type { Paged } from './api';
 
 // ── Response models ────────────────────────────────────────────────────────────
 export interface AadhaarResult {
@@ -42,9 +43,21 @@ export interface KycHistoryItem {
   documentType?: string | null;     // OCR doc_type (passport / pan_card / …)
   referenceId?: string | null;
   transactionId?: string | null;
-  status: 'PENDING' | 'SUCCESS' | 'FAILED' | string;
+  /**
+   * Display status, derived server-side. Aadhaar keeps the name-match statuses
+   * (VERIFIED / MANUAL_REVIEW / NOT_VERIFIED) and the raw API states; PAN, Passport and OCR use
+   * the SUCCESS_MATCHED / SUCCESS_NOT_MATCHED / FAILED_NOT_EXIST codes.
+   */
+  status: 'PENDING' | 'SUCCESS' | 'FAILED'
+    | 'SUCCESS_MATCHED' | 'SUCCESS_NOT_MATCHED' | 'FAILED_NOT_EXIST' | string;
   createdBy?: string | null;
   createdAt?: string | null;
+}
+
+/** KYC dashboard headline counter (summary card). */
+export interface KycStats {
+  /** Verifications that completed successfully for the caller's business pool. */
+  totalCompleted: number;
 }
 
 export interface KycHistoryDetail extends KycHistoryItem {
@@ -53,7 +66,17 @@ export interface KycHistoryDetail extends KycHistoryItem {
   errorMessage?: string | null;
   request?: Record<string, unknown> | null;
   response?: Record<string, unknown> | null;
+  /** Aadhaar photo parsed server-side out of the response's XML section (data URL), if present. */
+  aadhaarPhoto?: string | null;
   updatedAt?: string | null;
+}
+
+/** Membership lookup. Never 404s: `exists: false` means the operator names the ID by hand. */
+export interface KycMemberLookup {
+  membershipId: string;
+  memberName: string | null;
+  exists: boolean;
+  kyc: KycHistoryItem[];      // KYC already on record for this Membership ID
 }
 
 export interface AadhaarLinkResult {
@@ -71,6 +94,9 @@ export interface AadhaarStatusResult {
   error?: string;
   message?: string | null;
   details?: AadhaarDetails | null;
+  referenceId?: string | null;
+  /** Internal name-match percentage (0–100), or null when none was calculated. Debug use only. */
+  matchScore?: number | null;
 }
 
 // Aadhaar getAadhaarDetails response shape.
@@ -88,10 +114,15 @@ export interface AadhaarDetails {
   [k: string]: unknown;
 }
 
+// `referenceId` / `matchScore` are additive fields carried on the success response so the browser
+// can log the internal name-match percentage for debugging (see KYCPage). `matchScore` is the
+// exact value the backend calculated (0–100), or null when no name comparison was possible.
 export interface PanVerifyResult {
   id: number;
   status: string;
   validPan: boolean;
+  referenceId?: string | null;
+  matchScore?: number | null;
   result?: Record<string, unknown>;
   raw?: Record<string, unknown>;
 }
@@ -100,6 +131,8 @@ export interface PassportVerifyResult {
   id: number;
   status: string;
   validPassport: boolean;
+  referenceId?: string | null;
+  matchScore?: number | null;
   result?: Record<string, unknown>;
   raw?: Record<string, unknown>;
 }
@@ -108,6 +141,8 @@ export interface OcrVerifyResult {
   id: number;
   status: string;
   verified: boolean;
+  referenceId?: string | null;
+  matchScore?: number | null;
   raw?: Record<string, unknown>;
 }
 
@@ -122,42 +157,55 @@ export const OCR_DOC_TYPES: Array<{ value: string; label: string }> = [
 
 // ── Service methods ─────────────────────────────────────────────────────────────
 export const kycAPI = {
-  // Membership lookup → Member Name. Throws 404 ("Membership not found.") for unknown IDs.
-  lookupMember: async (membershipId: string): Promise<{ membershipId: string; memberName: string }> =>
+  // Membership lookup. Never 404s — an unknown ID returns exists:false and the operator supplies
+  // the Member Name, which the verification then persists against that ID.
+  lookupMember: async (membershipId: string): Promise<KycMemberLookup> =>
     (await api.get(`/api/kyc/member/${encodeURIComponent(membershipId)}`)).data,
 
-  generateAadhaarLink: async (membershipId: string): Promise<AadhaarLinkResult> =>
-    (await api.post<AadhaarLinkResult>('/api/kyc/aadhaar/generate-link', { membershipId })).data,
+  // `memberName` is only used when the Membership ID is not yet on record; for a known ID the
+  // server keeps its authoritative name and ignores what was sent.
+  generateAadhaarLink: async (membershipId: string, memberName?: string): Promise<AadhaarLinkResult> =>
+    (await api.post<AadhaarLinkResult>('/api/kyc/aadhaar/generate-link', { membershipId, memberName })).data,
 
   getAadhaarStatus: async (historyId: number): Promise<AadhaarStatusResult> =>
     (await api.post<AadhaarStatusResult>('/api/kyc/aadhaar/status', { historyId })).data,
 
   // PAN — verify by ID Number (pan) OR by uploaded card image (base64 data URL). The backend
   // derives source_type ("id" / "base64") from which field is supplied.
-  verifyPanMembership: async (membershipId: string, opts: { pan?: string; image?: string }): Promise<PanVerifyResult> =>
+  verifyPanMembership: async (membershipId: string, opts: { pan?: string; image?: string; memberName?: string }): Promise<PanVerifyResult> =>
     (await api.post<PanVerifyResult>('/api/kyc/pan/verify-membership', { membershipId, ...opts })).data,
 
   // Passport — verify by File Number (+ optional dob) OR by front+back card images (base64).
   verifyPassportMembership: async (
     membershipId: string,
-    opts: { passportNumber?: string; dateOfBirth?: string; frontImage?: string; backImage?: string },
+    opts: { passportNumber?: string; dateOfBirth?: string; frontImage?: string; backImage?: string; memberName?: string },
   ): Promise<PassportVerifyResult> =>
     (await api.post<PassportVerifyResult>('/api/kyc/passport/verify-membership', { membershipId, ...opts })).data,
 
   // Aadhaar — verify from an uploaded card image (General-Document OCR, doc_type=aadhaar_card).
-  verifyAadhaarImage: async (membershipId: string, image: string): Promise<OcrVerifyResult> =>
-    (await api.post<OcrVerifyResult>('/api/kyc/aadhaar/verify-image', { membershipId, image })).data,
+  verifyAadhaarImage: async (membershipId: string, image: string, memberName?: string): Promise<OcrVerifyResult> =>
+    (await api.post<OcrVerifyResult>('/api/kyc/aadhaar/verify-image', { membershipId, image, memberName })).data,
 
   verifyOcrMembership: async (
     membershipId: string, documentType: string, fileName: string, fileData: string, verification: boolean,
+    memberName?: string,
   ): Promise<OcrVerifyResult> =>
-    (await api.post<OcrVerifyResult>('/api/kyc/ocr/verify-membership', { membershipId, documentType, fileName, fileData, verification })).data,
+    (await api.post<OcrVerifyResult>('/api/kyc/ocr/verify-membership', { membershipId, documentType, fileName, fileData, verification, memberName })).data,
 
-  listHistory: async (): Promise<KycHistoryItem[]> =>
-    (await api.get<KycHistoryItem[]>('/api/kyc/history')).data,
+  // Server-side paged: one page of rows plus the full-set count. The complete history is never
+  // sent to the browser — sorting (newest first) and counting both happen in the database.
+  listHistory: async (page = 1, pageSize = 10): Promise<Paged<KycHistoryItem>> =>
+    (await api.get<Paged<KycHistoryItem>>('/api/kyc/history', {
+      params: { page, page_size: pageSize },
+    })).data,
 
   getHistoryDetail: async (id: number): Promise<KycHistoryDetail> =>
     (await api.get<KycHistoryDetail>(`/api/kyc/history/${id}`)).data,
+
+  // Headline counter for the dashboard summary card — counted in the database, so it reflects the
+  // whole history rather than the page currently on screen.
+  getStats: async (): Promise<KycStats> =>
+    (await api.get<KycStats>('/api/kyc/stats')).data,
 
   // ── Legacy placeholder seams (still used by the Passport / OCR cards) ──
   verifyAadhaar: async (aadhaarNumber: string): Promise<AadhaarResult> =>
@@ -185,11 +233,28 @@ export const KYC_VALIDATION = {
 export const OCR_ACCEPT = '.jpg,.jpeg,.png,.pdf';
 export const OCR_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
+// A verify endpoint's error `detail` is either a plain string (validation / legacy errors) or a
+// structured object { message, referenceId, matchScore } on a failed verification (so the browser
+// can still log the reference id). This type covers both shapes.
+type KycErrorDetail = string | { message?: string; referenceId?: string | null; matchScore?: number | null };
+
 /** Turn an axios error into a human-readable message for the KYC UI. */
 export const kycErrorMessage = (err: unknown, fallback: string): string => {
-  const e = err as { response?: { data?: { detail?: string }; status?: number }; code?: string };
-  if (e?.response?.data?.detail) return e.response.data.detail;
+  const e = err as { response?: { data?: { detail?: KycErrorDetail }; status?: number }; code?: string };
+  const detail = e?.response?.data?.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (detail && typeof detail === 'object' && detail.message) return detail.message;
   if (e?.code === 'ECONNABORTED') return 'API Timeout — please try again.';
   if (e?.response?.status === 503) return 'Service Unavailable — please try again later.';
   return fallback;
+};
+
+/**
+ * The generated Reference ID carried on a failed verification's structured error detail, or null
+ * when it is not available (a string-detail validation error, a network failure, etc.). Debug use
+ * only — feeds the KYC console logging.
+ */
+export const kycErrorReferenceId = (err: unknown): string | null => {
+  const detail = (err as { response?: { data?: { detail?: KycErrorDetail } } })?.response?.data?.detail;
+  return detail && typeof detail === 'object' ? detail.referenceId ?? null : null;
 };

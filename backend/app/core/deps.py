@@ -104,19 +104,37 @@ async def get_current_manager(current_user: User = Depends(get_current_user)) ->
     return current_user
 
 
-# Merchant roles permitted to use the KYC Update module (identity verification).
-KYC_MERCHANT_ROLES = ("SUPERVISOR", "MANAGER")
+# Merchant roles permitted to OPEN the KYC Update module. Data Operator (DEO) performs the
+# verifications; Supervisor and Manager have read-only access (history + details).
+KYC_MERCHANT_ROLES = ("SUPERVISOR", "MANAGER", "DEO")
+# Merchant roles permitted to PERFORM a verification (Aadhaar / PAN / Passport / OCR).
+KYC_VERIFIER_ROLES = ("DEO",)
 
 
 async def get_current_kyc_user(current_user: User = Depends(get_current_user)) -> User:
-    """MERCHANT users whose merchant_role is Supervisor or Manager — the only roles
-    allowed to access the KYC Update module. Every other role is rejected with 403."""
+    """MERCHANT users whose merchant_role is Data Operator, Supervisor or Manager — the only
+    roles allowed to access the KYC Update module. Every other role is rejected with 403.
+
+    This is the READ gate: it guards the history, record detail and membership lookup. Running a
+    verification additionally requires ``get_current_kyc_verifier`` below.
+    """
     if (
         current_user.role == UserRole.MERCHANT
         and str(current_user.merchant_role or "").upper() in KYC_MERCHANT_ROLES
     ):
         return current_user
-    raise HTTPException(status_code=403, detail="KYC access requires a Supervisor or Manager role")
+    raise HTTPException(status_code=403, detail="KYC access requires a Data Operator, Supervisor or Manager role")
+
+
+async def get_current_kyc_verifier(current_user: User = Depends(get_current_user)) -> User:
+    """MERCHANT users whose merchant_role is Data Operator — the only role that may RUN a KYC
+    verification. Supervisor and Manager keep read-only access via ``get_current_kyc_user``."""
+    if (
+        current_user.role == UserRole.MERCHANT
+        and str(current_user.merchant_role or "").upper() in KYC_VERIFIER_ROLES
+    ):
+        return current_user
+    raise HTTPException(status_code=403, detail="Performing a KYC verification requires a Data Operator role")
 
 
 # Merchant roles permitted to use the Agent Management module (Non-EPS agents).
