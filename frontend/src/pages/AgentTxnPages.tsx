@@ -1344,15 +1344,15 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
       <p style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 800, color: T.textMain }}>Deposit Distribution</p>
       <p style={{ margin: '0 0 14px', fontSize: 11.5, color: T.textMuted }}>
         Split this cash deposit among multiple members — each is credited individually, in full. The
-        agent's commission was already deducted on the deposit and is not charged again here, so the
-        total distributed must equal the distributable amount.
+        total distributed must equal the amount available for distribution.
       </p>
 
-      {/* Live summary — Original / Commission already deducted / Distributable / Distributed / Remaining */}
+      {/* Live summary — Original / Available for Distribution / Distributed / Remaining. Commission is
+          an internal value and is deliberately NOT shown to the merchant; it still drives the
+          `distributable` cap below (Original − Commission), so distribution stays limited exactly as before. */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', padding: 12, borderRadius: 8, background: T.surface, border: `1px solid ${T.border}`, marginBottom: 14 }}>
         {stat('Original Deposit', fmt(original), T.textMain)}
-        {stat('Commission (already deducted)', fmt(commission), T.warning)}
-        {stat('Distributable', fmt(distributable), T.textMain)}
+        {stat('Available for Distribution', fmt(distributable), T.textMain)}
         {stat('Distributed', fmt(distributed), T.blue)}
         {stat('Remaining', fmt(remaining), remainingColor)}
       </div>
@@ -1398,10 +1398,9 @@ const DistributionSection: React.FC<{ txn: AgentTxnRow; onDone: () => void }> = 
         {remaining <= 0.01 && remaining >= -0.01 && <span style={{ marginLeft: 10, fontSize: 11.5, color: T.success, fontWeight: 600 }}>Fully distributed</span>}
       </div>
 
-      {/* Summary card — totals, live */}
+      {/* Summary card — totals, live. Commission is intentionally omitted from the merchant view. */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', padding: 12, borderRadius: 8, background: T.surface, border: `1px solid ${T.border}`, marginTop: 14 }}>
         {stat('Original Deposit', fmt(original), T.textMain)}
-        {stat('Commission (already deducted)', fmt(commission), T.warning)}
         {stat('Total Distributed', fmt(distributed), T.blue)}
         {stat('Total Net Credit', fmt(distributed), T.success)}
         {stat('Remaining', fmt(remaining), remainingColor)}
