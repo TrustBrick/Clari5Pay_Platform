@@ -188,7 +188,7 @@ const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({
     <Input
       label="Membership ID"
       value={m.memberId}
-      onChange={(e) => m.setMemberId(e.target.value)}
+      onChange={(e) => m.setMemberId(e.target.value.toUpperCase())}
       onBlur={() => m.lookup(m.memberId)}
       placeholder="Enter Membership ID"
       required

@@ -113,17 +113,22 @@ def _actor_name(user: User) -> str:
 
 
 async def _gen_reference(db: AsyncSession, prefix: str) -> str:
-    """Sequential reference id per verification type: ``PAN000001``, ``AADHAAR000001``,
-    ``PASSPORT000001``, … incrementing by one on each verification.
+    """Sequential reference id per verification type: ``PAN00001``, ``AADHAAR00001``,
+    ``PASSPORT00001``, … incrementing by one on each verification.
 
     Backed by a dedicated Postgres sequence per prefix (created on first use, idempotent). The
     sequence only ever advances — even across a data reset — so every reference id stays unique,
     which the provider requires (it rejects a reused reference id).
+
+    The numeric part is left-padded to a minimum of 5 digits. Because ``:05d`` is a *minimum*
+    width (it never truncates), once the sequence passes 99999 the id simply grows a digit
+    (``PAN99999`` → ``PAN100000``) while staying unique and monotonic — no reset, no reuse, and no
+    collision with the older 6-digit ids (each sequence value is emitted exactly once).
     """
     seq = f"kyc_{prefix.lower()}_ref_seq"
     await db.execute(text(f'CREATE SEQUENCE IF NOT EXISTS "{seq}" START WITH 1'))
     n = (await db.execute(text(f"SELECT nextval('{seq}')"))).scalar()
-    return f"{prefix}{int(n):06d}"
+    return f"{prefix}{int(n):05d}"
 
 
 # ── Verification-status labels ────────────────────────────────────────────────
