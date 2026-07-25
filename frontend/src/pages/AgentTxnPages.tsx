@@ -8,6 +8,7 @@ import { usePoll, useDebouncedValue, useActivitySignal } from '../utils/usePoll'
 import { useToast } from '../context/ToastContext';
 import { Icon, type IconName } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
+import { TxnTimeline as TimelineRail, type TlStep } from '../components/TxnTimeline';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { today } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
@@ -1682,8 +1683,8 @@ const DField: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
 // ─── Transaction Timeline — the status progression for one transaction ────────────────────────
 // Built from the SAME per-method chain the backend enforces, so the steps always match the real
 // workflow. Each step is done / current / pending; a rejected transaction ends on a red terminal.
-// Audit timestamps enrich the steps that have actually happened.
-type TlStep = { key: string; label: string };
+// Audit timestamps enrich the steps that have actually happened. The rail itself lives in the
+// shared components/TxnTimeline so the Merchant module renders an identical timeline.
 const timelineSteps = (row: AgentTxnRow): TlStep[] => {
   const cash = isTokenMethod(row.txnMethod), crypto = isWalletMethod(row.txnMethod);
   if (row.type === 'DEPOSIT') {
@@ -1717,57 +1718,11 @@ const TxnTimeline: React.FC<{ row: AgentTxnRow; audit: AgentTxnAuditRow[] }> = (
   const curIdx = steps.findIndex(s => s.key === row.status);
   const reached = new Set(audit.map(a => a.action));   // statuses that actually happened
   const when = (k: string) => { const a = audit.find(x => x.action === k); return a ? `${a.createdDate || ''} ${a.createdTime || ''}`.trim() : ''; };
-  const nodeState = (i: number): 'done' | 'current' | 'pending' => {
-    if (done) return 'done';
-    if (rejected) return reached.has(steps[i].key) || i === 0 ? 'done' : 'pending';
-    if (curIdx < 0) return i === 0 ? 'current' : 'pending';
-    return i < curIdx ? 'done' : i === curIdx ? 'current' : 'pending';
-  };
-  const color = { done: T.success, current: T.blue, pending: T.textMuted } as const;
-  // One flat node list — the workflow steps, plus the red terminal when the transaction was
-  // rejected. Rendering every node through the same row keeps the rail unbroken all the way to
-  // the last entry instead of leaving the terminal floating below a stub of line.
-  type TlNode = { label: string; ts: string; dot: string; filled: boolean; line: string; muted: boolean; current: boolean };
-  const nodes: TlNode[] = steps.map((s, i) => {
-    const st = nodeState(i);
-    return { label: s.label, ts: when(s.key), dot: color[st], filled: st !== 'pending',
-      line: st === 'done' ? T.success : T.border, muted: st === 'pending', current: st === 'current' };
-  });
-  if (rejected) nodes.push({ label: 'Rejected', ts: '', dot: T.danger, filled: true, line: T.border, muted: false, current: false });
-  // Geometry of the rail, kept in one place so the dot, the connector and the text all line up.
-  // ROW is the distance between two dot centres — equal spacing whether or not a step carries a
-  // timestamp — and is a minimum, so a wrapped label grows the row instead of clipping. It has to
-  // clear the tallest ordinary row (label + timestamp + the 12px tail) or those rows would push
-  // past it and the spacing would drift. The connector stretches to fill whatever height the row
-  // ends up with, which is what makes the segments meet edge-to-edge as one continuous line.
-  // OFF drops the dot onto the centre of the label's first line; since that offset also pushes the
-  // NEXT row's dot down, the connector reclaims it with an equal negative bottom margin — without
-  // that, every junction shows a 2px break.
-  const DOT = 14, LINE = 2, LH = 18, OFF = (LH - DOT) / 2, ROW = 48;
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Timeline</div>
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {nodes.map((n, i) => {
-          const last = i === nodes.length - 1;
-          return (
-            <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'stretch', minHeight: last ? undefined : ROW }}>
-              {/* Rail: dot on top, connector filling the rest of the row. The column stretches to
-                  the full row height, so the connector ends exactly where the next dot begins. */}
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: DOT, flexShrink: 0 }}>
-                <div style={{ width: DOT, height: DOT, borderRadius: '50%', background: n.filled ? n.dot : 'transparent', border: `2px solid ${n.dot}`, flexShrink: 0, marginTop: OFF, boxSizing: 'border-box' }} />
-                {!last && <div style={{ width: LINE, flex: 1, minHeight: 8, background: n.line, borderRadius: LINE, marginBottom: -OFF }} />}
-              </div>
-              <div style={{ minWidth: 0, paddingBottom: last ? 0 : 12 }}>
-                <p style={{ margin: 0, fontSize: 13, lineHeight: `${LH}px`, fontWeight: n.muted ? 600 : 800, color: n.label === 'Rejected' ? T.danger : n.muted ? T.textMuted : T.textMain, wordBreak: 'break-word' }}>{n.label}{n.current && <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 700, color: T.blue }}>CURRENT</span>}</p>
-                {n.ts && <p style={{ margin: '2px 0 0', fontSize: 11, lineHeight: '15px', color: T.textMuted }}>{n.ts}</p>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+  // Enrich each step with its timestamp + whether it happened, then hand the fully-computed rungs
+  // to the shared rail. The presentation (dots, connectors, done/current/pending, red terminal)
+  // is identical to before — it just lives in components/TxnTimeline now, shared with Merchant.
+  const rich: TlStep[] = steps.map(s => ({ ...s, ts: when(s.key), reached: reached.has(s.key) }));
+  return <TimelineRail steps={rich} currentIndex={curIdx} done={done} rejected={rejected} />;
 };
 
 const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> = ({ row, onClose }) => {

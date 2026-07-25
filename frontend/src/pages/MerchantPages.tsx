@@ -3,6 +3,7 @@ import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField } from '../components/UI';
 import { Icon } from '../components/Icon';
+import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
 import { IfscField } from '../components/IfscField';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { fireConfetti } from '../utils/confetti';
@@ -1452,6 +1453,101 @@ const DetailSection: React.FC<{ title: string; children: React.ReactNode }> = ({
   </div>
 );
 
+// ─── Merchant transaction Timeline — the same visual rail as the Agent module ─────────────────
+// Renders through the shared components/TxnTimeline, so styling/spacing/behaviour are identical.
+// The step ladder mirrors the real merchant workflow and is derived from the transaction's own
+// lifecycle signals (status, action timestamps, audit + remarks history) rather than a hardcoded
+// status match — so it stays correct across the deposit/withdrawal/settlement variants. The review
+// stage is NEVER hardcoded: it reads as whoever the request was actually sent to (Manager Review /
+// Supervisor Review / …), resolved via the same reviewerRoleCode used everywhere else.
+const MERCHANT_REJECTED_STATUSES = new Set(['REJECTED', 'SA_REJECTED', 'CANCELLED']);
+// Statuses that mean the request is sitting in (or came back from) the review gate — the review
+// rung is the current one even before the reviewer has acted, so the timestamp fields are empty.
+// SLIP_SUBMITTED is overloaded (awaiting review, OR reviewer-approved and forwarded to Admin); the
+// approval signals below take precedence, so a post-approval SLIP_SUBMITTED lands on "Approved".
+const MERCHANT_REVIEW_STATUSES = new Set(['SLIP_SUBMITTED', 'PENDING_APPROVAL', 'SUPERVISOR_REVIEW', 'MANAGER_REVIEW', 'RESUBMITTED']);
+
+const buildMerchantTimeline = (
+  d: Transaction, audit: AuditLogEntry[],
+): { steps: TlStep[]; currentIndex: number; done: boolean; rejected: boolean } => {
+  const isDeposit = d.type.startsWith('DEPOSIT');
+  const isWithdrawal = d.type.startsWith('WITHDRAWAL');
+  const isSettlement = d.type.startsWith('SETTLEMENT');
+  // A deposit is reviewed at the Supervisor gate, a withdrawal at the Manager gate; the label is
+  // relabelled to the actual approver's role (Send To Approval) via reviewerRoleCode.
+  const gate: 'SUPERVISOR' | 'MANAGER' = isDeposit ? 'SUPERVISOR' : 'MANAGER';
+  const who = merchantRoleLabel(reviewerRoleCode(d.type, d.approverRole, gate)) || (gate === 'MANAGER' ? 'Manager' : 'Supervisor');
+
+  const actions = new Set(audit.map(a => a.action));
+  const has = (...as: string[]) => as.some(a => actions.has(a));
+  const auditTs = (...as: string[]) => {
+    for (const a of as) { const e = audit.find(x => x.action === a); if (e) return formatDateTime(e.createdAt); }
+    return '';
+  };
+  const remarkHas = (...names: string[]) => (d.remarksHistory || []).some(r => names.includes(r.action));
+  const fmtTs = (v?: string | null) => (v ? formatDateTime(v) : '');
+
+  const created = d.createdAt ? formatDateTime(d.createdAt) : `${d.date} ${d.time}`;
+  const slips = (d.merchantProofs && d.merchantProofs.length) ? d.merchantProofs : (d.merchantProof ? [d.merchantProof] : []);
+  const sentForApproval = has('SENT_FOR_APPROVAL') || !!d.approverName;
+  const reviewApproved = has('SUPERVISOR_APPROVED', 'MANAGER_APPROVED') || remarkHas('APPROVED');
+  const adminApproved = has('ADMIN_APPROVED');
+  const approved = reviewApproved || adminApproved;
+  // Settlements skip the review gate (they go straight to Admin), so their review rung only lights
+  // up on real review activity — never on the status alone (a settlement's SLIP_SUBMITTED means
+  // "awaiting Admin completion", not "in review").
+  const reviewHappened = reviewApproved
+    || has('SUPERVISOR_REJECTED', 'MANAGER_REJECTED', 'SUPERVISOR_RESUBMITTED', 'MANAGER_RESUBMITTED')
+    || remarkHas('APPROVED', 'REJECTED', 'RESUBMITTED')
+    || !!d.supervisorActionAt || !!d.managerActionAt
+    || (!isSettlement && MERCHANT_REVIEW_STATUSES.has(d.status));
+  const reviewTs = fmtTs(d.supervisorActionAt || d.managerActionAt) || auditTs('SUPERVISOR_APPROVED', 'MANAGER_APPROVED');
+  const completedTs = fmtTs(d.adminActionAt) || auditTs('ADMIN_APPROVED');
+
+  const done = d.status === 'DEPOSITED' || d.status === 'COMPLETED';
+  const rejected = MERCHANT_REJECTED_STATUSES.has(d.status);
+
+  const sentStep: TlStep[] = sentForApproval
+    ? [{ key: 'sent', label: 'Sent for Approval', ts: auditTs('SENT_FOR_APPROVAL'), reached: true }] : [];
+
+  let steps: TlStep[];
+  if (isDeposit) {
+    steps = [
+      { key: 'created', label: 'Deposit Created', ts: created, reached: true },
+      { key: 'proof', label: 'Proof Uploaded', ts: '', reached: slips.length > 0 },
+      ...sentStep,
+      { key: 'review', label: `${who} Review`, ts: '', reached: reviewHappened },
+      { key: 'approved', label: 'Approved', ts: reviewTs, reached: approved },
+      { key: 'deposited', label: 'Deposited', ts: completedTs, reached: done },
+    ];
+  } else if (isWithdrawal) {
+    steps = [
+      { key: 'created', label: 'Withdrawal Created', ts: created, reached: true },
+      ...sentStep,
+      { key: 'review', label: `${who} Review`, ts: '', reached: reviewHappened },
+      { key: 'approved', label: 'Approved', ts: reviewTs, reached: approved },
+      { key: 'completed', label: 'Completed', ts: completedTs, reached: done },
+    ];
+  } else {
+    // Settlement: skips the review gate (goes to Admin), so the review rung only appears when a
+    // review actually took place. The payment happens offline; Admin completion is the terminal.
+    steps = [
+      { key: 'created', label: 'Settlement Created', ts: created, reached: true },
+      ...sentStep,
+      ...(reviewHappened ? [{ key: 'review', label: `${who} Review`, ts: '', reached: true } as TlStep] : []),
+      { key: 'approved', label: 'Approved', ts: reviewTs || completedTs, reached: approved },
+      { key: 'completed', label: 'Settlement Completed', ts: completedTs, reached: done },
+    ];
+  }
+
+  // Current rung = the furthest one that has actually happened (the transaction is "on" it while it
+  // waits for the next). Ignored by the rail when done/rejected — it colours every reached rung then.
+  let lastReached = 0;
+  steps.forEach((s, i) => { if (s.reached) lastReached = i; });
+  const currentIndex = done || rejected ? -1 : lastReached;
+  return { steps, currentIndex, done, rejected };
+};
+
 export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: string; onClose: () => void }> = ({ tx, viewerRole, onClose }) => {
   const [d, setD] = useState<Transaction>(tx);
   const [audit, setAudit] = useState<AuditLogEntry[]>([]);
@@ -1469,20 +1565,9 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
   const created = d.createdAt ? formatDateTime(d.createdAt) : `${d.date} ${d.time}`;
   const paymentMethod = d.depositType ? depositTypeLabel(d.depositType) : (d.payoutMode || '—');
 
-  // Timeline of status changes: creation + each recorded approval action. This modal is
-  // client-facing (only role === 'MERCHANT' users reach it — see isOverseerRole), so actions taken
-  // by an internal Clari5Pay role show the role alone; the client's own staff keep their names.
-  // The internal audit log is unaffected and still records the real user.
-  const timeline: { label: string; who: string; at: string }[] = [
-    { label: 'Created', who: `${d.creatorUsername || d.merchant}`, at: created },
-    ...((d.remarksHistory || []).map(r => ({
-      label: r.action.charAt(0) + r.action.slice(1).toLowerCase(),
-      who: isInternalRole(r.role)
-        ? (merchantRoleLabel(r.role) || r.role)
-        : `${merchantRoleLabel(r.role) || r.role} · ${r.user}`,
-      at: r.at,
-    }))),
-  ];
+  // The transaction Timeline — the same visual rail the Agent module uses, driven by this
+  // transaction's own lifecycle. The review stage names the actual approver (never hardcoded).
+  const tl = buildMerchantTimeline(d, audit);
 
   return (
     <Modal title={`Transaction Details — ${d.ref}`} onClose={onClose} wide>
@@ -1538,15 +1623,8 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         </DetailSection>
       )}
 
-      <DetailSection title="Timeline">
-        {timeline.map((e, i) => (
-          <div key={i} style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: i < timeline.length - 1 ? `1px solid ${T.borderLight}` : 'none' }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: T.textMain, minWidth: 110 }}>{e.label}</span>
-            <span style={{ fontSize: 12, color: T.textMuted, flex: 1 }}>{e.who}</span>
-            <span style={{ fontSize: 11, color: T.textMuted, whiteSpace: 'nowrap' }}>{e.at}</span>
-          </div>
-        ))}
-      </DetailSection>
+      <TxnTimeline steps={tl.steps} currentIndex={tl.currentIndex} done={tl.done} rejected={tl.rejected} />
+
 
       {(slips.length > 0 || d.adminProof || d.adminBankImage) && (
         <DetailSection title="Uploaded Documents / Slips">
