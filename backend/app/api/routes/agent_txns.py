@@ -127,7 +127,7 @@ SETTLEMENT_METHODS = {"CASH", "BANK", "CRYPTO"}
 # Cash and Crypto follow their own Submit Account step (token / wallet instead of an Agent
 # Account) and their own withdrawal gate order. BANK/UPI/IMPS/NEFT/RTGS are untouched.
 TOKEN_METHODS = {"CASH"}          # Submit Account captures Token Details + Note + token image
-WALLET_METHODS = {"CRYPTO"}       # Submit Account captures a Wallet Address + payment slip
+WALLET_METHODS = {"CRYPTO"}       # Submit Account captures the Wallet Address ONLY (slip at next step)
 SPECIAL_METHODS = TOKEN_METHODS | WALLET_METHODS
 
 
@@ -923,13 +923,15 @@ class _Base(BaseModel):
 class AgentAccountSubmit(BaseModel):
     """What the Data Operator submits, by method:
       • BANK/UPI/IMPS/NEFT/RTGS → agentAccountId (one of that agent's own Agent Accounts)
-      • CASH                    → tokenDetails + noteNumber + accountProof (token image)
-      • CRYPTO                  → walletAddress + accountProof (crypto payment slip)
+      • CASH                    → tokenDetails + noteNumber
+      • CRYPTO                  → walletAddress (the payment slip is captured at the next step)
     """
     agentAccountId: int | None = None
     tokenDetails: str | None = None
     noteNumber: str | None = None
     walletAddress: str | None = None
+    # Legacy field — accepted for backward compatibility but no longer collected at this step for
+    # any method (crypto now uploads its slip at Pay / Upload Slip, like every other deposit).
     accountProof: str | None = None          # data URL
 
 
@@ -1381,16 +1383,15 @@ async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession
         note_txt = f"Token {token} / note {note} submitted"
 
     elif method in WALLET_METHODS:
-        # CRYPTO — the operator types the wallet the funds were sent to, plus the payment slip.
+        # CRYPTO — Wallet Submission captures the destination wallet ONLY. The payment slip is
+        # collected at the next step (Pay / Upload Slip), the same as every other deposit method —
+        # no payment proof is uploaded here (accountProof is deliberately ignored for crypto).
         wallet = (body.walletAddress or "").strip()
         if not wallet:
             raise HTTPException(status_code=400, detail="Crypto Wallet Address is required.")
         if not _valid_wallet(wallet):
             raise HTTPException(status_code=400, detail="Enter a valid crypto wallet address.")
-        if not body.accountProof:
-            raise HTTPException(status_code=400, detail="Crypto payment slip is required.")
         t.wallet_address = wallet
-        t.account_proof = body.accountProof
         note_txt = f"Wallet {wallet} submitted"
 
     else:

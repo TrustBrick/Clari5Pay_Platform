@@ -2135,7 +2135,7 @@ const AgentTxnManagementPage: React.FC<{
                         perform it and only at the status that expects it. */}
                     {/* Cash names its two operator steps after the token it handles — Submit Token
                         then Upload Token — since there is no account to submit and no slip to pay. */}
-                    {isDeposit && canOperate && x.status === requestedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setAcctRow(x)}>{isTokenMethod(x.txnMethod) ? 'Submit Token' : 'Submit Account'}</Btn>}
+                    {isDeposit && canOperate && x.status === requestedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setAcctRow(x)}>{isTokenMethod(x.txnMethod) ? 'Submit Token' : isWalletMethod(x.txnMethod) ? 'Submit Wallet' : 'Submit Account'}</Btn>}
                     {isDeposit && canOperate && x.status === submittedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setSlipRow(x)}>{isTokenMethod(x.txnMethod) ? 'Upload Token' : 'Pay / Upload Slip'}</Btn>}
                     {isDeposit && canOperate && x.status === 'SUPERVISOR_APPROVED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
                     {/* Withdrawal (approve-first): every method is created at MANAGER_REVIEW
@@ -3005,8 +3005,6 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
   const [token, setToken] = useState('');
   const [note, setNote] = useState('');
   const [wallet, setWallet] = useState('');
-  const [proof, setProof] = useState('');
-  const [proofName, setProofName] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -3020,17 +3018,10 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
       .catch(() => { setAccounts([]); showToast('Failed to load agent accounts.', 'error'); });
   }, [row.agentMasterId, isCash, isCrypto, showToast]);
 
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (!f) return;
-    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
-    try { setProof(await fileToDataUrl(f)); setProofName(f.name); }
-    catch { showToast('Could not read the file.', 'error'); }
-  };
-
   const chosen = accounts?.find(a => String(a.id) === sel);
 
   const submit = async () => {
-    let body: { agentAccountId?: number; tokenDetails?: string; noteNumber?: string; walletAddress?: string; accountProof?: string };
+    let body: { agentAccountId?: number; tokenDetails?: string; noteNumber?: string; walletAddress?: string };
     if (isCash) {
       if (!token.trim()) { showToast('Enter the Token Details.', 'error'); return; }
       if (!note.trim()) { showToast('Enter the Unique Note Number.', 'error'); return; }
@@ -3038,10 +3029,11 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
       // customer gave them; the slip uploaded at the next step is the proof.
       body = { tokenDetails: token.trim(), noteNumber: note.trim() };
     } else if (isCrypto) {
+      // Wallet Submission captures the wallet address ONLY. The payment slip is uploaded at the
+      // next step (Pay / Upload Slip), exactly like every other deposit method.
       if (!wallet.trim()) { showToast('Enter the Crypto Wallet Address.', 'error'); return; }
       if (!isValidWallet(wallet)) { showToast('Enter a valid crypto wallet address.', 'error'); return; }
-      if (!proof) { showToast('Upload the Crypto payment slip.', 'error'); return; }
-      body = { walletAddress: wallet.trim(), accountProof: proof };
+      body = { walletAddress: wallet.trim() };
     } else {
       if (!sel) { showToast('Select an agent account to send.', 'error'); return; }
       body = { agentAccountId: Number(sel) };
@@ -3055,11 +3047,11 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
     finally { setBusy(false); }
   };
 
-  const title = isCash ? 'Submit Token' : isCrypto ? 'Submit Wallet Details' : 'Submit Account';
-  // Cash no longer uploads a token image, so the token + note alone enable Submit. Crypto still
-  // requires its payment slip; Bank/UPI still require an account to be chosen.
+  const title = isCash ? 'Submit Token' : isCrypto ? 'Submit Wallet Address' : 'Submit Account';
+  // Cash needs token + note; Crypto needs only a valid wallet address (the slip moved to the next
+  // step); Bank/UPI still require an account to be chosen.
   const canSubmit = isCash ? Boolean(token.trim() && note.trim())
-    : isCrypto ? Boolean(isValidWallet(wallet) && proof)
+    : isCrypto ? isValidWallet(wallet)
     : Boolean(sel);
 
   return (
@@ -3076,13 +3068,11 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
       ) : isCrypto ? (
         <>
           <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
-            Enter the wallet the funds were sent to and upload the crypto payment slip. The Supervisor verifies both.
+            Enter the wallet the funds were sent to. You will pay and upload the crypto payment slip at
+            the next step (Pay / Upload Slip).
           </p>
           <Input label="Crypto Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="Destination wallet address"
             hint={wallet.trim() && !isValidWallet(wallet) ? 'Not a valid wallet address format' : 'Enter carefully — crypto transfers are irreversible'} />
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Crypto Payment Slip</label>
-          <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
-          {proofName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 12 }}>Attached: {proofName}</div>}
         </>
       ) : (
         <>
@@ -3275,6 +3265,9 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   // A CASH deposit has no UTR: the money changes hands in person, so no rail issues a reference and
   // the slip is the only proof. Every other deposit, and every payout, still captures one.
   const isCashDeposit = mode === 'deposit' && isTokenMethod(row.txnMethod);
+  // A CRYPTO deposit has no agent account — the destination wallet (submitted at the previous step)
+  // is shown here read-only, and the operator only pays and uploads the slip.
+  const isCryptoDeposit = mode === 'deposit' && isWalletMethod(row.txnMethod);
   // A CASH withdrawal hands physical money over, so the operator must attach proof of it — there is
   // no rail, no slip and no UTR to evidence it otherwise. Crypto confirms on the wallet alone.
   const isCashConfirm = confirmOnly && isTokenMethod(row.txnMethod);
@@ -3376,12 +3369,16 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
         <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
           {mode === 'payout'
             ? `Pay the member · ${row.membershipId}`
-            : `Send to · ${row.agentAccountRef || '—'} (${row.agentAccountType || '—'})`}
+            : isCryptoDeposit
+              ? 'Crypto Wallet Address (funds sent to)'
+              : `Send to · ${row.agentAccountRef || '—'} (${row.agentAccountType || '—'})`}
         </div>
         <div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>
           {mode === 'payout'
             ? [row.payoutAccountHolder, row.payoutAccountNumber || row.payoutUpiId, row.payoutIfsc, row.payoutBankName].filter(Boolean).join(' · ') || '—'
-            : row.agentAccountDetail || '—'}
+            : isCryptoDeposit
+              ? (row.walletAddress || '—')
+              : row.agentAccountDetail || '—'}
         </div>
         <div style={{ marginTop: 8, fontSize: 14, fontWeight: 800, color: T.blue }}>{fmt(row.amount)}</div>
       </div>

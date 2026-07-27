@@ -898,9 +898,12 @@ class AgentTransaction(Base):
     agent_account_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)    # BANK|UPI|QR|CRYPTO
     agent_account_detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # What Submit Account captured, by method: BANK/UPI pick an Agent Account (above); CASH enters
-    # token details + note + a token image; CRYPTO enters a wallet address + a payment slip.
+    # token details + note; CRYPTO enters the wallet address ONLY. The payment slip for every method
+    # (crypto included) is captured at the later Pay / Upload Slip step, in slip_image.
     wallet_address: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    account_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # token image / crypto slip
+    # Legacy: the crypto payment slip / cash token image once captured at Submit Account. No longer
+    # written (crypto's slip now lands in slip_image); kept nullable so historical rows still render.
+    account_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     account_submitted_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     account_submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
