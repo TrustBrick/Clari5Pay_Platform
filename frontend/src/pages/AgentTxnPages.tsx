@@ -1736,40 +1736,53 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
   // How this transaction's commission was calculated (item 6) — the exact figures behind it.
   useEffect(() => { agentTxnsAPI.txnCommission(row.id).then(setComm).catch(() => {}); }, [row.id]);
 
-  const allFields: Array<[string, React.ReactNode]> = [
-    ['Reference Number', row.referenceNumber], ['Transaction Code', row.transactionCode],
-    ['Type', row.type], ['Status', <StatusPill status={row.status} type={row.type} method={row.txnMethod} approverRole={row.approverRole} />],
-    ['Agent', `${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`],
-    ['Agent Country', row.agentCountry], ['Agent State', row.agentState],
-    ['Agent Location', row.agentLocation], ['Agent Category', row.agentCategory],
-    ['Membership ID', row.membershipId], ['Membership Name', row.membershipName],
-    ['Membership Type', row.membershipType], ['Amount', fmt(row.amount)],
-    ['Country', row.country], ['State', row.state], ['Location', row.location], ['Mobile', row.mobile],
-    ['Token Details', row.tokenDetails], ['Unique Note Number', row.noteNumber],
-    // The member's own Reference Number, captured on the withdrawal request.
-    ['Reference Number (Member)', row.memberReference],
-    ['Crypto Wallet Address', row.walletAddress],
-    ['Instructions', row.instructions ? instrLabel(row.instructions) : null], ['Notes', row.notes],
-    ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'], ['Approver', row.approverName],
-    ['Approved By', row.approvedBy], ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
-    // Payment evidence — stored on the transaction and re-read here; never re-uploaded.
-    // A cash deposit has no UTR (no rail issues one), so the row is omitted rather than
-    // rendered as a dash. Every other method, and every withdrawal, still shows it.
-    ...(row.type === 'DEPOSIT' && isTokenMethod(row.txnMethod)
-      ? [] : [['UTR Number', row.depositUtr] as [string, React.ReactNode]]),
-    ['Slip By', row.slipSubmittedBy],
-    ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
-    ['Sent To (Agent A/C)', row.agentAccountRef ? `${row.agentAccountRef} · ${row.agentAccountDetail || ''}` : null],
-    ['Paid To', [row.payoutAccountHolder, row.payoutAccountNumber || row.payoutUpiId, row.payoutBankName].filter(Boolean).join(' · ') || null],
-    [roleWord(reviewerRoleCode(row.type, row.approverRole, 'SUPERVISOR')) || 'Supervisor', row.supervisorName],
-    [roleWord(reviewerRoleCode(row.type, row.approverRole, 'MANAGER')) || 'Manager', row.managerName],
-    ['Review Remark', row.reviewRemark],
-    ['Deposited By', row.depositedBy],
-    ['Deposited (IST)', row.depositedDate ? `${row.depositedDate} ${row.depositedTime || ''}` : null],
-    ['Created By', row.createdBy], ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`],
+  // Grouped into logical sections (same across Deposit / Withdrawal / Settlement). Each field
+  // auto-hides when it has no value, and a whole section disappears if every field is empty.
+  // Redundant / noise fields are dropped outright: Transaction Code (Reference Number is the
+  // identifier), Country / State / Location (agent + member geography), and Membership Type.
+  const sections: Array<{ title: string; fields: Array<[string, React.ReactNode]> }> = [
+    { title: 'Transaction Information', fields: [
+      ['Reference Number', row.referenceNumber],
+      ['Type', row.type],
+      ['Status', <StatusPill status={row.status} type={row.type} method={row.txnMethod} approverRole={row.approverRole} />],
+      ['Amount', fmt(row.amount)],
+      ['Unique Note Number', row.noteNumber],
+      ['Token Details', row.tokenDetails],
+      ['Crypto Wallet Address', row.walletAddress],
+      // A cash deposit has no UTR (no rail issues one), so the row is omitted for it.
+      ...(row.type === 'DEPOSIT' && isTokenMethod(row.txnMethod)
+        ? [] : [['UTR Number', row.depositUtr] as [string, React.ReactNode]]),
+      ['Reference Number (Member)', row.memberReference],
+      ['Instructions', row.instructions ? instrLabel(row.instructions) : null],
+      ['Notes', row.notes],
+    ] },
+    { title: 'Agent', fields: [
+      ['Agent', `${row.agentCode || '—'}${row.agentName ? ` · ${row.agentName}` : ''}`],
+      ['Agent Category', row.agentCategory],
+    ] },
+    { title: 'Member Information', fields: [
+      ['Membership ID', row.membershipId],
+      ['Membership Name', row.membershipName],
+      ['Mobile', row.mobile],
+    ] },
+    { title: 'Approval & Processing', fields: [
+      ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'],
+      ['Approver', row.approverName],
+      ['Approved By', row.approvedBy],
+      ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
+      ['Slip By', row.slipSubmittedBy],
+      ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
+      ['Sent To (Agent A/C)', row.agentAccountRef ? `${row.agentAccountRef} · ${row.agentAccountDetail || ''}` : null],
+      ['Paid To', [row.payoutAccountHolder, row.payoutAccountNumber || row.payoutUpiId, row.payoutBankName].filter(Boolean).join(' · ') || null],
+      [roleWord(reviewerRoleCode(row.type, row.approverRole, 'SUPERVISOR')) || 'Supervisor', row.supervisorName],
+      [roleWord(reviewerRoleCode(row.type, row.approverRole, 'MANAGER')) || 'Manager', row.managerName],
+      ['Review Remark', row.reviewRemark],
+      ['Deposited By', row.depositedBy],
+      ['Deposited (IST)', row.depositedDate ? `${row.depositedDate} ${row.depositedTime || ''}` : null],
+      ['Created By', row.createdBy],
+      ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`],
+    ] },
   ];
-  // Only rows that actually carry data are rendered; the grid reflows to close the gaps.
-  const fields = allFields.filter(([, v]) => hasDetailValue(v));
 
   // The uploaded slip and the Mark-Deposit proof, shown from storage every time. Each renders
   // through SlipView, which shows the image (or names the PDF) and offers a Download.
@@ -1789,18 +1802,25 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
   ];
 
   return (
-    <Modal title={`${row.type === 'DEPOSIT' ? 'Agent Deposit' : 'Agent Withdrawal'} — ${row.referenceNumber}`} onClose={onClose} wide>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', marginBottom: 16, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-        {fields.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
-      </div>
+    <Modal title={`${row.type === 'DEPOSIT' ? 'Agent Deposit' : row.type === 'SETTLEMENT' ? 'Agent Settlement' : 'Agent Withdrawal'} — ${row.referenceNumber}`} onClose={onClose} wide>
+      {sections.map(sec => {
+        const fs = sec.fields.filter(([, v]) => hasDetailValue(v));
+        if (!fs.length) return null;
+        return (
+          <div key={sec.title} style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>{sec.title}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: '10px 18px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
+              {fs.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
+            </div>
+          </div>
+        );
+      })}
 
       {/* Commission Breakdown (item 6) — how the commission was calculated + balance movement. */}
       {comm && (
         <div style={{ marginBottom: 16 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Commission Breakdown</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: '10px 18px', padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
-            <DField k="Agent Name" v={comm.agentName || '—'} />
-            <DField k="Membership ID" v={comm.membershipId} />
             <DField k="Transaction Amount" v={fmt(comm.amount)} />
             <DField k="Commission %" v={`${comm.commissionPct}%`} />
             <DField k="Commission Amount" v={fmt(comm.commissionAmount)} />
