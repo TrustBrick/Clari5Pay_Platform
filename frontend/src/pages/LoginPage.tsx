@@ -31,6 +31,85 @@ const authErrorMessage = (e: any, fallback: string): string => {
   return fallback;
 };
 
+// ─── OtpBoxes — six linked single-digit inputs for OTP entry ───────────────────
+// Auth-only UX: auto-focus the first box, auto-advance on entry, Backspace steps back,
+// paste fills every box, numeric-only. The parent owns the value; `onComplete` fires once with
+// the just-completed 6-digit string (do NOT read parent state there — it lags a keystroke).
+// Purely presentational: no API / verification logic lives here.
+const OTP_LEN = 6;
+const OtpBoxes: React.FC<{
+  value: string;
+  onChange: (v: string) => void;
+  onComplete?: (v: string) => void;
+  disabled?: boolean;
+  autoFocus?: boolean;
+  invalid?: boolean;
+}> = ({ value, onChange, onComplete, disabled, autoFocus, invalid }) => {
+  const refs = useRef<Array<HTMLInputElement | null>>([]);
+  useEffect(() => { if (autoFocus) refs.current[0]?.focus(); }, [autoFocus]);
+
+  const commit = (next: string) => {
+    const v = next.replace(/\D/g, '').slice(0, OTP_LEN);
+    onChange(v);
+    const focusIdx = Math.min(v.length, OTP_LEN - 1);
+    refs.current[focusIdx]?.focus();
+    if (v.length === OTP_LEN) onComplete?.(v);
+    return v;
+  };
+
+  const handleChange = (i: number, raw: string) => {
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) { onChange((value.slice(0, i) + value.slice(i + 1)).slice(0, OTP_LEN)); return; }
+    // A single digit lands in this box and advances; multiple (fast typing / autofill) fill onward.
+    if (digits.length === 1) {
+      const next = (value.slice(0, i) + digits + value.slice(i + 1)).slice(0, OTP_LEN);
+      onChange(next);
+      if (i < OTP_LEN - 1) refs.current[i + 1]?.focus();
+      if (next.length === OTP_LEN) onComplete?.(next);
+    } else {
+      commit(value.slice(0, i) + digits);
+    }
+  };
+
+  const handleKeyDown = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace' && !value[i] && i > 0) {
+      e.preventDefault();
+      onChange(value.slice(0, i - 1) + value.slice(i));
+      refs.current[i - 1]?.focus();
+    } else if (e.key === 'ArrowLeft' && i > 0) { e.preventDefault(); refs.current[i - 1]?.focus(); }
+    else if (e.key === 'ArrowRight' && i < OTP_LEN - 1) { e.preventDefault(); refs.current[i + 1]?.focus(); }
+    else if (e.key === 'Enter' && value.length === OTP_LEN) { e.preventDefault(); onComplete?.(value); }
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 10, marginBottom: 16 }} onPaste={e => { e.preventDefault(); commit(e.clipboardData.getData('text')); }}>
+      {Array.from({ length: OTP_LEN }).map((_, i) => (
+        <input
+          key={i}
+          ref={el => { refs.current[i] = el; }}
+          value={value[i] || ''}
+          onChange={e => handleChange(i, e.target.value)}
+          onKeyDown={e => handleKeyDown(i, e)}
+          onFocus={e => { e.target.select(); if (!disabled) e.currentTarget.style.borderColor = invalid ? T.danger : T.blue; }}
+          disabled={disabled}
+          inputMode="numeric"
+          autoComplete={i === 0 ? 'one-time-code' : 'off'}
+          aria-label={`OTP digit ${i + 1}`}
+          maxLength={1}
+          style={{
+            width: '100%', height: 54, textAlign: 'center', fontSize: 22, fontWeight: 800,
+            color: T.textMain, background: disabled ? T.canvas : T.surface,
+            border: `1.5px solid ${invalid ? T.danger : value[i] ? T.blue : T.border}`,
+            borderRadius: 12, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit',
+            transition: 'border-color 0.15s', cursor: disabled ? 'not-allowed' : 'text',
+          }}
+          onBlur={e => { e.currentTarget.style.borderColor = invalid ? T.danger : (value[i] ? T.blue : T.border); }}
+        />
+      ))}
+    </div>
+  );
+};
+
 const LoginPage: React.FC = () => {
   const { login, verifyOtp, resendOtp, isLoading } = useAuth();
   const { showToast } = useToast();
@@ -99,12 +178,15 @@ const LoginPage: React.FC = () => {
     }
   };
 
-  const handleVerify = async () => {
-    if (!otp || verifying) return;         // guard against double-submit
+  // codeArg lets the OTP boxes pass the just-completed value directly (React state lags a tick
+  // behind the final keystroke/paste, so auto-verify must not read `code`).
+  const handleVerify = async (codeArg?: string) => {
+    const c = (typeof codeArg === 'string' ? codeArg : code).trim();
+    if (!otp || verifying || c.length < 6) return;   // guard against double-submit / incomplete
     setError('');
     setVerifying(true);
     try {
-      await verifyOtp(otp.otpToken, code.trim());
+      await verifyOtp(otp.otpToken, c);
       // success → AuthContext sets the user; App redirects to the dashboard.
     } catch (e: any) {
       setError(authErrorMessage(e, 'Invalid OTP. Please try again.'));
@@ -152,10 +234,12 @@ const LoginPage: React.FC = () => {
     } finally { setForgotBusy(false); }
   };
 
-  const verifyResetCode = async () => {
+  const verifyResetCode = async (codeArg?: string) => {
+    const c = (typeof codeArg === 'string' ? codeArg : resetCode).trim();
+    if (forgotBusy || c.length < 6) return;
     setError(''); setForgotBusy(true);
     try {
-      const r = await authAPI.verifyResetOtp(resetToken, resetCode.trim());
+      const r = await authAPI.verifyResetOtp(resetToken, c);
       setConfirmedToken(r.confirmedToken);
       setNewPw(''); setConfirmPw('');
       setForgotStep('newpw');
@@ -247,10 +331,8 @@ const LoginPage: React.FC = () => {
             )}
 
             <div className={shake ? 'c5-shake' : undefined}>
-              <Input label="One-Time Password" value={code}
-                onChange={e=>setCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
-                onEnter={()=>{ if(code.length>=6 && !verifying) handleVerify(); }}
-                placeholder="6-digit code" icon="login" required/>
+              <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:8,textTransform:'uppercase',letterSpacing:'0.05em' }}>One-Time Password</label>
+              <OtpBoxes value={code} onChange={setCode} onComplete={handleVerify} disabled={verifying} autoFocus invalid={!!error} />
             </div>
 
             <Btn size="lg" full onClick={handleVerify} disabled={verifying||code.length<6}>
@@ -323,10 +405,8 @@ const LoginPage: React.FC = () => {
                     <Icon name="demo-tools" size={14} /> Dev mode: your code is <b style={{ letterSpacing:'0.1em' }}>{resetDevOtp}</b>
                   </div>
                 )}
-                <Input label="One-Time Password" value={resetCode}
-                  onChange={e=>setResetCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
-                  onEnter={()=>{ if(resetCode.length>=6 && !forgotBusy) verifyResetCode(); }}
-                  placeholder="6-digit code" icon="login" required/>
+                <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:8,textTransform:'uppercase',letterSpacing:'0.05em' }}>One-Time Password</label>
+                <OtpBoxes value={resetCode} onChange={setResetCode} onComplete={verifyResetCode} disabled={forgotBusy} autoFocus invalid={!!error} />
                 <Btn size="lg" full onClick={verifyResetCode} disabled={forgotBusy||resetCode.length<6}>{forgotBusy?'Verifying...':'Verify Code →'}</Btn>
                 <div style={{ display:'flex',justifyContent:'flex-end',marginTop:16 }}>
                   <span onClick={resendResetOtp} style={{ fontSize:13,color:resendIn>0?T.textLight:T.blue,cursor:resendIn>0?'default':'pointer',fontWeight:700 }}>{resendIn>0?`Resend in ${resendIn}s`:'Resend OTP'}</span>
