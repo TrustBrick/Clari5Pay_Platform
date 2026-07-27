@@ -1,7 +1,7 @@
 import React from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, memberLabel } from '../utils/helpers';
-import { Badge, Btn, TableSkeleton } from './UI';
+import { Badge, Btn, TableSkeleton, CopyButton } from './UI';
 import { Icon, type IconName } from './Icon';
 import type { Transaction } from '../types';
 
@@ -35,21 +35,6 @@ const rowAction = (mode: ActionMode, status: string, type: string): { label: str
   }
   if (mode === 'view') return { label: 'View', action: 'view', variant: 'ghost', icon: 'view' };
   return null;
-};
-
-// Click-to-copy control for reference numbers (transient ✓ feedback).
-const CopyRef: React.FC<{ value: string }> = ({ value }) => {
-  const [copied, setCopied] = React.useState(false);
-  const copy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch { /* ignore */ }
-  };
-  return (
-    <button onClick={copy} title="Copy reference number" aria-label="Copy reference number"
-      style={{ border:'none',background:'transparent',cursor:'pointer',color:copied?T.success:T.textMuted,lineHeight:1,padding:'0 2px',display:'inline-flex',alignItems:'center' }}>
-      <Icon name={copied ? 'approve' : 'copy'} size={13} />
-    </button>
-  );
 };
 
 const typeColor = (type: string): { color: string; bg: string } => {
@@ -86,7 +71,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
               <td style={{ padding:'11px 14px' }}>
                 <span style={{ display:'inline-flex',alignItems:'center',gap:6 }}>
                   <span style={{ fontWeight:700,color:T.textMain }}>{t.ref}</span>
-                  <CopyRef value={t.ref} />
+                  <CopyButton value={t.ref} stop title="Copy reference number" />
                 </span>
               </td>
               <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:700 }}>{t.merchant}</td>

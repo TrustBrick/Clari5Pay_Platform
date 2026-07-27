@@ -142,6 +142,29 @@ export const Btn: React.FC<{
   return <button type={type} onClick={onClick} disabled={disabled} className="c5-btn" style={{ ...base,...vars[variant],...style }}>{children}</button>;
 };
 
+// ─── CopyButton — click-to-copy with transient ✓ feedback ─────────────────────
+// One shared control for every "copy this value" affordance (references, IDs, account
+// numbers, UTRs). Swaps the copy icon to a check for ~1.2s — self-contained feedback, no
+// toast needed. Pass `stop` when it sits inside a clickable row so the click doesn't also
+// trigger the row's onClick. Optional `label` renders visible text (e.g. "Copy Link").
+export const CopyButton: React.FC<{
+  value: string; title?: string; label?: string; size?: number; stop?: boolean; style?: CSSProperties;
+}> = ({ value, title = 'Copy', label, size = 13, stop, style = {} }) => {
+  const [copied, setCopied] = useState(false);
+  const copy = async (e: React.MouseEvent) => {
+    if (stop) e.stopPropagation();
+    if (!value) return;
+    try { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch { /* clipboard blocked — ignore */ }
+  };
+  return (
+    <button type="button" onClick={copy} title={copied ? 'Copied' : title} aria-label={title}
+      style={{ border:'none',background:'transparent',cursor:'pointer',color:copied?T.success:T.textMuted,lineHeight:1,padding:label?'2px 4px':'0 2px',display:'inline-flex',alignItems:'center',gap:label?5:0,fontSize:12,fontWeight:700,fontFamily:'inherit',...style }}>
+      <Icon name={copied ? 'approve' : 'copy'} size={size} />
+      {label && <span>{copied ? 'Copied' : label}</span>}
+    </button>
+  );
+};
+
 // ─── enterSubmit — shared Enter-to-submit for multi-field forms ────────────────
 // Returns an onKeyDown handler for a form's root element: pressing Enter fires `submit`,
 // but ONLY when `canSubmit` is true (mirror the primary button's enabled state) so a form

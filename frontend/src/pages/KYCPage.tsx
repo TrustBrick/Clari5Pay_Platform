@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { Card, Btn, Input, Modal, Pager, enterSubmit } from '../components/UI';
+import { Card, Btn, Input, Modal, Pager, enterSubmit, CopyButton } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { useToast } from '../context/ToastContext';
 import { fileToDataUrl } from '../utils/helpers';
@@ -374,7 +374,7 @@ const AadhaarView: React.FC<FlowProps> = ({ onDone, onBack }) => {
             <div style={{ fontSize: 13, color: T.blue, wordBreak: 'break-all', marginBottom: 8 }}>
               <a href={link} target="_blank" rel="noreferrer" style={{ color: T.blue }}>{link}</a>
             </div>
-            {referenceId && <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 14 }}>Reference ID: <span style={{ fontFamily: 'monospace' }}>{referenceId}</span></div>}
+            {referenceId && <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 14, display: 'inline-flex', alignItems: 'center', gap: 4 }}>Reference ID: <span style={{ fontFamily: 'monospace' }}>{referenceId}</span><CopyButton value={referenceId} size={12} title="Copy Reference ID" /></div>}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <Btn size="sm" onClick={copyLink}><Icon name="copy" size={14} /> Copy Link</Btn>
               <Btn size="sm" variant="ghost" onClick={checkStatus} disabled={checking}>{checking ? <><Spinner /> Checking…</> : <><Icon name="refresh" size={14} /> Check Verification Status</>}</Btn>

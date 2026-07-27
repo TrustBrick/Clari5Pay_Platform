@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
 import { IfscField } from '../components/IfscField';
@@ -203,10 +203,12 @@ const MultiProofUpload: React.FC<{
 };
 
 // ─── Merchant payment-slip modal (pay using admin details, submit proof) ────────
-const SlipRow = ({ k, v }: { k: string; v: React.ReactNode }) => (
+// `copy` (the raw value) adds an inline copy-to-clipboard control after the value — used for
+// references, UTRs, account numbers and other exact strings users routinely copy.
+const SlipRow = ({ k, v, copy }: { k: string; v: React.ReactNode; copy?: string }) => (
   <div style={{ display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
     <span style={{ fontSize:12,color:T.textMuted }}>{k}</span>
-    <span style={{ fontSize:12,fontWeight:700,color:T.textMain,textAlign:'right' }}>{v}</span>
+    <span style={{ fontSize:12,fontWeight:700,color:T.textMain,textAlign:'right',display:'inline-flex',alignItems:'center',gap:6,justifyContent:'flex-end' }}>{v}{copy ? <CopyButton value={copy} size={12} title={`Copy ${k}`} /> : null}</span>
   </div>
 );
 
@@ -315,7 +317,7 @@ export const MerchantSlipModal: React.FC<{
         <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
           <SlipRow k="Amount" v={fmt(tx.amount)} />
           <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" approverRole={tx.approverRole} />} />
-          {tx.adminUtr && <SlipRow k="UTR Number" v={tx.adminUtr} />}
+          {tx.adminUtr && <SlipRow k="UTR Number" v={tx.adminUtr} copy={tx.adminUtr} />}
           {/* Receiving account the merchant pays into — UPI ID (copyable) and/or bank details. */}
           {tx.adminUpiId && (
             <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
@@ -352,7 +354,7 @@ export const MerchantSlipModal: React.FC<{
       {!canSubmitSlip && (imgs.merchantProof || tx.merchantRef) && (
         <div style={{ borderTop:`1px solid ${T.border}`,paddingTop:14,marginBottom:4 }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Your Submitted Proof</p>
-          {tx.merchantRef && <SlipRow k="Reference" v={tx.merchantRef} />}
+          {tx.merchantRef && <SlipRow k="Reference" v={tx.merchantRef} copy={tx.merchantRef} />}
           {(() => {
             const list = (imgs.merchantProofs && imgs.merchantProofs.length) ? imgs.merchantProofs : (imgs.merchantProof ? [imgs.merchantProof] : []);
             return list.length ? <ProofGallery srcs={list} /> : null;
@@ -1039,7 +1041,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Settling To (Company)</p>
       <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:16 }}>
         <SlipRow k="Company / Merchant Name" v={user.name} />
-        {user.merchantCode && <SlipRow k="Merchant ID" v={user.merchantCode} />}
+        {user.merchantCode && <SlipRow k="Merchant ID" v={user.merchantCode} copy={user.merchantCode} />}
         {user.settlement && <SlipRow k="Settlement Code" v={user.settlement} />}
         {user.country && <SlipRow k="Country" v={user.country} />}
       </div>
@@ -1304,7 +1306,7 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
         {d.payoutMode && <SlipRow k="Settlement Method" v={SETTLEMENT_METHOD_LABEL[d.payoutMode] || d.payoutMode} />}
         <SlipRow k="Amount" v={fmt(d.amount)} />
         <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} />} />
-        <SlipRow k="Reference" v={d.ref} />
+        <SlipRow k="Reference" v={d.ref} copy={d.ref} />
         {d.payoutDetails && Object.entries(d.payoutDetails).map(([k, v]) =>
           v ? <SlipRow key={k} k={SETTLEMENT_FIELD_LABEL[k] || k} v={String(v)} /> : null)}
       </div>
@@ -1572,7 +1574,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
   return (
     <Modal title={`Transaction Details — ${d.ref}`} onClose={onClose} wide>
       <DetailSection title="Transaction Information">
-        <SlipRow k="Reference Number" v={d.ref} />
+        <SlipRow k="Reference Number" v={d.ref} copy={d.ref} />
         <SlipRow k="Type" v={typeLabel(d.type)} />
         <SlipRow k="Status" v={<Badge status={d.status} type={d.type} viewerRole={viewerRole} approverRole={d.approverRole} />} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
@@ -1584,7 +1586,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
 
       <DetailSection title="Merchant Information">
         <SlipRow k="Merchant Name" v={d.merchant} />
-        {d.merchantCode && <SlipRow k="Merchant ID" v={d.merchantCode} />}
+        {d.merchantCode && <SlipRow k="Merchant ID" v={d.merchantCode} copy={d.merchantCode} />}
         {d.creatorUsername && <SlipRow k="Merchant Username" v={d.creatorUsername} />}
         {d.creatorRole && <SlipRow k="Merchant Role" v={merchantRoleLabel(d.creatorRole) || d.creatorRole} />}
       </DetailSection>
@@ -1752,13 +1754,13 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
         <SlipRow k="Type" v={typeLabel(d.type)} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
         <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} />} />
-        <SlipRow k="Reference" v={d.ref} />
+        <SlipRow k="Reference" v={d.ref} copy={d.ref} />
         {d.merchantRef && <SlipRow k="Payment / UTR Reference" v={d.merchantRef} />}
         {d.depositType && <SlipRow k="Payment Method" v={depositTypeLabel(d.depositType)} />}
         {d.payoutMode && <SlipRow k="Payout Mode" v={d.payoutMode} />}
         {d.bank && <SlipRow k="Bank" v={d.bank} />}
         {d.accountHolder && <SlipRow k="Account Holder" v={d.accountHolder} />}
-        {d.accountNumber && <SlipRow k="Account Number" v={d.accountNumber} />}
+        {d.accountNumber && <SlipRow k="Account Number" v={d.accountNumber} copy={d.accountNumber} />}
         {d.ifsc && <SlipRow k="IFSC" v={d.ifsc} />}
         {d.adminUpiId && <SlipRow k="UPI ID" v={d.adminUpiId} />}
         {d.senderUpiId && <SlipRow k="Sender UPI" v={d.senderUpiId} />}
