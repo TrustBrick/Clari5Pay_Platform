@@ -2122,7 +2122,7 @@ export const TransactionHistory: React.FC<{ user: User }> = ({ user }) => {
       <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
         <h3 style={{ margin:'0 0 12px',fontSize:14,fontWeight:800 }}>{overseer ? 'All Transactions' : 'Transaction Ledger'}</h3>
         {overseer && <p style={{ margin:'-6px 0 12px',fontSize:11,color:T.textMuted }}>Read-only view of every merchant's transactions, ordered by transaction time (most recent first).</p>}
-        <TxSearchFilters onApply={setQuery} onClear={()=>setQuery({})} loading={filtering} />
+        <TxSearchFilters onApply={setQuery} onClear={()=>setQuery({})} loading={filtering} storageKey="transaction-history" />
         <div style={{ display:'flex',gap:8,flexWrap:'wrap',marginTop:12 }}>
           <select value={type} onChange={e=>setType(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...MERCHANT_TYPES].map(v=><option key={v} value={v}>{v==='ALL'?'All Types':typeLabel(v)}</option>)}

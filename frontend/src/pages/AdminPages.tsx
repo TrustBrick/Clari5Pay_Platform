@@ -658,7 +658,7 @@ export const AdminTransactionsPage: React.FC = () => {
     <Card>
       <div style={{ padding:'16px 20px',borderBottom:`1px solid ${T.border}` }}>
         <h3 style={{ margin:'0 0 12px',fontSize:14,fontWeight:800 }}>All Transactions</h3>
-        <TxSearchFilters onApply={setQuery} onClear={()=>setQuery({})} loading={filtering} />
+        <TxSearchFilters onApply={setQuery} onClear={()=>setQuery({})} loading={filtering} storageKey="all-transactions" />
         <div style={{ display:'flex',gap:8,flexWrap:'wrap',marginTop:12 }}>
           <select value={type} onChange={e=>setType(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...REQUEST_TYPES].map(v=><option key={v} value={v}>{v==='ALL'?'All Types':typeLabel(v)}</option>)}

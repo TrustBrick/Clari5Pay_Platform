@@ -1,5 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { transactionAPI, type ActivitySignal } from '../services/api';
+
+/**
+ * Like useState, but the value is mirrored to sessionStorage under `key`, so a filter set
+ * survives navigation between pages and a page refresh — within the SAME tab only. It is
+ * intentionally not persisted across sessions: sessionStorage is per-tab, is wiped when the
+ * tab/browser closes, and AuthContext.logout() calls sessionStorage.clear() — so a remembered
+ * filter can never leak into a later login. Used for "remember my filters".
+ */
+export function useSessionState<T>(key: string, initial: T): [T, Dispatch<SetStateAction<T>>] {
+  const [value, setValue] = useState<T>(() => {
+    try { const raw = sessionStorage.getItem(key); return raw != null ? (JSON.parse(raw) as T) : initial; }
+    catch { return initial; }
+  });
+  useEffect(() => {
+    try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* quota / disabled — ignore */ }
+  }, [key, value]);
+  return [value, setValue];
+}
 
 /**
  * Debounce a rapidly-changing value (e.g. a search box) so dependent effects — a

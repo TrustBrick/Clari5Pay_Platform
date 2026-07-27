@@ -1,7 +1,8 @@
-import React, { useState, type CSSProperties } from 'react';
+import React, { useEffect, useRef, type CSSProperties } from 'react';
 import { T } from '../utils/theme';
 import { Btn } from './UI';
 import { Icon } from './Icon';
+import { useSessionState } from '../utils/usePoll';
 import type { TxQuery } from '../services/api';
 
 /**
@@ -27,65 +28,79 @@ const lbl: CSSProperties = {
 };
 const field: CSSProperties = { display: 'flex', flexDirection: 'column' };
 
+const EMPTY_FILTERS = { ref: '', memberId: '', dateFrom: '', dateTo: '', dtFrom: '', dtTo: '' };
+
 const TxSearchFilters: React.FC<{
   onApply: (q: TxQuery) => void;
   onClear: () => void;
   loading?: boolean;
-}> = ({ onApply, onClear, loading }) => {
-  const [ref, setRef] = useState('');
-  const [memberId, setMemberId] = useState('');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const [dtFrom, setDtFrom] = useState('');
-  const [dtTo, setDtTo] = useState('');
+  /** Persists the filter fields (per-tab, via sessionStorage) so they survive navigation and
+   *  refresh, and re-applies them once on mount to restore the filtered view. Pass a distinct
+   *  key per page so All Transactions and Transaction History remember independently. */
+  storageKey: string;
+}> = ({ onApply, onClear, loading, storageKey }) => {
+  const [f, setF] = useSessionState(`txfilters:${storageKey}`, EMPTY_FILTERS);
+  const set = (k: keyof typeof EMPTY_FILTERS, v: string) => setF(p => ({ ...p, [k]: v }));
+
+  const toQuery = (s: typeof EMPTY_FILTERS): TxQuery => ({
+    ref: s.ref.trim() || undefined,
+    member_id: s.memberId.trim() || undefined,
+    date_from: s.dateFrom || undefined,
+    date_to: s.dateTo || undefined,
+    datetime_from: s.dtFrom || undefined,
+    datetime_to: s.dtTo || undefined,
+  });
 
   const apply = () => {
     if (loading) return;
-    onApply({
-      ref: ref.trim() || undefined,
-      member_id: memberId.trim() || undefined,
-      date_from: dateFrom || undefined,
-      date_to: dateTo || undefined,
-      datetime_from: dtFrom || undefined,
-      datetime_to: dtTo || undefined,
-    });
+    onApply(toQuery(f));
   };
 
   const clear = () => {
     if (loading) return;
-    setRef(''); setMemberId(''); setDateFrom(''); setDateTo(''); setDtFrom(''); setDtTo('');
+    setF(EMPTY_FILTERS);
     onClear();
   };
+
+  // On mount, if a remembered filter set is present, re-apply it once so the table/exports show
+  // the same filtered view the user left — not just the populated fields.
+  const bootstrapped = useRef(false);
+  useEffect(() => {
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    if (Object.values(f).some(Boolean)) onApply(toQuery(f));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
       <div style={{ ...field, flex: '1 1 180px', minWidth: 160 }}>
         <label style={lbl}>Transaction Reference Number</label>
-        <input value={ref} onChange={e => setRef(e.target.value)}
+        <input value={f.ref} onChange={e => set('ref', e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') apply(); }}
           placeholder="e.g. DEP0000101" style={inp} />
       </div>
       <div style={{ ...field, flex: '1 1 150px', minWidth: 140 }}>
         <label style={lbl}>Membership ID</label>
-        <input value={memberId} onChange={e => setMemberId(e.target.value)}
+        <input value={f.memberId} onChange={e => set('memberId', e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') apply(); }}
           placeholder="e.g. MBR20240001" style={inp} />
       </div>
       <div style={{ ...field, flex: '1 1 130px' }}>
         <label style={lbl}>From Date</label>
-        <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={inp} />
+        <input type="date" value={f.dateFrom} onChange={e => set('dateFrom', e.target.value)} style={inp} />
       </div>
       <div style={{ ...field, flex: '1 1 130px' }}>
         <label style={lbl}>To Date</label>
-        <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} style={inp} />
+        <input type="date" value={f.dateTo} onChange={e => set('dateTo', e.target.value)} style={inp} />
       </div>
       <div style={{ ...field, flex: '1 1 170px' }}>
         <label style={lbl}>From Date &amp; Time</label>
-        <input type="datetime-local" value={dtFrom} onChange={e => setDtFrom(e.target.value)} style={inp} />
+        <input type="datetime-local" value={f.dtFrom} onChange={e => set('dtFrom', e.target.value)} style={inp} />
       </div>
       <div style={{ ...field, flex: '1 1 170px' }}>
         <label style={lbl}>To Date &amp; Time</label>
-        <input type="datetime-local" value={dtTo} onChange={e => setDtTo(e.target.value)} style={inp} />
+        <input type="datetime-local" value={f.dtTo} onChange={e => set('dtTo', e.target.value)} style={inp} />
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
         <Btn size="sm" onClick={apply} disabled={loading}>{loading ? <><Icon name="pending" size={14} /> Applying…</> : <><Icon name="search" size={14} /> Apply Filters</>}</Btn>

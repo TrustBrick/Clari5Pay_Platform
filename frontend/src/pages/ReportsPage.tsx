@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
 import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel, clientApproverLabel, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
@@ -6,7 +6,7 @@ import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../co
 import { Icon, type IconName } from '../components/Icon';
 import { transactionAPI, userAPI } from '../services/api';
 import type { ReportRange } from '../services/api';
-import { usePoll } from '../utils/usePoll';
+import { usePoll, useSessionState } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
 import {
@@ -898,8 +898,10 @@ const ReportsView: React.FC<ReportsViewProps> = ({
   // `draft` is bound to the filter inputs; `f` is the *applied* filter set that
   // actually drives the table, summary/footer totals, count and exports. Editing a
   // field only updates the draft — nothing filters until "Apply Filters" is pressed.
-  const [draft, setDraft] = useState<RFilters>(EMPTY_FILTERS);
-  const [f, setF] = useState<RFilters>(EMPTY_FILTERS);
+  // Remembered per-tab (sessionStorage): both the draft inputs and the applied set survive
+  // navigation + refresh, and reset on logout / tab close. See useSessionState.
+  const [draft, setDraft] = useSessionState<RFilters>('reports:draft', EMPTY_FILTERS);
+  const [f, setF] = useSessionState<RFilters>('reports:f', EMPTY_FILTERS);
   const [applying, setApplying] = useState(false);
   const [genAt] = useState(() => new Date());
   const toast = useToast();
@@ -930,6 +932,16 @@ const ReportsView: React.FC<ReportsViewProps> = ({
     try { await reload(serverRange(EMPTY_FILTERS.datePreset, '', '')); setF(EMPTY_FILTERS); }
     finally { setApplying(false); }
   };
+
+  // Restore a remembered filter set on mount: if the persisted draft is non-default, re-apply it
+  // once so the server refetches the right window and the applied view matches what the user left.
+  const bootstrapped = useRef(false);
+  useEffect(() => {
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    if (JSON.stringify(draft) !== JSON.stringify(EMPTY_FILTERS)) applyFilters();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!data) return (
     <div>
