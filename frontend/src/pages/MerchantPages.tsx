@@ -2191,18 +2191,43 @@ const WhatsAppIcon: React.FC<{ size?: number; color?: string }> = ({ size = 20, 
 );
 
 // ─── Customer Support chat (merchant side, WebSocket) ──────────────────────────
+// Quick-action chips: clicking one only populates the input (never auto-sends). The welcome
+// screen lists the same topics support can help with.
+const SUPPORT_CHIPS = ['Deposit', 'Withdrawal', 'Settlement', 'KYC', 'Reports', 'Account'];
+const SUPPORT_TOPICS = ['Deposits', 'Withdrawals', 'Settlements', 'KYC', 'Reports', 'Technical Issues'];
+type WsState = 'connecting' | 'online' | 'offline';
+
 export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
   const { showToast } = useToast();
   const [messages, setMessages] = useState<SupportMessage[]>([]);
   const [input, setInput] = useState('');
-  const [connected, setConnected] = useState(false);
+  const [wsState, setWsState] = useState<WsState>('connecting');
   const [sending, setSending] = useState(false);
   const [conv, setConv] = useState<{ queued: boolean; agentName: string | null; status: string } | null>(null);
+  // A file staged for preview before the user presses Send (attachments no longer fire on pick).
+  const [pending, setPending] = useState<{ dataUrl: string; name: string; size: number; type: string } | null>(null);
+  const [showNew, setShowNew] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const atBottomRef = useRef(true);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  const scrollToBottom = () => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); setShowNew(false); };
+  const onScroll = () => {
+    const el = listRef.current; if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (atBottomRef.current) setShowNew(false);
+  };
+  // Auto-scroll only when the user is already at the bottom (or just sent a message); otherwise
+  // leave their scroll position alone and surface a "New Messages" pill instead.
+  useEffect(() => {
+    const last = messages[messages.length - 1];
+    if (atBottomRef.current || last?.sender === 'MERCHANT') scrollToBottom();
+    else setShowNew(true);
+  }, [messages]);
+
   // Refresh assignment status whenever the thread changes (a new message may have just assigned us).
   const refreshConv = () => supportAPI.myConversation().then(setConv).catch(()=>{});
   useEffect(() => { refreshConv(); }, [messages.length]);
@@ -2212,8 +2237,8 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
     refreshConv();
     const ws = new WebSocket(supportWsUrl());
     wsRef.current = ws;
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
+    ws.onopen = () => setWsState('online');
+    ws.onclose = () => setWsState('offline');
     ws.onmessage = (ev) => {
       try {
         const m = JSON.parse(ev.data) as SupportMessage;
@@ -2225,6 +2250,19 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
 
   const send = async () => {
     const content = input.trim();
+    // A staged attachment sends over REST (large base64 can exceed the socket frame limit) together
+    // with any typed caption; the socket echoes it back, deduped on id.
+    if (pending) {
+      setSending(true);
+      try {
+        const m = await supportAPI.send(content, undefined, { dataUrl: pending.dataUrl, name: pending.name });
+        setMessages(prev => prev.some(x => x.id === m.id) ? prev : [...prev, m]);
+        setInput(''); setPending(null);
+      } catch (e: any) {
+        showToast(e?.response?.data?.detail || 'Failed to send attachment', 'error');
+      } finally { setSending(false); }
+      return;
+    }
     if (!content) return;
     setInput('');
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -2234,54 +2272,55 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
     }
   };
 
-  // Attach an image/document: validate client-side, then send (with any typed text) over the
-  // socket, or via REST as a fallback. The receiver gets it in real time.
-  const sendAttachment = async (f: File) => {
+  // Stage a picked file for preview (name / size / thumbnail + remove) instead of sending it now.
+  const onPickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
     const err = chatAttachmentError(f);
     if (err) { showToast(err, 'error'); return; }
-    setSending(true);
     try {
       const att = await readChatAttachment(f);
-      // Always send attachments over REST (not the socket) — large base64 payloads can exceed
-      // the WebSocket frame limit. The server still delivers to both parties in real time, so
-      // the socket echoes it back; dedupe on id to avoid showing it twice.
-      const m = await supportAPI.send(input.trim(), undefined, { dataUrl: att.dataUrl, name: att.name });
-      setMessages(prev => prev.some(x => x.id === m.id) ? prev : [...prev, m]);
-      setInput('');
-    } catch (e: any) {
-      showToast(e?.response?.data?.detail || 'Failed to send attachment', 'error');
-    } finally { setSending(false); }
+      setPending({ dataUrl: att.dataUrl, name: att.name, size: f.size, type: f.type });
+    } catch { showToast('Could not read the file', 'error'); }
   };
-  const onPickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) sendAttachment(f);
-    e.target.value = '';
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!sending) send(); }  // Shift+Enter = newline
   };
+  const useChip = (topic: string) => { setInput(prev => (prev.trim() ? prev : `I need help with ${topic}: `)); inputRef.current?.focus(); };
+
+  const status: Record<WsState, { label: string; color: string }> = {
+    online: { label: 'Online', color: T.success },
+    connecting: { label: 'Connecting', color: T.warning },
+    offline: { label: 'Offline', color: T.danger },
+  };
+  const st = status[wsState];
+  const canSend = (!!input.trim() || !!pending) && !sending;
 
   return (
     <div style={{ maxWidth:800,height:'calc(100vh - 120px)',display:'flex',flexDirection:'column',gap:16 }}>
-      {/* Emergency Contact — instant WhatsApp support, above the live chat. */}
-      <Card style={{ padding:'16px 20px', borderLeft:`3px solid ${WA_GREEN}` }}>
-        <div style={{ display:'flex',alignItems:'center',gap:14,flexWrap:'wrap' }}>
-          <div style={{ width:44,height:44,flexShrink:0,borderRadius:14,background:WA_GREEN,display:'flex',alignItems:'center',justifyContent:'center' }}>
-            <WhatsAppIcon size={26} color="#fff" />
+      {/* Emergency Contact — instant WhatsApp support, above the live chat (compact). */}
+      <Card style={{ padding:'11px 16px', borderLeft:`3px solid ${WA_GREEN}` }}>
+        <div style={{ display:'flex',alignItems:'center',gap:12,flexWrap:'wrap' }}>
+          <div style={{ width:36,height:36,flexShrink:0,borderRadius:11,background:WA_GREEN,display:'flex',alignItems:'center',justifyContent:'center' }}>
+            <WhatsAppIcon size={20} color="#fff" />
           </div>
           <div style={{ flex:'1 1 220px',minWidth:0 }}>
-            <h3 style={{ margin:0,fontSize:14,fontWeight:800,color:T.textMain }}>Emergency Contact</h3>
-            <p style={{ margin:'2px 0 0',fontSize:12,color:T.textMuted }}>Need immediate assistance? Chat with us instantly on WhatsApp.</p>
-            <p style={{ margin:'6px 0 0',fontSize:13,fontWeight:800,color:T.textMain,letterSpacing:'0.02em' }}>+91 91778 47799</p>
+            <h3 style={{ margin:0,fontSize:13,fontWeight:800,color:T.textMain }}>Emergency Contact <span style={{ fontWeight:700,color:T.textMain }}>· +91 91778 47799</span></h3>
+            <p style={{ margin:'1px 0 0',fontSize:11,color:T.textMuted }}>Need immediate assistance? Chat with us instantly on WhatsApp.</p>
           </div>
           <a href="https://wa.me/919177847799" target="_blank" rel="noopener noreferrer"
-            style={{ flexShrink:0,display:'inline-flex',alignItems:'center',gap:8,padding:'10px 18px',borderRadius:10,background:WA_GREEN,color:'#fff',fontSize:13,fontWeight:800,textDecoration:'none',boxShadow:`0 4px 14px ${WA_GREEN}55` }}>
-            <WhatsAppIcon size={18} color="#fff" /> Chat on WhatsApp
+            style={{ flexShrink:0,display:'inline-flex',alignItems:'center',gap:8,padding:'8px 16px',borderRadius:10,background:WA_GREEN,color:'#fff',fontSize:12.5,fontWeight:800,textDecoration:'none',boxShadow:`0 4px 14px ${WA_GREEN}55` }}>
+            <WhatsAppIcon size={16} color="#fff" /> Chat on WhatsApp
           </a>
         </div>
       </Card>
 
-      <Card style={{ padding:'16px 20px' }}>
-        <div style={{ display:'flex',alignItems:'center',gap:12 }}>
+      <Card style={{ padding:'14px 20px' }}>
+        <div style={{ display:'flex',alignItems:'center',gap:12,flexWrap:'wrap' }}>
           <div style={{ width:44,height:44,borderRadius:14,background:T.grad1,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22 }}><Icon name="chat" size={22} /></div>
-          <div>
+          <div style={{ minWidth:0 }}>
             <h2 style={{ margin:0,fontSize:15,fontWeight:800 }}>Customer Support</h2>
             <p style={{ margin:0,fontSize:12,color: conv?.queued ? T.warning : conv?.agentName ? T.success : T.textMuted }}>
               {conv?.queued
@@ -2291,17 +2330,38 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
                 : 'Chat with our support team in real time'}
             </p>
           </div>
-          <div style={{ marginLeft:'auto',display:'flex',alignItems:'center',gap:6 }}>
-            <div style={{ width:8,height:8,borderRadius:'50%',background:connected?T.success:T.textLight }}/>
-            <span style={{ fontSize:11,color:connected?T.success:T.textMuted,fontWeight:700 }}>{connected?'Connected':'Connecting...'}</span>
+          {/* Status badge (Online / Connecting / Offline) */}
+          <div style={{ marginLeft:'auto',display:'inline-flex',alignItems:'center',gap:6,padding:'4px 10px',borderRadius:20,background:`color-mix(in srgb, ${st.color} 12%, transparent)` }}>
+            <span style={{ width:8,height:8,borderRadius:'50%',background:st.color }}/>
+            <span style={{ fontSize:11,color:st.color,fontWeight:800 }}>{st.label}</span>
           </div>
+        </div>
+        {/* Support information row */}
+        <div style={{ display:'flex',gap:22,flexWrap:'wrap',marginTop:12,paddingTop:12,borderTop:`1px solid ${T.borderLight}` }}>
+          {([['Support Available','24×7'],['Average Response','< 5 Minutes'],['Status',st.label]] as [string,string][]).map(([k,v])=>(
+            <div key={k}>
+              <p style={{ margin:0,fontSize:9.5,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>{k}</p>
+              <p style={{ margin:'1px 0 0',fontSize:12.5,fontWeight:700,color:k==='Status'?st.color:T.textMain }}>{v}</p>
+            </div>
+          ))}
         </div>
       </Card>
 
-      <Card style={{ flex:1,padding:0,display:'flex',flexDirection:'column',overflow:'hidden' }}>
-        <div style={{ flex:1,overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:12 }}>
-          {messages.length === 0 && <div style={{ margin:'auto',color:T.textMuted,fontSize:13 }}>No messages yet. Say hello 👋</div>}
-          {messages.map((m, i)=>{
+      <Card style={{ flex:1,padding:0,display:'flex',flexDirection:'column',overflow:'hidden',position:'relative' }}>
+        <div ref={listRef} onScroll={onScroll} style={{ flex:1,overflowY:'auto',padding:20,display:'flex',flexDirection:'column',gap:12 }}>
+          {messages.length === 0 ? (
+            <div style={{ margin:'auto',textAlign:'center',maxWidth:360,padding:'20px 0' }}>
+              <div style={{ width:52,height:52,borderRadius:16,background:T.infoBg,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 12px' }}><Icon name="chat" size={26} color={T.blue} /></div>
+              <h3 style={{ margin:'0 0 6px',fontSize:15,fontWeight:800,color:T.textMain }}>Welcome to Customer Support</h3>
+              <p style={{ margin:'0 0 14px',fontSize:12.5,color:T.textMuted }}>Our support team is ready to assist you. You can ask about:</p>
+              <div style={{ display:'flex',flexWrap:'wrap',gap:6,justifyContent:'center',marginBottom:14 }}>
+                {SUPPORT_TOPICS.map(t=>(
+                  <span key={t} style={{ fontSize:11,fontWeight:700,color:T.textMain,background:T.canvas,border:`1px solid ${T.border}`,borderRadius:20,padding:'4px 11px' }}>{t}</span>
+                ))}
+              </div>
+              <p style={{ margin:0,fontSize:11.5,color:T.textMuted }}>Type your message below to start a conversation.</p>
+            </div>
+          ) : messages.map((m, i)=>{
             const mine = m.sender === 'MERCHANT';
             const prev = messages[i-1];
             const showSep = i === 0 || chatDateLabel(prev.createdAt) !== chatDateLabel(m.createdAt);
@@ -2323,14 +2383,46 @@ export const MerchantSupportChat: React.FC<{ user: User }> = ({ user }) => {
           })}
           <div ref={bottomRef}/>
         </div>
-        <div style={{ padding:'12px 16px',borderTop:`1px solid ${T.border}`,display:'flex',gap:10,alignItems:'center' }}>
+
+        {/* New-messages pill — appears only when new content arrives while scrolled up. */}
+        {showNew && (
+          <button onClick={scrollToBottom}
+            style={{ position:'absolute',bottom:150,left:'50%',transform:'translateX(-50%)',zIndex:5,display:'inline-flex',alignItems:'center',gap:6,padding:'6px 14px',borderRadius:20,border:'none',background:T.blue,color:'#fff',fontSize:11.5,fontWeight:800,cursor:'pointer',boxShadow:'0 6px 18px rgba(0,0,0,0.2)',fontFamily:'inherit' }}>
+            <Icon name="download" size={13} /> New Messages
+          </button>
+        )}
+
+        {/* Quick-action chips (populate the input only) */}
+        <div style={{ display:'flex',gap:6,flexWrap:'wrap',padding:'10px 16px 0' }}>
+          {SUPPORT_CHIPS.map(c=>(
+            <button key={c} onClick={()=>useChip(c)} disabled={sending}
+              style={{ fontSize:11,fontWeight:700,color:T.blue,background:T.infoBg,border:`1px solid ${T.blue}30`,borderRadius:20,padding:'4px 12px',cursor:sending?'default':'pointer',fontFamily:'inherit' }}>{c}</button>
+          ))}
+        </div>
+
+        {/* Staged-attachment preview (before send) */}
+        {pending && (
+          <div style={{ display:'flex',alignItems:'center',gap:10,margin:'10px 16px 0',padding:'8px 10px',border:`1px solid ${T.border}`,borderRadius:10,background:T.canvas }}>
+            {isChatImage(pending.type, pending.name)
+              ? <img src={pending.dataUrl} alt={pending.name} style={{ width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0 }} />
+              : <div style={{ width:38,height:38,borderRadius:8,background:T.infoBg,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}><Icon name="file" size={18} color={T.blue} /></div>}
+            <div style={{ flex:1,minWidth:0 }}>
+              <p style={{ margin:0,fontSize:12,fontWeight:700,color:T.textMain,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>{pending.name}</p>
+              <p style={{ margin:0,fontSize:10.5,color:T.textMuted }}>{formatBytes(pending.size)}</p>
+            </div>
+            <button onClick={()=>setPending(null)} disabled={sending} title="Remove" aria-label="Remove attachment"
+              style={{ background:'none',border:'none',cursor:sending?'default':'pointer',color:T.danger,display:'flex',alignItems:'center' }}><Icon name="close" size={16} /></button>
+          </div>
+        )}
+
+        <div style={{ padding:'12px 16px',borderTop:`1px solid ${T.border}`,display:'flex',gap:10,alignItems:'flex-end' }}>
           <input ref={fileRef} type="file" accept={CHAT_ACCEPT} onChange={onPickFile} style={{ display:'none' }} />
           <button onClick={()=>fileRef.current?.click()} disabled={sending} title="Attach image or document" aria-label="Attach file"
             style={{ width:40,height:40,flexShrink:0,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.canvas,color:T.textMuted,fontSize:18,cursor:sending?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center' }}>{sending ? <Icon name="pending" size={18} /> : <Icon name="attach" size={18} />}</button>
-          <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()}
-            placeholder={sending ? 'Sending attachment…' : 'Type a message...'} disabled={sending}
-            style={{ flex:1,padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:13,outline:'none',fontFamily:'inherit',color:T.textMain,background:T.canvas }}/>
-          <Btn onClick={send} disabled={!input.trim()||sending} style={{ borderRadius:12 }}><Icon name="send" size={14} /> Send</Btn>
+          <textarea ref={inputRef} value={input} onChange={e=>setInput(e.target.value)} onKeyDown={onKeyDown} rows={1}
+            placeholder={sending ? 'Sending…' : 'Type a message…  (Enter to send · Shift+Enter for a new line)'} disabled={sending}
+            style={{ flex:1,padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:12,fontSize:13,outline:'none',fontFamily:'inherit',color:T.textMain,background:T.canvas,resize:'none',maxHeight:120,lineHeight:1.5,boxSizing:'border-box' }}/>
+          <Btn onClick={send} disabled={!canSend} style={{ borderRadius:12 }}><Icon name="send" size={14} /> Send</Btn>
         </div>
       </Card>
     </div>
