@@ -1163,7 +1163,8 @@ export const AdminMerchantsPage: React.FC = () => {
         <Btn onClick={()=>setShowCreate(true)}>+ Onboard Merchant</Btn>
       </div>
       {showCreate && (
-        <Modal title="Onboard Merchant" onClose={()=>setShowCreate(false)} wide>
+        <Modal title="Onboard Merchant" onClose={()=>setShowCreate(false)} wide
+          onEnter={()=>{ if(form.name&&form.email&&form.phone&&form.payIn&&form.payOut&&form.settlement) createMerchant(); }}>
           {/* Section 1 — Merchant Information */}
           <p style={{ margin:'0 0 12px',fontSize:12,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Merchant Information</p>
           <div style={{ display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:'0 18px',marginBottom:20 }}>
@@ -1316,7 +1317,8 @@ export const AdminMerchantsPage: React.FC = () => {
 
       {/* Create User — adds a login under the current business (codes/fees inherited). */}
       {viewCompany && showCreateUser && (
-        <Modal title={`Create User — ${viewCompany.name}`} onClose={()=>setShowCreateUser(false)} wide>
+        <Modal title={`Create User — ${viewCompany.name}`} onClose={()=>setShowCreateUser(false)} wide
+          onEnter={()=>{ if(!uMismatch&&!creatingUser) createUser(); }}>
           <div style={{ display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(0,1fr)',gap:'0 18px' }}>
             <Input label="Merchant Name" value={viewCompany.name} readOnly onChange={()=>{}}/>
             <Input label="User ID" value="Auto-generated" readOnly onChange={()=>{}} hint="Assigned on creation"/>
@@ -1737,7 +1739,8 @@ export const AdminAccountsPage: React.FC = () => {
       )}
 
       {showCreate && (
-        <Modal title="Add Bank Account" onClose={()=>setShowCreate(false)} wide>
+        <Modal title="Add Bank Account" onClose={()=>setShowCreate(false)} wide
+          onEnter={()=>{ if(form.account_name&&form.account_number&&form.ifsc_code&&form.bank_name&&form.branch) create(); }}>
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
             <BankNamesDatalist names={BANK_NAMES}/>
             <Input label="Account Name" value={form.account_name} onChange={e=>set('account_name',e.target.value)} required/>
@@ -2003,7 +2006,8 @@ export const SaAdminsPage: React.FC = () => {
         <Btn onClick={()=>setShowCreate(true)}>+ Create Admin</Btn>
       </div>
       {showCreate && (
-        <Modal title="Create Admin Account" onClose={()=>setShowCreate(false)}>
+        <Modal title="Create Admin Account" onClose={()=>setShowCreate(false)}
+          onEnter={()=>{ if(!passwordMismatch&&form.reason.trim()) create(); }}>
           <Input label="Full Name" value={form.name} onChange={e=>set('name',e.target.value)} required placeholder="Admin's full name"/>
           <Input label="Username" value={form.username} onChange={e=>set('username',e.target.value)} required placeholder="Login username"/>
           <Input label="Email ID" type="email" value={form.email} onChange={e=>set('email',e.target.value)} required placeholder="admin@company.com"/>

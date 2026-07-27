@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
-import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
 import { IfscField } from '../components/IfscField';
@@ -609,7 +609,7 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   };
 
   return (
-    <div>
+    <div onKeyDown={enterSubmit(!(loading||!form.amount||!form.memberName), submit)}>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
         <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={DEPOSIT_TYPE_OPTIONS} required/>
         <Input label="Amount (INR)" type="text" inputMode="decimal" value={form.amount} onChange={e=>set('amount',formatIndianAmountInput(e.target.value))} placeholder="Min 1" required/>
@@ -797,7 +797,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   };
 
   return (
-    <div>
+    <div onKeyDown={enterSubmit(!(loading||!amount||!memberId||!!amountErr), submit)}>
       <div style={{ background:T.infoBg,borderRadius:12,padding:'14px 16px',marginBottom:16 }}>
         <div style={{ display:'flex',gap:32,flexWrap:'wrap' }}>
           <div>
@@ -1026,7 +1026,7 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   };
 
   return (
-    <div>
+    <div onKeyDown={enterSubmit(!(loading||!amount||!method), submit)}>
       <div style={{ background:T.grad3,borderRadius:14,padding:20,marginBottom:18,textAlign:'center' }}>
         <p style={{ fontSize:11,color:'rgba(255,255,255,0.6)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Available Balance</p>
         <p style={{ fontSize:30,fontWeight:800,color:'#fff',margin:0 }}>{fmt(available)}</p>
@@ -2450,7 +2450,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
       </Card>
 
       {edit && (
-        <Modal title="Edit Profile" onClose={()=>setEdit(false)}>
+        <Modal title="Edit Profile" onClose={()=>setEdit(false)} onEnter={()=>{ if(!saving) save(); }}>
           {/* Profile picture */}
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Profile Picture</p>
           <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:16 }}>
@@ -2495,7 +2495,7 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
       )}
 
       {contactEdit && (
-        <Modal title="Edit Contact Details" onClose={()=>setContactEdit(false)}>
+        <Modal title="Edit Contact Details" onClose={()=>setContactEdit(false)} onEnter={()=>{ if(!savingContact) saveContact(); }}>
           <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 14px' }}>Update the email and phone number for your account. Your phone number is where WhatsApp transaction notifications are sent.</p>
           <Input label="Email ID" type="email" value={contactForm.email} onChange={e=>setContact('email',e.target.value)} placeholder="you@company.com"/>
           <Input label="Phone Number" type="tel" value={contactForm.phone} onChange={e=>setContact('phone',e.target.value)} placeholder="+91 98123 45678"/>

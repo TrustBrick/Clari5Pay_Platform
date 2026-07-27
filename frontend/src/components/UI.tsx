@@ -142,6 +142,23 @@ export const Btn: React.FC<{
   return <button type={type} onClick={onClick} disabled={disabled} className="c5-btn" style={{ ...base,...vars[variant],...style }}>{children}</button>;
 };
 
+// ─── enterSubmit — shared Enter-to-submit for multi-field forms ────────────────
+// Returns an onKeyDown handler for a form's root element: pressing Enter fires `submit`,
+// but ONLY when `canSubmit` is true (mirror the primary button's enabled state) so a form
+// never submits while required fields are missing or a request is already in flight.
+// Enter inside a <textarea> / contentEditable is ignored so multi-line fields keep newlines.
+// Safe for financial request forms (create ≠ approve): the submit handler still runs its own
+// full validation, and this guard prevents a premature submit from an early field.
+export const enterSubmit = (canSubmit: boolean, submit: () => void) =>
+  (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter' || e.defaultPrevented) return;
+    const t = e.target as HTMLElement;
+    if (t.tagName === 'TEXTAREA' || t.isContentEditable) return;
+    if (!canSubmit) return;
+    e.preventDefault();
+    submit();
+  };
+
 // ─── Input ───────────────────────────────────────────────────────────────────
 export const Input: React.FC<{
   label?: string; type?: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -360,6 +377,19 @@ export const SearchSelect: React.FC<{
           value={shown}
           placeholder={placeholder}
           onFocus={() => { setOpen(true); setQ(''); }}
+          onKeyDown={(e) => {
+            // Enter picks the first filtered match and stops here — so it never bubbles up to a
+            // form's Enter-to-submit while the operator is still choosing a country/state.
+            if (e.key === 'Enter' && open) {
+              e.preventDefault(); e.stopPropagation();
+              if (list[0]) onChange(list[0].value);
+              setOpen(false); setQ('');
+            } else if (e.key === 'Escape' && open) {
+              // Escape closes just this dropdown (preventDefault so the enclosing Modal stays open).
+              e.preventDefault(); e.stopPropagation();
+              setOpen(false);
+            }
+          }}
           onChange={(e) => { setQ(e.target.value); setOpen(true); onChange(e.target.value); }}
           style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${open ? T.blue : T.border}`, borderRadius: 10, fontSize: 14, color: T.textMain, background: T.surface, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit', transition: 'border-color 0.2s' }}
         />

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { Card, Btn, Input, Modal, Pager } from '../components/UI';
+import { Card, Btn, Input, Modal, Pager, enterSubmit } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { useToast } from '../context/ToastContext';
 import { fileToDataUrl } from '../utils/helpers';
@@ -137,10 +137,10 @@ const StatusPill: React.FC<{ status?: string | null }> = ({ status }) => {
 };
 
 // Shell that wraps every verification view: title, back link, and children.
-const VerifyShell: React.FC<{ icon: string; view?: ViewKey; title: string; children: React.ReactNode; onBack: () => void }> = ({ icon, view, title, children, onBack }) => (
+const VerifyShell: React.FC<{ icon: string; view?: ViewKey; title: string; children: React.ReactNode; onBack: () => void; onKeyDown?: (e: React.KeyboardEvent) => void }> = ({ icon, view, title, children, onBack, onKeyDown }) => (
   <div style={{ maxWidth: 720 }}>
     <button onClick={onBack} style={{ background: 'none', border: 'none', color: T.blue, fontWeight: 700, fontSize: 13, cursor: 'pointer', padding: 0, marginBottom: 14, fontFamily: 'inherit' }}>← Back to KYC Dashboard</button>
-    <Card style={{ padding: 22 }}>
+    <Card style={{ padding: 22 }} onKeyDown={onKeyDown}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
         <div style={{ width: 44, height: 44, borderRadius: 12, overflow: 'hidden', background: `${T.blue}15`, color: T.blue, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>{view ? <KycIcon view={view} emoji={icon} /> : (isIconName(icon) ? <Icon name={icon} size={24} color={T.blue} /> : icon)}</div>
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800, color: T.textMain }}>{title}</h2>
@@ -438,7 +438,7 @@ const PanView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   };
 
   return (
-    <VerifyShell icon="pan" view="pan" title="PAN Verification" onBack={onBack}>
+    <VerifyShell icon="pan" view="pan" title="PAN Verification" onBack={onBack} onKeyDown={enterSubmit(canVerify, verify)}>
       <MembershipFields m={m} />
       <VerifyBy value={mode} onChange={(v) => setMode(v as 'id' | 'image')}
         options={[{ value: 'id', label: 'ID Number' }, { value: 'image', label: 'Upload Image' }]} />
@@ -488,7 +488,7 @@ const PassportView: React.FC<FlowProps> = ({ onDone, onBack }) => {
   };
 
   return (
-    <VerifyShell icon="passport" view="passport" title="Passport Verification" onBack={onBack}>
+    <VerifyShell icon="passport" view="passport" title="Passport Verification" onBack={onBack} onKeyDown={enterSubmit(canVerify, verify)}>
       <MembershipFields m={m} />
       <VerifyBy value={mode} onChange={(v) => setMode(v as 'id' | 'image')}
         options={[{ value: 'id', label: 'Passport File Number' }, { value: 'image', label: 'Upload Image' }]} />
