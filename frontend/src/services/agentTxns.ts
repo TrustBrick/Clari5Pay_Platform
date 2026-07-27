@@ -17,6 +17,8 @@ export type AgentTxnStatus =
   | 'TOKEN_REQUESTED' | 'TOKEN_SUBMITTED' | 'WALLET_REQUESTED' | 'WALLET_SUBMITTED'
   | 'ACCOUNT_REQUESTED' | 'ACCOUNT_SUBMITTED'
   | 'SLIP_SUBMITTED' | 'SUPERVISOR_APPROVED' | 'MANAGER_REVIEW' | 'MANAGER_APPROVED'
+  // Crypto-only: a rejected crypto deposit returned to the operator to re-upload its slip (not final).
+  | 'SLIP_REJECTED'
   | 'DEPOSITED' | 'COMPLETED' | 'REJECTED' | 'PENDING' | 'APPROVED'
   | 'SUPERVISOR_REVIEW'
   // A Cash deposit split among members by a DEO: the parent container, non-crediting and final.

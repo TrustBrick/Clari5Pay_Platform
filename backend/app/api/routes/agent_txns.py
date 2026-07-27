@@ -75,6 +75,11 @@ ST_MANAGER_REVIEW = "MANAGER_REVIEW"
 # A SETTLEMENT also sits on SLIP_SUBMITTED as its "ready for the Supervisor to pay" gate, which is
 # unchanged and deliberately left alone — every code path that reads it is txn_type-gated.
 ST_SLIP_SUBMITTED = "SLIP_SUBMITTED"
+# CRYPTO deposits ONLY: a rejected crypto deposit is returned to the Data Operator to re-upload its
+# payment slip, rather than ending terminally. This is NOT a completed/rejected/final state — it is
+# an in-progress re-work state, so it never counts toward any money figure or the rejected totals.
+# Every other method (Bank / Cash) keeps ending at the terminal ST_REJECTED, unchanged.
+ST_SLIP_REJECTED = "SLIP_REJECTED"
 ST_SUPERVISOR_APPROVED = "SUPERVISOR_APPROVED"
 ST_MANAGER_APPROVED = "MANAGER_APPROVED"
 ST_DEPOSITED = "DEPOSITED"
@@ -1431,7 +1436,15 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     business = _business(user)
     t = await _load_own(db, business, txn_id)
     _require_deposit(t)
-    _require_status(t, _submitted_status(t.txn_method), "a slip")
+    # Normally the slip is uploaded right after Submit Account/Wallet. A CRYPTO deposit that a
+    # reviewer rejected is returned to SLIP_REJECTED for the operator to re-upload, so that state is
+    # also accepted here — for crypto only. Every other method keeps the single-state guard.
+    _allowed_slip_states = {_submitted_status(t.txn_method)}
+    if str(t.txn_method or "").upper() in WALLET_METHODS:
+        _allowed_slip_states.add(ST_SLIP_REJECTED)
+    if t.status not in _allowed_slip_states:
+        raise HTTPException(status_code=400, detail="This transaction is not awaiting a slip.")
+    _reupload = t.status == ST_SLIP_REJECTED     # a re-submission after a rejection
     # The slip image is always mandatory — captured once here and reused unchanged for the rest of
     # the workflow (Approvals, Mark Deposit, Details, Reports). Cash has no UTR: money changes hands
     # in person and no rail issues a reference, so the slip is the only proof. Every other method is
@@ -1448,6 +1461,12 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
     t.status = ST_SLIP_SUBMITTED             # straight to the Supervisor queue (as the merchant flow does)
+    if _reupload:
+        # Re-submission after a rejection: drop the previous reviewer's decision so the record no
+        # longer reads as "rejected", and the fresh review starts clean. The rejection stays in the
+        # timeline / audit trail, which is the history of record.
+        t.review_remark = None
+        t.supervisor_name = t.supervisor_action_at = None
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
     # "Send To Approval": the Authorized Approver is chosen at this step (after the slip uploads),
     # not at creation. Record who the deposit is addressed to; the Supervisor review is unchanged.
@@ -1457,7 +1476,9 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     # The deposit gate is Supervisor by default, but a Manager may be the chosen approver — name the
     # role the request is actually waiting on, resolved from approver_role (never hardcoded).
     _await = _role_word(t.approver_role) or "Supervisor"
-    await _log(db, t, "SLIP_SUBMITTED", user, note=f"Slip submitted — awaiting {_await} approval")
+    _slip_note = (f"Slip re-uploaded after rejection — awaiting {_await} approval" if _reupload
+                  else f"Slip submitted — awaiting {_await} approval")
+    await _log(db, t, "SLIP_SUBMITTED", user, note=_slip_note)
     if t.approver_name:
         await _log(db, t, "SENT_FOR_APPROVAL", user, approver_name=t.approver_name,
                    note=_sent_for_approval_note(t.approver_name, t.approver_role))
@@ -1492,8 +1513,13 @@ async def supervisor_approve(txn_id: int, body: AgentReviewAction, db: AsyncSess
 @router.post("/{txn_id}/supervisor/reject")
 async def supervisor_reject(txn_id: int, body: AgentReviewAction, db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_agent_operator)):
-    """The chosen Authorized Approver rejects a deposit under review → REJECTED. Only the specific
-    approver selected on the request may act (403 otherwise)."""
+    """The chosen Authorized Approver rejects a deposit under review. Only the specific approver
+    selected on the request may act (403 otherwise).
+
+    A CRYPTO deposit is returned to the Data Operator at SLIP_REJECTED so the payment slip can be
+    re-uploaded and sent for approval again (the rejection reason is shown to the operator, and kept
+    in the timeline). Every other method ends at the terminal REJECTED, exactly as before.
+    """
     remark = (body.remark or "").strip()
     if not remark:
         raise HTTPException(status_code=400, detail="Remarks are required for every review action.")
@@ -1501,12 +1527,15 @@ async def supervisor_reject(txn_id: int, body: AgentReviewAction, db: AsyncSessi
     _require_deposit(t)
     _require_sole_approver(user, t)
     _require_status(t, ST_SLIP_SUBMITTED, "Supervisor review")
-    t.status = ST_REJECTED
+    _is_crypto = str(t.txn_method or "").upper() in WALLET_METHODS
+    t.status = ST_SLIP_REJECTED if _is_crypto else ST_REJECTED
     t.supervisor_name = user.username
     t.supervisor_action_at = datetime.utcnow()
     t.review_remark = remark
     t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
-    await _log(db, t, "SUPERVISOR_REJECTED", user, note=remark)
+    _reject_note = (f"{remark} — returned to the operator to re-upload the payment slip" if _is_crypto
+                    else remark)
+    await _log(db, t, "SUPERVISOR_REJECTED", user, note=_reject_note)
     await db.commit()
     await db.refresh(t)
     return _row(t)

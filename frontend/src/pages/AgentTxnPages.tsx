@@ -54,6 +54,8 @@ const STATUS_STYLE: Record<string, { c: string; bg: string; label: string }> = {
   ACCOUNT_REQUESTED: { c: T.warning, bg: T.warningBg, label: 'Account Requested' },
   ACCOUNT_SUBMITTED: { c: T.info, bg: T.infoBg, label: 'Account Submitted' },
   SLIP_SUBMITTED: { c: T.blue, bg: `${T.blue}18`, label: 'Slip Submitted' },
+  // Crypto-only: a rejected crypto deposit returned to the operator to re-upload its slip.
+  SLIP_REJECTED: { c: T.danger, bg: T.dangerBg, label: 'Rejected — Re-upload Slip' },
   SUPERVISOR_APPROVED: { c: '#7c3aed', bg: '#7c3aed18', label: 'Approved by Supervisor' },
   // Withdrawal approve-first flow: MANAGER_REVIEW = created & awaiting the chosen approver;
   // MANAGER_APPROVED = approved, awaiting the operator's payment details.
@@ -113,7 +115,7 @@ const StatusPill: React.FC<{ status: string; type?: string | null; method?: stri
 // Status filter — the chain in workflow order, then the legacy values.
 const STATUS_FILTER_OPTIONS = [
   'TOKEN_REQUESTED', 'TOKEN_SUBMITTED', 'WALLET_REQUESTED', 'WALLET_SUBMITTED',
-  'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'SUPERVISOR_APPROVED',
+  'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'SLIP_REJECTED', 'SUPERVISOR_APPROVED',
   'MANAGER_REVIEW', 'MANAGER_APPROVED',
   'SETTLEMENT_REQUESTED', 'SETTLEMENT_ACCEPTED', 'PROOF_UPLOADED', 'SETTLED',
   'DEPOSITED', 'DISTRIBUTED', 'COMPLETED', 'REJECTED', 'PENDING', 'APPROVED',
@@ -2137,6 +2139,8 @@ const AgentTxnManagementPage: React.FC<{
                         then Upload Token — since there is no account to submit and no slip to pay. */}
                     {isDeposit && canOperate && x.status === requestedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setAcctRow(x)}>{isTokenMethod(x.txnMethod) ? 'Submit Token' : isWalletMethod(x.txnMethod) ? 'Submit Wallet' : 'Submit Account'}</Btn>}
                     {isDeposit && canOperate && x.status === submittedStatus(x.txnMethod) && <Btn size="sm" onClick={() => setSlipRow(x)}>{isTokenMethod(x.txnMethod) ? 'Upload Token' : 'Pay / Upload Slip'}</Btn>}
+                    {/* Crypto-only: a rejected crypto deposit reopens the slip step for re-upload. */}
+                    {isDeposit && canOperate && isWalletMethod(x.txnMethod) && x.status === 'SLIP_REJECTED' && <Btn size="sm" variant="danger" onClick={() => setSlipRow(x)}>Re-upload Slip</Btn>}
                     {isDeposit && canOperate && x.status === 'SUPERVISOR_APPROVED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
                     {/* Withdrawal (approve-first): every method is created at MANAGER_REVIEW
                         (Waiting for Approval); once the chosen approver approves (MANAGER_APPROVED),
@@ -3352,8 +3356,19 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
     );
   }
 
+  // A crypto deposit the reviewer sent back — the operator re-uploads the slip. Show why it was
+  // rejected so they can correct it before re-submitting.
+  const isReupload = mode === 'deposit' && row.status === 'SLIP_REJECTED';
   return (
-    <Modal title={`${isCashDeposit ? 'Upload Token' : 'Pay / Upload Slip'} — ${row.referenceNumber}`} onClose={onClose}>
+    <Modal title={`${isReupload ? 'Re-upload Slip' : isCashDeposit ? 'Upload Token' : 'Pay / Upload Slip'} — ${row.referenceNumber}`} onClose={onClose}>
+      {isReupload && (
+        <div style={{ padding: 12, borderRadius: 10, background: T.dangerBg, border: `1px solid ${T.danger}33`, marginBottom: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: T.danger, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+            Rejected{row.supervisorName ? ` by ${row.supervisorName}` : ''} — re-upload the payment slip
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: T.textMain, wordBreak: 'break-word' }}>{row.reviewRemark || 'No reason was provided.'}</div>
+        </div>
+      )}
       {/* Cash has no account to send to — the operator uploads the token image against the Token
           Details and Unique Note Number entered at Submit Token, so summarise those instead. */}
       {isCashDeposit ? (
