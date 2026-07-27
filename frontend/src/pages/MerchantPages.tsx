@@ -2452,7 +2452,8 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
       </Card>
 
       {edit && (
-        <Modal title="Edit Profile" onClose={()=>setEdit(false)} onEnter={()=>{ if(!saving) save(); }}>
+        <Modal title="Edit Profile" onClose={()=>setEdit(false)} onEnter={()=>{ if(!saving) save(); }}
+          dirty={!!(form.current || form.next || form.confirm) || avatar !== (user.avatar || null) || waEnabled !== (user.whatsappEnabled !== false)}>
           {/* Profile picture */}
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Profile Picture</p>
           <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:16 }}>
@@ -2497,7 +2498,8 @@ export const ProfilePage: React.FC<{ user: User }> = ({ user }) => {
       )}
 
       {contactEdit && (
-        <Modal title="Edit Contact Details" onClose={()=>setContactEdit(false)} onEnter={()=>{ if(!savingContact) saveContact(); }}>
+        <Modal title="Edit Contact Details" onClose={()=>setContactEdit(false)} onEnter={()=>{ if(!savingContact) saveContact(); }}
+          dirty={contactForm.email !== user.email || contactForm.phone !== (user.phone || '')}>
           <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 14px' }}>Update the email and phone number for your account. Your phone number is where WhatsApp transaction notifications are sent.</p>
           <Input label="Email ID" type="email" value={contactForm.email} onChange={e=>setContact('email',e.target.value)} placeholder="you@company.com"/>
           <Input label="Phone Number" type="tel" value={contactForm.phone} onChange={e=>setContact('phone',e.target.value)} placeholder="+91 98123 45678"/>

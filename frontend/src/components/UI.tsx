@@ -455,17 +455,29 @@ export const Modal: React.FC<{
    * <textarea> is ignored so multi-line fields keep normal newline behaviour.
    */
   onEnter?: () => void;
-}> = ({ title, children, onClose, wide, xl, xxl, icon, closeOnEsc = true, onEnter }) => {
+  /**
+   * Unsaved-changes guard. When true, an ACCIDENTAL dismiss (Esc or the ✕) asks the user to
+   * confirm before discarding, and a beforeunload guard warns on tab close / refresh. The
+   * parent's explicit Cancel button is a deliberate discard and is intentionally NOT guarded.
+   */
+  dirty?: boolean;
+}> = ({ title, children, onClose, wide, xl, xxl, icon, closeOnEsc = true, onEnter, dirty }) => {
   // Refs keep the effect stable across renders even when callers pass fresh inline arrows.
   const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
   const onEnterRef = useRef(onEnter); onEnterRef.current = onEnter;
+  const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
+  // Ask before discarding unsaved edits; deliberate Cancel bypasses this by calling onClose directly.
+  const requestClose = () => {
+    if (dirtyRef.current && !window.confirm('You have unsaved changes. Discard them?')) return;
+    onCloseRef.current();
+  };
   useEffect(() => {
     const token = {};
     modalEscStack.push(token);
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       if (modalEscStack[modalEscStack.length - 1] !== token) return; // only the top-most modal reacts
-      if (e.key === 'Escape' && closeOnEsc !== false) { e.preventDefault(); onCloseRef.current(); return; }
+      if (e.key === 'Escape' && closeOnEsc !== false) { e.preventDefault(); requestClose(); return; }
       // Ctrl/Cmd+S saves — only on modals that expose a primary action (the create/edit forms
       // that pass onEnter), so financial and approval dialogs are untouched. Works from any field
       // (an explicit save intent), and preventDefault stops the browser's "save page" dialog.
@@ -487,12 +499,19 @@ export const Modal: React.FC<{
       if (i >= 0) modalEscStack.splice(i, 1);
     };
   }, [closeOnEsc]);
+  // Warn on tab close / refresh only while there are unsaved edits.
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
   return (
     <div className="c5-overlay" style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:xxl?'24px 2.5vw':16,backdropFilter:'blur(4px)' }}>
       <div className="c5-pop" style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xxl?1760:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
         <div style={{ padding:'20px 24px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:T.surface,zIndex:1 }}>
           <h2 style={{ margin:0,fontSize:16,fontWeight:800,color:T.textMain,display:'flex',alignItems:'center',gap:9 }}>{icon && isIconName(icon) && <Icon name={icon} size={19} color={T.blue} />}{title}</h2>
-          <button onClick={onClose} aria-label="Close" style={{ background:'none',border:'none',cursor:'pointer',color:T.textMuted,borderRadius:8,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center' }}><Icon name="close" size={20} /></button>
+          <button onClick={requestClose} aria-label="Close" style={{ background:'none',border:'none',cursor:'pointer',color:T.textMuted,borderRadius:8,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center' }}><Icon name="close" size={20} /></button>
         </div>
         <div style={{ padding:'20px 24px' }}>{children}</div>
       </div>
