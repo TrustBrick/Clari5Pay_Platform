@@ -269,6 +269,9 @@ const App: React.FC = () => {
       <Header
         user={user}
         title={PAGE_TITLES[activePage] || 'Dashboard'}
+        page={activePage}
+        onNavigate={navigate}
+        onLogout={logout}
         onMenuClick={() => setSidebarOpen(o => !o)}
       />
 
