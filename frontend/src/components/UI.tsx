@@ -466,6 +466,12 @@ export const Modal: React.FC<{
       if (e.defaultPrevented) return;
       if (modalEscStack[modalEscStack.length - 1] !== token) return; // only the top-most modal reacts
       if (e.key === 'Escape' && closeOnEsc !== false) { e.preventDefault(); onCloseRef.current(); return; }
+      // Ctrl/Cmd+S saves — only on modals that expose a primary action (the create/edit forms
+      // that pass onEnter), so financial and approval dialogs are untouched. Works from any field
+      // (an explicit save intent), and preventDefault stops the browser's "save page" dialog.
+      if (e.key.toLowerCase() === 's' && (e.ctrlKey || e.metaKey) && !e.altKey && onEnterRef.current) {
+        e.preventDefault(); onEnterRef.current(); return;
+      }
       if (e.key === 'Enter' && onEnterRef.current) {
         const el = e.target as HTMLElement | null;
         const tag = el?.tagName;
