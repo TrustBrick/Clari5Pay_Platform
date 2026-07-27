@@ -90,8 +90,8 @@ export const RiskBadge: React.FC<{ risk: string }> = ({ risk }) => {
 };
 
 // ─── Card ─────────────────────────────────────────────────────────────────────
-export const Card: React.FC<{ children: React.ReactNode; style?: CSSProperties; glow?: boolean; className?: string; onClick?: () => void }> = ({ children, style={}, glow, className, onClick }) => (
-  <div className={className} onClick={onClick} style={{ background:T.surface,borderRadius:16,boxShadow:glow?`0 0 0 1px ${T.blue}30,0 8px 32px rgba(0,82,204,0.1)`:'0 4px 6px -1px rgba(0,0,0,0.07),0 2px 4px -1px rgba(0,0,0,0.04)',border:`1px solid ${T.border}`,overflow:'hidden',...style }}>
+export const Card: React.FC<{ children: React.ReactNode; style?: CSSProperties; glow?: boolean; className?: string; onClick?: () => void; onKeyDown?: (e: React.KeyboardEvent) => void }> = ({ children, style={}, glow, className, onClick, onKeyDown }) => (
+  <div className={className} onClick={onClick} onKeyDown={onKeyDown} style={{ background:T.surface,borderRadius:16,boxShadow:glow?`0 0 0 1px ${T.blue}30,0 8px 32px rgba(0,82,204,0.1)`:'0 4px 6px -1px rgba(0,0,0,0.07),0 2px 4px -1px rgba(0,0,0,0.04)',border:`1px solid ${T.border}`,overflow:'hidden',...style }}>
     {children}
   </div>
 );
@@ -148,12 +148,19 @@ export const Input: React.FC<{
   placeholder?: string; required?: boolean; hint?: string; icon?: string; style?: CSSProperties; list?: string;
   readOnly?: boolean; onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void; error?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
-}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list, inputMode, readOnly, onBlur, error }) => (
+  /** Fired on any keydown (full control). */
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  /** Convenience: fired when Enter is pressed (e.g. trigger a search or move to the next field). Skipped if a custom onKeyDown calls preventDefault. */
+  onEnter?: () => void;
+  autoFocus?: boolean; maxLength?: number; name?: string;
+}> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list, inputMode, readOnly, onBlur, error, onKeyDown, onEnter, autoFocus, maxLength, name }) => (
   <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <div style={{ position:'relative' }}>
       {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',display:'flex',alignItems:'center',fontSize:16,color:T.textMuted }}>{isIconName(icon) ? <Icon name={icon} size={16} color={T.textMuted} /> : icon}</span>}
       <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode} readOnly={readOnly} aria-invalid={error?true:undefined}
+        autoFocus={autoFocus} maxLength={maxLength} name={name}
+        onKeyDown={e=>{ onKeyDown?.(e); if(e.key==='Enter' && !e.defaultPrevented && onEnter){ onEnter(); } }}
         style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',borderWidth:1.5,borderStyle:'solid',borderColor:error?T.danger:T.border,borderRadius:10,fontSize:14,color:T.textMain,background:readOnly?T.canvas:T.surface,cursor:readOnly?'not-allowed':'text',outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
         onFocus={e=>{ if(readOnly) return; e.target.style.borderColor=error?T.danger:T.blue;e.target.style.boxShadow=`0 0 0 3px ${error?T.danger:T.blue}18`;}}
         onBlur={e=>{e.target.style.borderColor=error?T.danger:T.border;e.target.style.boxShadow='none';onBlur?.(e);}}/>
@@ -381,17 +388,58 @@ export const SearchSelect: React.FC<{
 };
 
 // ─── Modal ───────────────────────────────────────────────────────────────────
-export const Modal: React.FC<{ title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean; xxl?:boolean; icon?:string }> = ({ title, children, onClose, wide, xl, xxl, icon }) => (
-  <div className="c5-overlay" style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:xxl?'24px 2.5vw':16,backdropFilter:'blur(4px)' }}>
-    <div className="c5-pop" style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xxl?1760:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
-      <div style={{ padding:'20px 24px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:T.surface,zIndex:1 }}>
-        <h2 style={{ margin:0,fontSize:16,fontWeight:800,color:T.textMain,display:'flex',alignItems:'center',gap:9 }}>{icon && isIconName(icon) && <Icon name={icon} size={19} color={T.blue} />}{title}</h2>
-        <button onClick={onClose} aria-label="Close" style={{ background:'none',border:'none',cursor:'pointer',color:T.textMuted,borderRadius:8,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center' }}><Icon name="close" size={20} /></button>
+// Stack of open modals so a global Escape only closes the top-most one (nested
+// modals: a confirm opened over a details view closes the confirm first).
+const modalEscStack: Array<{}> = [];
+
+export const Modal: React.FC<{
+  title:string; children:React.ReactNode; onClose:()=>void; wide?:boolean; xl?:boolean; xxl?:boolean; icon?:string;
+  /** Esc closes the modal (cancel is always safe). Opt out with false for a modal that must not be dismissed by key. */
+  closeOnEsc?: boolean;
+  /**
+   * Opt-in: Enter triggers the modal's primary action. Only pass this for SAFE modals
+   * (Add Account, Assign, View — never Delete / Reject / financial approvals). Enter inside a
+   * <textarea> is ignored so multi-line fields keep normal newline behaviour.
+   */
+  onEnter?: () => void;
+}> = ({ title, children, onClose, wide, xl, xxl, icon, closeOnEsc = true, onEnter }) => {
+  // Refs keep the effect stable across renders even when callers pass fresh inline arrows.
+  const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
+  const onEnterRef = useRef(onEnter); onEnterRef.current = onEnter;
+  useEffect(() => {
+    const token = {};
+    modalEscStack.push(token);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (modalEscStack[modalEscStack.length - 1] !== token) return; // only the top-most modal reacts
+      if (e.key === 'Escape' && closeOnEsc !== false) { e.preventDefault(); onCloseRef.current(); return; }
+      if (e.key === 'Enter' && onEnterRef.current) {
+        const el = e.target as HTMLElement | null;
+        const tag = el?.tagName;
+        if (tag === 'TEXTAREA' || el?.isContentEditable) return; // let multi-line inputs keep Enter
+        if (tag === 'BUTTON' || tag === 'A') return;             // native activation handles these
+        e.preventDefault(); onEnterRef.current();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      const i = modalEscStack.indexOf(token);
+      if (i >= 0) modalEscStack.splice(i, 1);
+    };
+  }, [closeOnEsc]);
+  return (
+    <div className="c5-overlay" style={{ position:'fixed',inset:0,background:'rgba(10,37,64,0.6)',zIndex:500,display:'flex',alignItems:'center',justifyContent:'center',padding:xxl?'24px 2.5vw':16,backdropFilter:'blur(4px)' }}>
+      <div className="c5-pop" style={{ background:T.surface,borderRadius:20,width:'100%',maxWidth:xxl?1760:xl?1040:wide?740:520,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 80px rgba(0,0,0,0.25)' }}>
+        <div style={{ padding:'20px 24px',borderBottom:`1px solid ${T.border}`,display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,background:T.surface,zIndex:1 }}>
+          <h2 style={{ margin:0,fontSize:16,fontWeight:800,color:T.textMain,display:'flex',alignItems:'center',gap:9 }}>{icon && isIconName(icon) && <Icon name={icon} size={19} color={T.blue} />}{title}</h2>
+          <button onClick={onClose} aria-label="Close" style={{ background:'none',border:'none',cursor:'pointer',color:T.textMuted,borderRadius:8,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center' }}><Icon name="close" size={20} /></button>
+        </div>
+        <div style={{ padding:'20px 24px' }}>{children}</div>
       </div>
-      <div style={{ padding:'20px 24px' }}>{children}</div>
     </div>
-  </div>
-);
+  );
+};
 
 // ─── LoadingScreen (logo + spinner, shown while a page fetches its data) ───────
 export const LoadingScreen: React.FC<{ label?: string }> = ({ label = 'Loading…' }) => (

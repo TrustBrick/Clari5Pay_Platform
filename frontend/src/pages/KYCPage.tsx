@@ -190,6 +190,7 @@ const MembershipFields: React.FC<{ m: ReturnType<typeof useMemberLookup> }> = ({
       value={m.memberId}
       onChange={(e) => m.setMemberId(e.target.value.toUpperCase())}
       onBlur={() => m.lookup(m.memberId)}
+      onEnter={() => m.lookup(m.memberId)}
       placeholder="Enter Membership ID"
       required
       hint={m.looking ? 'Looking up member…' : undefined}

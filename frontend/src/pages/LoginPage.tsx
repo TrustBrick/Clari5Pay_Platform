@@ -249,6 +249,7 @@ const LoginPage: React.FC = () => {
             <div className={shake ? 'c5-shake' : undefined}>
               <Input label="One-Time Password" value={code}
                 onChange={e=>setCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
+                onEnter={()=>{ if(code.length>=6 && !verifying) handleVerify(); }}
                 placeholder="6-digit code" icon="login" required/>
             </div>
 
@@ -309,7 +310,7 @@ const LoginPage: React.FC = () => {
 
             {forgotStep==='username' && (
               <>
-                <Input label="Username" value={forgotUsername} onChange={e=>setForgotUsername(e.target.value)} placeholder="Your username" icon="user" required/>
+                <Input label="Username" value={forgotUsername} onChange={e=>setForgotUsername(e.target.value)} onEnter={()=>{ if(forgotUsername && !forgotBusy) sendResetOtp(); }} placeholder="Your username" icon="user" required/>
                 <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 14px' }}>A one-time code will be sent to the email registered for this account.</p>
                 <Btn size="lg" full onClick={sendResetOtp} disabled={forgotBusy||!forgotUsername}>{forgotBusy?'Sending...':'Send OTP'}</Btn>
               </>
@@ -324,6 +325,7 @@ const LoginPage: React.FC = () => {
                 )}
                 <Input label="One-Time Password" value={resetCode}
                   onChange={e=>setResetCode(e.target.value.replace(/[^\d]/g,'').slice(0,6))}
+                  onEnter={()=>{ if(resetCode.length>=6 && !forgotBusy) verifyResetCode(); }}
                   placeholder="6-digit code" icon="login" required/>
                 <Btn size="lg" full onClick={verifyResetCode} disabled={forgotBusy||resetCode.length<6}>{forgotBusy?'Verifying...':'Verify Code →'}</Btn>
                 <div style={{ display:'flex',justifyContent:'flex-end',marginTop:16 }}>
@@ -336,10 +338,10 @@ const LoginPage: React.FC = () => {
             {forgotStep==='newpw' && (
               <>
                 <div style={{ position:'relative' }}>
-                  <Input label="New Password" type={show?'text':'password'} value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Enter new password" icon="password" required/>
+                  <Input label="New Password" type={show?'text':'password'} value={newPw} onChange={e=>setNewPw(e.target.value)} onEnter={()=>document.querySelector<HTMLInputElement>('input[name=confirmPw]')?.focus()} placeholder="Enter new password" icon="password" required/>
                   <span onClick={()=>setShow(!show)} style={{ position:'absolute',right:12,bottom:22,cursor:'pointer',fontSize:16,color:T.textMuted }}>{show ? <Icon name="eye-off" size={16} /> : <Icon name="view" size={16} />}</span>
                 </div>
-                <Input label="Confirm Password" type={show?'text':'password'} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Re-enter new password" icon="password" required/>
+                <Input label="Confirm Password" name="confirmPw" type={show?'text':'password'} value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} onEnter={()=>{ if(newPw && confirmPw && newPw===confirmPw && !forgotBusy) submitNewPassword(); }} placeholder="Re-enter new password" icon="password" required/>
                 {confirmPw && newPw !== confirmPw && <p style={{ fontSize:11,color:T.danger,margin:'-10px 0 12px',fontWeight:600 }}>Passwords do not match</p>}
                 <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 14px' }}>{PASSWORD_POLICY_TEXT}</p>
                 <Btn size="lg" full onClick={submitNewPassword} disabled={forgotBusy||!newPw||!confirmPw}>{forgotBusy?'Updating...':'Update Password'}</Btn>

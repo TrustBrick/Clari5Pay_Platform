@@ -1003,7 +1003,10 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 
       {/* 3 — Advanced filters */}
       <RSectionTitle note="Set your filters, then click Apply Filters to update the table, footer totals and exports together."><Icon name="filter" size={15} /> Advanced Filters</RSectionTitle>
-      <Card style={{ padding: 16, marginBottom: 18 }}>
+      {/* Enter in any text filter applies the filters — same path as the Apply Filters button.
+          Guarded to INPUT targets so it never double-fires from the button or hijacks a <select>. */}
+      <Card style={{ padding: 16, marginBottom: 18 }}
+        onKeyDown={(e: React.KeyboardEvent) => { if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT' && !applying) applyFilters(); }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
           {DATE_PRESETS.map(([k, label]) => <button key={k} className="c5-btn" onClick={() => set('datePreset', k)} style={pill(draft.datePreset === k)}>{label}</button>)}
         </div>
