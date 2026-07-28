@@ -4,6 +4,7 @@ import { Btn } from './UI';
 import { Icon } from './Icon';
 import { useSessionState } from '../utils/usePoll';
 import type { TxQuery } from '../services/api';
+import { IS_DEMO } from '../utils/portal';
 
 /**
  * Server-side transaction search & date/time filters (shared by the merchant/
@@ -28,7 +29,7 @@ const lbl: CSSProperties = {
 };
 const field: CSSProperties = { display: 'flex', flexDirection: 'column' };
 
-const EMPTY_FILTERS = { ref: '', memberId: '', dateFrom: '', dateTo: '', dtFrom: '', dtTo: '' };
+const EMPTY_FILTERS = { ref: '', memberId: '', dateFrom: '', dateTo: '', dtFrom: '', dtTo: '', txClass: 'ALL' };
 
 const TxSearchFilters: React.FC<{
   onApply: (q: TxQuery) => void;
@@ -49,6 +50,8 @@ const TxSearchFilters: React.FC<{
     date_to: s.dateTo || undefined,
     datetime_from: s.dtFrom || undefined,
     datetime_to: s.dtTo || undefined,
+    // Crypto Balance module — Transaction Type filter (demo-only UI, harmless if sent on prod).
+    tx_class: s.txClass === 'ALL' ? undefined : s.txClass.toLowerCase(),
   });
 
   const apply = () => {
@@ -63,12 +66,15 @@ const TxSearchFilters: React.FC<{
   };
 
   // On mount, if a remembered filter set is present, re-apply it once so the table/exports show
-  // the same filtered view the user left — not just the populated fields.
+  // the same filtered view the user left — not just the populated fields. Compared against each
+  // field's own default (not just truthiness) since txClass defaults to the non-empty 'ALL'.
   const bootstrapped = useRef(false);
   useEffect(() => {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
-    if (Object.values(f).some(Boolean)) onApply(toQuery(f));
+    const changed = (Object.keys(EMPTY_FILTERS) as Array<keyof typeof EMPTY_FILTERS>)
+      .some(k => f[k] !== EMPTY_FILTERS[k]);
+    if (changed) onApply(toQuery(f));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -102,6 +108,16 @@ const TxSearchFilters: React.FC<{
         <label style={lbl}>To Date &amp; Time</label>
         <input type="datetime-local" value={f.dtTo} onChange={e => set('dtTo', e.target.value)} style={inp} />
       </div>
+      {IS_DEMO && (
+        <div style={{ ...field, flex: '1 1 140px' }}>
+          <label style={lbl}>Transaction Type</label>
+          <select value={f.txClass} onChange={e => set('txClass', e.target.value)} style={inp}>
+            <option value="ALL">All</option>
+            <option value="BUSINESS">Business</option>
+            <option value="CRYPTO">Crypto</option>
+          </select>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8 }}>
         <Btn size="sm" onClick={apply} disabled={loading}>{loading ? <><Icon name="pending" size={14} /> Applying…</> : <><Icon name="search" size={14} /> Apply Filters</>}</Btn>
         <Btn size="sm" variant="ghost" onClick={clear} disabled={loading}>Clear Filters</Btn>

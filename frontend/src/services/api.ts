@@ -117,6 +117,8 @@ export interface TxQuery {
   datetime_to?: string;
   limit?: number;        // optional server-side pagination
   offset?: number;
+  /** Crypto Balance module — "Transaction Type" filter: 'business' | 'crypto'. Omit/'all' = no filter. */
+  tx_class?: string;
 }
 const cleanTxParams = (p?: TxQuery): Record<string, string> | undefined => {
   if (!p) return undefined;

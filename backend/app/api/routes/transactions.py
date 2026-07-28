@@ -289,22 +289,63 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     def _sum(cond):
         return func.coalesce(func.sum(case((cond, Transaction.amount), else_=0.0)), 0.0)
 
+    # ── Crypto separation (DEMO ONLY) ────────────────────────────────────────────────
+    # A crypto leg is a deposit with deposit_type='CRYPTO' or a withdrawal with
+    # payout_mode='CRYPTO'. On demo these are pulled OUT of the Business Balance and tracked
+    # as a separate Crypto Balance (INR business amount). On PRODUCTION `demo` is False, so
+    # every business condition below stays byte-for-byte identical to before and no crypto
+    # columns are queried — the live PSP accounting path is untouched. Settlements are never
+    # crypto, so they are never excluded.
+    demo = settings.is_demo
+    _biz_dep = Transaction.deposit_type.is_distinct_from("CRYPTO")   # non-crypto deposits
+    _biz_wd = Transaction.payout_mode.is_distinct_from("CRYPTO")     # non-crypto withdrawals
+
+    dep_cond = and_(Transaction.type.in_(_DEP), Transaction.status.in_(_COMPLETED_STATUSES))
+    wd_cond = and_(Transaction.type.in_(_WD), Transaction.status == TxStatus.COMPLETED)
+    # In-flight (non-terminal) withdrawals + settlements — the running-balance base.
+    inflight_cond = and_(Transaction.type.in_(_WD + _ST), Transaction.status.notin_(_TERMINAL_STATUSES))
+    dep_count_cond = Transaction.type.in_(_DEP)
+    wd_count_cond = Transaction.type.in_(_WD)
+    if demo:
+        dep_cond = and_(dep_cond, _biz_dep)
+        wd_cond = and_(wd_cond, _biz_wd)
+        # Keep every in-flight settlement; drop only in-flight crypto withdrawals so they no
+        # longer reserve the business spendable balance.
+        inflight_cond = and_(inflight_cond, or_(Transaction.type.in_(_ST), _biz_wd))
+        dep_count_cond = and_(dep_count_cond, _biz_dep)
+        wd_count_cond = and_(wd_count_cond, _biz_wd)
+
+    crypto_deposits = crypto_withdrawals = 0.0
+    crypto_deposit_count = crypto_withdrawal_count = pending_crypto_count = 0
     if ids:
-        agg = (await db.execute(
-            select(
-                _sum(and_(Transaction.type.in_(_DEP), Transaction.status.in_(_COMPLETED_STATUSES))),
-                _sum(and_(Transaction.type.in_(_ST), Transaction.status == TxStatus.COMPLETED)),
-                _sum(and_(Transaction.type.in_(_WD), Transaction.status == TxStatus.COMPLETED)),
-                # In-flight (non-terminal) withdrawals + settlements — the running-balance base.
-                _sum(and_(Transaction.type.in_(_WD + _ST), Transaction.status.notin_(_TERMINAL_STATUSES))),
-                func.count(case((Transaction.type.in_(_DEP), 1))),
-                func.count(case((Transaction.type.in_(_WD), 1))),
-                func.count(case((Transaction.type.in_(_ST), 1))),
-            ).where(Transaction.merchant_id.in_(ids))
-        )).one()
+        cols = [
+            _sum(dep_cond),
+            _sum(and_(Transaction.type.in_(_ST), Transaction.status == TxStatus.COMPLETED)),
+            _sum(wd_cond),
+            _sum(inflight_cond),
+            func.count(case((dep_count_cond, 1))),
+            func.count(case((wd_count_cond, 1))),
+            func.count(case((Transaction.type.in_(_ST), 1))),
+        ]
+        if demo:
+            _c_dep = and_(Transaction.type.in_(_DEP), Transaction.deposit_type == "CRYPTO")
+            _c_wd = and_(Transaction.type.in_(_WD), Transaction.payout_mode == "CRYPTO")
+            cols += [
+                _sum(and_(_c_dep, Transaction.status.in_(_COMPLETED_STATUSES))),
+                _sum(and_(_c_wd, Transaction.status == TxStatus.COMPLETED)),
+                func.count(case((_c_dep, 1))),
+                func.count(case((_c_wd, 1))),
+                func.count(case((and_(or_(_c_dep, _c_wd),
+                                      Transaction.status.notin_(_TERMINAL_STATUSES)), 1))),
+            ]
+        agg = (await db.execute(select(*cols).where(Transaction.merchant_id.in_(ids)))).one()
         total_deposit, total_settled, total_withdrawn, running_base = (
             float(agg[0]), float(agg[1]), float(agg[2]), float(agg[3]))
         deposit_count, withdrawal_count, settlement_count = int(agg[4]), int(agg[5]), int(agg[6])
+        if demo:
+            crypto_deposits, crypto_withdrawals = float(agg[7]), float(agg[8])
+            crypto_deposit_count, crypto_withdrawal_count, pending_crypto_count = (
+                int(agg[9]), int(agg[10]), int(agg[11]))
     else:
         total_deposit = total_settled = total_withdrawn = running_base = 0.0
         deposit_count = withdrawal_count = settlement_count = 0
@@ -343,6 +384,11 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
     max_settleable = max_withdrawable
     # deposit_count / withdrawal_count are aggregated in SQL above (COUNT with a type filter).
 
+    # ── Crypto Balance (DEMO ONLY, INR business amount) — SEPARATE from every business figure
+    # above. Crypto never touches Business Balance / commission / spendable guard. On prod
+    # these are always 0.0 (crypto_deposits/withdrawals stay 0.0 — see `demo` gate above). ──
+    crypto_balance = crypto_deposits - crypto_withdrawals
+
     return {
         # ── Canonical financial-summary figures (new formulas) — read by EVERY
         #    portal / API / dashboard / report / export so values match everywhere. ──
@@ -369,6 +415,15 @@ async def compute_balance(db: AsyncSession, user: User) -> dict:
         "depositCount": deposit_count,
         "withdrawalCount": withdrawal_count,
         "settlementCount": settlement_count,
+        # ── Crypto Balance module (DEMO ONLY) — a fully separate figure set. Never folded
+        # into the business figures above; 0.0/0 on production. ──
+        "cryptoDeposits": crypto_deposits,
+        "cryptoWithdrawals": crypto_withdrawals,
+        "cryptoBalance": crypto_balance,          # Crypto Wallet Balance
+        "availableCrypto": crypto_balance,        # Available Crypto Balance (same basis — no crypto fees tracked)
+        "cryptoDepositCount": crypto_deposit_count,
+        "cryptoWithdrawalCount": crypto_withdrawal_count,
+        "pendingCryptoCount": pending_crypto_count,
     }
 
 
@@ -389,7 +444,11 @@ async def compute_global_summary(db: AsyncSession) -> dict:
 
     keys = ("totalDeposit", "totalWithdrawn", "totalSettled",
             "depositCommission", "withdrawalCommission", "settlementCommission",
-            "totalCommission", "totalAvailableBalance", "payoutFee", "available")
+            "totalCommission", "totalAvailableBalance", "payoutFee", "available",
+            # Crypto Balance module (DEMO ONLY) — 0.0 on prod, kept fully separate from the
+            # business figures above.
+            "cryptoDeposits", "cryptoWithdrawals", "cryptoBalance", "availableCrypto",
+            "cryptoDepositCount", "cryptoWithdrawalCount", "pendingCryptoCount")
     agg = {k: 0.0 for k in keys}
     for user in rep.values():
         s = await compute_balance(db, user)
@@ -411,6 +470,14 @@ async def compute_global_summary(db: AsyncSession) -> dict:
         "payoutFee": round(agg["payoutFee"], 2),
         "available": round(agg["available"], 2),
         "availableBalance": round(agg["available"], 2),
+        # Crypto Balance module (DEMO ONLY) — separate section, 0.0/0 on production.
+        "cryptoDeposits": round(agg["cryptoDeposits"], 2),
+        "cryptoWithdrawals": round(agg["cryptoWithdrawals"], 2),
+        "cryptoBalance": round(agg["cryptoBalance"], 2),
+        "availableCrypto": round(agg["availableCrypto"], 2),
+        "cryptoDepositCount": int(agg["cryptoDepositCount"]),
+        "cryptoWithdrawalCount": int(agg["cryptoWithdrawalCount"]),
+        "pendingCryptoCount": int(agg["pendingCryptoCount"]),
     }
 
 
@@ -918,11 +985,17 @@ def _resolve_statuses(status_param: str | None):
 def _apply_paged_filters(stmt, *, search=None, ref=None, member_id=None,
                          date_from=None, date_to=None, datetime_from=None, datetime_to=None,
                          status=None, type=None, amount_min=None, amount_max=None,
-                         merchant=None):
+                         merchant=None, tx_class=None):
     """All filtering for the paged endpoints — every clause runs in the database.
     Reuses the shared date/ref/member filtering, then broadens `search` (ref + Membership
     ID + member name + merchant + account holder) and adds status / type / amount /
-    merchant filters."""
+    merchant / tx_class filters.
+
+    `tx_class` — Crypto module's "Transaction Type" filter: 'business' | 'crypto'
+    (case-insensitive; any other value, including None/'all', is a no-op). A row is crypto
+    when it's a crypto deposit (deposit_type='CRYPTO') or a crypto withdrawal
+    (payout_mode='CRYPTO'); settlements are never crypto. Purely a display/history filter —
+    does not touch balance math."""
     stmt = _apply_tx_filters(stmt, None, date_from, date_to, datetime_from, datetime_to,
                              ref=ref, member_id=member_id)
     # Exact business name (not a partial `search` match) — Merchant Analytics drills into one
@@ -948,6 +1021,17 @@ def _apply_paged_filters(stmt, *, search=None, ref=None, member_id=None,
         stmt = stmt.where(Transaction.amount >= amount_min)
     if amount_max is not None:
         stmt = stmt.where(Transaction.amount <= amount_max)
+    tx_class = (tx_class or "").strip().lower()
+    if tx_class == "crypto":
+        stmt = stmt.where(or_(Transaction.deposit_type == "CRYPTO", Transaction.payout_mode == "CRYPTO"))
+    elif tx_class == "business":
+        # NOT a plain negation of the crypto OR — settlements (and any row) carry a NULL
+        # deposit_type, and `NOT (NULL OR x)` is NULL in SQL (excludes the row). is_distinct_from
+        # treats NULL as "not CRYPTO", so every non-crypto row — including settlements — matches.
+        stmt = stmt.where(and_(
+            Transaction.deposit_type.is_distinct_from("CRYPTO"),
+            Transaction.payout_mode.is_distinct_from("CRYPTO"),
+        ))
     return stmt
 
 
@@ -1042,6 +1126,7 @@ async def get_my_transactions_paged(
     type: str | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
+    tx_class: str | None = None,
     page: int = 1,
     page_size: int = 10,
 ):
@@ -1053,7 +1138,7 @@ async def get_my_transactions_paged(
         search=search, ref=ref, member_id=member_id,
         date_from=date_from, date_to=date_to, datetime_from=datetime_from,
         datetime_to=datetime_to, status=status, type=type,
-        amount_min=amount_min, amount_max=amount_max,
+        amount_min=amount_min, amount_max=amount_max, tx_class=tx_class,
     )
     return await _paged_response(db, stmt, (Transaction.created_at.desc(),), page, page_size)
 
@@ -1325,6 +1410,7 @@ async def get_all_transactions_overseer_paged(
     type: str | None = None,
     amount_min: float | None = None,
     amount_max: float | None = None,
+    tx_class: str | None = None,
     page: int = 1,
     page_size: int = 10,
 ):
@@ -1334,7 +1420,7 @@ async def get_all_transactions_overseer_paged(
         select(Transaction), search=search, ref=ref, member_id=member_id,
         date_from=date_from, date_to=date_to, datetime_from=datetime_from,
         datetime_to=datetime_to, status=status, type=type,
-        amount_min=amount_min, amount_max=amount_max,
+        amount_min=amount_min, amount_max=amount_max, tx_class=tx_class,
     )
     return await _paged_response(db, stmt, _chronological_order(), page, page_size)
 
@@ -2409,10 +2495,17 @@ async def create_withdrawal(
     # new ID takes the entered name; a conflicting name is rejected.
     member_name = await resolve_member_name(db, current_user, data.memberId, data.memberName)
     summary = await compute_balance(db, current_user)
-    pay_out_rate = (current_user.pay_out_fee or 0) / 100
-    total_required = data.amount * (1 + pay_out_rate)
-    if total_required > summary["spendableLimit"] + 1e-6:   # guard: never over-draw
-        raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
+    _wd_payout_mode = (data.payoutMode or "BANK").upper()
+    if settings.is_demo and _wd_payout_mode == "CRYPTO":
+        # Crypto Balance module: a crypto withdrawal draws down the SEPARATE Crypto Balance,
+        # never the business spendable guard — crypto never touches Business Balance.
+        if data.amount > summary["cryptoBalance"] + 1e-6:
+            raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
+    else:
+        pay_out_rate = (current_user.pay_out_fee or 0) / 100
+        total_required = data.amount * (1 + pay_out_rate)
+        if total_required > summary["spendableLimit"] + 1e-6:   # guard: never over-draw
+            raise HTTPException(status_code=400, detail=INSUFFICIENT_BALANCE_MSG)
     _proofs = _clean_proofs(data.proofs, data.proof)
     tx = Transaction(
         ref="TEMP",
@@ -2434,7 +2527,7 @@ async def create_withdrawal(
         merchant_proofs=json.dumps(_proofs) if _proofs else None,
         utr=data.utr,
         notes=data.notes,
-        payout_mode=(data.payoutMode or "BANK").upper(),
+        payout_mode=_wd_payout_mode,
         payout_details=json.dumps(data.payoutDetails) if data.payoutDetails else None,
         agent_code=current_user.merchant_code,
         creator_username=current_user.username,

@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, memberLabel } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton, CopyButton } from './UI';
 import { Icon, type IconName } from './Icon';
 import type { Transaction } from '../types';
@@ -82,6 +82,15 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
                 </span>
                 {t.type.startsWith('DEPOSIT') && t.depositType && (
                   <div style={{ fontSize:10,color:T.textMuted,marginTop:3 }}>{depositTypeLabel(t.depositType)}</div>
+                )}
+                {/* Crypto Balance module: identify crypto rows inline — never hidden from the
+                    normal ledger, just clearly badged (deposit + withdrawal legs alike). */}
+                {isCryptoTx(t) && (
+                  <div style={{ marginTop:3 }}>
+                    <span style={{ display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:6,fontSize:9.5,fontWeight:800,background:'#fff4de',color:'#b8860b',whiteSpace:'nowrap',letterSpacing:'0.03em' }}>
+                      <Icon name="crypto" size={10} weight="fill" /> CRYPTO
+                    </span>
+                  </div>
                 )}
               </td>
               <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(t.amount)}</td>

@@ -9,11 +9,16 @@ import type { ReportRange } from '../services/api';
 import { usePoll, useSessionState } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useTheme } from '../context/ThemeContext';
+import { IS_DEMO } from '../utils/portal';
 import {
   ResponsiveContainer, AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip as RcTooltip,
 } from 'recharts';
-import type { User, ReportData, ReportRow, ReportMemberRow } from '../types';
+import type { User, ReportData, ReportRow, ReportMemberRow, BalanceSummary, GlobalSummary } from '../types';
+
+// Crypto Balance module — a report row is crypto iff its payment method (deposit_type for
+// deposits, payout_mode for withdrawals) is CRYPTO. Settlements are never crypto.
+const isCryptoRow = (r: ReportRow): boolean => String(r.paymentMethod || '').toUpperCase() === 'CRYPTO';
 
 const RTYPE_LABEL: Record<string, string> = { deposit: 'Deposit', withdrawal: 'Withdrawal', settlement: 'Settlement' };
 const prettyStatusR = (s: string) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -619,6 +624,82 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
   if (autoPrint) setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
 }
 
+// ─── Crypto Balance module — separate reporting (demo-only) ────────────────────
+// A dedicated "Crypto Transactions" report: its own summary cards (from the same
+// compute_balance-derived crypto* figures the dashboard/balance page use) and its own
+// transaction table, filtered from the SAME /reports payload (which already includes every
+// transaction) down to crypto-only rows. The Business tab / full report pipeline above is
+// completely untouched by this — crypto never enters those totals.
+interface CryptoSummaryFigures {
+  cryptoDeposits?: number; cryptoWithdrawals?: number; cryptoBalance?: number;
+  cryptoDepositCount?: number; cryptoWithdrawalCount?: number; pendingCryptoCount?: number;
+}
+
+function exportCryptoReportPdf(rows: ReportRow[], summary: CryptoSummaryFigures | null, businessName: string, generatedBy: string) {
+  const w = window.open('', '_blank', 'width=1180,height=820');
+  if (!w) { alert('Please allow pop-ups to export the report.'); return; }
+  const now = new Date().toLocaleString('en-IN');
+  const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
+  const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
+  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td></tr>`).join('');
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay Crypto Report</title><style>
+    @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
+    .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #b8860b;padding-bottom:10px}
+    .brand{font-size:22px;font-weight:800}.brand .b{color:#0052cc}.brand .g{color:#26d00c}.meta{margin-left:auto;text-align:right;font-size:11px;color:#4a5568;line-height:1.6}
+    h2{font-size:13px;margin:16px 0 8px;color:#b8860b}.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
+    .kpi{border:1px solid #e2e8f0;border-radius:8px;padding:7px 9px}.kl{font-size:8.5px;text-transform:uppercase;letter-spacing:.04em;color:#64748b}.kv{font-size:13px;font-weight:800;margin-top:2px}
+    table{width:100%;border-collapse:collapse;font-size:9.5px}th{background:#0a2540;color:#fff;text-align:left;padding:6px 7px;font-size:8.5px;text-transform:uppercase}
+    td{padding:5px 7px;border-bottom:1px solid #e2e8f0}tr.alt td{background:#f5f8ff}.amt{text-align:right;font-weight:700}.mono{font-family:'Courier New',monospace}.nw{white-space:nowrap}
+    footer{margin-top:14px;font-size:9px;color:#9ca3af;text-align:center}
+  </style></head><body>
+    <div class="head"><span class="brand"><span class="b">clari</span><span class="g">5</span>pay</span>
+      <div class="meta">Crypto Transaction Report — CONFIDENTIAL<br>${esc(businessName)}<br>Generated: ${esc(now)} · By ${esc(generatedBy)}<br>${rows.length} crypto transaction(s)</div></div>
+    <h2>Crypto Summary</h2><div class="kpis">
+      ${kpi('Total Crypto Deposits', fmt(summary?.cryptoDeposits ?? 0))}${kpi('Total Crypto Withdrawals', fmt(summary?.cryptoWithdrawals ?? 0))}
+      ${kpi('Crypto Wallet Balance', fmt(summary?.cryptoBalance ?? 0))}${kpi('Pending Crypto Requests', String(summary?.pendingCryptoCount ?? 0))}</div>
+    <h2>Crypto Transactions</h2>
+    <table><thead><tr><th>Reference</th><th>Recipient</th><th>Type</th><th style="text-align:right">Amount (INR)</th><th>Status</th><th>Date &amp; Time</th></tr></thead>
+      <tbody>${body || '<tr><td colspan="6" style="text-align:center;padding:24px;color:#9ca3af">No crypto transactions yet.</td></tr>'}</tbody>
+    </table>
+    <footer>Clari5Pay — confidential. Crypto Balance module — a separate ledger from Business transactions.</footer>
+  </body></html>`);
+  w.document.close(); w.focus();
+  setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
+}
+
+const CryptoReportsPanel: React.FC<{
+  rows: ReportRow[]; summary: CryptoSummaryFigures | null; businessName: string; generatedBy: string;
+}> = ({ rows, summary, businessName, generatedBy }) => {
+  const toast = useToast();
+  const cryptoRows = rows.filter(isCryptoRow);
+  const card = (label: string, value: React.ReactNode, color: string) => (
+    <Card className="c5-hover-lift" style={{ padding: '14px 16px', borderTop: `3px solid ${color}` }}>
+      <p style={{ margin: '0 0 6px', fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</p>
+      <p style={{ margin: 0, fontSize: 19, fontWeight: 800, color }}>{value}</p>
+    </Card>
+  );
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Crypto Transactions</h2>
+          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>A separate ledger — never mixed into Business Balance, totals or analytics.</p>
+        </div>
+        <Btn size="sm" variant="secondary" onClick={() => exportCryptoReportPdf(cryptoRows, summary, businessName, generatedBy)}><Icon name="pdf" size={14} /> Download PDF</Btn>
+        <Btn size="sm" variant="secondary" onClick={() => { exportRowsXlsx(cryptoRows, `clari5pay-crypto-report-${today()}.xlsx`); toast.showToast(`Excel — ${cryptoRows.length} rows`); }}><Icon name="excel" size={14} /> Download Excel</Btn>
+      </div>
+      <div className="c5-stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 12, marginBottom: 16 }}>
+        {card('Total Crypto Deposits', fmt(summary?.cryptoDeposits ?? 0), T.success)}
+        {card('Total Crypto Withdrawals', fmt(summary?.cryptoWithdrawals ?? 0), T.danger)}
+        {card('Crypto Wallet Balance', fmt(summary?.cryptoBalance ?? 0), '#b8860b')}
+        {card('Pending Crypto Requests', summary?.pendingCryptoCount ?? 0, T.info)}
+      </div>
+      <RSectionTitle note="Every crypto deposit/withdrawal across your business — denominated in business (INR) amount.">Crypto Transactions</RSectionTitle>
+      <ReportRowsTable rows={cryptoRows} empty="No crypto transactions yet." />
+    </div>
+  );
+};
+
 // ─── Treasury Report & Agent Ledger Report ──────────────────────────────────────
 // Two focused report types layered on top of the existing Reports module. They reuse the
 // same advanced-filter set (the already-`filtered` rows), the same xlsx helper and the same
@@ -886,12 +967,19 @@ interface ReportsViewProps {
   subtitle?: string;
   merchantSelector?: React.ReactNode;   // admin: scope dropdown rendered in the header
   showBusinessFilter?: boolean;         // admin all-merchants: enables the Business Name filter
+  // Crypto Balance module (demo-only) — the SAME crypto* figures the dashboard/balance page
+  // read (compute_balance / compute_global_summary), so the Crypto tab's cards match everywhere.
+  cryptoSummary?: CryptoSummaryFigures | null;
 }
 
 const ReportsView: React.FC<ReportsViewProps> = ({
-  data, reload, businessName, generatedBy, subtitle, merchantSelector, showBusinessFilter,
+  data, reload, businessName, generatedBy, subtitle, merchantSelector, showBusinessFilter, cryptoSummary,
 }) => {
   const [profileId, setProfileId] = useState<string | null>(null);
+  // Top-level Business / Crypto switch (demo-only). Business is the default and every existing
+  // report/tab below is rendered completely unchanged when it's selected — Crypto renders an
+  // entirely separate, self-contained panel instead. See CryptoReportsPanel.
+  const [txClass, setTxClass] = useState<'business' | 'crypto'>('business');
   // Which report the page is showing: the full analytics dashboard (default), or one of the
   // two focused report types. All three share the same advanced filters + applied filter set.
   const [reportType, setReportType] = useState<'full' | 'treasury' | 'ledger'>('full');
@@ -953,6 +1041,23 @@ const ReportsView: React.FC<ReportsViewProps> = ({
     </div>
   );
 
+  // Crypto Balance module — top-level switch (demo-only; never rendered on production, so
+  // txClass can never move off 'business' there and the tree below is what always renders).
+  const txClassSwitch = IS_DEMO && (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+      <button className="c5-btn" onClick={() => setTxClass('business')} style={{ ...pill(txClass === 'business'), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="transactions" size={14} /> Business Transactions</button>
+      <button className="c5-btn" onClick={() => setTxClass('crypto')} style={{ ...pill(txClass === 'crypto'), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="crypto" size={14} /> Crypto Transactions</button>
+    </div>
+  );
+  if (txClass === 'crypto') {
+    return (
+      <div>
+        {txClassSwitch}
+        <CryptoReportsPanel rows={data.transactions} summary={cryptoSummary ?? null} businessName={businessName} generatedBy={generatedBy} />
+      </div>
+    );
+  }
+
   const c = data.cards;
   const statuses = Array.from(new Set(data.transactions.map(r => r.status)));
   const filtered = data.transactions.filter(r => matchesFilters(r, f));
@@ -975,6 +1080,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 
   return (
     <div>
+      {txClassSwitch}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 16 }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Reports &amp; Analytics</h2>
@@ -1133,17 +1239,24 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 // ── Merchant Reports page (own business) ──
 export const ReportsPage: React.FC<{ user: User }> = ({ user }) => {
   const [data, setData] = useState<ReportData | null>(null);
+  // Crypto Balance module (demo-only) — the same compute_balance-derived crypto* figures the
+  // dashboard/balance page read, so the Crypto tab's cards match everywhere. Skipped on
+  // production (IS_DEMO false) — one less request, and the tab never renders there anyway.
+  const [cryptoSummary, setCryptoSummary] = useState<BalanceSummary | null>(null);
   // The applied window is held here so the 30s poll keeps refetching the SAME scope the reader
   // chose, rather than silently widening back to the whole ledger.
   const [range, setRange] = useState<ReportRange>(() => serverRange(EMPTY_FILTERS.datePreset, '', ''));
   const reload = useCallback((next?: ReportRange) => {
     const r = next ?? range;
     if (next) setRange(next);
-    return transactionAPI.reports(r).then(setData).catch(() => {});
+    return Promise.all([
+      transactionAPI.reports(r).then(setData),
+      IS_DEMO ? transactionAPI.summary().then(setCryptoSummary) : Promise.resolve(),
+    ]).then(() => {}).catch(() => {});
   }, [range]);
   useEffect(() => { reload(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   usePoll(() => reload(), 30000);
-  return <ReportsView data={data} reload={reload} businessName={user.name} generatedBy={user.name} />;
+  return <ReportsView data={data} reload={reload} businessName={user.name} generatedBy={user.name} cryptoSummary={cryptoSummary} />;
 };
 
 // ── Admin Reports page (all merchants, or one selected merchant) ──
@@ -1154,12 +1267,19 @@ export const AdminReportsPage: React.FC<{ user: User }> = ({ user }) => {
   const [data, setData] = useState<ReportData | null>(null);
   const [merchant, setMerchant] = useState('');         // '' = all merchants
   const [businesses, setBusinesses] = useState<string[]>([]);
+  // Crypto Balance module (demo-only) — platform-wide crypto totals (compute_global_summary).
+  // Simplification: shows the system-wide crypto figures regardless of the Merchant filter below;
+  // the Crypto tab's transaction table is still correctly scoped to the selected merchant.
+  const [cryptoSummary, setCryptoSummary] = useState<GlobalSummary | null>(null);
   // See the note on ReportsPage: the applied window is held here so the poll keeps the reader's scope.
   const [range, setRange] = useState<ReportRange>(() => serverRange(EMPTY_FILTERS.datePreset, '', ''));
   const reload = useCallback((next?: ReportRange) => {
     const r = next ?? range;
     if (next) setRange(next);
-    return transactionAPI.adminReports(merchant || undefined, r).then(setData).catch(() => {});
+    return Promise.all([
+      transactionAPI.adminReports(merchant || undefined, r).then(setData),
+      IS_DEMO ? transactionAPI.globalSummary().then(setCryptoSummary) : Promise.resolve(),
+    ]).then(() => {}).catch(() => {});
   }, [merchant, range]);
   // Distinct merchant business names for the scope dropdown (system-wide).
   useEffect(() => {
@@ -1181,7 +1301,7 @@ export const AdminReportsPage: React.FC<{ user: User }> = ({ user }) => {
       data={data} reload={reload}
       businessName={merchant || 'All Merchants'} generatedBy={user.name}
       subtitle="System-wide financial intelligence — all merchants, transactions and reports."
-      merchantSelector={selector} showBusinessFilter={!merchant}
+      merchantSelector={selector} showBusinessFilter={!merchant} cryptoSummary={cryptoSummary}
     />
   );
 };

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
@@ -505,6 +505,19 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
       <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:16,marginBottom:22 }}>
         {cards}
       </div>
+      {/* ── Crypto Balance module (demo-only) — a fully separate card row. Figures come from
+          the summary's dedicated crypto* fields, which never overlap the business cards above. ── */}
+      {IS_DEMO && (
+        <div style={{ marginBottom:22 }}>
+          <p style={{ margin:'0 0 10px',fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em' }}>Crypto Balance</p>
+          <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:16 }}>
+            <StatCard icon="crypto" label="Crypto Wallet Balance" value={<CountUp value={summary?.cryptoBalance ?? 0} format={fmt} />} sub="Available now" color={T.warning} onClick={()=>go('balance')}/>
+            <StatCard icon="deposit" label="Crypto Deposits" value={<CountUp value={summary?.cryptoDeposits ?? 0} format={fmt} />} sub={`${summary?.cryptoDepositCount ?? 0} completed`} color={T.blue} onClick={()=>go('deposit')}/>
+            <StatCard icon="withdrawal" label="Crypto Withdrawals" value={<CountUp value={summary?.cryptoWithdrawals ?? 0} format={fmt} />} sub={`${summary?.cryptoWithdrawalCount ?? 0} completed`} color={T.danger} onClick={()=>go('withdrawal')}/>
+            <StatCard icon="pending-requests" label="Pending Crypto Requests" value={<CountUp value={summary?.pendingCryptoCount ?? 0} />} sub="In progress" color={T.info} onClick={()=>go('transactions')}/>
+          </div>
+        </div>
+      )}
       {/* Deposit/Withdrawal "tap to manage" shortcuts — hidden for the approval-only Manager. */}
       {role !== 'MANAGER' && (
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:22 }}>
@@ -1472,6 +1485,33 @@ export const BalancePage: React.FC<{ user: User }> = ({ user }) => {
         ))}
         <p style={{ fontSize:11,color:T.textMuted,margin:'14px 0 0' }}>Computed from completed transactions. Fees are applied at your configured rates.</p>
       </Card>
+      {/* ── Crypto Balance module (demo-only) — a SEPARATE panel with its own figures.
+          Crypto never contributes to any row in the Business Balance card above. ── */}
+      {IS_DEMO && (
+        <Card style={{ padding:26,marginTop:20 }}>
+          <div style={{ background:T.grad2,borderRadius:16,padding:28,marginBottom:22,color:'#fff' }}>
+            <p style={{ fontSize:11,color:'rgba(255,255,255,0.55)',margin:'0 0 4px',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700 }}>Available Crypto Balance</p>
+            <p style={{ fontSize:40,fontWeight:800,margin:'0 0 16px' }}>{fmt(s?.availableCrypto ?? 0)}</p>
+            <div style={{ display:'flex',gap:24,flexWrap:'wrap' }}>
+              {[['Asset','USDT'],['Network','Multi-chain'],['Currency','INR (business amount)']].map(([k,v])=>(
+                <div key={k}><p style={{ fontSize:10,color:'rgba(255,255,255,0.45)',margin:0 }}>{k}</p><p style={{ fontWeight:700,margin:0,fontSize:14 }}>{v}</p></div>
+              ))}
+            </div>
+          </div>
+          {([
+            ['Crypto Wallet Balance', s?.cryptoBalance ?? 0, T.textMain, true],
+            ['Total Crypto Deposits', s?.cryptoDeposits ?? 0, T.success, false],
+            ['Total Crypto Withdrawals', s?.cryptoWithdrawals ?? 0, T.danger, false],
+            ['Available Crypto Balance', s?.availableCrypto ?? 0, T.blue, true],
+          ] as Array<[string, number, string, boolean]>).map(([k,v,c,strong])=>(
+            <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'11px 0',borderBottom:`1px solid ${T.borderLight}` }}>
+              <span style={{ fontSize:13,color:strong?T.textMain:T.textMuted,fontWeight:strong?800:400 }}>{k}</span>
+              <span style={{ fontSize:14,fontWeight:800,color:c }}>{fmt(v)}</span>
+            </div>
+          ))}
+          <p style={{ fontSize:11,color:T.textMuted,margin:'14px 0 0' }}>A fully separate ledger — Crypto never affects your Business Balance above. Denominated in the transaction's business (INR) amount.</p>
+        </Card>
+      )}
     </div>
   );
 };
@@ -1634,6 +1674,25 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         {isWithdrawal && <SlipRow k="Withdrawal Amount" v={fmt(d.amount)} />}
         {isSettlement && <SlipRow k="Settlement Amount" v={fmt(d.amount)} />}
       </DetailSection>
+
+      {/* Crypto Balance module — a dedicated section grouping every crypto-specific field
+          (Currency / Network / Wallet Address / Transaction Hash / Business Amount). Status,
+          Created Date & Time and Approval Details already render in their own sections above/
+          below; this section adds only what's unique to a crypto leg. Deposit legs carry
+          walletAddress/network/txHash in depositDetails; withdrawal legs carry
+          walletAddress/network in payoutDetails (the hash is captured later, at payout). */}
+      {isCryptoTx(d) && (() => {
+        const cd = (isDeposit ? d.depositDetails : d.payoutDetails) || {};
+        return (
+          <DetailSection title="Crypto Details">
+            <SlipRow k="Currency" v="USDT" />
+            {cd.network && <SlipRow k="Network" v={cd.network} />}
+            {cd.walletAddress && <SlipRow k="Wallet Address" v={cd.walletAddress} copy={cd.walletAddress} />}
+            {cd.txHash && <SlipRow k="Transaction Hash" v={cd.txHash} copy={cd.txHash} />}
+            <SlipRow k="Business Amount (INR)" v={fmt(d.amount)} />
+          </DetailSection>
+        );
+      })()}
 
       {/* Where the settlement is paid. A settlement goes to the company itself, so this replaces
           the member section entirely. Deposits/withdrawals are untouched. */}

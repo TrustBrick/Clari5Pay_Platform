@@ -415,6 +415,16 @@ export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'CRYPTO', label: 'Crypto (USDT)' },
 ];
 
+// ── Crypto Balance module ──────────────────────────────────────────────────────
+// A transaction is "crypto" iff its deposit leg is CRYPTO or its withdrawal payout mode is
+// CRYPTO — the same predicate the backend uses in compute_balance / tx_class filtering.
+// Settlements are never crypto. Used to badge/identify crypto rows in Transaction History
+// while they still display inline alongside business transactions (never hidden, never
+// mixed into business totals).
+export const isCryptoTx = (tx: { depositType?: string | null; payoutMode?: string | null }): boolean =>
+  String(tx.depositType || '').toUpperCase() === 'CRYPTO' ||
+  String(tx.payoutMode || '').toUpperCase() === 'CRYPTO';
+
 // Country dialing codes for the phone-number dropdown (India first, then alphabetical).
 // Indian states + union territories, for the State pickers. The searchable dropdown still accepts
 // free text, so a state outside this list (non-India agents) can simply be typed.

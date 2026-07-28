@@ -303,6 +303,15 @@ export interface GlobalSummary {
   payoutFee: number;
   available: number;
   availableBalance: number;
+  // Crypto Balance module (demo-only; 0 on production) — platform-wide totals, separate
+  // from every business figure above. See BalanceSummary for the per-merchant equivalent.
+  cryptoDeposits?: number;
+  cryptoWithdrawals?: number;
+  cryptoBalance?: number;
+  availableCrypto?: number;
+  cryptoDepositCount?: number;
+  cryptoWithdrawalCount?: number;
+  pendingCryptoCount?: number;
 }
 
 /**
@@ -625,6 +634,15 @@ export interface BalanceSummary {
     withdrawal?: Record<string, { count: number; amount: number }>;
     settlement?: Record<string, { count: number; amount: number }>;
   };
+  // ── Crypto Balance module (demo-only; 0 on production) — a fully SEPARATE figure set,
+  // never folded into totalDeposit/available/totalAvailableBalance above (backend compute_balance).
+  cryptoDeposits?: number;
+  cryptoWithdrawals?: number;
+  cryptoBalance?: number;             // Crypto Wallet Balance = cryptoDeposits − cryptoWithdrawals
+  availableCrypto?: number;           // Available Crypto Balance (same basis — no crypto fees tracked)
+  cryptoDepositCount?: number;
+  cryptoWithdrawalCount?: number;
+  pendingCryptoCount?: number;        // Pending Crypto Requests card
 }
 
 export interface SystemLogEntry {
