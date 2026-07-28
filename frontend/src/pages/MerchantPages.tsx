@@ -390,6 +390,16 @@ export const MerchantSlipModal: React.FC<{
 };
 
 // ─── Merchant Dashboard ──────────────────────────────────────────────────────
+// Display buckets for the dashboard card method breakdown. Raw stored method keys map into a few
+// operator-friendly categories, each with its own dot colour; lists are disjoint so a key lands in
+// exactly one bucket (anything unmapped is grouped as "Other" at render time).
+const METHOD_BUCKETS: Array<{ label: string; color: string; match: string[] }> = [
+  { label: 'Bank Transfer', color: T.blue, match: ['BANK', 'IMPS', 'NEFT', 'RTGS'] },
+  { label: 'UPI', color: T.info, match: ['UPI', 'QR'] },
+  { label: 'Cash', color: T.warning, match: ['CASH'] },
+  { label: 'Crypto', color: '#f97316', match: ['CRYPTO', 'USDT'] },
+];
+
 export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: string) => void }> = ({ user, onNavigate }) => {
   const [txns, setTxns] = useState<Transaction[]>([]);
   const [summary, setSummary] = useState<BalanceSummary | null>(null);
@@ -431,6 +441,28 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
     { label: 'Completed', value: scAt('withdrawal', 'COMPLETED'), color: T.success },
   ];
 
+  // Payment-method breakdown for the count cards (Bank / UPI / Cash / Crypto), derived from the
+  // summary's methodCounts (no extra fetch). Buckets are disjoint; anything unmapped falls into
+  // "Other"; zero-count categories are hidden to keep the card compact.
+  const methodBreakdown = (g: 'deposit' | 'withdrawal' | 'settlement') => {
+    const mc = summary?.methodCounts?.[g];
+    if (!mc) return undefined;
+    const matched = new Set<string>();
+    const rows = METHOD_BUCKETS.map(b => {
+      let tot = 0;
+      for (const [k, v] of Object.entries(mc)) if (b.match.includes(k)) { tot += v.count; matched.add(k); }
+      return { label: b.label, color: b.color, raw: tot };
+    });
+    let other = 0;
+    for (const [k, v] of Object.entries(mc)) if (!matched.has(k)) other += v.count;
+    if (other > 0) rows.push({ label: 'Other', color: T.textLight, raw: other });
+    const out = rows.filter(r => r.raw > 0).map(r => ({ label: r.label, color: r.color, value: r.raw }));
+    return out.length ? out : undefined;
+  };
+  const depBreak = methodBreakdown('deposit');
+  const wdBreak = methodBreakdown('withdrawal');
+  const stBreak = methodBreakdown('settlement');
+
   // Role-scoped dashboard cards (count-up values; click jumps to the relevant page).
   const role = String(user.merchantRole || '').toUpperCase();
   const balLen = fmt(summary?.available ?? 0).length;
@@ -438,20 +470,20 @@ export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: strin
   const balanceCard = <StatCard icon="available-balance" label="Available Balance" value={<CountUp value={summary?.available ?? 0} format={fmt} />} valueLen={balLen} sub="Updated now" color={T.success} onClick={()=>go('balance')}/>;
   let cards: React.ReactNode;
   if (role === 'DEPOSIT_OPERATOR') {
-    cards = <><StatCard icon="deposit" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')}/>{pendingCard}</>;
+    cards = <><StatCard icon="deposit" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')} breakdown={depBreak}/>{pendingCard}</>;
   } else if (role === 'WITHDRAWAL_OPERATOR') {
-    cards = <>{balanceCard}<StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')} breakdown={wdBreak}/>{pendingCard}</>;
   } else if (role === 'SUPERVISOR') {
-    cards = <>{balanceCard}<StatCard icon="settlement" label="No. of Settlements" value={<CountUp value={settlementCount} />} color={T.info} onClick={()=>go('settlement')}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="settlement" label="No. of Settlements" value={<CountUp value={settlementCount} />} color={T.info} onClick={()=>go('settlement')} breakdown={stBreak}/>{pendingCard}</>;
   } else if (role === 'MANAGER') {
     // Approval-only role: no direct Deposit/Withdrawal creation entry. Balance is view-only;
     // the withdrawals card opens the Approvals (review) queue, not a creation page.
-    cards = <>{balanceCard}<StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('approvals')}/>{pendingCard}</>;
+    cards = <>{balanceCard}<StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('approvals')} breakdown={wdBreak}/>{pendingCard}</>;
   } else {
     cards = <>
       {balanceCard}
-      <StatCard icon="deposit" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')}/>
-      <StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')}/>
+      <StatCard icon="deposit" label="No. of Deposits" value={<CountUp value={summary?.depositCount ?? 0} />} color={T.blue} onClick={()=>go('deposit')} breakdown={depBreak}/>
+      <StatCard icon="withdrawal" label="No. of Withdrawals" value={<CountUp value={summary?.withdrawalCount ?? 0} />} color={T.danger} onClick={()=>go('withdrawal')} breakdown={wdBreak}/>
       {pendingCard}
     </>;
   }

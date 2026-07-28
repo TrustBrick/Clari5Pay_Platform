@@ -100,7 +100,10 @@ export const Card: React.FC<{ children: React.ReactNode; style?: CSSProperties; 
 export const StatCard: React.FC<{
   icon: string; label: string; value: React.ReactNode; sub?: string;
   color?: string; trend?: number; gradient?: string; onClick?: () => void; valueLen?: number;
-}> = ({ icon, label, value, sub, color=T.blue, trend, gradient, onClick, valueLen }) => {
+  /** Optional per-category sub-rows (e.g. Bank / Cash / Crypto) shown under the value, each with a
+   *  small colour dot. Kept compact so the card height barely changes. */
+  breakdown?: Array<{ label: string; value: React.ReactNode; color: string }>;
+}> = ({ icon, label, value, sub, color=T.blue, trend, gradient, onClick, valueLen, breakdown }) => {
   // Shrink the value font for long strings (e.g. "INR 1,79,000.00") so it stays on one line.
   const len = valueLen ?? ((typeof value === 'string' || typeof value === 'number') ? String(value).length : 10);
   const valueSize = len > 13 ? 17 : len > 10 ? 20 : 24;
@@ -113,6 +116,17 @@ export const StatCard: React.FC<{
         <p style={{ fontSize:valueSize,fontWeight:800,color:T.textMain,lineHeight:1.2,whiteSpace:'nowrap' }}>{value}</p>
         {sub && <p style={{ fontSize:11,color:T.textMuted,marginTop:4 }}>{sub}</p>}
         {trend!==undefined && <p style={{ fontSize:11,marginTop:6,color:trend>=0?T.success:T.danger,fontWeight:700 }}>{trend>=0?'▲':'▼'} {Math.abs(trend)}% vs last week</p>}
+        {breakdown && breakdown.length > 0 && (
+          <div style={{ marginTop:8,display:'flex',flexDirection:'column',gap:5 }}>
+            {breakdown.map(b => (
+              <div key={b.label} style={{ display:'flex',alignItems:'center',gap:7,fontSize:11 }}>
+                <span style={{ width:7,height:7,borderRadius:'50%',background:b.color,flexShrink:0 }}/>
+                <span style={{ color:T.textMuted,flex:1,whiteSpace:'nowrap' }}>{b.label}</span>
+                <span style={{ color:T.textMain,fontWeight:700 }}>{b.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div style={{ width:40,height:40,borderRadius:12,background:gradient||`${color}18`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flexShrink:0,color:gradient?'#fff':color }}>
         {isIconName(icon) ? <Icon name={icon} size={22} color={gradient?'#fff':color} /> : icon}

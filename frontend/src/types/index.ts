@@ -617,6 +617,14 @@ export interface BalanceSummary {
     withdrawal?: Record<string, number>;
     settlement?: Record<string, number>;
   };
+  // Per-type × payment-method breakdown for the dashboard card sub-rows. `count` is all-status
+  // (the "requests" cards); `amount` is COMPLETED-only (the financial figure). Method keys are the
+  // raw stored values (BANK / UPI / CASH / CRYPTO / IMPS / NEFT / RTGS …); the UI buckets them.
+  methodCounts?: {
+    deposit?: Record<string, { count: number; amount: number }>;
+    withdrawal?: Record<string, { count: number; amount: number }>;
+    settlement?: Record<string, { count: number; amount: number }>;
+  };
 }
 
 export interface SystemLogEntry {

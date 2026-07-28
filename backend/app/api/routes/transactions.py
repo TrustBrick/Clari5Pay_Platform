@@ -1487,6 +1487,35 @@ async def my_summary(
             skey = status.value if hasattr(status, "value") else str(status)
             status_counts[group][skey] = status_counts[group].get(skey, 0) + int(cnt)
     result["statusCounts"] = status_counts
+
+    # Per-type × payment-method matrix for the dashboard card breakdowns (Bank / Cash / Crypto /
+    # UPI). The method lives in deposit_type for deposits and payout_mode for withdrawals/
+    # settlements, so COALESCE picks the right one. `count` spans every status (the "requests"
+    # cards); `amount` is COMPLETED/DEPOSITED only, matching the financial totals — the SAME
+    # _COMPLETED_STATUSES basis compute_balance uses, so the figures never diverge. One GROUP BY,
+    # no extra round-trip beyond statusCounts.
+    method_counts: dict[str, dict[str, dict[str, float]]] = {"deposit": {}, "withdrawal": {}, "settlement": {}}
+    if ids:
+        method_expr = func.coalesce(Transaction.deposit_type, Transaction.payout_mode)
+        mrows = (await db.execute(
+            select(
+                Transaction.type,
+                method_expr,
+                func.count(),
+                func.coalesce(func.sum(case((Transaction.status.in_(_COMPLETED_STATUSES), Transaction.amount), else_=0.0)), 0.0),
+            )
+            .where(Transaction.merchant_id.in_(ids))
+            .group_by(Transaction.type, method_expr)
+        )).all()
+        for ttype, method, cnt, amt in mrows:
+            group = _TYPE_GROUP.get(ttype)
+            if not group:
+                continue
+            key = str(method.value if hasattr(method, "value") else (method or "OTHER")).upper()
+            bucket = method_counts[group].setdefault(key, {"count": 0, "amount": 0.0})
+            bucket["count"] += int(cnt)
+            bucket["amount"] = round(bucket["amount"] + float(amt or 0.0), 2)
+    result["methodCounts"] = method_counts
     return result
 
 
