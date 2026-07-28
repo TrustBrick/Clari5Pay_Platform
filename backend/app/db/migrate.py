@@ -407,10 +407,6 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             await conn.execute(
                 text(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}')
             )
-        # BI/reporting views — see _VIEWS above. CREATE OR REPLACE VIEW always reflects the
-        # current definition, so this needs no IF NOT EXISTS guard.
-        for view_name, view_sql in _VIEWS:
-            await conn.execute(text(f"CREATE OR REPLACE VIEW {view_name} AS {view_sql}"))
         # Independent per-type transaction-reference sequences (DEP/WIT/SET → DEP000001 …).
         # Created once; each is reset to 1 when transaction data is cleared. START WITH 1 so a
         # fresh database's first transaction of each type is …000001.
@@ -560,6 +556,14 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         ))
         # The former Lowest Credit column is superseded by Highest Debit — drop it once (idempotent).
         await conn.execute(text("ALTER TABLE account_master DROP COLUMN IF EXISTS lowest_credit"))
+
+        # BI/reporting views — see _VIEWS above. MUST run LAST in this transaction: Postgres
+        # refuses to ALTER COLUMN TYPE / DROP COLUMN on a column any view depends on (e.g.
+        # vw_merchant_report references users.merchant_role, which the ALTER above widens), so
+        # every column-shape change in this block has to happen before views are (re)created.
+        # CREATE OR REPLACE VIEW always reflects the current definition, so no IF NOT EXISTS guard.
+        for view_name, view_sql in _VIEWS:
+            await conn.execute(text(f"CREATE OR REPLACE VIEW {view_name} AS {view_sql}"))
 
     # ── Performance indexes + enum values (both must run outside a txn block) ──
     autocommit = engine.execution_options(isolation_level="AUTOCOMMIT")
