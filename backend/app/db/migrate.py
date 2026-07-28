@@ -205,6 +205,161 @@ _NEW_COLUMNS = [
     ("agent_master", "settlement_code", "VARCHAR(3)"),
 ]
 
+# ── BI / reporting read-only views ───────────────────────────────────────────
+# (name, SELECT body) — created with CREATE OR REPLACE VIEW, which is naturally idempotent
+# (no IF NOT EXISTS needed). These exist SOLELY for external consumption (BI tools, analyst
+# SQL access, finance/compliance exports) — the application itself never queries them; every
+# existing API route keeps reading the base tables exactly as before. See
+# docs / the "PostgreSQL Views" plan for why this list is deliberately short: a repo-wide
+# audit found no SQL-join duplication anywhere in this codebase (every model denormalizes
+# what a join would fetch, directly onto the row, at write time), so a broad view layer would
+# not consolidate anything real. These four cover the genuine reporting/compliance/audit-
+# export use cases and nothing else.
+_VIEWS = [
+    # One row per transaction (Deposit/Withdrawal/Settlement — one table, differentiated by
+    # `type`). Excludes every base64 proof/image column (mirrors the existing deferred=True
+    # precedent on those same columns in models.py) and the internal JSON blob columns
+    # (deposit_details/payout_details/remarks_history). account_number is masked to its last
+    # 4 digits rather than dropped — enough for reconciliation without exporting full
+    # account numbers to a general-access BI view.
+    ("vw_transaction_report", """
+        SELECT
+            t.id,
+            t.ref,
+            t.type::text AS transaction_type,
+            t.status::text AS status,
+            t.amount,
+            t.merchant_name AS merchant_business,
+            t.member_name,
+            t.member_id,
+            t.deposit_type,
+            t.payout_mode,
+            t.bank_name,
+            t.account_holder,
+            t.ifsc,
+            CASE WHEN t.account_number IS NOT NULL AND length(t.account_number) >= 4
+                 THEN '****' || RIGHT(t.account_number, 4)
+                 ELSE t.account_number END AS account_number_masked,
+            t.utr,
+            t.approved_by,
+            t.processed_by,
+            t.supervisor_name,
+            t.manager_name,
+            t.high_risk,
+            t.risk_analysis,
+            t.reject_reason,
+            t.cancel_reason,
+            t.creator_username,
+            t.creator_role,
+            t.tx_date,
+            t.tx_time,
+            t.created_at
+        FROM transactions t
+    """),
+    # One row per merchant BUSINESS (not per staff login). merchant_role IS NULL is the
+    # canonical company/business row created once at onboarding (see create_merchant in
+    # users.py) — every staff login (DEO/Supervisor/Manager/…) is a separate User row with
+    # merchant_role set, sharing the same business `name`. The aggregate joins through ALL
+    # User ids sharing that name (mirrors compute_balance's own "aggregated across all
+    # merchant users sharing a business name"). The completed-status filters below are
+    # copied verbatim from compute_balance/compute_global_summary in transactions.py
+    # (_COMPLETED_STATUSES = {COMPLETED, DEPOSITED} for deposits; COMPLETED only for
+    # withdrawals/settlements) — keep these two in sync if that definition ever changes,
+    # or this view's totals will silently disagree with the app's own dashboard.
+    ("vw_merchant_report", """
+        SELECT
+            m.merchant_code,
+            m.name AS business_name,
+            m.full_name AS owner_name,
+            m.email,
+            m.phone,
+            m.country,
+            m.pay_in_fee,
+            m.pay_out_fee,
+            m.settlement_fee,
+            m.risk::text AS risk,
+            m.active,
+            m.created_at,
+            m.last_login_at,
+            COALESCE(agg.total_deposits, 0) AS total_deposits,
+            COALESCE(agg.total_withdrawals, 0) AS total_withdrawals,
+            COALESCE(agg.total_settlements, 0) AS total_settlements,
+            COALESCE(agg.total_deposits, 0) - COALESCE(agg.total_withdrawals, 0)
+                - COALESCE(agg.total_settlements, 0) AS total_available_balance,
+            COALESCE(agg.deposit_count, 0) AS deposit_count,
+            COALESCE(agg.withdrawal_count, 0) AS withdrawal_count,
+            COALESCE(agg.settlement_count, 0) AS settlement_count
+        FROM users m
+        LEFT JOIN (
+            SELECT
+                u2.name AS business_name,
+                SUM(CASE WHEN t.type::text IN ('DEPOSIT','DEPOSIT_REQUEST')
+                          AND t.status::text IN ('COMPLETED','DEPOSITED')
+                         THEN t.amount ELSE 0 END) AS total_deposits,
+                SUM(CASE WHEN t.type::text IN ('WITHDRAWAL','WITHDRAWAL_REQUEST')
+                          AND t.status::text = 'COMPLETED'
+                         THEN t.amount ELSE 0 END) AS total_withdrawals,
+                SUM(CASE WHEN t.type::text IN ('SETTLEMENT','SETTLEMENT_REQUEST')
+                          AND t.status::text = 'COMPLETED'
+                         THEN t.amount ELSE 0 END) AS total_settlements,
+                COUNT(CASE WHEN t.type::text IN ('DEPOSIT','DEPOSIT_REQUEST') THEN 1 END) AS deposit_count,
+                COUNT(CASE WHEN t.type::text IN ('WITHDRAWAL','WITHDRAWAL_REQUEST') THEN 1 END) AS withdrawal_count,
+                COUNT(CASE WHEN t.type::text IN ('SETTLEMENT','SETTLEMENT_REQUEST') THEN 1 END) AS settlement_count
+            FROM transactions t
+            JOIN users u2 ON u2.id = t.merchant_id
+            WHERE u2.role::text = 'MERCHANT'
+            GROUP BY u2.name
+        ) agg ON agg.business_name = m.name
+        WHERE m.role::text = 'MERCHANT' AND m.merchant_role IS NULL
+    """),
+    # Compliance/audit export. HARD EXCLUSION (not a style choice): request_json,
+    # response_json and aadhaar_photo carry raw government-ID numbers, full provider
+    # payloads and an actual photo of the person — never expose these to a general-access
+    # BI view. generated_link (a live DigiLocker URL) is excluded as irrelevant to reporting.
+    # Mirrors the same summary shape the app's own _history_summary() already exposes.
+    ("vw_kyc_history", """
+        SELECT
+            id,
+            membership_id,
+            member_name,
+            verification_type,
+            verification_method,
+            reference_id,
+            document_type,
+            transaction_id,
+            verification_status,
+            match_score,
+            match_status,
+            error_message,
+            merchant_business,
+            created_by,
+            created_at,
+            updated_at
+        FROM kyc_verification_history
+    """),
+    # Stable external read surface over audit_logs. The table is already flat/denormalized
+    # (username/role/business are already on the row — no join needed), so this view adds no
+    # new consolidation; its value is a stable contract external tools can query against
+    # without depending on the raw table's internal structure.
+    ("vw_audit_logs", """
+        SELECT
+            id,
+            username,
+            role,
+            business,
+            action_type,
+            entity_type,
+            entity_id,
+            old_value,
+            new_value,
+            reason,
+            ip_address,
+            location,
+            created_at
+        FROM audit_logs
+    """),
+]
+
 # ── Performance indexes ──────────────────────────────────────────────────────
 # (name, table, columns-expression) — created with CREATE INDEX CONCURRENTLY IF NOT
 # EXISTS so building them never takes an ACCESS EXCLUSIVE lock (writes keep flowing)
@@ -252,6 +407,10 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             await conn.execute(
                 text(f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {coltype}')
             )
+        # BI/reporting views — see _VIEWS above. CREATE OR REPLACE VIEW always reflects the
+        # current definition, so this needs no IF NOT EXISTS guard.
+        for view_name, view_sql in _VIEWS:
+            await conn.execute(text(f"CREATE OR REPLACE VIEW {view_name} AS {view_sql}"))
         # Independent per-type transaction-reference sequences (DEP/WIT/SET → DEP000001 …).
         # Created once; each is reset to 1 when transaction data is cleared. START WITH 1 so a
         # fresh database's first transaction of each type is …000001.
