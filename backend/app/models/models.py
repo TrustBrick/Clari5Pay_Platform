@@ -81,6 +81,10 @@ class User(Base):
     created: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     # Full creation timestamp (date + time) — shown in the SA "merchants by admin" popup
     created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=datetime.utcnow, nullable=True)
+    # Set on every successful login (support-agent direct login and OTP-verified login alike) —
+    # NOT on /logout-all, which re-opens a session on the SAME device rather than a fresh sign-in.
+    # Shown in the profile popup's "Last Login" row; null until this user's first login post-rollout.
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Which admin created this merchant (null for admins / super admin)
     created_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)

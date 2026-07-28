@@ -12,7 +12,7 @@ import { PORTAL, IS_DEMO } from './utils/portal';
 import {
   MerchantDashboard, DepositManagement, WithdrawalManagement, SettlementManagement,
   TransactionHistory, BalancePage, RiskPage, MerchantSupportChat, ProfilePage,
-  CancelRequestPage, TemplatesPage, NewsPage, ReportsPage, ApprovalsPage,
+  CancelRequestPage, TemplatesPage, NewsPage, ReportsPage, ApprovalsPage, NotificationsPage,
 } from './pages/MerchantPages';
 import { AdminReportsPage } from './pages/ReportsPage';
 import {
@@ -52,6 +52,7 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   const role = user.role;
   if (!page) return false;
   if (page === 'profile') return true;
+  if (page === 'notifications') return true;   // reachable from every portal's header bell popup
   if (page === 'risk-mgmt') return true;   // Risk Management is available in all three portals
   if (page === 'news') return true;        // News is viewable in all portals (SA also manages it)
   if (page === 'complaints') return role === 'ADMIN' || role === 'SUPER_ADMIN';
@@ -206,6 +207,7 @@ const App: React.FC = () => {
       news: <NewsPage {...props} />,
       support: <MerchantSupportChat {...props} />,
       profile: <ProfilePage {...props} />,
+      notifications: <NotificationsPage {...props} />,
       'admin-dashboard': <AdminDashboard {...props} />,
       'admin-merchants': <AdminMerchantsPage />,
       'admin-active-users': <ActiveUsersPage user={user} />,

@@ -34,6 +34,8 @@ _NEW_COLUMNS = [
     # Token revocation generation — see User.token_version. DEFAULT 0 is what makes the rollout
     # backward compatible: existing tokens carry no `ver` claim, are read as 0, and keep working.
     ("users", "token_version", "INTEGER DEFAULT 0 NOT NULL"),
+    # Set on every successful login; shown as "Last Login" in the profile popup.
+    ("users", "last_login_at", "TIMESTAMP"),
     ("transactions", "merchant_ref", "VARCHAR(64)"),
     ("transactions", "admin_bank_details", "TEXT"),
     ("transactions", "admin_bank_image", "TEXT"),

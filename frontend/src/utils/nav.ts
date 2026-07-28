@@ -106,6 +106,7 @@ export const PAGE_TITLES: Record<string, string> = {
   news: 'News & Updates',
   support: 'Customer Support',
   profile: 'Profile',
+  notifications: 'Notifications',
   'admin-dashboard': 'Dashboard',
   'admin-merchants': 'Merchants',
   'admin-active-users': 'Active Users',

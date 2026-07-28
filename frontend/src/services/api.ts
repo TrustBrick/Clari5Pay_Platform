@@ -649,6 +649,18 @@ export const notificationAPI = {
     const res = await api.delete('/api/notifications');
     return res.data;
   },
+  // View All Notifications page — server-side paged, with an optional read filter and search.
+  // Additive: list()/markAllRead()/clear() above are unchanged and keep powering the header preview.
+  history: async (params: { page: number; pageSize: number; read?: 'read' | 'unread'; search?: string }) => {
+    const res = await api.get<Paged<Notification>>('/api/notifications/history', {
+      params: { page: params.page, page_size: params.pageSize, read: params.read, search: params.search || undefined },
+    });
+    return res.data;
+  },
+  markOneRead: async (id: number) => {
+    const res = await api.post<Notification>(`/api/notifications/${id}/read`);
+    return res.data;
+  },
 };
 
 export interface WhatsappSettings {

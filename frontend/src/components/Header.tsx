@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { T } from '../utils/theme';
-import { timeAgo, merchantRoleLabel } from '../utils/helpers';
+import { timeAgo, merchantRoleLabel, formatDateTime } from '../utils/helpers';
 import ThemeToggle from './ThemeToggle';
 import { Icon } from './Icon';
 import { notificationAPI } from '../services/api';
@@ -224,6 +224,15 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
                   ))
                 )}
               </div>
+
+              {/* Quick preview only — the full list (search / filter / pagination) lives on its
+                  own page; existing popup behaviour above is unchanged. */}
+              {onNavigate && (
+                <div
+                  onClick={() => go('notifications')}
+                  style={{ padding:'10px 16px',borderTop:`1px solid ${T.borderLight}`,textAlign:'center',fontSize:11.5,fontWeight:700,color:T.blue,cursor:'pointer',flexShrink:0 }}
+                >View All Notifications</div>
+              )}
             </div>
           )}
         </div>
@@ -262,6 +271,7 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
                 {user.merchantCode && <ProfileRow k="Merchant ID" v={user.merchantCode} />}
                 {user.email && <ProfileRow k="Email" v={user.email} />}
                 {user.phone && <ProfileRow k="Phone" v={user.phone} />}
+                {user.lastLogin && <ProfileRow k="Last Login" v={formatDateTime(user.lastLogin)} />}
               </div>
               {/* Actions */}
               <div style={{ padding:6 }}>

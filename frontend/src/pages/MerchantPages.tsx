@@ -12,13 +12,13 @@ import { TxExportButton } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
 import { IS_DEMO, SEND_TO_APPROVAL_ENABLED } from '../utils/portal';
 import { AgentAssignmentPanel } from './AgentPages';
-import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI, fetchAllPages } from '../services/api';
+import { transactionAPI, supportAPI, supportWsUrl, userAPI, bankAccountAPI, newsAPI, fetchAllPages, notificationAPI } from '../services/api';
 import type { TxQuery, TxPagedQuery, MemberGroup, Paged } from '../services/api';
 import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { lookupIfsc, isValidIfsc, bankBadge, BANK_NAMES } from '../utils/ifsc';
-import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry } from '../types';
+import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry, Notification } from '../types';
 
 // The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
 export { ReportsPage } from './ReportsPage';
@@ -2921,6 +2921,111 @@ export const NewsPage: React.FC<{ user: User }> = ({ user }) => {
       )}
 
       {editing !== undefined && <NewsEditor post={editing} onClose={() => setEditing(undefined)} onSaved={() => load()} />}
+    </div>
+  );
+};
+
+// ─── Notifications — the full list behind the header bell's "View All Notifications" link ─────
+// Server-side paged (mirrors the KYC History pager), with a read/unread filter and a message
+// search. The header's popup (Header.tsx) is untouched — it keeps calling notificationAPI.list()/
+// markAllRead()/clear() exactly as before; this page is purely additive and calls its own
+// paginated endpoint (GET /api/notifications/history) plus a per-row mark-as-read.
+const NOTIF_PAGE_SIZE = 10;
+const READ_FILTERS = [
+  { value: '', label: 'All' },
+  { value: 'unread', label: 'Unread' },
+  { value: 'read', label: 'Read' },
+] as const;
+
+export const NotificationsPage: React.FC<{ user: User }> = () => {
+  const { showToast } = useToast();
+  const [rows, setRows] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(NOTIF_PAGE_SIZE);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [readFilter, setReadFilter] = useState<'' | 'read' | 'unread'>('');
+  const [search, setSearch] = useState('');
+  const debouncedSearch = useDebouncedValue(search, 350);
+
+  const load = useCallback(async (opts?: { page?: number; pageSize?: number }) => {
+    const p = opts?.page ?? page;
+    const ps = opts?.pageSize ?? pageSize;
+    setLoading(true);
+    try {
+      const res = await notificationAPI.history({ page: p, pageSize: ps, read: readFilter || undefined, search: debouncedSearch });
+      setRows(res.items); setTotal(res.total); setTotalPages(res.totalPages);
+    } catch { showToast('Failed to load notifications.', 'error'); }
+    finally { setLoading(false); }
+  }, [page, pageSize, readFilter, debouncedSearch, showToast]);
+
+  // Any filter/search change restarts at page 1 — same convention as every other paged list here.
+  useEffect(() => { setPage(1); }, [readFilter, debouncedSearch]);
+  useEffect(() => { load(); }, [page, pageSize, readFilter, debouncedSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const markOne = async (n: Notification) => {
+    if (n.read) return;
+    try {
+      await notificationAPI.markOneRead(n.id);
+      setRows(prev => prev.map(r => r.id === n.id ? { ...r, read: true } : r));
+    } catch { showToast('Failed to mark as read.', 'error'); }
+  };
+
+  const markAllRead = async () => {
+    try { await notificationAPI.markAllRead(); setRows(prev => prev.map(r => ({ ...r, read: true }))); showToast('All notifications marked as read.'); }
+    catch { showToast('Failed to mark all as read.', 'error'); }
+  };
+
+  const anyUnread = rows.some(r => !r.read);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800 }}>Notifications</h2>
+          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>Every action and alert raised for your account.</p>
+        </div>
+        <Input value={search} onChange={e => setSearch(e.target.value)} icon="search" placeholder="Search notifications" style={{ marginBottom: 0, width: 220 }} />
+        <Sel value={readFilter} onChange={e => setReadFilter(e.target.value as '' | 'read' | 'unread')} style={{ marginBottom: 0, width: 140 }}
+          options={READ_FILTERS as unknown as { value: string; label: string }[]} />
+        <Btn variant="secondary" disabled={!anyUnread} onClick={markAllRead}>Mark All Read</Btn>
+      </div>
+
+      <Card>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ background: T.canvas }}>
+                {['', 'Message', 'Received', 'Status', 'Action'].map(h => (
+                  <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}`, whiteSpace: 'nowrap' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading && <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>Loading…</td></tr>}
+              {!loading && rows.length === 0 && <tr><td colSpan={5} style={{ padding: 28, textAlign: 'center', color: T.textMuted }}>No notifications{search || readFilter ? ' match this filter.' : ' yet.'}</td></tr>}
+              {!loading && rows.map((n, i) => (
+                <tr key={n.id} style={{ background: n.read ? (i % 2 === 0 ? T.surface : T.canvas) : `color-mix(in srgb, ${T.blue} 6%, ${i % 2 === 0 ? T.surface : T.canvas})` }}>
+                  <td style={{ padding: '11px 14px', fontSize: 15 }}>{n.icon}</td>
+                  <td style={{ padding: '11px 14px', color: T.textMain, fontWeight: n.read ? 500 : 700 }}>{n.message}</td>
+                  <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{formatDateTime(n.createdAt)}</td>
+                  <td style={{ padding: '11px 14px' }}>
+                    {n.read
+                      ? <span style={{ fontSize: 11, fontWeight: 700, color: T.textMuted }}>Read</span>
+                      : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, color: T.blue }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: T.blue }} />Unread</span>}
+                  </td>
+                  <td style={{ padding: '11px 14px' }}>
+                    {!n.read && <Btn size="sm" variant="ghost" onClick={() => markOne(n)}>Mark as Read</Btn>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages}
+          onPage={setPage} onPageSize={(n) => { setPageSize(n); setPage(1); }} loading={loading} fullControls />
+      </Card>
     </div>
   );
 };

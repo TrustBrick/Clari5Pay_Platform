@@ -135,6 +135,7 @@ def _user_to_out(u: User) -> dict:
         "failedAttempts": u.failed_attempts or 0,
         "created": str(u.created),
         "createdAt": (u.created_at.isoformat() + "Z") if u.created_at else None,
+        "lastLogin": (u.last_login_at.isoformat() + "Z") if u.last_login_at else None,
         "createdBy": u.created_by,
         "payIn": u.pay_in,
         "payOut": u.pay_out,
@@ -236,6 +237,7 @@ async def login(
         # A fresh login starts Available; the member can flip to Busy from the portal.
         user.support_availability = "AVAILABLE"
         user.support_availability_at = datetime.utcnow()
+        user.last_login_at = datetime.utcnow()
         await log_event(db, "LOGIN", f"{user.name} ({user.role.value}) signed in", actor=user)
         await record_audit(db, "LOGIN", actor=user, entity_type="user", entity_id=user.id, ip=ip)
         await presence.start_session(db, user, ip, request.headers.get("user-agent"))
@@ -382,6 +384,7 @@ async def verify_otp(
     await log_event(db, "OTP_VERIFIED", f"OTP verified for {user.name}", actor=user)
     await record_audit(db, "LOGIN", actor=user, entity_type="user", entity_id=user.id, ip=ip)
     await log_event(db, "LOGIN", f"{user.name} ({user.role.value}) signed in", actor=user)
+    user.last_login_at = datetime.utcnow()
     await presence.start_session(db, user, ip, request.headers.get("user-agent"))
     return {
         "access_token": token,

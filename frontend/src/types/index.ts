@@ -16,6 +16,7 @@ export interface User {
   created: string;
   createdAt?: string | null;
   createdBy?: number | null;
+  lastLogin?: string | null;   // set on every successful login; shown in the profile popup
   // Merchant-only fields
   payIn?: string;
   payOut?: string;
