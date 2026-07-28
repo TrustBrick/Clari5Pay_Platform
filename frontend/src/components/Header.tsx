@@ -141,6 +141,12 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
   const isDashboard = (page || '').toLowerCase().includes('dashboard');
   const hr = now.getHours();
   const greeting = hr >= 5 && hr < 12 ? 'Good Morning' : hr >= 12 && hr < 17 ? 'Good Afternoon' : 'Good Evening';
+  // Greet the signed-in person — never the business name. For merchant logins `user.name` holds the
+  // BUSINESS name, so prefer the personal Full Name and fall back to the username (never the business).
+  // Other portals keep `user.name` (the person's real name) with the same Full Name preference.
+  const greetName = user.role === 'MERCHANT'
+    ? ((user.fullName || '').trim() || user.username)
+    : user.name;
   const dateStr = now.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const timeStr = now.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
 
@@ -161,7 +167,7 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
         <div>
           {isDashboard ? (
             <>
-              <h1 style={{ fontSize:16,fontWeight:800,color:T.textMain,margin:0 }}>{greeting}, {user.name} <span aria-hidden style={{ fontSize:15 }}>👋</span></h1>
+              <h1 style={{ fontSize:16,fontWeight:800,color:T.textMain,margin:0 }}>{greeting}, {greetName} <span aria-hidden style={{ fontSize:15 }}>👋</span></h1>
               <p style={{ fontSize:10,color:T.textMuted,margin:0 }}>{dateStr} • {timeStr}</p>
             </>
           ) : (

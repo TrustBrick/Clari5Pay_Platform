@@ -120,7 +120,8 @@ async def seed():
             User(
                 username="merchant1", hashed_password=get_password_hash("pass123"),
                 role=UserRole.MERCHANT, email="nexus@clari5pay.io",
-                name="Nexus Fintech Ltd.", phone="+91 90000 12345", active=True, created=date(2025, 6, 1),
+                name="Nexus Fintech Ltd.", full_name="Harsha Vardhan Valikar",
+                phone="+91 90000 12345", active=True, created=date(2025, 6, 1),
                 created_at=datetime(2025, 6, 1, 10, 15, 0),
                 created_by=admin1.id,
                 pay_in="DEP", pay_out="WIT", settlement="SET",
@@ -131,7 +132,8 @@ async def seed():
             User(
                 username="merchant2", hashed_password=get_password_hash("pass123"),
                 role=UserRole.MERCHANT, email="bright@clari5pay.io",
-                name="BrightPay Inc.", phone="+1 415 555 0199", active=True, created=date(2025, 7, 15),
+                name="BrightPay Inc.", full_name="John Smith",
+                phone="+1 415 555 0199", active=True, created=date(2025, 7, 15),
                 created_at=datetime(2025, 7, 15, 14, 30, 0),
                 created_by=admin2.id,
                 pay_in="BDP", pay_out="BWI", settlement="BST",
@@ -141,7 +143,8 @@ async def seed():
             User(
                 username="merchant3", hashed_password=get_password_hash("pass123"),
                 role=UserRole.MERCHANT, email="zenpay@clari5pay.io",
-                name="ZenPay Solutions", phone="+91 90000 67890", active=True, created=date(2025, 8, 2),
+                name="ZenPay Solutions", full_name="Priya Nair",
+                phone="+91 90000 67890", active=True, created=date(2025, 8, 2),
                 created_at=datetime(2025, 8, 2, 9, 0, 0),
                 created_by=admin1.id,
                 pay_in="ZDP", pay_out="ZWI", settlement="ZST",

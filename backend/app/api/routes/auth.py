@@ -146,6 +146,9 @@ def _user_to_out(u: User) -> dict:
         "profile": u.profile,
         "merchantRole": u.merchant_role,
         "merchantCode": u.merchant_code,
+        # Personal name of the login user (distinct from the business name in `name`) — used by
+        # the dashboard greeting so it shows the person, not the merchant/business.
+        "fullName": u.full_name,
         # Support member fields (only meaningful for SUPPORT_AGENT rows).
         "supportCode": u.support_code,
         "supportDepartment": u.support_department,
