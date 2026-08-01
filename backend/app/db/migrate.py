@@ -400,6 +400,28 @@ _NEW_ENUM_VALUES = [
 ]
 
 
+async def _widen_column(conn, table: str, column: str, length: int) -> None:
+    """Widen a VARCHAR column — but only when it is not already at least that wide.
+
+    Postgres refuses ALTER COLUMN TYPE on a column any view depends on, and the BI views in
+    ``_VIEWS`` are (re)created at the end of every startup. Creating them last is enough on a
+    database that has never had them; it is NOT enough from the SECOND startup onward, where the
+    column already carries its target type but the view now exists and depends on it — the
+    unconditional ALTER then aborts the whole ensure_schema transaction and the app never starts
+    (observed on Demo: `cannot alter type of a column used by a view or rule … rule _RETURN on
+    view vw_merchant_report depends on column "merchant_role"`).
+
+    Checking the current width first makes the statement a no-op on an already-migrated database,
+    while a fresh one still performs the widening before any view exists. Never narrows a column.
+    """
+    current = (await conn.execute(text(
+        "SELECT character_maximum_length FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = :t AND column_name = :c"
+    ), {"t": table, "c": column})).scalar()
+    if current is not None and current < length:
+        await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({length})"))
+
+
 async def ensure_schema(engine: AsyncEngine) -> None:
     # ── Columns + backfill (safe inside a transaction) ──
     async with engine.begin() as conn:
@@ -463,11 +485,11 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 f"WHERE t.created_by_id = u.id AND t.created_by IS DISTINCT FROM u.username"
             ))
         # Widen merchant_role for the longer operator roles (e.g. WITHDRAWAL_OPERATOR).
-        await conn.execute(text("ALTER TABLE users ALTER COLUMN merchant_role TYPE VARCHAR(32)"))
+        await _widen_column(conn, "users", "merchant_role", 32)
         # The isolated agent ledger now carries the merchant workflow's status labels, and the
         # longest (ACCOUNT_REQUESTED / ACCOUNT_SUBMITTED / SUPERVISOR_REVIEW = 17 chars) overflow
         # the original VARCHAR(16). Widening is lossless and idempotent.
-        await conn.execute(text("ALTER TABLE agent_transaction ALTER COLUMN status TYPE VARCHAR(24)"))
+        await _widen_column(conn, "agent_transaction", "status", 24)
         # A CASH/CRYPTO deposit has no Token Details / Note Number at creation — they are captured
         # at Submit Account — so these two can no longer be NOT NULL. Existing rows keep their
         # values; only the constraint is relaxed.
