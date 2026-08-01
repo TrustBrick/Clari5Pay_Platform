@@ -72,6 +72,12 @@ def match_score(member_name: str | None, kyc_name: str | None) -> int:
     large = normalize_name(kyc_name).split()
     if not small or not large:
         return 0
+    # The same name written differently is a PERFECT match. normalize_name has already folded away
+    # case, accents, punctuation and stray whitespace, so once the two token lists agree the values
+    # denote one person and nothing — word order, float rounding — may cost them a point.
+    # "SURAJ PAULD", "Suraj  Pauld" and "Pauld, Suraj" all score 100 against "Suraj Pauld".
+    if sorted(small) == sorted(large):
+        return 100
     if len(small) > len(large):
         small, large = large, small
 

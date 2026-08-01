@@ -60,6 +60,18 @@ export interface KycStats {
   totalCompleted: number;
 }
 
+/**
+ * One document a member uploaded for an OCR (Image Upload) verification, as offered by the
+ * View Details popup. Metadata only — the bytes are fetched separately via `getOcrDocument`.
+ */
+export interface KycOcrDocument {
+  index: number;          // page of a multi-document upload (passport front = 0, back = 1)
+  label: string;          // "Uploaded Document", or "Front" / "Back"
+  contentType: string;    // image/png · image/jpeg · application/pdf
+  fileName: string;       // suggested download filename
+  sizeBytes: number;
+}
+
 export interface KycHistoryDetail extends KycHistoryItem {
   generatedLink?: string | null;
   apiStatus?: string | null;
@@ -68,6 +80,12 @@ export interface KycHistoryDetail extends KycHistoryItem {
   response?: Record<string, unknown> | null;
   /** Aadhaar photo parsed server-side out of the response's XML section (data URL), if present. */
   aadhaarPhoto?: string | null;
+  /**
+   * Uploaded OCR document(s) available to view / download. The backend fills this for ADMIN
+   * callers only, and only for an Image Upload record — every Merchant Portal role (Data
+   * Operator, Supervisor, Manager, DEO) receives an empty list, so no document control renders.
+   */
+  ocrDocuments?: KycOcrDocument[];
   updatedAt?: string | null;
 }
 
@@ -201,6 +219,15 @@ export const kycAPI = {
 
   getHistoryDetail: async (id: number): Promise<KycHistoryDetail> =>
     (await api.get<KycHistoryDetail>(`/api/kyc/history/${id}`)).data,
+
+  // The document already stored on an OCR (Image Upload) verification — Admin Portal only; the
+  // backend rejects every Merchant Portal role with a 403. Returned as a Blob because the request
+  // must carry the session's Authorization header, which an <img src> could not. Nothing is
+  // re-uploaded: this reads the image the verification was performed with.
+  getOcrDocument: async (id: number, index = 0): Promise<Blob> =>
+    (await api.get(`/api/kyc/history/${id}/document`, {
+      params: { index }, responseType: 'blob',
+    })).data as Blob,
 
   // Headline counter for the dashboard summary card — counted in the database, so it reflects the
   // whole history rather than the page currently on screen.

@@ -21,12 +21,12 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_kyc_user, get_current_kyc_verifier
+from app.core.deps import get_current_kyc_admin, get_current_kyc_user, get_current_kyc_verifier
 from app.db.session import get_db
 from app.models.models import KycVerificationHistory, User, UserRole
 from app.services import kyc as kyc_service
@@ -237,15 +237,203 @@ def _extract_kyc_name(response) -> str | None:
     return candidates[0][1] if candidates else None
 
 
+# ── OCR (Image Upload) name matching ──────────────────────────────────────────
+# An OCR response has no single fixed key for the holder's name: depending on the document it
+# arrives as `name`, `full_name`, `name_on_card`, an MRZ-style `surname_and_given_names`, or split
+# across `given_name(s)` + `surname`. Picking ONE key by priority meant an Image Upload read
+# "Success – Not Matched" whenever the provider used a key we did not recognise — no name found,
+# so no percentage was ever calculated, whatever the two names actually were. For an Image Upload
+# we therefore collect EVERY plausible holder-name value (plus the re-joined first/middle/last and
+# given+surname forms) and score the Member Name against the BEST of them.
+#
+# The comparison itself is case-insensitive: both values go through name_match.normalize_name —
+# lowercased, accents/punctuation stripped, whitespace trimmed and collapsed — before any
+# percentage is calculated, so letter casing alone can never move the score.
+#
+# Scoped to Image Upload / OCR only; the DigiLocker and ID Number paths keep the single-name
+# extraction they have always used.
+_OCR_NAME_KEYS = frozenset(_NAME_KEYS) | {
+    "surname_and_given_names", "given_names", "name_of_holder", "name_in_english", "english_name",
+    "cardholder_name", "card_holder_name", "account_holder_name", "document_holder_name",
+    "applicant_name", "customer_name", "holder", "surname", "family_name",
+    "first_name", "middle_name", "last_name",
+}
+# Name parts that only form a name once joined, in the order they must be joined.
+_OCR_NAME_PARTS = (
+    ("first_name", "middle_name", "last_name"),
+    ("given_name", "middle_name", "surname"),
+    ("given_names", "surname"),
+    ("given_name", "family_name"),
+)
+_MAX_NAME_LEN = 80
+
+
+def _looks_like_name(value: str) -> bool:
+    """A short, mostly-alphabetic value — keeps ids, dates and base64 blobs out of the comparison."""
+    return bool(value) and len(value) <= _MAX_NAME_LEN and len(re.findall(r"[A-Za-z]", value)) >= 2
+
+
+def _joined_name_parts(node: dict) -> str | None:
+    """A name the document reader split across separate fields, put back together."""
+    lower = {str(k).lower(): v.strip() for k, v in node.items() if isinstance(v, str)}
+    for parts in _OCR_NAME_PARTS:
+        values = [lower[p] for p in parts if lower.get(p)]
+        if len(values) >= 2:
+            return " ".join(values)
+    return None
+
+
+def _iter_ocr_names(node, depth: int = 0):
+    """Every plausible holder name in an OCR response (relatives / authorities excluded)."""
+    if depth > 6:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            kl = str(key).lower()
+            if isinstance(value, str):
+                if kl in _OCR_NAME_KEYS and not any(b in kl for b in _NAME_BLOCK):
+                    candidate = value.strip()
+                    if _looks_like_name(candidate):
+                        yield candidate
+            elif isinstance(value, (dict, list)):
+                yield from _iter_ocr_names(value, depth + 1)
+        joined = _joined_name_parts(node)
+        if joined and _looks_like_name(joined):
+            yield joined
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            yield from _iter_ocr_names(value, depth + 1)
+
+
+def _ocr_best_match(member_name: str, response) -> tuple[int, str] | None:
+    """Best (score, status) across every name the OCR response carries, or None when it carries
+    none. Best-of, because only the holder's own name decides the outcome and the provider may
+    return it alongside several other name-shaped fields."""
+    best: tuple[int, str] | None = None
+    for candidate in _iter_ocr_names(response):
+        scored = score_and_status(member_name, candidate)
+        if best is None or scored[0] > best[0]:
+            best = scored
+            if scored[0] >= 100:
+                break                       # a perfect match cannot be bettered
+    return best
+
+
 def _apply_name_match(row: KycVerificationHistory, response, member_name: str | None) -> None:
     """Compute + store the name-match score/status when the response carries an official name.
 
     The score/status compare the member's registered name (``member_name``) with the official KYC
-    name. Leaves the row untouched (status falls back to the API state) when no name is returned.
+    name, case-insensitively (both sides are normalised first — see ``name_match.normalize_name``).
+    An Image Upload / OCR record scores against the best of every name the document returned; the
+    DigiLocker and ID Number paths are unchanged. Leaves the row untouched (status falls back to
+    the API state) when no name is returned.
     """
+    if not member_name:
+        return
+    if str(row.verification_method or "") == METHOD_IMAGE:
+        best = _ocr_best_match(member_name, response)
+        if best:
+            row.match_score, row.match_status = best
+        return
     kyc_name = _extract_kyc_name(response)
-    if kyc_name and member_name:
+    if kyc_name:
         row.match_score, row.match_status = score_and_status(member_name, kyc_name)
+
+
+# ── Uploaded OCR document (Admin Portal only) ─────────────────────────────────
+# An Image Upload verification already persists the document exactly as it was sent to the
+# provider — the raw base64 lives in the row's ``request_json`` under ``source`` (a two-item list
+# for a passport's front + back). The Admin Portal reads THAT; nothing is copied, re-uploaded or
+# stored a second time. The file type is recovered from the bytes themselves because only the
+# base64 payload was kept, never the original data-URL prefix.
+_DOC_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png", "png"),
+    (b"\xff\xd8\xff", "image/jpeg", "jpg"),
+    (b"%PDF-", "application/pdf", "pdf"),
+    (b"GIF87a", "image/gif", "gif"),
+    (b"GIF89a", "image/gif", "gif"),
+)
+# Labels for a multi-document upload (passport front + back); a single upload needs none.
+_DOC_LABELS = ("Front", "Back")
+
+
+def _sniff_document(raw: bytes) -> tuple[str, str]:
+    """(content type, file extension) for the uploaded bytes. Only the types the upload fields
+    accept are recognised; anything else is served as a plain download rather than guessed at."""
+    for magic, content_type, ext in _DOC_MAGIC:
+        if raw.startswith(magic):
+            return content_type, ext
+    return "application/octet-stream", "bin"
+
+
+def _stored_documents(row: KycVerificationHistory) -> list[bytes]:
+    """The document(s) the operator uploaded for this verification, decoded from the stored
+    request. Empty for anything that is not an Image Upload — an ID Number verification stores the
+    id itself in ``source``, which is not a document."""
+    if str(row.verification_method or "") != METHOD_IMAGE:
+        return []
+    try:
+        payload = json.loads(row.request_json or "")
+    except (ValueError, TypeError):
+        return []
+    source = payload.get("source") if isinstance(payload, dict) else None
+    sources = [source] if isinstance(source, str) else source if isinstance(source, list) else []
+    out: list[bytes] = []
+    for item in sources:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        b64 = re.sub(r"\s+", "", item.split(",", 1)[-1] if item.startswith("data:") else item)
+        try:
+            out.append(base64.b64decode(b64, validate=True))
+        except (binascii.Error, ValueError):
+            continue                       # unreadable payload → simply no document to offer
+    return out
+
+
+def _document_name(row: KycVerificationHistory, index: int, count: int, ext: str) -> str:
+    """Download filename: reference id + document type, plus Front/Back when there are two."""
+    parts = [str(row.reference_id or f"KYC{row.id}")]
+    if row.document_type:
+        parts.append(str(row.document_type))
+    if count > 1 and index < len(_DOC_LABELS):
+        parts.append(_DOC_LABELS[index].lower())
+    return f"{'_'.join(parts)}.{ext}"
+
+
+def _redacted_request(row: KycVerificationHistory, payload):
+    """The stored request as the View Details popup receives it, minus the uploaded document.
+
+    An Image Upload persists the document as raw base64 under ``source``; that payload is replaced
+    with a short placeholder so the document never rides along on a detail response. An Admin
+    fetches it deliberately from ``/history/{id}/document``, and no Merchant Portal role can reach
+    it by any route. Every other verification (ID Number / DigiLocker) is returned untouched, and
+    the stored row itself is never modified.
+    """
+    if str(row.verification_method or "") != METHOD_IMAGE or not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    source = out.get("source")
+    if isinstance(source, str):
+        out["source"] = f"<uploaded document — {len(source)} chars>"
+    elif isinstance(source, list):
+        out["source"] = [f"<uploaded document — {len(s)} chars>" if isinstance(s, str) else s for s in source]
+    return out
+
+
+def _document_manifest(row: KycVerificationHistory) -> list[dict]:
+    """What the View Details popup needs to offer each uploaded document — never the bytes."""
+    documents = _stored_documents(row)
+    manifest = []
+    for index, raw in enumerate(documents):
+        content_type, ext = _sniff_document(raw)
+        manifest.append({
+            "index": index,
+            "label": _DOC_LABELS[index] if len(documents) > 1 and index < len(_DOC_LABELS) else "Uploaded Document",
+            "contentType": content_type,
+            "fileName": _document_name(row, index, len(documents), ext),
+            "sizeBytes": len(raw),
+        })
+    return manifest
 
 
 def _image_b64(data_url: str, field: str = "image") -> str:
@@ -1027,9 +1215,57 @@ async def kyc_history_detail(
         "generatedLink": row.generated_link,
         "apiStatus": row.api_status,
         "errorMessage": row.error_message,
-        "request": _parse(row.request_json),
+        "request": _redacted_request(row, _parse(row.request_json)),
         "response": response,
         # Aadhaar cardholder photo (data URL), or None when absent / the link had expired.
         "aadhaarPhoto": photo,
+        # Uploaded OCR document(s) available for view/download — ADMIN ONLY, and only for an Image
+        # Upload record. Every Merchant Portal role gets an empty list, so the popup simply has no
+        # document section to render for them.
+        "ocrDocuments": _document_manifest(row) if user.role == UserRole.ADMIN else [],
         "updatedAt": (row.updated_at.isoformat() + "Z") if row.updated_at else None,
     }
+
+
+@router.get("/history/{history_id}/document")
+async def kyc_history_document(
+    history_id: int,
+    index: int = 0,
+    download: bool = False,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_kyc_admin),
+):
+    """The document a member uploaded for an OCR (Image Upload) verification — Admin Portal only.
+
+    Serves the image already stored on the verification request; nothing is re-uploaded or copied.
+    ``download=true`` sends it as an attachment, otherwise it renders inline. ``index`` selects the
+    page of a multi-document upload (passport front = 0, back = 1).
+    """
+    row = (await db.execute(
+        select(KycVerificationHistory).where(
+            KycVerificationHistory.id == history_id,
+            _kyc_scope(user),          # same tenancy predicate as every other read path
+        )
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Verification record not found.")
+
+    documents = _stored_documents(row)
+    if not documents:
+        raise HTTPException(status_code=404, detail="No uploaded document is stored for this verification.")
+    if index < 0 or index >= len(documents):
+        raise HTTPException(status_code=404, detail="Uploaded document not found.")
+
+    raw = documents[index]
+    content_type, ext = _sniff_document(raw)
+    filename = _document_name(row, index, len(documents), ext)
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=raw,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            # A KYC document is personal data — never let a proxy or the browser keep a copy.
+            "Cache-Control": "no-store, private",
+        },
+    )

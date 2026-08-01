@@ -132,6 +132,19 @@ async def get_current_kyc_user(current_user: User = Depends(get_current_user)) -
     raise HTTPException(status_code=403, detail="KYC access requires a Data Operator, Supervisor or Manager role")
 
 
+async def get_current_kyc_admin(current_user: User = Depends(get_current_user)) -> User:
+    """ADMIN users only — the gate on the uploaded OCR document (view / download).
+
+    Strictly narrower than ``get_current_kyc_user``: the identity document a member handed over is
+    exposed to the Admin Portal alone. Every Merchant Portal role — Data Operator, Supervisor,
+    Manager, DEO and any other — is rejected here even though they may read the same record's
+    history and details.
+    """
+    if current_user.role == UserRole.ADMIN:
+        return current_user
+    raise HTTPException(status_code=403, detail="Viewing the uploaded KYC document requires Admin access")
+
+
 async def get_current_kyc_verifier(current_user: User = Depends(get_current_user)) -> User:
     """MERCHANT users whose merchant_role is Data Operator — the only role that may RUN a KYC
     verification. Supervisor and Manager keep read-only access via ``get_current_kyc_user``."""
