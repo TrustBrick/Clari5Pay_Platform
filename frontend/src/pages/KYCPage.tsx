@@ -4,10 +4,10 @@ import { T } from '../utils/theme';
 import { Card, Btn, Input, Modal, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { useToast } from '../context/ToastContext';
-import { fileToDataUrl } from '../utils/helpers';
+import { fileToDataUrl, downloadDataUrl } from '../utils/helpers';
 import {
   kycAPI, KYC_VALIDATION, OCR_MAX_BYTES, kycErrorMessage, kycErrorReferenceId,
-  type KycHistoryItem, type KycHistoryDetail, type AadhaarDetails,
+  type KycHistoryItem, type KycHistoryDetail, type KycOcrDocument, type AadhaarDetails,
 } from '../services/kyc';
 
 // ─── Debug console logging (temporary — verification only) ─────────────────────
@@ -537,6 +537,95 @@ const KVGrid: React.FC<{ rows: Array<[string, React.ReactNode]> }> = ({ rows }) 
   </div>
 );
 
+// ─── Uploaded OCR document — Admin Portal only ─────────────────────────────────
+// The backend fills `ocrDocuments` for an ADMIN caller alone, and only on an Image Upload record;
+// every Merchant Portal role (Data Operator, Supervisor, Manager, DEO) receives an empty list and
+// therefore never renders this section. The gate is the API, not this component.
+//
+// The bytes are the ones the verification was performed with — read back from the stored request,
+// never re-uploaded. They are fetched as a Blob (the request must carry the session's auth header,
+// which an <img src> cannot) and held as object URLs for the life of the popup, so View and
+// Download reuse the single fetch instead of hitting the server again.
+const fmtBytes = (n: number): string =>
+  n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MB`
+  : n >= 1024 ? `${Math.round(n / 1024)} KB`
+  : `${n} B`;
+
+const useOcrDocuments = (id: number, docs?: KycOcrDocument[]) => {
+  const [urls, setUrls] = useState<Record<number, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!docs || docs.length === 0) { setUrls({}); return; }
+    let alive = true;
+    const created: string[] = [];
+    setLoading(true); setError('');
+    (async () => {
+      try {
+        const pairs = await Promise.all(docs.map(async (d) => {
+          const url = URL.createObjectURL(await kycAPI.getOcrDocument(id, d.index));
+          created.push(url);
+          return [d.index, url] as const;
+        }));
+        if (!alive) { created.forEach((u) => URL.revokeObjectURL(u)); return; }
+        setUrls(Object.fromEntries(pairs));
+      } catch (e) {
+        if (alive) setError(kycErrorMessage(e, 'Could not load the uploaded document.'));
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    // Revoke on close so the popup never leaks a KYC document into the tab's memory.
+    return () => { alive = false; created.forEach((u) => URL.revokeObjectURL(u)); };
+  }, [id, docs]);
+
+  return { urls, loading, error };
+};
+
+const OcrDocumentSection: React.FC<{ id: number; docs: KycOcrDocument[] }> = ({ id, docs }) => {
+  const { urls, loading, error } = useOcrDocuments(id, docs);
+  return (
+    <Section title={docs.length > 1 ? 'Uploaded Documents' : 'Uploaded Document'}>
+      {loading && <div style={{ fontSize: 12.5, color: T.textMuted }}>Loading the uploaded document…</div>}
+      {error && <div style={{ fontSize: 12.5, fontWeight: 700, color: T.danger }}>{error}</div>}
+      {!loading && !error && (
+        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+          {docs.map((d) => {
+            const url = urls[d.index];
+            const isPdf = d.contentType === 'application/pdf';
+            return (
+              <div key={d.index} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{d.label}</div>
+                {url && !isPdf ? (
+                  <img src={url} alt={d.label} style={{ maxWidth: 260, maxHeight: 200, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }} />
+                ) : (
+                  <div style={{ width: 160, height: 120, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 10, border: `1px dashed ${T.border}`, background: T.canvas, color: T.textMuted, fontSize: 11, fontWeight: 700 }}>
+                    <Icon name={isPdf ? 'pdf' : 'document-preview'} size={22} />{isPdf ? 'PDF document' : 'Preview unavailable'}
+                  </div>
+                )}
+                <div style={{ fontSize: 11, color: T.textMuted, wordBreak: 'break-all', maxWidth: 260 }}>
+                  {d.fileName} · {fmtBytes(d.sizeBytes)}
+                </div>
+                {url && (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <Btn size="sm" variant="ghost" onClick={() => window.open(url, '_blank', 'noopener')}>
+                      <Icon name="view" size={13} /> View
+                    </Btn>
+                    <Btn size="sm" variant="ghost" onClick={() => downloadDataUrl(url, d.fileName)}>
+                      <Icon name="download" size={13} /> Download
+                    </Btn>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Section>
+  );
+};
+
 // Render an arbitrary object as a prettified KV grid (used for PAN sub-objects).
 const ObjectGrid: React.FC<{ obj?: Record<string, unknown> | null }> = ({ obj }) => {
   const entries = obj ? Object.entries(obj).filter(([, v]) => typeof v !== 'object' || v === null) : [];
@@ -873,6 +962,12 @@ const ViewDetailsModal: React.FC<{ item: KycHistoryItem; onClose: () => void; on
       )}
 
       {!loading && err && <Banner kind="error">{err}</Banner>}
+
+      {/* The document this OCR verification was run against. Present only for an Admin viewing an
+          Image Upload record — the backend returns no documents to any Merchant Portal role. */}
+      {!loading && !pendingMsg && (detail?.ocrDocuments?.length ?? 0) > 0 && (
+        <OcrDocumentSection id={item.id} docs={detail!.ocrDocuments!} />
+      )}
 
       {!loading && !pendingMsg && isDigilocker && aadhaar && (
         <AadhaarDetailsBody data={aadhaar} photo={detail?.aadhaarPhoto} record={detail} />
