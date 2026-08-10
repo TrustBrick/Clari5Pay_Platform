@@ -3185,39 +3185,39 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
     ? { ...(slip ? { tokenImage: slip } : {}), ...(needsNote ? { noteNumber: note.trim() } : {}) }
     : { ...(slip ? { slipImage: slip } : {}), utr: utr.trim() });
 
-  // Saving the proof is a DATA UPDATE — it never moves the transaction's status. Completing it is
-  // the separate, explicit action below, so an upload can no longer complete a withdrawal by itself.
-  const submit = async () => {
+  // ONE action: save the proof, then complete. The two are still separate server steps — saving
+  // the file never moves a status by itself, and completion is gated on the approval already
+  // given — but the operator performs them as a single act, so there is a single button.
+  //
+  // The two calls are reported separately on purpose. If the upload fails, nothing is completed.
+  // If the upload succeeds and only the completion fails, the proof IS on the record, so the list
+  // is refreshed (rather than closed) and the row offers Complete Withdrawal again — a failure
+  // here never loses the operator's upload or silently marks the transaction completed.
+  const completeWithdrawal = async () => {
     if (!ready || busy) { if (!ready) showToast(`Attach the ${fileLabel.toLowerCase()}${isCash ? '' : ' and enter the UTR number'}.`, 'error'); return; }
     setBusy(true);
     try {
       await agentTxnsAPI.payout(row.id, payload());
-      showToast(`Payment details saved for ${row.referenceNumber}. Status unchanged.`, 'success');
-      onDone(); onClose();
-    } catch (e) { showToast(agentTxnError(e, 'Failed to submit payment details.'), 'error'); }
-    finally { setBusy(false); }
-  };
-
-  // Save the proof and complete in one go, for the operator who is doing both at the same time.
-  // The completion is still its own server-side step, gated on the approval already given — and it
-  // only runs once the upload has been accepted, so a failed upload never completes anything.
-  const saveAndComplete = async () => {
-    if (!ready || busy) { if (!ready) showToast(`Attach the ${fileLabel.toLowerCase()}${isCash ? '' : ' and enter the UTR number'}.`, 'error'); return; }
-    setBusy(true);
+    } catch (e) {
+      showToast(agentTxnError(e, 'Failed to save the payment details. The withdrawal was not completed.'), 'error');
+      setBusy(false);
+      return;
+    }
     try {
-      await agentTxnsAPI.payout(row.id, payload());
       await agentTxnsAPI.completeWithdrawal(row.id);
       showToast(`${row.referenceNumber} completed.`, 'success');
       onDone(); onClose();
-    } catch (e) { showToast(agentTxnError(e, 'Failed to complete the withdrawal.'), 'error'); }
-    finally { setBusy(false); }
+    } catch (e) {
+      showToast(agentTxnError(e, 'Payment details saved, but the withdrawal could not be completed.'), 'error');
+      onDone();
+    } finally { setBusy(false); }
   };
 
   return (
     <Modal title={`Pay and Upload Slip — ${row.referenceNumber}`} onClose={onClose}>
       <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
-        Approved by {row.approverName || row.managerName || 'the approver'}. Make the {methodLabel(row.txnMethod)} payment, then attach the {fileLabel.toLowerCase()}{isCash ? '' : ' and enter the UTR number'}.
-        Saving updates the payment information only — the status stays as the approval workflow left it until you complete the withdrawal.
+        Approved by {row.approverName || row.managerName || 'the approver'}. Make the {methodLabel(row.txnMethod)} payment, then attach the {fileLabel.toLowerCase()}{isCash ? '' : ' and enter the UTR number'} and complete the withdrawal.
+        The proof is saved first; the withdrawal is marked completed only after the server confirms it.
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
         <DField k="Amount" v={fmt(row.amount)} />
@@ -3248,8 +3248,7 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
         : row.slipImage ? <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Re-attach the {fileLabel.toLowerCase()} to save a correction.</div> : null}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10, flexWrap: 'wrap' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-        <Btn onClick={submit} disabled={busy || !ready}>{busy ? 'Saving…' : 'Save Payment Details'}</Btn>
-        <Btn variant="success" onClick={saveAndComplete} disabled={busy || !ready}>{busy ? 'Completing…' : 'Save & Complete'}</Btn>
+        <Btn variant="success" onClick={completeWithdrawal} disabled={busy || !ready}>{busy ? 'Completing…' : 'Complete Withdrawal'}</Btn>
       </div>
     </Modal>
   );

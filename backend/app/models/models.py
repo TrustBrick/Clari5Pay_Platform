@@ -980,8 +980,11 @@ class AgentTransactionAudit(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     agent_transaction_id: Mapped[int] = mapped_column(Integer, ForeignKey("agent_transaction.id"), index=True, nullable=False)
     reference_number: Mapped[Optional[str]] = mapped_column(String(24), index=True, nullable=True)  # denormalized for search
-    # CREATED | AMOUNT_UPDATED | SENT_FOR_APPROVAL | APPROVED | REJECTED
-    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    # CREATED | AMOUNT_UPDATED | SENT_FOR_APPROVAL | APPROVED | REJECTED | PAYMENT_DETAILS_SUBMITTED …
+    # 32, not 24: PAYMENT_DETAILS_SUBMITTED is 25 characters, so every withdrawal payout raised
+    # StringDataRightTruncation on Postgres and aborted the transaction — which is what made
+    # Pay and Upload Slip (and therefore completion) fail for Bank, Cash and Crypto alike.
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
     old_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     new_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

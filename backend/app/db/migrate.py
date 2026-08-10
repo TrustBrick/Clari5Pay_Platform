@@ -490,6 +490,11 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         # longest (ACCOUNT_REQUESTED / ACCOUNT_SUBMITTED / SUPERVISOR_REVIEW = 17 chars) overflow
         # the original VARCHAR(16). Widening is lossless and idempotent.
         await _widen_column(conn, "agent_transaction", "status", 24)
+        # The agent audit trail's longest action, PAYMENT_DETAILS_SUBMITTED, is 25 characters and
+        # overflowed the original VARCHAR(24): every Pay and Upload Slip insert failed with
+        # StringDataRightTruncation, aborting the transaction, so no agent withdrawal of any method
+        # could record its payment or be completed. Widening is lossless and idempotent.
+        await _widen_column(conn, "agent_transaction_audit", "action", 32)
         # A CASH/CRYPTO deposit has no Token Details / Note Number at creation — they are captured
         # at Submit Account — so these two can no longer be NOT NULL. Existing rows keep their
         # values; only the constraint is relaxed.
