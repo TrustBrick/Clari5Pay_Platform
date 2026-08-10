@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
@@ -586,6 +586,9 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const [approverId, setApproverId] = useState('');
   const [approvers, setApprovers] = useState<ApproverOption[]>([]);
   useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
+  // The Deposit Types this operator may currently pick. The Cash/Crypto handling below stays in
+  // place either way — a deposit already recorded as one still renders and processes normally.
+  const depositTypes = txnTypeOptionsFor(DEPOSIT_TYPE_OPTIONS, user.merchantRole);
   const isUpi = form.depositType === 'UPI';
   const isCash = form.depositType === 'CASH';
   const isCrypto = form.depositType === 'CRYPTO';
@@ -658,7 +661,10 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   return (
     <div onKeyDown={enterSubmit(!(loading||!form.amount||!form.memberName), submit)}>
       <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-        <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={DEPOSIT_TYPE_OPTIONS} required/>
+        {/* Cash / Crypto are temporarily withheld from the operator roles here — those two are
+            raised through the Agent Module instead. Options only: every Cash/Crypto branch of this
+            form, and every existing Cash/Crypto deposit, is untouched (see txnTypeOptionsFor). */}
+        <Sel label="Deposit Type" value={form.depositType} onChange={e=>set('depositType',e.target.value)} options={depositTypes} required/>
         <Input label="Amount (INR)" type="text" inputMode="decimal" value={form.amount} onChange={e=>set('amount',formatIndianAmountInput(e.target.value))} placeholder="Min 1" required/>
         <Input label="Member Name" value={form.memberName} onChange={e=>set('memberName',e.target.value)} placeholder="Full name" required readOnly={memberLocked} hint={memberLocked ? 'Auto-filled from existing membership' : undefined}/>
         <Input label="Membership ID" value={form.memberId} onChange={e=>setMemberId(e.target.value)} placeholder="e.g. MBR20240001" required/>
@@ -750,6 +756,9 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [approverId, setApproverId] = useState('');
   const [approvers, setApprovers] = useState<ApproverOption[]>([]);
   useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers('WITHDRAWAL').then(setApprovers).catch(()=>{}); }, []);
+  // The Payout Modes this operator may currently pick. MODE_FIELDS keeps every mode, so a saved
+  // destination or an existing Cash/Crypto withdrawal still resolves its fields normally.
+  const payoutModes = txnTypeOptionsFor(PAYOUT_MODES, user.merchantRole);
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
@@ -894,7 +903,10 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
 
       {usingOther && (
         <>
-          <Sel label="Payout Mode" value={mode} onChange={e=>{ setMode(e.target.value); setDetails({}); }} options={PAYOUT_MODES} required/>
+          {/* Same temporary withholding as the Deposit form: Cash / Crypto payouts are raised
+              through the Agent Module for now. MODE_FIELDS and every existing Cash/Crypto
+              withdrawal are untouched. */}
+          <Sel label="Payout Mode" value={mode} onChange={e=>{ setMode(e.target.value); setDetails({}); }} options={payoutModes} required/>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>{PAYOUT_MODES.find(m=>m.value===mode)?.label} Details</p>
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
             {fields.map(f => (

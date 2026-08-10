@@ -415,6 +415,25 @@ export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'CRYPTO', label: 'Crypto (USDT)' },
 ];
 
+// ── Transaction types temporarily withheld from the operator request forms ─────────────────────
+// Cash and Crypto are not currently offered to the Data / Deposit / Withdrawal Operators on the
+// MERCHANT Deposit Type and Payout Mode selectors — those two move through the Agent Module
+// instead, where they stay fully available.
+//
+// This hides the OPTIONS ONLY. Nothing is deleted or disabled: the Cash/Crypto branches of both
+// request forms, their member-detail fields, proof upload, APIs, transaction statuses and database
+// columns are all untouched, every existing Cash/Crypto transaction still displays and processes
+// exactly as before, and any other role (e.g. a merchant with no operator role) keeps the full
+// list. Emptying WITHHELD_TXN_TYPES re-offers both types immediately.
+export const WITHHELD_TXN_TYPES = ['CASH', 'CRYPTO'];
+const WITHHELD_TXN_TYPE_ROLES = ['DEO', 'DEPOSIT_OPERATOR', 'WITHDRAWAL_OPERATOR'];
+
+/** `options` filtered to the transaction types this merchant role may currently pick. */
+export const txnTypeOptionsFor = <O extends { value: string }>(options: O[], merchantRole?: string | null): O[] =>
+  WITHHELD_TXN_TYPE_ROLES.includes(String(merchantRole || '').toUpperCase())
+    ? options.filter(o => !WITHHELD_TXN_TYPES.includes(String(o.value).toUpperCase()))
+    : options;
+
 // ── Crypto Balance module ──────────────────────────────────────────────────────
 // A transaction is "crypto" iff its deposit leg is CRYPTO or its withdrawal payout mode is
 // CRYPTO — the same predicate the backend uses in compute_balance / tx_class filtering.
