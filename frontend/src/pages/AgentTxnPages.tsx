@@ -39,7 +39,7 @@ const INSTR_LABEL: Record<string, string> = {
   // Retired options — kept for display of legacy records only (no longer offered in the dropdown).
   NO_CALL: 'No Call', HIGH_PRIORITY: 'High Priority',
 };
-const instrLabel = (v: string) => INSTR_LABEL[v] || v;
+export const instrLabel = (v: string) => INSTR_LABEL[v] || v;
 
 
 // Workflow statuses — same labels as the merchant deposit workflow. PENDING/APPROVED are legacy
@@ -106,14 +106,14 @@ export const agentStatusLabel = (
   return s?.label || String(status || '').replace(/_/g, ' ');
 };
 
-const StatusPill: React.FC<{ status: string; type?: string | null; method?: string | null; approverRole?: string | null }> = ({ status, type, method, approverRole }) => {
+export const StatusPill: React.FC<{ status: string; type?: string | null; method?: string | null; approverRole?: string | null }> = ({ status, type, method, approverRole }) => {
   const s = STATUS_STYLE[status] || { c: T.textMuted, bg: T.borderLight, label: status };
   const label = agentStatusLabel(status, type, method, approverRole);
   return <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 20, color: s.c, background: s.bg, whiteSpace: 'nowrap' }}>{label}</span>;
 };
 
 // Status filter — the chain in workflow order, then the legacy values.
-const STATUS_FILTER_OPTIONS = [
+export const STATUS_FILTER_OPTIONS = [
   'TOKEN_REQUESTED', 'TOKEN_SUBMITTED', 'WALLET_REQUESTED', 'WALLET_SUBMITTED',
   'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED', 'SLIP_REJECTED', 'SUPERVISOR_APPROVED',
   'MANAGER_REVIEW', 'MANAGER_APPROVED',
@@ -121,23 +121,26 @@ const STATUS_FILTER_OPTIONS = [
   'DEPOSITED', 'DISTRIBUTED', 'COMPLETED', 'REJECTED', 'PENDING', 'APPROVED',
 ].map(v => ({ value: v, label: STATUS_STYLE[v]?.label || v }));
 
-const METHOD_LABEL: Record<string, string> = {
+export const METHOD_LABEL: Record<string, string> = {
   CASH: 'Cash', UPI: 'UPI', BANK: 'Bank Transfer', IMPS: 'IMPS', NEFT: 'NEFT', RTGS: 'RTGS', CRYPTO: 'Crypto (USDT)',
 };
-const methodLabel = (v?: string | null) => (v ? METHOD_LABEL[v] || v : '—');
+export const methodLabel = (v?: string | null) => (v ? METHOD_LABEL[v] || v : '—');
 const BANK_LIKE = ['BANK', 'IMPS', 'NEFT', 'RTGS'];
 // Cash/Crypto capture their reference at Submit Account (token image / wallet), not at create.
-const isTokenMethod = (m?: string | null) => m === 'CASH';
-const isWalletMethod = (m?: string | null) => m === 'CRYPTO';
+export const isTokenMethod = (m?: string | null) => m === 'CASH';
+export const isWalletMethod = (m?: string | null) => m === 'CRYPTO';
 const isSpecialMethod = (m?: string | null) => isTokenMethod(m) || isWalletMethod(m);
-/** Whether a withdrawal already holds the payment details its method needs — mirrors the server's
- *  `_missing_payment_detail`, and gates the Complete Withdrawal action. The Unique Note Number is
- *  part of that set for CASH only: a bank or crypto withdrawal never captures one. */
+/** Whether a withdrawal already holds the PROOF OF PAYMENT its method needs — mirrors the server's
+ *  `_missing_payment_detail`, and gates the Complete Withdrawal action.
+ *
+ *  It deliberately looks only at what the operator supplies AFTER approval. The Token Number and
+ *  the Wallet Address are captured when the request is raised, so treating those as the payment
+ *  details made this true the instant the Manager approved — which is what offered Complete
+ *  Withdrawal before anything had been uploaded. */
 const hasPaymentDetails = (r: AgentTxnRow) =>
   isTokenMethod(r.txnMethod)
-    ? !!(r.tokenDetails || '').trim() && !!(r.noteNumber || '').trim()
-    : isWalletMethod(r.txnMethod) ? !!(r.walletAddress || '').trim()
-      : !!r.slipImage && !!(r.depositUtr || '').trim();
+    ? !!r.slipImage                                   // CASH   → token image
+    : !!r.slipImage && !!(r.depositUtr || '').trim(); // CRYPTO / BANK / UPI → slip + UTR
 
 // A transaction can only be routed through an agent of the matching category: cash moves through a
 // Cash agent, a bank transfer through a Bank Transfer agent, crypto through a Crypto agent. The
@@ -199,8 +202,8 @@ const COUNTRY_OPTIONS = COUNTRY_CODES
   .map(n => ({ value: n, label: n }));
 const STATE_OPTIONS = INDIAN_STATES.map(n => ({ value: n, label: n }));
 
-const thS: React.CSSProperties = { padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}` };
-const tdS: React.CSSProperties = { padding: '11px 14px', fontSize: 12, color: T.textMain };
+export const thS: React.CSSProperties = { padding: '10px 14px', textAlign: 'left', fontSize: 10, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `2px solid ${T.border}` };
+export const tdS: React.CSSProperties = { padding: '11px 14px', fontSize: 12, color: T.textMain };
 
 // ─── Agent Overview (isolated KPIs / summaries) ────────────────────────────────
 export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) => void }> = () => {
@@ -316,7 +319,7 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
 // the figures, never on the card — a border per metric turned the page into a colour chart and made
 // the numbers themselves harder to pick out. `T.border` is the theme's own hairline (#283342 in
 // dark, #e2e8f0 in light), so this reads the same in both themes rather than only the dark one.
-const DASH_CARD: React.CSSProperties = {
+export const DASH_CARD: React.CSSProperties = {
   padding: 20,
   height: '100%',
   border: `1px solid ${T.border}`,
@@ -324,9 +327,9 @@ const DASH_CARD: React.CSSProperties = {
   boxSizing: 'border-box',
 };
 // A figure worth reading is coloured; a zero is not news, so it stays muted.
-const figure = (value: number, color: string) => (value ? color : T.textMuted);
+export const figure = (value: number, color: string) => (value ? color : T.textMuted);
 // The icon sits in a quiet chip so it labels the card without competing with the number.
-const DashIcon: React.FC<{ name: IconName; color: string }> = ({ name, color }) => (
+export const DashIcon: React.FC<{ name: IconName; color: string }> = ({ name, color }) => (
   <span style={{
     width: 34, height: 34, borderRadius: 10, flexShrink: 0,
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -336,7 +339,7 @@ const DashIcon: React.FC<{ name: IconName; color: string }> = ({ name, color }) 
   </span>
 );
 
-const FinCard: React.FC<{ title: string; icon: IconName; accent: string; a: [string, number]; b: [string, number]; bMoney?: boolean }> =
+export const FinCard: React.FC<{ title: string; icon: IconName; accent: string; a: [string, number]; b: [string, number]; bMoney?: boolean }> =
   ({ title, icon, accent, a, b, bMoney = true }) => (
   <Card style={DASH_CARD}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
@@ -351,7 +354,7 @@ const FinCard: React.FC<{ title: string; icon: IconName; accent: string; a: [str
   </Card>
 );
 // A single value tile in the Balance Overview flow.
-const BoTile: React.FC<{ label: string; sub: string; value: number; color: string; icon: IconName; big?: boolean }> = ({ label, sub, value, color, icon, big }) => (
+export const BoTile: React.FC<{ label: string; sub: string; value: number; color: string; icon: IconName; big?: boolean }> = ({ label, sub, value, color, icon, big }) => (
   <Card style={{ ...DASH_CARD, flex: '1 1 210px', minWidth: 190 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
       <DashIcon name={icon} color={color} />
@@ -362,11 +365,11 @@ const BoTile: React.FC<{ label: string; sub: string; value: number; color: strin
   </Card>
 );
 // The operator between two Balance Overview tiles — larger and centred against the tiles it joins.
-const BoOp: React.FC<{ symbol: string }> = ({ symbol }) => (
+export const BoOp: React.FC<{ symbol: string }> = ({ symbol }) => (
   <span style={{ fontSize: 30, fontWeight: 700, color: T.textMuted, alignSelf: 'center', padding: '0 6px', lineHeight: 1 }}>{symbol}</span>
 );
 // One heading treatment for all three sections.
-const DashSection: React.FC<{ title: string; note?: string }> = ({ title, note }) => (
+export const DashSection: React.FC<{ title: string; note?: string }> = ({ title, note }) => (
   <p style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 800, color: T.textMain, letterSpacing: '-0.01em' }}>
     {title}{note && <span style={{ fontWeight: 500, color: T.textMuted }}> · {note}</span>}
   </p>
@@ -1677,7 +1680,7 @@ const hasDetailValue = (v: React.ReactNode): boolean => {
   return v.replace(/[—·|,/\s]/g, '') !== '';
 };
 
-const DField: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
+export const DField: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
   <div>
     <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div>
     <div style={{ fontSize: 12.5, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v == null || v === '' ? '—' : v}</div>
@@ -1706,11 +1709,15 @@ const timelineSteps = (row: AgentTxnRow): TlStep[] => {
       { key: 'DEPOSITED', label: 'Deposited' }];
   }
   if (row.type === 'WITHDRAWAL') {
-    if (cash || crypto) return [
-      { key: cash ? 'TOKEN_SUBMITTED' : 'WALLET_SUBMITTED', label: 'Withdrawal Created · Manager Review' },
-      { key: 'MANAGER_APPROVED', label: 'Manager Approved' }, { key: 'COMPLETED', label: 'Completed' }];
-    return [{ key: 'ACCOUNT_SUBMITTED', label: 'Withdrawal Created' },
-      { key: 'MANAGER_REVIEW', label: 'Paid · Manager Review' }, { key: 'COMPLETED', label: 'Completed' }];
+    // The three phases every withdrawal method runs, keyed to the statuses the server actually
+    // sets: created at MANAGER_REVIEW → MANAGER_APPROVED → COMPLETED. Only the first phase's name
+    // differs by method — it is named after what the request captured (token / wallet / account).
+    const submitted = cash ? 'Token Submitted' : crypto ? 'Wallet Submitted' : 'Account Submitted';
+    return [
+      { key: 'MANAGER_REVIEW', label: `${submitted} · Manager Review` },
+      { key: 'MANAGER_APPROVED', label: cash ? 'Approved · Upload Token Image' : 'Approved · Pay and Upload Slip' },
+      { key: 'COMPLETED', label: 'Completed' },
+    ];
   }
   return [{ key: 'SLIP_SUBMITTED', label: 'Settlement Created' }, { key: 'COMPLETED', label: 'Completed' }];
 };
@@ -1788,13 +1795,10 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
   // through SlipView, which shows the image (or names the PDF) and offers a Download.
   const proofLabel = isWalletMethod(row.txnMethod) ? 'Crypto Payment Slip'
     : isTokenMethod(row.txnMethod) ? 'Token Details Image' : 'Account Proof';
-  // A cash withdrawal has no slip — what it carries is the operator's proof that the cash was
-  // handed over, captured at Confirm & Complete. Name it for what it is.
-  // The stored slip_image is a cash withdrawal's payment proof, a cash deposit's token image, or a
-  // real payment slip for every other method — name it for what it actually is.
-  const slipLabel = isTokenMethod(row.txnMethod)
-    ? (row.type === 'WITHDRAWAL' ? 'Cash Payment Proof' : 'Token Image')
-    : 'Uploaded Slip';
+  // The stored slip_image is the token image for cash (the deposit's token, or the token handed
+  // over at a cash withdrawal's Pay and Upload Slip step) and a real payment slip for every other
+  // method — name it for what it actually is.
+  const slipLabel = isTokenMethod(row.txnMethod) ? 'Token Image' : 'Uploaded Slip';
   const images: Array<[string, string]> = [
     ...(row.accountProof ? [[proofLabel, row.accountProof] as [string, string]] : []),
     ...(row.slipImage ? [[slipLabel, row.slipImage] as [string, string]] : []),
@@ -2009,7 +2013,7 @@ const SettlementSettleModal: React.FC<{ row: AgentTxnRow; onClose: () => void; o
 // Mirrors the Merchant Deposit/Withdrawal Management pages, but reads and writes ONLY the isolated
 // Agent Transaction ledger (filtered to this txn_type) — never any merchant module. The "+ Create"
 // button opens the existing Agent Request form (reused, embedded), not a new form.
-const PAGE_SIZE = 10;
+export const PAGE_SIZE = 10;
 
 const AgentTxnManagementPage: React.FC<{
   user: User;
@@ -2164,12 +2168,14 @@ const AgentTxnManagementPage: React.FC<{
                     {isDeposit && canOperate && x.status === 'SUPERVISOR_APPROVED' && <Btn size="sm" variant="success" onClick={() => setDepositRow(x)}>Mark Deposit</Btn>}
                     {/* Withdrawal (approve-first): every method is created at MANAGER_REVIEW
                         (Waiting for Approval); once the chosen approver approves (MANAGER_APPROVED),
-                        the CREATING operator records the method-specific payment details. Saving
-                        those only updates the payment information — completing is the separate
-                        action beside it. Only the creator sees either. */}
+                        the CREATING operator pays and uploads the proof — the token image for cash,
+                        the payment slip + UTR for crypto and bank. Saving that only updates the
+                        payment information; completing is the separate action beside it, which
+                        appears only once the proof is actually on the record. Only the creator
+                        sees either. */}
                     {!isDeposit && txnType !== 'SETTLEMENT' && canPayout && x.status === 'MANAGER_APPROVED'
                       && x.createdBy === user.username
-                      && <Btn size="sm" onClick={() => setPayoutRow(x)}>{hasPaymentDetails(x) ? 'Edit Payment Details' : 'Submit Payment Details'}</Btn>}
+                      && <Btn size="sm" onClick={() => setPayoutRow(x)}>{hasPaymentDetails(x) ? 'Edit Payment Details' : isTokenMethod(x.txnMethod) ? 'Upload Token Image' : 'Pay / Upload Slip'}</Btn>}
                     {!isDeposit && txnType !== 'SETTLEMENT' && canPayout && x.status === 'MANAGER_APPROVED'
                       && x.createdBy === user.username && hasPaymentDetails(x)
                       && <Btn size="sm" variant="success" onClick={() => setCompleteRow(x)}>Complete Withdrawal</Btn>}
@@ -3000,7 +3006,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
 
 // A stored slip/proof: preview when it is an image, always downloadable. The file is read from
 // the transaction — never re-uploaded — so every viewer sees the same original.
-const SlipView: React.FC<{ label: string; src: string; filename: string }> = ({ label, src, filename }) => {
+export const SlipView: React.FC<{ label: string; src: string; filename: string }> = ({ label, src, filename }) => {
   const isPdf = src.startsWith('data:application/pdf');
   return (
     <div>
@@ -3132,24 +3138,29 @@ const SubmitAccountModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDo
   );
 };
 
-/** Submit Payment Details — the CREATING operator, after approval, enters the method-specific
- *  execution details (Token Number / Wallet Address + Tx Hash / Slip + Reference / UTR + Screenshot),
- *  which completes the withdrawal. */
+/** Pay and Upload Slip — the CREATING operator, after approval, uploads the PROOF of the payment
+ *  they have just made and records its reference:
+ *    • Cash          → the token image handed to the member
+ *    • Crypto / Bank → the payment slip + the UTR
+ *  The Token Number (cash) and the Wallet Address (crypto) were captured when the request was
+ *  raised, so they are shown here for reference instead of being asked for again. */
 const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
   const { showToast } = useToast();
   const method = String(row.txnMethod || '').toUpperCase();
-  const isCash = isTokenMethod(row.txnMethod);       // CASH → Token Number
-  const isCryptoM = isWalletMethod(row.txnMethod);   // CRYPTO → Wallet Address (+ optional Tx Hash)
-  const isBank = method === 'BANK';                  // BANK → Slip + Reference; else UPI-style → UTR + Screenshot
-  // The Unique Note Number is captured on the request form now (the member supplies it during the
-  // withdrawal). It is pre-filled and read-only here; a legacy request raised before that change
-  // has none, so the field stays editable for those.
-  const noteFromRequest = (row.noteNumber || '').trim();
-  const [note, setNote] = useState(noteFromRequest);
-  const [token, setToken] = useState('');
-  const [wallet, setWallet] = useState('');
-  const [txHash, setTxHash] = useState('');
-  const [utr, setUtr] = useState('');
+  const isCash = isTokenMethod(row.txnMethod);       // CASH   → Token Image
+  const isCryptoM = isWalletMethod(row.txnMethod);   // CRYPTO → Payment Slip + UTR
+  const isBank = method === 'BANK';                  // BANK   → Payment Slip + UTR; else UPI-style screenshot
+  // Evidence already on the record (Edit Payment Details). Cash and Crypto may be re-saved to
+  // correct a detail without re-attaching the file; Bank/UPI keep their existing server rule, which
+  // requires the slip on every submission — so the file stays mandatory there and nothing about the
+  // working Bank Transfer flow changes.
+  const canReuseFile = (isCash || isCryptoM) && !!row.slipImage;
+  // The Unique Note Number is captured on the cash withdrawal request, so it is displayed rather
+  // than asked for. A LEGACY cash request raised before that rule has none, and the server refuses
+  // to complete without one — so for those, and only those, the field stays enterable here.
+  const needsNote = isCash && !(row.noteNumber || '').trim();
+  const [note, setNote] = useState('');
+  const [utr, setUtr] = useState((row.depositUtr || '').trim());
   const [slip, setSlip] = useState('');
   const [slipName, setSlipName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -3158,42 +3169,43 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
     const f = e.target.files?.[0]; if (!f) return;
     if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
     try { setSlip(await fileToDataUrl(f)); setSlipName(f.name); }
-    catch { showToast('Could not read the file.', 'error'); }
+    catch { showToast('Could not read the file.', 'error'); setSlip(''); setSlipName(''); }
   };
 
-  // The Unique Note Number belongs to CASH, alongside the Token Number — a bank or crypto payout
-  // has none, so it is neither shown nor required for those.
-  const ready = isCash ? (!!note.trim() && !!token.trim())
-    : isCryptoM ? !!wallet.trim() : (!!slip && !!utr.trim());
+  const fileLabel = isCash ? 'Token Image' : isBank || isCryptoM ? 'Payment Slip' : 'Payment Screenshot';
+  // The upload is mandatory for every method; the UTR for every method except cash (money changes
+  // hands in person, so no rail issues a reference).
+  const haveFile = !!slip || canReuseFile;
+  const ready = haveFile && (isCash || !!utr.trim()) && (!needsNote || !!note.trim());
+
+  /** The proof + reference, in the shape this method's endpoint expects. `ready` guarantees a file
+   *  is present whenever the server demands one, so omitting it here only ever means "keep the one
+   *  already stored". */
+  const payload = () => (isCash
+    ? { ...(slip ? { tokenImage: slip } : {}), ...(needsNote ? { noteNumber: note.trim() } : {}) }
+    : { ...(slip ? { slipImage: slip } : {}), utr: utr.trim() });
+
   // Saving the proof is a DATA UPDATE — it never moves the transaction's status. Completing it is
   // the separate, explicit action below, so an upload can no longer complete a withdrawal by itself.
   const submit = async () => {
-    if (!ready) { showToast('Fill the required payment details.', 'error'); return; }
+    if (!ready || busy) { if (!ready) showToast(`Attach the ${fileLabel.toLowerCase()}${isCash ? '' : ' and enter the UTR number'}.`, 'error'); return; }
     setBusy(true);
     try {
-      const body = {
-        ...(isCash ? { noteNumber: note.trim(), tokenDetails: token.trim() }
-          : isCryptoM ? { walletAddress: wallet.trim(), ...(txHash.trim() ? { txHash: txHash.trim() } : {}) }
-          : { slipImage: slip, utr: utr.trim() }),
-      };
-      await agentTxnsAPI.payout(row.id, body);
+      await agentTxnsAPI.payout(row.id, payload());
       showToast(`Payment details saved for ${row.referenceNumber}. Status unchanged.`, 'success');
       onDone(); onClose();
     } catch (e) { showToast(agentTxnError(e, 'Failed to submit payment details.'), 'error'); }
     finally { setBusy(false); }
   };
 
-  // Save the details and complete in one go, for the operator who is doing both at the same time.
-  // The completion is still its own server-side step, gated on the approval already given.
+  // Save the proof and complete in one go, for the operator who is doing both at the same time.
+  // The completion is still its own server-side step, gated on the approval already given — and it
+  // only runs once the upload has been accepted, so a failed upload never completes anything.
   const saveAndComplete = async () => {
-    if (!ready) { showToast('Fill the required payment details.', 'error'); return; }
+    if (!ready || busy) { if (!ready) showToast(`Attach the ${fileLabel.toLowerCase()}${isCash ? '' : ' and enter the UTR number'}.`, 'error'); return; }
     setBusy(true);
     try {
-      await agentTxnsAPI.payout(row.id, {
-        ...(isCash ? { noteNumber: note.trim(), tokenDetails: token.trim() }
-          : isCryptoM ? { walletAddress: wallet.trim(), ...(txHash.trim() ? { txHash: txHash.trim() } : {}) }
-          : { slipImage: slip, utr: utr.trim() }),
-      });
+      await agentTxnsAPI.payout(row.id, payload());
       await agentTxnsAPI.completeWithdrawal(row.id);
       showToast(`${row.referenceNumber} completed.`, 'success');
       onDone(); onClose();
@@ -3202,37 +3214,38 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
   };
 
   return (
-    <Modal title={`Submit Payment Details — ${row.referenceNumber}`} onClose={onClose}>
+    <Modal title={`Pay and Upload Slip — ${row.referenceNumber}`} onClose={onClose}>
       <p style={{ margin: '0 0 14px', fontSize: 12.5, color: T.textMuted }}>
-        Approved by {row.approverName || row.managerName || 'the approver'}. Record the {methodLabel(row.txnMethod)} payment details.
-        Saving them updates the payment information only — the status stays as the approval workflow left it until you complete the withdrawal.
+        Approved by {row.approverName || row.managerName || 'the approver'}. Make the {methodLabel(row.txnMethod)} payment, then attach the {fileLabel.toLowerCase()}{isCash ? '' : ' and enter the UTR number'}.
+        Saving updates the payment information only — the status stays as the approval workflow left it until you complete the withdrawal.
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: '10px 18px', marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
         <DField k="Amount" v={fmt(row.amount)} />
         <DField k="Membership" v={row.membershipId} />
         {row.memberReference ? <DField k="Reference Number" v={row.memberReference} /> : null}
+        {/* Captured when the request was raised — shown so the operator can check what they are
+            paying against, never re-typed here. */}
+        {isCash && row.noteNumber ? <DField k="Unique Note Number" v={row.noteNumber} /> : null}
+        {isCash && row.tokenDetails ? <DField k="Token Number" v={row.tokenDetails} /> : null}
+        {isCryptoM && row.walletAddress ? <DField k="Wallet Address" v={row.walletAddress} /> : null}
       </div>
-      {/* Unique Note Number — a CASH detail, supplied by the member and captured on the request, so
-          it is shown read-only here. A legacy request without one can still have it entered. Bank
-          and crypto withdrawals never carry one, so the field is not shown for them at all. */}
-      {isCash && <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required
-        readOnly={!!noteFromRequest}
-        placeholder="Example: ABC-123 / TOKEN#001"
-        hint={noteFromRequest ? 'Captured on the withdrawal request' : 'Enter the Unique Note Number exactly as provided.'} />}
-      {isCash && <Input label="Token Number" value={token} onChange={e => setToken(e.target.value)} required placeholder="Token number handed to the member" />}
-      {isCryptoM && (<>
-        <Input label="Wallet Address" value={wallet} onChange={e => setWallet(e.target.value)} required placeholder="The wallet paid out to" />
-        <Input label="Transaction Hash (optional)" value={txHash} onChange={e => setTxHash(e.target.value)} placeholder="On-chain transaction hash" />
-      </>)}
-      {!isCash && !isCryptoM && (<>
-        <Input label={isBank ? 'Reference Number' : 'UTR Number'} value={utr} onChange={e => setUtr(e.target.value)} required
-          placeholder={isBank ? 'Bank payment reference' : 'UPI UTR / payment reference'} />
-        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, margin: '2px 0 6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-          {isBank ? 'Payment Slip' : 'Payment Screenshot'} <span style={{ color: T.danger }}>*</span>
-        </label>
-        <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
-        {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
-      </>)}
+      {needsNote && (
+        <Input label="Unique Note Number" value={note} onChange={e => setNote(normalizeNoteNumber(e.target.value))} required
+          placeholder="Example: ABC-123 / TOKEN#001"
+          hint="This request was raised before the Unique Note Number was captured on the form — enter it exactly as provided." />
+      )}
+      {!isCash && (
+        <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)} required
+          placeholder={isBank ? 'Bank payment reference / UTR' : isCryptoM ? 'On-chain transaction hash / UTR' : 'UPI UTR / payment reference'} />
+      )}
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, margin: '2px 0 6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        {fileLabel} <span style={{ color: T.danger }}>*</span>
+      </label>
+      <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
+      {slipName
+        ? <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>
+        : canReuseFile ? <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>A {fileLabel.toLowerCase()} is already on the record — attach a file only to replace it.</div>
+        : row.slipImage ? <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Re-attach the {fileLabel.toLowerCase()} to save a correction.</div> : null}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10, flexWrap: 'wrap' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
         <Btn onClick={submit} disabled={busy || !ready}>{busy ? 'Saving…' : 'Save Payment Details'}</Btn>
@@ -3270,9 +3283,14 @@ const CompleteWithdrawalModal: React.FC<{ row: AgentTxnRow; onClose: () => void;
         {row.memberReference ? <DField k="Reference Number" v={row.memberReference} /> : null}
         {row.tokenDetails ? <DField k="Token Number" v={row.tokenDetails} /> : null}
         {row.walletAddress ? <DField k="Wallet Address" v={row.walletAddress} /> : null}
-        {row.depositUtr ? <DField k="UTR / Reference" v={row.depositUtr} /> : null}
+        {row.depositUtr ? <DField k="UTR Number" v={row.depositUtr} /> : null}
       </div>
-      {row.slipImage && <div style={{ marginBottom: 14 }}><SlipView label="Payment Proof" src={row.slipImage} filename={`${row.referenceNumber}-payment-proof`} /></div>}
+      {/* The proof uploaded at Pay and Upload Slip — the token image for cash, the payment slip
+          for every other method. Shown here so the operator confirms against what was saved. */}
+      {row.slipImage && <div style={{ marginBottom: 14 }}>
+        <SlipView label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Payment Slip'} src={row.slipImage}
+          filename={`${row.referenceNumber}-${isTokenMethod(row.txnMethod) ? 'token-image' : 'payment-slip'}`} />
+      </div>}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
         <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : 'Complete Withdrawal'}</Btn>

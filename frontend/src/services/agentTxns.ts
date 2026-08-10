@@ -147,6 +147,8 @@ export interface AgentTxnRow {
   createdAt?: string | null;
   createdDate?: string | null;
   createdTime?: string | null;
+  /** Who last touched the record, and when — already returned by every agent-txn endpoint. */
+  updatedBy?: string | null;
   updatedDate?: string | null;
   updatedTime?: string | null;
   // Per-leg commission (attached by the list endpoint for the Reports columns).
@@ -395,11 +397,12 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/approve`, { remark })).data,
   managerReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/manager/reject`, { remark })).data,
-  /** Submit Payment Details (creator, after approval) — method-specific, completes the withdrawal. */
-  /** Submit Payment Details — saves the proof + payment information ONLY. The status is left
-   *  exactly where the approval workflow put it; `completeWithdrawal` is the explicit step that
-   *  completes the transaction. */
-  payout: async (id: number, body: { noteNumber?: string; tokenDetails?: string; walletAddress?: string; txHash?: string; slipImage?: string; utr?: string }) =>
+  /** Pay and Upload Slip (creator, after approval) — saves the PROOF of the payment and its
+   *  reference ONLY: Cash → `tokenImage`; Crypto/Bank → `slipImage` + `utr`. `tokenDetails` /
+   *  `walletAddress` are captured on the request and are accepted here only as corrections.
+   *  The status is left exactly where the approval workflow put it; `completeWithdrawal` is the
+   *  explicit step that completes the transaction. */
+  payout: async (id: number, body: { noteNumber?: string; tokenDetails?: string; walletAddress?: string; txHash?: string; slipImage?: string; tokenImage?: string; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
   /** Complete an approved withdrawal whose payment details are already on the record. */
   completeWithdrawal: async (id: number) =>

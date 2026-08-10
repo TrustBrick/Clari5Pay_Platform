@@ -130,10 +130,11 @@ BANK_LIKE_METHODS = {"BANK", "IMPS", "NEFT", "RTGS"}   # collect a sending bank 
 # review gate, so it is created ready to pay. Methods are limited to Cash / Bank Transfer / Crypto.
 SETTLEMENT_METHODS = {"CASH", "BANK", "CRYPTO"}
 # Cash and Crypto follow their own Submit Account step (token / wallet instead of an Agent
-# Account) and their own withdrawal gate order. BANK/UPI/IMPS/NEFT/RTGS are untouched.
+# Account). BANK/UPI/IMPS/NEFT/RTGS are untouched. Every method shares ONE withdrawal chain —
+# see _withdrawal_gate, which is why the SPECIAL_METHODS union that once expressed a second order
+# no longer exists.
 TOKEN_METHODS = {"CASH"}          # Submit Account captures Token Details + Note + token image
 WALLET_METHODS = {"CRYPTO"}       # Submit Account captures the Wallet Address ONLY (slip at next step)
-SPECIAL_METHODS = TOKEN_METHODS | WALLET_METHODS
 
 
 def _requested_status(method: str | None) -> str:
@@ -179,11 +180,17 @@ def _require_agent_serves_method(agent: AgentMaster, method: str | None) -> None
 
 
 def _withdrawal_gate(method: str | None) -> str:
-    """Where the Manager decides a withdrawal. CASH/CRYPTO are authorised before the operator
-    confirms them, so they wait at TOKEN_SUBMITTED / WALLET_SUBMITTED — the state they are created
-    in. BANK/UPI are paid first and reach the Manager at MANAGER_REVIEW (unchanged)."""
-    m = str(method or "").upper()
-    return _submitted_status(m) if m in SPECIAL_METHODS else ST_MANAGER_REVIEW
+    """Where the Manager decides a withdrawal — MANAGER_REVIEW, for every method.
+
+    This used to answer TOKEN_SUBMITTED / WALLET_SUBMITTED for CASH / CRYPTO, from an earlier
+    design where those two were authorised before the operator confirmed them. Every withdrawal is
+    now created at MANAGER_REVIEW (see _create) and manager_approve accepts only that status, so
+    the old answer named a state nothing could act on: correcting the amount of an APPROVED cash
+    withdrawal sent it to TOKEN_SUBMITTED, where the Manager could no longer see it (the approval
+    queue reads MANAGER_REVIEW) and the operator could no longer pay it — stranding it. The gate
+    now matches the chain the module actually runs.
+    """
+    return ST_MANAGER_REVIEW
 
 # Crypto wallet address — structural format check across the common networks. There is no network
 # selector on an agent crypto transaction, so an address is accepted if it is a valid shape on ANY
@@ -729,15 +736,22 @@ def _max_withdrawable(available: float, rate: float) -> float:
     return round(max(0.0, available) / (1 + rate), 2)
 
 
-async def _agent_performance(db: AsyncSession, business: str) -> dict:
+async def _agent_performance(db: AsyncSession, business: str | None) -> dict:
     """Agent financial performance for the Agent Dashboard — overall totals, a per-agent breakdown,
     rankings and single-agent highs. Completed-only (COMPLETED_STATUSES), commission per leg from
     each agent's own Pay-In / Pay-Out / Settlement fee — the SAME calculation as everywhere else, no
-    new formula. This is AGENT performance, not a per-member balance."""
-    agents = (await db.execute(select(AgentMaster).where(
-        AgentMaster.merchant_business == business).order_by(AgentMaster.id))).scalars().all()
-    txns = (await db.execute(select(AgentTransaction).where(
-        AgentTransaction.merchant_business == business))).scalars().all()
+    new formula. This is AGENT performance, not a per-member balance.
+
+    `business` is the owning merchant. Passing None computes the SAME figures across every
+    business, which is what the Admin Portal's read-only Agent Management monitors — one
+    calculation serving both, so the two can never disagree."""
+    _agent_q = select(AgentMaster).order_by(AgentMaster.id)
+    _txn_q = select(AgentTransaction)
+    if business is not None:
+        _agent_q = _agent_q.where(AgentMaster.merchant_business == business)
+        _txn_q = _txn_q.where(AgentTransaction.merchant_business == business)
+    agents = (await db.execute(_agent_q)).scalars().all()
+    txns = (await db.execute(_txn_q)).scalars().all()
 
     # Per-agent accumulator: each leg → [count, amount, commission].
     zero = lambda: {"DEPOSIT": [0, 0.0, 0.0], "WITHDRAWAL": [0, 0.0, 0.0], "SETTLEMENT": [0, 0.0, 0.0]}
@@ -955,9 +969,13 @@ class AgentReviewAction(BaseModel):
 
 
 class AgentPaymentDetails(BaseModel):
-    """Method-specific execution details the CREATING operator submits AFTER approval: CASH →
-    tokenDetails; CRYPTO → walletAddress (+ optional txHash); BANK → slipImage + utr (reference);
-    UPI → utr + slipImage (screenshot).
+    """The proof of payment the CREATING operator submits AFTER approval — one set per method:
+    CASH → tokenImage; CRYPTO → slipImage + utr; BANK → slipImage + utr; UPI → utr + slipImage
+    (screenshot).
+
+    tokenDetails / walletAddress stay accepted as OPTIONAL corrections: both are captured when the
+    withdrawal request is raised, so this step no longer asks for them (asking for them was what
+    let a cash/crypto withdrawal complete with no evidence at all).
 
     Submitting these SAVES the payment information; it does not complete the withdrawal (see
     /payout vs /complete). The Unique Note Number is captured on the request form now — it stays
@@ -967,6 +985,7 @@ class AgentPaymentDetails(BaseModel):
     walletAddress: str | None = None
     txHash: str | None = None
     slipImage: str | None = None       # data URL
+    tokenImage: str | None = None      # data URL — CASH: the token handed to the member
     utr: str | None = None
 
 
@@ -1734,16 +1753,24 @@ async def _load_own_withdrawal_for_payment(db: AsyncSession, user: User, txn_id:
 def _missing_payment_detail(t: AgentTransaction) -> str | None:
     """Which method-specific payment detail is still missing, as a message — None when the record
     holds everything its Withdrawal Type needs. The same rule the Submit Payment Details popup
-    applies, expressed against the STORED row so it can also gate completion."""
+    applies, expressed against the STORED row so it can also gate completion.
+
+    Phase 3 asks for the EVIDENCE OF THE PAYMENT, never for something the request already carries.
+    The Token Number (cash) and the Wallet Address (crypto) are captured when the request is
+    raised, so requiring them here passed the moment the Manager approved and let a withdrawal
+    complete with no proof at all. What the operator supplies after approval is:
+      • CASH   → the token image handed over
+      • CRYPTO → the payment slip + the UTR of the transfer
+      • BANK   → the payment slip + the UTR  (unchanged)
+    """
     method = str(t.txn_method or "").upper()
-    if method in TOKEN_METHODS:                        # CASH → Token Number
-        return None if (t.token_details or "").strip() else "Token Number is required."
-    if method in WALLET_METHODS:                       # CRYPTO → Wallet Address
-        return None if (t.wallet_address or "").strip() else "Wallet Address is required."
-    if not t.slip_image:                               # BANK → Slip; UPI → Screenshot
-        return "Payment slip image is required." if method == "BANK" else "Payment screenshot is required."
+    if method in TOKEN_METHODS:                        # CASH → Token Image
+        return None if t.slip_image else "Token image is required."
+    if not t.slip_image:                               # BANK/CRYPTO → Slip; UPI → Screenshot
+        return ("Payment screenshot is required." if method not in ("BANK", *WALLET_METHODS)
+                else "Payment slip image is required.")
     if not (t.deposit_utr or "").strip():
-        return "Reference Number is required." if method == "BANK" else "UTR Number is required."
+        return "UTR Number is required."
     return None
 
 
@@ -1780,26 +1807,41 @@ async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSes
         if clash:
             raise HTTPException(status_code=400, detail="This Unique Note Number is already used.")
         t.note_number = note
-    # Method-specific execution details — mandatory ones enforced per Withdrawal Type.
-    if method in TOKEN_METHODS:                        # CASH → Token Number
-        if not (body.tokenDetails or "").strip():
-            raise HTTPException(status_code=400, detail="Token Number is required.")
-        t.token_details = body.tokenDetails.strip()
-    elif method in WALLET_METHODS:                     # CRYPTO → Wallet Address (+ optional Tx Hash)
-        if not (body.walletAddress or "").strip():
-            raise HTTPException(status_code=400, detail="Wallet Address is required.")
-        t.wallet_address = body.walletAddress.strip()
-        if (body.txHash or "").strip():
-            t.deposit_utr = body.txHash.strip()
-    else:                                              # BANK → Slip + Reference; UPI → UTR + Screenshot
+    # Method-specific execution details — mandatory ones enforced per Withdrawal Type. This step
+    # records how the payment was ACTUALLY made, so each method asks for its own proof and never
+    # for a detail the request already carries (the Token Number and the Wallet Address are
+    # captured when the withdrawal is raised — see _validate_common).
+    if method in TOKEN_METHODS:                        # CASH → Token Image (the proof of hand-over)
+        image = body.tokenImage or body.slipImage
+        if not image and not t.slip_image:
+            raise HTTPException(status_code=400, detail="Token image is required.")
+        if image:
+            t.slip_image = image
+        # A correction to the token number stays possible; it is not re-demanded here.
+        if (body.tokenDetails or "").strip():
+            t.token_details = body.tokenDetails.strip()
+    elif method in WALLET_METHODS:                     # CRYPTO → Payment Slip + UTR
+        # `txHash` is the on-chain reference older clients sent under its own name — accepted as
+        # the UTR so nothing that already works breaks.
+        utr = (body.utr or body.txHash or "").strip()
+        if not body.slipImage and not t.slip_image:
+            raise HTTPException(status_code=400, detail="Payment slip image is required.")
+        if not utr and not (t.deposit_utr or "").strip():
+            raise HTTPException(status_code=400, detail="UTR Number is required.")
+        if body.slipImage:
+            t.slip_image = body.slipImage
+        if utr:
+            t.deposit_utr = utr
+        # A correction to the destination wallet stays possible; it is not re-demanded here.
+        if (body.walletAddress or "").strip():
+            t.wallet_address = body.walletAddress.strip()
+    else:                                              # BANK → Slip + UTR; UPI → UTR + Screenshot
         if not body.slipImage:
             raise HTTPException(status_code=400,
                                 detail=("Payment slip image is required." if method == "BANK"
                                         else "Payment screenshot is required."))
         if not (body.utr or "").strip():
-            raise HTTPException(status_code=400,
-                                detail=("Reference Number is required." if method == "BANK"
-                                        else "UTR Number is required."))
+            raise HTTPException(status_code=400, detail="UTR Number is required.")
         t.slip_image = body.slipImage
         t.deposit_utr = body.utr.strip()
     t.slip_submitted_by = user.username
@@ -2138,9 +2180,10 @@ def _chain_order(t: AgentTransaction) -> list[str]:
     if ty == "DEPOSIT":
         return [_requested_status(m), _submitted_status(m), ST_SLIP_SUBMITTED, ST_SUPERVISOR_APPROVED]
     if ty == "WITHDRAWAL":
-        # CASH/CRYPTO: gate → confirm. BANK/UPI: pay → gate (unchanged).
-        return ([_submitted_status(m), ST_MANAGER_APPROVED] if m in SPECIAL_METHODS
-                else [ST_ACCOUNT_SUBMITTED, ST_MANAGER_REVIEW])
+        # One chain for every method: created at the Manager gate → approved → paid & completed.
+        # (It previously described two different orders, neither of which matched the statuses the
+        # module sets — see _withdrawal_gate.)
+        return [ST_MANAGER_REVIEW, ST_MANAGER_APPROVED]
     if ty == "SETTLEMENT":
         return [ST_SETTLEMENT_REQUESTED, ST_SETTLEMENT_ACCEPTED, ST_PROOF_UPLOADED]
     return []
@@ -2165,9 +2208,9 @@ def _restart_approval(t: AgentTransaction) -> str | None:
     approval has happened yet and there is nothing to redo. Any prior decision is voided so the
     gate must be passed again from scratch; the audit trail of it is append-only and untouched.
     """
-    # _chain_order already accounts for the CASH/CRYPTO withdrawal being gated BEFORE the operator
-    # confirms it — the reverse of BANK/UPI. Using the wrong order would let an amount change on an
-    # already-approved cash withdrawal skip the Manager gate entirely.
+    # _chain_order is the order the module actually runs, so an amount change on an already-approved
+    # withdrawal lands back on the Manager gate — never past it, and never on a state no endpoint
+    # can act on.
     order = _chain_order(t)
     gate = _gate_for(t)
     if not gate or gate not in order or t.status not in order:
@@ -2416,21 +2459,26 @@ async def reject_txn(txn_id: int, db: AsyncSession = Depends(get_db),
 
 
 # ── Overview (isolated KPIs — summarizes ONLY agent_transactions) ────────────────
-@router.get("/overview")
-async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_agent_operator)):
+async def _overview_payload(db: AsyncSession, business: str | None) -> dict:
     """KPIs / summaries / trend for the Agent Overview — computed exclusively from the isolated
     agent_transaction table (never merchant transactions). Commission uses the agent fee for that
-    leg: deposit -> Pay-In, withdrawal -> Pay-Out, settlement -> Settlement."""
-    business = _business(user)
-    txns = (await db.execute(select(AgentTransaction).where(
-        AgentTransaction.merchant_business == business).order_by(AgentTransaction.id.desc()))).scalars().all()
+    leg: deposit -> Pay-In, withdrawal -> Pay-Out, settlement -> Settlement.
+
+    `business` is the owning merchant. Passing None aggregates every business with the SAME
+    calculation, which is what the Admin Portal's read-only Agent Management monitors — there is
+    one aggregation, not a second statistics system alongside it."""
+    _txn_q = select(AgentTransaction).order_by(AgentTransaction.id.desc())
+    _agent_q = select(AgentMaster)
+    if business is not None:
+        _txn_q = _txn_q.where(AgentTransaction.merchant_business == business)
+        _agent_q = _agent_q.where(AgentMaster.merchant_business == business)
+    txns = (await db.execute(_txn_q)).scalars().all()
     # A distributed cash deposit is a reconciliation CONTAINER, not a real member transaction — its
     # child deposits already represent the full amount. Exclude containers from every KPI/count/trend
     # so they neither inflate the deposit count nor double-count the amount. They stay visible in All
     # Transactions and Reports for parent→child traceability.
     txns = [t for t in txns if t.status != ST_DISTRIBUTED]
-    _agents = (await db.execute(
-        select(AgentMaster).where(AgentMaster.merchant_business == business))).scalars().all()
+    _agents = (await db.execute(_agent_q)).scalars().all()
     # One fee table per leg — an agent can charge a different rate on each.
     fees_in = {a.id: (a.pay_in_fee or 0.0) for a in _agents}
     fees_out = {a.id: (a.pay_out_fee or 0.0) for a in _agents}
@@ -2535,3 +2583,9 @@ async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_
                   for d, v in sorted(trend.items())][-14:],
         "recent": [_row(t) for t in txns[:10]],
     }
+
+
+@router.get("/overview")
+async def overview(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_agent_operator)):
+    """The Agent Overview for the caller's own business — see _overview_payload."""
+    return await _overview_payload(db, _business(user))
