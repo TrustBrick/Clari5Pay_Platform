@@ -93,7 +93,8 @@ if settings.is_demo:
 # matching the demo-gated Merchant-portal menu. A 404 on Production regardless of auth.
 if settings.is_demo:
     from app.api.routes import (
-        agents, agent_accounts, agent_assignment, agent_dashboard, agent_transactions, agent_txns,
+        admin_agent_txns, agents, agent_accounts, agent_assignment, agent_dashboard,
+        agent_transactions, agent_txns,
     )
     app.include_router(agents.router)
     app.include_router(agent_accounts.router)
@@ -102,6 +103,9 @@ if settings.is_demo:
     app.include_router(agent_transactions.router)
     # Isolated Agent Transaction subsystem (operator deposit/withdrawal/manage) — separate ledger.
     app.include_router(agent_txns.router)
+    # Admin Portal → Agent Management: READ-ONLY monitoring over that same ledger. GET-only and
+    # Admin-gated; it grants no write access to any agent transaction.
+    app.include_router(admin_agent_txns.router)
 
 
 @app.get("/health")

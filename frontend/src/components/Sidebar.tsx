@@ -89,9 +89,10 @@ const Sidebar: React.FC<SidebarProps> = ({ user, active, onNav, onLogout, open, 
     if (children.length === 0) return null;
     const opened = groupIsOpen(item);
     const childActive = children.some(c => c.key === active);
-    // The Agent Module carries its own accent so it is recognisable at a glance. Scoped to this
-    // one group key — every other module renders exactly as before.
-    const accent = item.key === 'agent-mgmt' ? ACCENT_AGENT : ACCENT_DEFAULT;
+    // The Agent Module carries its own accent so it is recognisable at a glance. Scoped to the
+    // agent group keys (the Merchant portal's Management menu and the Admin portal's read-only
+    // Agent Management) — every other module renders exactly as before.
+    const accent = item.key === 'agent-mgmt' || item.key === 'admin-agent-mgmt' ? ACCENT_AGENT : ACCENT_DEFAULT;
     return (
       <div key={item.key} style={{ marginBottom:2 }}>
         <div

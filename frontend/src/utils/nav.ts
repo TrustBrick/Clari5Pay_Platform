@@ -41,6 +41,18 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'admin-reports', icon: 'reports', label: 'Reports' },
     { key: 'admin-transactions', icon: 'transactions', label: 'All Transactions' },
     { key: 'admin-accounts', icon: 'account-management', label: 'Account Management' },
+    // Agent Management — READ-ONLY monitoring of the Merchant-portal Agent Module. Same dropdown
+    // treatment (and the same orange agent accent) the Merchant portal's Management menu uses.
+    // Demo-gated exactly like that menu and like the backend routes, which are only mounted when
+    // ENVIRONMENT=demo, so this never appears on Production.
+    ...(IS_DEMO ? [{
+      key: 'admin-agent-mgmt', icon: 'agent', label: 'Agent Management',
+      children: [
+        { key: 'admin-agent-dashboard', icon: 'dashboard', label: 'Dashboard' },
+        { key: 'admin-agent-txns', icon: 'transactions', label: 'Transactions' },
+        { key: 'admin-agents', icon: 'agent', label: 'Agents' },
+      ],
+    } as NavItem] : []),
     { key: 'kyc', icon: 'kyc', label: 'KYC Management' },
     { key: 'risk-mgmt', icon: 'risk-management', label: 'Risk Management' },
     { key: 'complaints', icon: 'complaints', label: 'Complaint Management' },
@@ -115,6 +127,10 @@ export const PAGE_TITLES: Record<string, string> = {
   'admin-reports': 'Reports',
   'admin-transactions': 'All Transactions',
   'admin-accounts': 'Account Management',
+  'admin-agent-mgmt': 'Agent Management',
+  'admin-agent-dashboard': 'Agent Dashboard',
+  'admin-agent-txns': 'Agent Transactions',
+  'admin-agents': 'Agents',
   'admin-whatsapp': 'Telegram Management',
   'sa-dashboard': 'Platform Overview',
   'sa-admins': 'Admin Management',

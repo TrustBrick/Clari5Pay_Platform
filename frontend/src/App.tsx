@@ -20,6 +20,7 @@ import {
   SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage,
   MerchantAnalyticsPage, WhatsAppSettingsPage, DemoToolsPage,
 } from './pages/AdminPages';
+import { AdminAgentDashboardPage, AdminAgentTransactionsPage, AdminAgentsPage } from './pages/AdminAgentPages';
 import { KYCPage } from './pages/KYCPage';
 import { AgentsPage, AgentAccountsPage, AgentTransactionsPage, UnassignedTransactionsPage, AgentAuditPage, AgentReportsPage } from './pages/AgentPages';
 import { AgentDashboardPage, AgentOverviewPage, AgentDepositRequestPage, AgentWithdrawalRequestPage, AgentManageTransactionPage, AgentDepositManagementPage, AgentWithdrawalManagementPage, AgentSettlementManagementPage, AgentTxnReportsPage, AgentApprovalsPage, AgentAllTransactionsPage } from './pages/AgentTxnPages';
@@ -60,6 +61,11 @@ const pageAllowed = (user: { role: string; merchantRole?: string | null }, page:
   // (Admins run no verifications — the KYCPage renders read-only for a user with no merchantRole,
   // and the backend scopes the history across all businesses; see kyc.py _kyc_scope).
   if (page === 'kyc' && role === 'ADMIN') return true;
+  // Admin Portal → Agent Management: READ-ONLY monitoring of the Merchant Agent Module. Demo-gated
+  // like the module itself (the backend routes are only mounted when ENVIRONMENT=demo) and Admin
+  // only. These pages expose no agent action — the Agent write APIs stay merchant-operator-only.
+  if (['admin-agent-dashboard', 'admin-agent-txns', 'admin-agents'].includes(page))
+    return IS_DEMO && role === 'ADMIN';
   if (role === 'SUPER_ADMIN') return page.startsWith('sa-');
   if (role === 'ADMIN') return page.startsWith('admin-');
   // MERCHANT — no admin/SA pages.
@@ -216,6 +222,13 @@ const App: React.FC = () => {
       'admin-reports': <AdminReportsPage {...props} />,
       'admin-transactions': <AdminTransactionsPage />,
       'admin-accounts': <AdminAccountsPage />,
+      // Admin → Agent Management (read-only). Demo-gated like the Merchant Agent Module; the keys
+      // are inert on Production builds, where the backend routes do not exist either.
+      ...(IS_DEMO ? {
+        'admin-agent-dashboard': <AdminAgentDashboardPage {...props} />,
+        'admin-agent-txns': <AdminAgentTransactionsPage {...props} />,
+        'admin-agents': <AdminAgentsPage {...props} />,
+      } : {}),
       'admin-whatsapp': <WhatsAppSettingsPage />,
       'sa-dashboard': <SaDashboard onNavigate={navigate} />,
       'sa-active-users': <ActiveUsersPage user={user} />,
