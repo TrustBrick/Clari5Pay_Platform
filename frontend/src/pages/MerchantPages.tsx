@@ -230,19 +230,16 @@ export const MerchantSlipModal: React.FC<{
   const [imgs, setImgs] = useState<{ adminProof?: string | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
   // ── Card deposit ────────────────────────────────────────────────────────────────────────────
   // This same modal is the operator's Card workspace: the payment gateway link (copy / share), the
-  // reviewer's resubmission reason, the slip + UTR, and — once approved — Mark Deposit. Everything
-  // below it (upload, UTR, approver, submit) is shared with every other deposit type unchanged.
+  // reviewer's resubmission reason, and the slip + UTR. Everything below it (upload, UTR, approver,
+  // submit) is shared with every other deposit type unchanged — and so is what happens after the
+  // reviewer approves: the Admin marks it deposited, exactly as they do for a bank deposit.
   const isCard = isCardDeposit(tx);
   // The link and the remarks trail are on the detail payload; hold the full record for them.
   const [record, setRecord] = useState<Transaction>(tx);
-  const [depositing, setDepositing] = useState(false);
   useEffect(() => {
     transactionAPI.getDetail(tx.id).then(d => { setImgs({ adminProof: d.adminProof, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs }); setRecord(d); }).catch(()=>{});
   }, [tx.id]);
   const paymentLink = record.paymentLink || tx.paymentLink || '';
-  // Card is approved (awaiting Mark Deposit) once the reviewer has forwarded it — SLIP_SUBMITTED on
-  // a deposit means exactly that (see the backend's _reviewer_action).
-  const cardApproved = isCard && tx.status === 'SLIP_SUBMITTED';
   // The reviewer's most recent Resubmit remark, shown while the request sits back with the operator.
   const resubmitReason = (tx.status === 'RESUBMITTED'
     ? [...(record.remarksHistory || [])].reverse().find(r => r.action === 'RESUBMITTED')?.remark
@@ -281,24 +278,6 @@ export const MerchantSlipModal: React.FC<{
       return;
     }
     await copy(paymentLink, 'Payment link');
-  };
-
-  // Card — Mark Deposit (Phase 5). Only reachable once the Manager/Supervisor has approved; the
-  // backend re-checks ownership, role, type and approval, so this is the convenience, not the gate.
-  const markDeposit = async () => {
-    if (depositing) return;                       // a second click while in flight is ignored
-    setDepositing(true);
-    try {
-      await transactionAPI.markCardDeposit(tx.id);
-      fireConfetti();
-      showToast(`${tx.ref} marked deposited`);
-      onSubmitted?.();
-      onClose();
-    } catch (e: any) {
-      showToast(e?.response?.data?.detail || 'Failed to mark deposit', 'error');
-    } finally {
-      setDepositing(false);
-    }
   };
 
   // Both the UTR number and at least one payment proof are mandatory when submitting a slip; in demo
@@ -342,10 +321,10 @@ export const MerchantSlipModal: React.FC<{
     if (img) downloadDataUrl(img, `bank-details-${tx.ref}.png`);
   };
 
-  // Card names its steps after the phase the operator is in; every other type keeps its wording.
-  const modalTitle = isCard
-    ? (canSubmitSlip ? 'Pay & Upload Slip' : cardApproved ? 'Mark Deposit' : 'Request Details')
-    : (canSubmitSlip ? 'Pay & Submit Proof' : 'Request Details');
+  // Card names its payment step after the phase the operator is in; every other type keeps its wording.
+  const modalTitle = canSubmitSlip
+    ? (isCard ? 'Pay & Upload Slip' : 'Pay & Submit Proof')
+    : 'Request Details';
 
   return (
     <Modal title={`${modalTitle} — ${tx.ref}`} onClose={onClose}>
@@ -462,18 +441,6 @@ export const MerchantSlipModal: React.FC<{
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={submit} disabled={loading||!canSubmit}>{loading?'Submitting...':(isCard?'Submit for Review':'Submit Proof')}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
-          </div>
-        </div>
-      ) : cardApproved ? (
-        /* Card, Phase 5 — the Manager/Supervisor has approved; the operator closes it out. */
-        <div style={{ borderTop:`1px solid ${T.border}`,paddingTop:14 }}>
-          <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 12px' }}>
-            Approved by the {merchantRoleLabel(reviewerRoleCode(tx.type, tx.approverRole, 'SUPERVISOR')) || 'reviewer'}.
-            Mark this Card deposit as deposited to complete it.
-          </p>
-          <div style={{ display:'flex',gap:10,flexWrap:'wrap' }}>
-            <Btn onClick={markDeposit} disabled={depositing}>{depositing ? 'Marking...' : <><Icon name="approve" size={14} /> Mark Deposit</>}</Btn>
-            <Btn variant="secondary" onClick={onClose}>Close</Btn>
           </div>
         </div>
       ) : (
@@ -1932,9 +1899,7 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
       // this is identical to the previous role-based routing there.
       if (isDeposit) await transactionAPI.supervisorReview(tx.id, action, remark);
       else await transactionAPI.managerReview(tx.id, action, remark);
-      // A Card approval goes back to the requesting operator to Mark Deposit, not on to the Admin.
-      const approved = isCard ? 'Approved — returned to the operator to mark deposit' : 'Approved — forwarded to Admin';
-      showToast(action === 'approve' ? approved : action === 'reject' ? 'Request rejected' : 'Returned for resubmission');
+      showToast(action === 'approve' ? 'Approved — forwarded to Admin' : action === 'reject' ? 'Request rejected' : 'Returned for resubmission');
       onDone();
     } catch (e: any) {
       showToast(e?.response?.data?.detail || 'Action failed', 'error');
@@ -1943,12 +1908,9 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
 
   if (action) {
     const l = REMARK_LABELS[action];
-    // Same reason card, accurate wording: an approved Card request goes back to the operator to
-    // mark deposit, so it is never "forwarded to Admin".
-    const title = isCard && action === 'approve' ? 'Approve Card Deposit' : l.title;
     return (
       <ReasonModal
-        title={`${title} — ${d.ref}`} label={l.label} confirmLabel={l.confirm}
+        title={`${l.title} — ${d.ref}`} label={l.label} confirmLabel={l.confirm}
         requiredHint="Remarks are required" maxLength={1000} busy={busy}
         placeholder="Enter your remarks (mandatory)…"
         onSubmit={submit} onClose={() => setAction(null)} closeLabel="Back"
@@ -1965,10 +1927,10 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
         <SlipRow k="Amount" v={fmt(d.amount)} />
         <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} depositType={d.depositType} />} />
         <SlipRow k="Reference" v={d.ref} copy={d.ref} />
-        {d.merchantRef && <SlipRow k={isCardDeposit(d) ? 'UTR Number' : 'Payment / UTR Reference'} v={d.merchantRef} copy={d.merchantRef} />}
+        {d.merchantRef && <SlipRow k={isCard ? 'UTR Number' : 'Payment / UTR Reference'} v={d.merchantRef} copy={d.merchantRef} />}
         {d.depositType && <SlipRow k="Payment Method" v={depositTypeLabel(d.depositType)} />}
         {/* Card — the reviewer verifies the slip against the link the member actually paid through. */}
-        {isCardDeposit(d) && d.paymentLink && <SlipRow k="Payment Gateway Link" v={<span style={{ wordBreak:'break-all' }}>{d.paymentLink}</span>} copy={d.paymentLink} />}
+        {isCard && d.paymentLink && <SlipRow k="Payment Gateway Link" v={<span style={{ wordBreak:'break-all' }}>{d.paymentLink}</span>} copy={d.paymentLink} />}
         {d.payoutMode && <SlipRow k="Payout Mode" v={d.payoutMode} />}
         {d.bank && <SlipRow k="Bank" v={d.bank} />}
         {d.accountHolder && <SlipRow k="Account Holder" v={d.accountHolder} />}

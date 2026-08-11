@@ -53,19 +53,22 @@ APPROVER_ROLES = {
 
 # ─── Card deposit ──────────────────────────────────────────────────────────────
 # A Card deposit is an ordinary DEPOSIT_REQUEST with deposit_type='CARD'; it introduces NO new
-# status. It reuses the existing deposit lifecycle throughout, relabelled for the operator:
+# status and NO new workflow. It runs the existing deposit lifecycle end to end, relabelled for
+# the people who work it:
 #
-#   ACCOUNT_REQUESTED  → "Link Requested"              (operator raised the request)
-#   ACCOUNT_SUBMITTED  → "Link Submitted"              (Admin submitted the payment gateway link)
-#   SUPERVISOR_REVIEW  → "Manager/Supervisor Review"   (slip + UTR submitted to the chosen reviewer)
-#   SLIP_SUBMITTED     → "Manager/Supervisor Approved" (reviewer approved — awaiting Mark Deposit)
-#   RESUBMITTED        → "Link Submitted"              (reviewer returned it; same phase as above)
-#   DEPOSITED / REJECTED                               (terminal, unchanged)
+#   ACCOUNT_REQUESTED  → "Link Requested"       (operator raised the request)
+#   ACCOUNT_SUBMITTED  → "Link Submitted"       (Admin submitted the payment gateway link)
+#   SUPERVISOR_REVIEW  → "<Reviewer> Review"    (slip + UTR submitted to the chosen reviewer)
+#   SLIP_SUBMITTED     → "<Reviewer> Approved"  (reviewer approved — with the Admin for completion)
+#   RESUBMITTED        → "Link Submitted"       (reviewer returned it; same phase as above)
+#   DEPOSITED / REJECTED                        (terminal, unchanged)
 #
-# The one behavioural difference from a bank deposit is the last hop: the requesting operator marks
-# it deposited (/card/deposit) instead of the Admin, whose only Card action is submitting the link.
+# The ONLY Card-specific hop is the Admin's: they submit a payment gateway link where every other
+# deposit type gets an account. Completion is not Card-specific — the Admin's existing /done marks
+# any reviewer-approved deposit (SLIP_SUBMITTED) as DEPOSITED, Card included.
 CARD_DEPOSIT_TYPE = "CARD"
-# Merchant roles allowed to raise and drive a Card deposit (mirrors the frontend selector).
+# Merchant roles allowed to raise a Card deposit and supply its payment evidence (mirrors the
+# frontend selector). Completion is the Admin's, exactly as it is for every other deposit type.
 CARD_OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR")
 # Where the operator may submit payment evidence from: awaiting payment, or returned for correction.
 CARD_PAYABLE_STATUSES = (TxStatus.ACCOUNT_SUBMITTED, TxStatus.RESUBMITTED)
@@ -1364,6 +1367,7 @@ async def get_my_member_groups(
     if mids:
         lstmt = select(
             grp.label("mid"), Transaction.status, Transaction.type, Transaction.deposit_type,
+            Transaction.approver_role,
             Transaction.tx_date, Transaction.tx_time, Transaction.created_at,
         ).where(Transaction.merchant_id == current_user.id, grp.in_(mids))
         if active_cond is not None:
@@ -1372,6 +1376,10 @@ async def get_my_member_groups(
         for lr in (await db.execute(lstmt)).all():
             latest[lr.mid] = {
                 "status": lr.status, "type": lr.type, "depositType": lr.deposit_type,
+                # The response has always carried an "latestApproverRole" key, but the column was
+                # never selected here, so it was silently always null and the group badge fell back
+                # to the gate name — reading "Supervisor Review" on a request a Manager owns.
+                "approverRole": lr.approver_role,
                 "date": str(lr.tx_date), "time": lr.tx_time,
                 "createdAt": (lr.created_at.isoformat() + "Z") if lr.created_at else None,
             }
@@ -2967,57 +2975,6 @@ async def mark_done(
     await log_event(db, "TRANSACTION_COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
     await record_audit(db, "ADMIN_APPROVED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
                        new=tx.status.value, ip=_client_ip(request))
-    await _refresh_with_images(db, tx)
-    return _t(tx)
-
-
-@router.post("/{tx_id}/card/deposit")
-async def card_mark_deposit(
-    tx_id: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Phase 5 of the Card deposit — the requesting operator marks an approved Card request
-    deposited (Manager/Supervisor Approved → Deposited).
-
-    This is the one step where Card diverges from the other deposit types, whose final approval
-    belongs to the Admin (/done); on Card the Admin's involvement ends at the payment link. It is
-    not a parallel completion path: it performs exactly the same finalisation as /done for a
-    deposit — same status, same actor/timestamp fields, same account-credit tracking, same
-    notification, remark and audit trail — attributed to the operator instead of the Admin.
-
-    Four things must hold, all checked server-side rather than trusted from the UI: the caller owns
-    the request, holds a Card operator role, the request is a Card deposit, and it is sitting in
-    the reviewer-approved state. That last check is also the duplicate-completion guard — an
-    already-deposited row is no longer approved, so a second click is rejected."""
-    tx = await _get_own_tx(tx_id, db, current_user)
-    if not _is_card_deposit(tx):
-        raise HTTPException(status_code=400, detail="This action applies to Card deposits only.")
-    if str(current_user.merchant_role or "").upper() not in CARD_OPERATOR_ROLES:
-        raise HTTPException(status_code=403, detail="Only a Data Operator or Deposit Operator can mark a Card deposit.")
-    if tx.status == TxStatus.DEPOSITED:
-        raise HTTPException(status_code=400, detail="This request has already been deposited.")
-    # SLIP_SUBMITTED on a deposit means "the reviewer approved it" (see _reviewer_action) — the
-    # only state a Card deposit may be completed from. Anything earlier has not been approved;
-    # REJECTED / CANCELLED can never be completed.
-    if tx.status != TxStatus.SLIP_SUBMITTED:
-        raise HTTPException(status_code=400, detail="This request has not been approved by the Manager/Supervisor yet.")
-    tx.status = TxStatus.DEPOSITED
-    tx.processed_by = current_user.name
-    tx.approved_by = tx.approved_by or current_user.name
-    tx.admin_action_at = datetime.utcnow()
-    _append_remark(tx, role=str(current_user.merchant_role or "").upper(), user=current_user.name,
-                   username=current_user.username, action="APPROVED", remark="Deposited")
-    await db.flush()
-    # Deposit credited to an account → update that account's Highest Credit, exactly as /done does.
-    await _track_account_credit(db, tx, current_user, request)
-    await notify_tx(db, tx, f"{tx.ref}: marked deposited successfully", "✓")
-    # Telegram (demo, next-step only): completion → notify ONLY the requesting user.
-    await tgn.notify(db, tx, "USER", "deposit_done")
-    await log_event(db, "TRANSACTION_COMPLETED", f"{tx.ref} marked deposited by {current_user.name}", actor=current_user)
-    await record_audit(db, "CARD_DEPOSITED", actor=current_user, entity_type=tx.type.value,
-                       entity_id=tx.ref, new=tx.status.value, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
     return _t(tx)
 

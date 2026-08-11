@@ -1,9 +1,10 @@
 """Tests for the Card deposit transaction type.
 
-A Card deposit reuses the whole existing deposit lifecycle and introduces no new status — the
-Admin submits a payment gateway link where every other deposit type gets an account, and the
-requesting operator (not the Admin) performs the final Mark Deposit. What that buys in reuse it
-owes in server-side rigour: nothing about the flow is safe if the state gates are only in the UI.
+A Card deposit reuses the whole existing deposit lifecycle and introduces no new status: the only
+Card-specific hop is the Admin's, who submits a payment gateway link where every other deposit type
+gets an account. Completion stays exactly where it is for every other deposit — the Admin's /done,
+once the reviewer has approved. What that buys in reuse it owes in server-side rigour: nothing
+about the flow is safe if the state gates live only in the UI.
 
 The properties that matter, and which these tests pin down:
 
@@ -12,12 +13,12 @@ The properties that matter, and which these tests pin down:
      who is about to click it.
   2. **Payment evidence is mandatory** — a Card request cannot enter review without BOTH a payment
      image and a UTR, and without a chosen Manager/Supervisor.
-  3. **The state machine holds** — Link Requested cannot jump to review; only a reviewer-approved
-     request can be deposited; a rejected or already-deposited one never can.
-  4. **The right person acts** — Mark Deposit requires the owning Data/Deposit Operator, not any
-     merchant user and not a reviewer.
-  5. **Duplicates are rejected** — a second link submission and a second Mark Deposit both fail on
-     the state gate, which is what makes double-clicking harmless.
+  3. **The state machine holds** — Link Requested cannot jump to review, and evidence cannot be
+     altered once the request has left the operator for review or completion.
+  4. **There is one way to complete a deposit** — the Admin's /done. No Card-specific completion
+     route exists, and no operator can reach one.
+  5. **Duplicates are rejected** — a second link submission and a second submit-for-review both
+     fail on the state gate, which is what makes double-clicking harmless.
 
 Every rejection path above raises before the route touches the database, so the suite needs no
 database, no migrations and no fixtures — a stub session that can serve one row is enough. That is
@@ -206,62 +207,37 @@ async def test_slip_rejects_a_foreign_transaction():
     assert e.value.status_code == 403
 
 
-# ── 5. Mark Deposit (Manager/Supervisor Approved → Deposited) ──────────────────────────────────
+# ── 5. Completion belongs to the Admin ─────────────────────────────────────────────────────────
+# Marking a Card deposit DEPOSITED is not Card-specific and must not be: the Admin's existing
+# /done already completes any reviewer-approved deposit (SLIP_SUBMITTED). An operator-side
+# completion route briefly existed here; these tests are what keep it from coming back, because a
+# second way to move money to DEPOSITED is exactly the kind of thing that gets re-added by accident.
 
-async def _mark_deposit(tx: Transaction, user: User):
-    return await txr.card_mark_deposit("TXN042", None, _StubSession(tx), user)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", [TxStatus.ACCOUNT_REQUESTED, TxStatus.ACCOUNT_SUBMITTED,
-                                    TxStatus.SUPERVISOR_REVIEW, TxStatus.RESUBMITTED,
-                                    TxStatus.REJECTED, TxStatus.CANCELLED])
-async def test_mark_deposit_requires_reviewer_approval(status):
-    """Nothing short of a reviewer-approved request can be deposited — including a rejected one,
-    which must never be completable."""
-    tx = _card_tx(status, link="https://pay.example.com/abc")
-    with pytest.raises(HTTPException) as e:
-        await _mark_deposit(tx, _operator("DEO"))
-    assert e.value.status_code == 400
-    assert tx.status == status
+def test_no_operator_completion_route_exists():
+    """No Card-specific completion endpoint — the operator cannot mark a deposit at all."""
+    paths = {getattr(r, "path", "") for r in txr.router.routes}
+    assert not [p for p in paths if "card" in p.lower()], sorted(p for p in paths if "card" in p.lower())
+    assert not hasattr(txr, "card_mark_deposit")
 
 
-@pytest.mark.asyncio
-async def test_mark_deposit_rejects_an_already_deposited_request():
-    """The duplicate-completion guard: a second click finds it deposited and is refused."""
-    tx = _card_tx(TxStatus.DEPOSITED, link="https://pay.example.com/abc")
-    with pytest.raises(HTTPException) as e:
-        await _mark_deposit(tx, _operator("DEO"))
-    assert e.value.status_code == 400
-    assert "already" in e.value.detail.lower()
+def test_admin_done_is_the_only_completion_route():
+    """/{tx_id}/done exists and is Admin-gated, so completion cannot be reached by an operator."""
+    import inspect
+    from app.core.deps import get_current_admin
+
+    done = [r for r in txr.router.routes if getattr(r, "path", "").endswith("/{tx_id}/done")]
+    assert len(done) == 1, [getattr(r, "path", "") for r in txr.router.routes]
+    actor = inspect.signature(txr.mark_done).parameters["actor"].default
+    assert actor.dependency is get_current_admin
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("role", ["SUPERVISOR", "MANAGER", "WITHDRAWAL_OPERATOR", None, ""])
-async def test_mark_deposit_requires_a_card_operator_role(role):
-    tx = _card_tx(TxStatus.SLIP_SUBMITTED, link="https://pay.example.com/abc")
-    with pytest.raises(HTTPException) as e:
-        await _mark_deposit(tx, _operator(role))
-    assert e.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_mark_deposit_rejects_a_foreign_transaction():
-    tx = _card_tx(TxStatus.SLIP_SUBMITTED, link="https://pay.example.com/abc", merchant_id=7)
-    with pytest.raises(HTTPException) as e:
-        await _mark_deposit(tx, _operator("DEO", user_id=99))
-    assert e.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_mark_deposit_rejects_a_non_card_deposit():
-    """The Admin's /done still owns every other deposit type; this route must not touch them."""
-    tx = _card_tx(TxStatus.SLIP_SUBMITTED)
-    tx.deposit_type = "BANK"
-    with pytest.raises(HTTPException) as e:
-        await _mark_deposit(tx, _operator("DEO"))
-    assert e.value.status_code == 400
-    assert tx.status == TxStatus.SLIP_SUBMITTED
+def test_operator_cannot_alter_evidence_once_it_leaves_them():
+    """The reviewer's approval parks a Card deposit at SLIP_SUBMITTED, where it waits for the
+    Admin. The operator's payable window must not include that state (nor a finished one), or the
+    slip and UTR could be swapped out from under the person about to release the money."""
+    for status in (TxStatus.SLIP_SUBMITTED, TxStatus.SUPERVISOR_REVIEW, TxStatus.DEPOSITED,
+                   TxStatus.REJECTED, TxStatus.ACCOUNT_REQUESTED):
+        assert status not in txr.CARD_PAYABLE_STATUSES
 
 
 # ── 6. Who may raise a Card deposit ────────────────────────────────────────────────────────────

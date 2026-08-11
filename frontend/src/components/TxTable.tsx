@@ -20,18 +20,16 @@ const rowAction = (mode: ActionMode, t: Transaction): { label: string; action: s
   const { status, type } = t;
   const isDeposit = type.startsWith('DEPOSIT');
   // ── Card deposit ──────────────────────────────────────────────────────────────────────────
-  // Same statuses as any other deposit, different owners: the Admin's only action is submitting
-  // the payment gateway link, and the final Mark Deposit belongs to the requesting operator.
-  // Both open the SAME modals as every other deposit — only the wording differs.
+  // Only the wording of the operator's payment step differs, plus the Admin's first hop — which
+  // sends a payment gateway link instead of an account. Everything else, including the Admin's
+  // "Mark Deposited" once the reviewer approves, is the shared deposit handling below.
   if (isCardDeposit(t)) {
-    if (mode === 'admin') {
-      if (status === 'ACCOUNT_REQUESTED') return { label: 'Submit Link', action: 'manage', variant: 'primary', icon: 'link' };
-      return { label: 'View Details', action: 'view', variant: 'ghost', icon: 'view' };
+    if (mode === 'admin' && status === 'ACCOUNT_REQUESTED') {
+      return { label: 'Submit Link', action: 'manage', variant: 'primary', icon: 'link' };
     }
     if (mode === 'merchant') {
       if (status === 'ACCOUNT_SUBMITTED') return { label: 'Pay & Upload Slip', action: 'slip', variant: 'primary', icon: 'upload' };
       if (status === 'RESUBMITTED') return { label: 'Re-upload Slip', action: 'slip', variant: 'primary', icon: 'refresh' };
-      if (status === 'SLIP_SUBMITTED') return { label: 'Mark Deposit', action: 'slip', variant: 'primary', icon: 'approve' };
       return { label: 'View Details', action: 'view', variant: 'ghost', icon: 'view' };
     }
   }

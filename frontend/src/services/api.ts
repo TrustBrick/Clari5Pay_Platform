@@ -336,13 +336,6 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/done`, data ?? {});
     return res.data;
   },
-  // Card deposits only: the requesting operator marks an approved request deposited (the Admin's
-  // Card involvement ends at the payment link). The backend re-checks ownership, role, type and
-  // that the reviewer actually approved it.
-  markCardDeposit: async (id: string) => {
-    const res = await api.post<Transaction>(`/api/transactions/${id}/card/deposit`);
-    return res.data;
-  },
   // Supervisor (deposit) review-gate actions — remarks are mandatory.
   supervisorReview: async (id: string, decision: 'approve' | 'reject' | 'resubmit', remark: string) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/supervisor/${decision}`, { remark });
