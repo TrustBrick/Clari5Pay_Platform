@@ -51,6 +51,44 @@ APPROVER_ROLES = {
     "WITHDRAWAL": ("MANAGER",),
 }
 
+# ─── Card deposit ──────────────────────────────────────────────────────────────
+# A Card deposit is an ordinary DEPOSIT_REQUEST with deposit_type='CARD'; it introduces NO new
+# status. It reuses the existing deposit lifecycle throughout, relabelled for the operator:
+#
+#   ACCOUNT_REQUESTED  → "Link Requested"              (operator raised the request)
+#   ACCOUNT_SUBMITTED  → "Link Submitted"              (Admin submitted the payment gateway link)
+#   SUPERVISOR_REVIEW  → "Manager/Supervisor Review"   (slip + UTR submitted to the chosen reviewer)
+#   SLIP_SUBMITTED     → "Manager/Supervisor Approved" (reviewer approved — awaiting Mark Deposit)
+#   RESUBMITTED        → "Link Submitted"              (reviewer returned it; same phase as above)
+#   DEPOSITED / REJECTED                               (terminal, unchanged)
+#
+# The one behavioural difference from a bank deposit is the last hop: the requesting operator marks
+# it deposited (/card/deposit) instead of the Admin, whose only Card action is submitting the link.
+CARD_DEPOSIT_TYPE = "CARD"
+# Merchant roles allowed to raise and drive a Card deposit (mirrors the frontend selector).
+CARD_OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR")
+# Where the operator may submit payment evidence from: awaiting payment, or returned for correction.
+CARD_PAYABLE_STATUSES = (TxStatus.ACCOUNT_SUBMITTED, TxStatus.RESUBMITTED)
+
+
+def _is_card_deposit(tx: Transaction) -> bool:
+    """True for a deposit raised with Transaction Type = Card."""
+    return tx.type.value.startswith("DEPOSIT") and (tx.deposit_type or "").upper() == CARD_DEPOSIT_TYPE
+
+
+def _validate_payment_link(raw: str | None) -> str:
+    """The Admin-supplied payment gateway link: mandatory, absolute http(s), length-bounded.
+    Rejecting anything else here is what stops an empty or malformed link from being saved over a
+    good one, and keeps a non-http scheme (javascript:, data:) out of a URL the operator will open."""
+    link = (raw or "").strip()
+    if not link:
+        raise HTTPException(status_code=400, detail="Enter the payment gateway link.")
+    if len(link) > 512:
+        raise HTTPException(status_code=400, detail="The payment gateway link is too long (max 512 characters).")
+    if not link.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Enter a valid payment gateway link starting with http:// or https://")
+    return link
+
 
 async def _resolve_merchant_approver(db: AsyncSession, merchant: User, approver_user_id: int | None,
                                      kind: str = "DEPOSIT"):
@@ -747,6 +785,10 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "adminRef": t.admin_ref,
         "adminBankDetails": t.admin_bank_details,
         "adminUpiId": t.admin_upi_id,
+        # CARD deposits: the payment gateway link the Admin submitted. Carried by the same
+        # already-authorized payloads as every other field here (own transactions, oversight roles
+        # and admins), so it is never exposed more widely than the request it belongs to.
+        "paymentLink": t.payment_link,
         "adminUtr": t.admin_utr,
         "payoutMode": t.payout_mode,
         "payoutDetails": json.loads(t.payout_details) if t.payout_details else None,
@@ -1321,7 +1363,7 @@ async def get_my_member_groups(
     latest: dict[str, dict] = {}
     if mids:
         lstmt = select(
-            grp.label("mid"), Transaction.status, Transaction.type,
+            grp.label("mid"), Transaction.status, Transaction.type, Transaction.deposit_type,
             Transaction.tx_date, Transaction.tx_time, Transaction.created_at,
         ).where(Transaction.merchant_id == current_user.id, grp.in_(mids))
         if active_cond is not None:
@@ -1329,7 +1371,7 @@ async def get_my_member_groups(
         lstmt = lstmt.distinct(grp).order_by(grp, Transaction.created_at.desc())
         for lr in (await db.execute(lstmt)).all():
             latest[lr.mid] = {
-                "status": lr.status, "type": lr.type,
+                "status": lr.status, "type": lr.type, "depositType": lr.deposit_type,
                 "date": str(lr.tx_date), "time": lr.tx_time,
                 "createdAt": (lr.created_at.isoformat() + "Z") if lr.created_at else None,
             }
@@ -1347,6 +1389,9 @@ async def get_my_member_groups(
             "totalAmount": float(r.total_amount or 0.0),
             "latestStatus": lt.get("status"),
             "latestType": lt.get("type"),
+            # Carried so a Card group's badge reads in Card wording ("Link Requested") like the
+            # rows inside it, instead of falling back to the generic deposit status.
+            "latestDepositType": lt.get("depositType"),
             # Carried so the group's status badge names the approver who owns it, exactly as the
             # row badges in the drill-down do — without it the badge falls back to the gate name.
             "latestApproverRole": lt.get("approverRole"),
@@ -2407,8 +2452,17 @@ async def create_deposit(
     member_name = await resolve_member_name(db, current_user, data.memberId, data.memberName)
     _proofs = _clean_proofs(data.proofs, data.proof)
     dep_type = (data.depositType or "").upper()
+    # Card is offered to the Data Operator and Deposit Operator only. Enforced here as well as in
+    # the selector, so the restriction holds against a request made outside the UI. Only a CARD
+    # payload can reach this check — every existing deposit type is unaffected.
+    if dep_type == CARD_DEPOSIT_TYPE and str(current_user.merchant_role or "").upper() not in CARD_OPERATOR_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="A Card deposit can only be raised by a Data Operator or Deposit Operator.")
     # Cash / Crypto requests carry their own member-supplied proof up-front, so they skip the
     # bank/UPI "account sent" hop and land straight in the agent's review queue (SLIP_SUBMITTED).
+    # A Card request is NOT one of them: it waits for the Admin's payment link (ACCOUNT_REQUESTED,
+    # shown as "Link Requested"), exactly like a bank deposit waits for account details.
     direct_review = dep_type in ("CASH", "CRYPTO")
     tx = Transaction(
         ref="TEMP",
@@ -2689,6 +2743,31 @@ async def _get_own_tx(tx_id: str, db: AsyncSession, user: User) -> Transaction:
     return tx
 
 
+async def _card_link_submit(db: AsyncSession, tx: Transaction, data: AccountSubmitRequest, actor: User) -> dict:
+    """Phase 2 of the Card deposit — the Admin submits the payment gateway link generated by company
+    staff, and the request moves Link Requested (ACCOUNT_REQUESTED) → Link Submitted
+    (ACCOUNT_SUBMITTED). Runs the same notification / log / audit trail as the account send it
+    replaces, so a Card request appears in every existing feed exactly like any other deposit.
+
+    The status gate is what makes a double-click harmless: the second call finds the request no
+    longer in Link Requested and is rejected, so one link is stored and one notification is sent."""
+    if tx.status != TxStatus.ACCOUNT_REQUESTED:
+        raise HTTPException(status_code=400, detail="The payment link has already been submitted for this request.")
+    tx.payment_link = _validate_payment_link(data.paymentLink)
+    tx.status = TxStatus.ACCOUNT_SUBMITTED
+    tx.approved_by = actor.name
+    await db.flush()
+    await _notify_merchant(db, tx, f"{tx.ref}: payment link received — share it with the member, then upload the slip and UTR", "🔗")
+    await _notify_admin(db, tx, f"{tx.ref}: payment link sent to {tx.merchant_name}", "🔗")
+    # Telegram (demo, next-step only): the link is out → the requesting user owns the next step.
+    await tgn.notify(db, tx, "USER", "account_submitted")
+    await log_event(db, "CARD_LINK_SUBMITTED", f"{tx.ref}: payment link sent to {tx.merchant_name}", actor=actor)
+    await record_audit(db, "CARD_LINK_SUBMITTED", actor=actor, entity_type=tx.type.value,
+                       entity_id=tx.ref, new="ACCOUNT_SUBMITTED")
+    await _refresh_with_images(db, tx)
+    return _t(tx)
+
+
 @router.post("/{tx_id}/account-submit")
 async def account_submit(
     tx_id: str,
@@ -2698,13 +2777,19 @@ async def account_submit(
 ):
     """Admin selects a managed account, the app sends its details/image, status → Account Submitted.
     If the admin uploads a custom bank-details image, it overrides the auto-generated card for
-    this transaction (the structured bank details are not stored/shown)."""
+    this transaction (the structured bank details are not stored/shown).
+
+    A Card deposit takes the same hop with a different payload: the Admin submits the externally
+    generated payment gateway link instead of an account, and the request moves Link Requested →
+    Link Submitted. Every other deposit type is untouched below."""
+    tx = await _get_tx(tx_id, db)
+    if _is_card_deposit(tx):
+        return await _card_link_submit(db, tx, data, actor)
     if not (data.adminBankDetails or data.adminUpiId or data.adminProof or data.adminBankImage):
         raise HTTPException(
             status_code=400,
             detail="Select an account to send",
         )
-    tx = await _get_tx(tx_id, db)
     if data.adminBankImage:
         # Custom image becomes the official bank details — skip the auto-generated card.
         tx.admin_bank_image = _validate_bank_image(data.adminBankImage)
@@ -2758,7 +2843,11 @@ async def submit_slip(
 ):
     """Merchant pays using the admin's details and submits the deposit slip (image(s) and/or
     reference). The deposit then enters the Supervisor review gate (PENDING APPROVAL → auto-
-    assigned to the business's Supervisors → SUPERVISOR REVIEW)."""
+    assigned to the business's Supervisors → SUPERVISOR REVIEW).
+
+    A Card deposit takes this same step (Phase 3, "Pay and Upload Slip") with stricter rules — both
+    the payment image AND the UTR are mandatory, a reviewer must be chosen, and the request must
+    actually be in a payable phase. Other deposit types keep the existing either/or behaviour."""
     _proofs = _clean_proofs(data.merchantProofs, data.merchantProof)
     if not (_proofs or data.merchantRef):
         raise HTTPException(
@@ -2766,6 +2855,24 @@ async def submit_slip(
             detail="Upload an image or enter a reference number",
         )
     tx = await _get_own_tx(tx_id, db, current_user)
+    if _is_card_deposit(tx):
+        # State gate first: a Card deposit can only take payment evidence while it is awaiting
+        # payment (Link Submitted) or has been returned for correction. This is what rejects a
+        # repeated submit — the second call finds it already in review — and blocks a jump
+        # straight from Link Requested (no link yet) or from an approved/rejected/deposited row.
+        if tx.status not in CARD_PAYABLE_STATUSES:
+            raise HTTPException(status_code=400, detail="This Card request is not awaiting a payment slip.")
+        if not tx.payment_link:
+            raise HTTPException(status_code=400, detail="The payment gateway link has not been submitted yet.")
+        if not _proofs:
+            raise HTTPException(status_code=400, detail="Upload the payment slip / image.")
+        if not (data.merchantRef or "").strip():
+            raise HTTPException(status_code=400, detail="UTR Number is required.")
+        data.merchantRef = data.merchantRef.strip()
+        # The reviewer is chosen on this step, so it must be supplied (unless the whole
+        # Send To Approval feature is switched off, in which case there is nobody to choose).
+        if settings.SEND_TO_APPROVAL_ENABLED and data.approverUserId is None and tx.approver_user_id is None:
+            raise HTTPException(status_code=400, detail="Select the Manager/Supervisor who should approve this request.")
     if _proofs:
         tx.merchant_proof = _proofs[0]
         tx.merchant_proofs = json.dumps(_proofs)
@@ -2860,6 +2967,57 @@ async def mark_done(
     await log_event(db, "TRANSACTION_COMPLETED", f"{tx.ref} marked {label} by {actor.name}", actor=actor)
     await record_audit(db, "ADMIN_APPROVED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
                        new=tx.status.value, ip=_client_ip(request))
+    await _refresh_with_images(db, tx)
+    return _t(tx)
+
+
+@router.post("/{tx_id}/card/deposit")
+async def card_mark_deposit(
+    tx_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Phase 5 of the Card deposit — the requesting operator marks an approved Card request
+    deposited (Manager/Supervisor Approved → Deposited).
+
+    This is the one step where Card diverges from the other deposit types, whose final approval
+    belongs to the Admin (/done); on Card the Admin's involvement ends at the payment link. It is
+    not a parallel completion path: it performs exactly the same finalisation as /done for a
+    deposit — same status, same actor/timestamp fields, same account-credit tracking, same
+    notification, remark and audit trail — attributed to the operator instead of the Admin.
+
+    Four things must hold, all checked server-side rather than trusted from the UI: the caller owns
+    the request, holds a Card operator role, the request is a Card deposit, and it is sitting in
+    the reviewer-approved state. That last check is also the duplicate-completion guard — an
+    already-deposited row is no longer approved, so a second click is rejected."""
+    tx = await _get_own_tx(tx_id, db, current_user)
+    if not _is_card_deposit(tx):
+        raise HTTPException(status_code=400, detail="This action applies to Card deposits only.")
+    if str(current_user.merchant_role or "").upper() not in CARD_OPERATOR_ROLES:
+        raise HTTPException(status_code=403, detail="Only a Data Operator or Deposit Operator can mark a Card deposit.")
+    if tx.status == TxStatus.DEPOSITED:
+        raise HTTPException(status_code=400, detail="This request has already been deposited.")
+    # SLIP_SUBMITTED on a deposit means "the reviewer approved it" (see _reviewer_action) — the
+    # only state a Card deposit may be completed from. Anything earlier has not been approved;
+    # REJECTED / CANCELLED can never be completed.
+    if tx.status != TxStatus.SLIP_SUBMITTED:
+        raise HTTPException(status_code=400, detail="This request has not been approved by the Manager/Supervisor yet.")
+    tx.status = TxStatus.DEPOSITED
+    tx.processed_by = current_user.name
+    tx.approved_by = tx.approved_by or current_user.name
+    tx.admin_action_at = datetime.utcnow()
+    _append_remark(tx, role=str(current_user.merchant_role or "").upper(), user=current_user.name,
+                   username=current_user.username, action="APPROVED", remark="Deposited")
+    await db.flush()
+    # Deposit credited to an account → update that account's Highest Credit, exactly as /done does.
+    await _track_account_credit(db, tx, current_user, request)
+    await notify_tx(db, tx, f"{tx.ref}: marked deposited successfully", "✓")
+    # Telegram (demo, next-step only): completion → notify ONLY the requesting user.
+    await tgn.notify(db, tx, "USER", "deposit_done")
+    await log_event(db, "TRANSACTION_COMPLETED", f"{tx.ref} marked deposited by {current_user.name}", actor=current_user)
+    await record_audit(db, "CARD_DEPOSITED", actor=current_user, entity_type=tx.type.value,
+                       entity_id=tx.ref, new=tx.status.value, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
     return _t(tx)
 

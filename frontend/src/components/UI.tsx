@@ -67,7 +67,11 @@ export const Logo: React.FC<{ size?: 'sm' | 'md' | 'lg'; dark?: boolean }> = ({ 
 // ─── Badge ───────────────────────────────────────────────────────────────────
 // Statuses that are still "in flight" → their dot gently pulses to signal processing.
 const INFLIGHT_STATUSES = new Set(['PENDING','ADMIN_APPROVED','ACCOUNT_REQUESTED','ACCOUNT_SUBMITTED','SLIP_SUBMITTED','PENDING_APPROVAL','SUPERVISOR_REVIEW','MANAGER_REVIEW','RESUBMITTED']);
-export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: string; approverRole?: string | null }> = ({ status, type, viewerRole, approverRole }) => {
+// `depositType` is optional and only ever changes the WORD shown: a Card deposit reads
+// "Link Requested / Link Submitted / …" over the same shared statuses (see statusLabel). Omitting
+// it keeps the badge exactly as it renders today. The review/approved rungs name the actual
+// approver's role, which `displayStatus` resolves from `approverRole` just below.
+export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: string; approverRole?: string | null; depositType?: string | null }> = ({ status, type, viewerRole, approverRole, depositType }) => {
   // The colour, the pulse and the label all follow the status this viewer is shown, so a
   // withdrawal the Merchant Portal renders as "Pending" also carries the Pending styling. A request
   // sent to a specific approver reads as that person's role (see displayStatus).
@@ -77,7 +81,7 @@ export const Badge: React.FC<{ status: TxStatus; type?: string; viewerRole?: str
     <span style={{ display:'inline-flex',alignItems:'center',gap:4,padding:'3px 10px',borderRadius:20,fontSize:11,fontWeight:600,color:s.color,background:s.bg,whiteSpace:'nowrap' }}>
       <span className={INFLIGHT_STATUSES.has(shown) ? 'c5-dot-pulse' : undefined}
         style={{ width:6,height:6,borderRadius:'50%',background:s.color,display:'inline-block' }}/>
-      {statusLabel(shown, type, viewerRole)}
+      {statusLabel(shown, type, viewerRole, depositType, approverRole)}
     </span>
   );
 };

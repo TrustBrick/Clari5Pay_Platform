@@ -120,6 +120,8 @@ export interface Transaction {
   adminBankDetails?: string | null;
   adminUpiId?: string | null;
   adminUtr?: string | null;
+  // Card deposits: the payment gateway link the Admin submitted (Link Requested → Link Submitted).
+  paymentLink?: string | null;
   payoutMode?: string | null;
   payoutDetails?: Record<string, string> | null;
   depositDetails?: Record<string, string> | null;

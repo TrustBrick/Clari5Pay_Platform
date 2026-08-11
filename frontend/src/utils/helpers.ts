@@ -128,11 +128,46 @@ export const displayStatus = (status: string, type?: string, viewerRole?: string
   return MERCHANT_WITHDRAWAL_VIEW[status] || status;
 };
 
+// ── Card Deposit status wording ────────────────────────────────────────────────────────────────
+// A Card deposit runs on the EXISTING deposit statuses — no new status was introduced — but the
+// first two hops are spoken about differently by the people who work it: the Admin sends a payment
+// link rather than an account. This map is presentation only; the stored status, the workflow, the
+// permissions and every other deposit type are untouched.
+//   ACCOUNT_REQUESTED  → Link Requested
+//   ACCOUNT_SUBMITTED  → Link Submitted
+//   RESUBMITTED        → Link Submitted   (returned for correction — the same phase, and the
+//                                          resubmission reason is shown alongside it)
+//
+// The review and approved rungs are deliberately NOT in this map: they must name the person the
+// request was actually sent to (Supervisor Review / Manager Review), which displayStatus already
+// resolves from approver_role before the label is produced. Mapping them to a fixed
+// "Manager/Supervisor …" string threw that resolution away and made every Card request read the
+// same whoever was reviewing it.
+const CARD_STATUS_LABELS: Record<string, string> = {
+  ACCOUNT_REQUESTED: 'Link Requested',
+  ACCOUNT_SUBMITTED: 'Link Submitted',
+  RESUBMITTED: 'Link Submitted',
+};
+
 // Role- and type-aware status label.
 // Deposit: Account Requested → Account Submitted → Slip Submitted → Deposited.
 // Withdrawal/Settlement: Submitted (merchant) / Pending (admin) → Completed.
-export const statusLabel = (status: string, type?: string, viewerRole?: string): string => {
+// A Card deposit (`depositType='CARD'`) uses its own wording for the shared statuses — see above.
+// `approverRole` names who the request was sent to, so a Card deposit reads "Supervisor Approved"
+// or "Manager Approved" on the rung between the review and the operator's Mark Deposit.
+export const statusLabel = (status: string, type?: string, viewerRole?: string, depositType?: string | null, approverRole?: string | null): string => {
   const isDeposit = !!type && type.startsWith('DEPOSIT');
+  if (isDeposit && String(depositType || '').toUpperCase() === CARD_TXN_TYPE) {
+    const card = CARD_STATUS_LABELS[status];
+    if (card) return card;
+    // Reviewer-approved, awaiting the operator's Mark Deposit. SLIP_SUBMITTED is the shared
+    // "approved by the reviewer" status; name the reviewer who actually approved it, falling back
+    // to the deposit gate (Supervisor) when no approver was recorded.
+    if (status === 'SLIP_SUBMITTED') {
+      const who = merchantRoleLabel(reviewerRoleCode(type, approverRole, 'SUPERVISOR')) || 'Supervisor';
+      return `${who} Approved`;
+    }
+  }
   const isSettlement = !!type && type.startsWith('SETTLEMENT');
   const isWithdrawOrSettle = !!type && (type.startsWith('WITHDRAWAL') || type.startsWith('SETTLEMENT'));
   if (status === 'COMPLETED') return isDeposit ? 'Deposited' : 'Completed';
@@ -391,6 +426,7 @@ export const DEPOSIT_TYPE_LABELS: Record<string, string> = {
   RTGS: 'RTGS',
   CASH: 'Cash',
   CRYPTO: 'Crypto (USDT)',
+  CARD: 'Card',
 };
 export const depositTypeLabel = (code?: string | null) =>
   code ? (DEPOSIT_TYPE_LABELS[String(code).toUpperCase()] || code) : '';
@@ -413,6 +449,7 @@ export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'RTGS', label: 'RTGS' },
   { value: 'CASH', label: 'Cash' },
   { value: 'CRYPTO', label: 'Crypto (USDT)' },
+  { value: 'CARD', label: 'Card' },
 ];
 
 // ── Transaction types temporarily withheld from the operator request forms ─────────────────────
@@ -428,11 +465,26 @@ export const DEPOSIT_TYPE_OPTIONS = [
 export const WITHHELD_TXN_TYPES = ['CASH', 'CRYPTO'];
 const WITHHELD_TXN_TYPE_ROLES = ['DEO', 'DEPOSIT_OPERATOR', 'WITHDRAWAL_OPERATOR'];
 
+// ── Card Deposit — offered to the Data Operator and Deposit Operator only ──────────────────────
+// The inverse of the withheld list above: instead of hiding a type from certain roles, CARD is
+// shown to these roles alone and hidden from every other. The backend applies the same rule on
+// create, so this is the selector half of one restriction, not the restriction itself.
+export const CARD_TXN_TYPE = 'CARD';
+const CARD_TXN_TYPE_ROLES = ['DEO', 'DEPOSIT_OPERATOR'];
+/** True for a deposit raised with Transaction Type = Card. */
+export const isCardDeposit = (tx: { type?: string | null; depositType?: string | null }): boolean =>
+  String(tx.type || '').toUpperCase().startsWith('DEPOSIT') &&
+  String(tx.depositType || '').toUpperCase() === CARD_TXN_TYPE;
+
 /** `options` filtered to the transaction types this merchant role may currently pick. */
-export const txnTypeOptionsFor = <O extends { value: string }>(options: O[], merchantRole?: string | null): O[] =>
-  WITHHELD_TXN_TYPE_ROLES.includes(String(merchantRole || '').toUpperCase())
-    ? options.filter(o => !WITHHELD_TXN_TYPES.includes(String(o.value).toUpperCase()))
-    : options;
+export const txnTypeOptionsFor = <O extends { value: string }>(options: O[], merchantRole?: string | null): O[] => {
+  const role = String(merchantRole || '').toUpperCase();
+  const withheld = WITHHELD_TXN_TYPE_ROLES.includes(role) ? WITHHELD_TXN_TYPES : [];
+  // CARD only exists in the Deposit Type list, so filtering it here is a no-op for payout modes.
+  const cardHidden = CARD_TXN_TYPE_ROLES.includes(role) ? [] : [CARD_TXN_TYPE];
+  const hide = [...withheld, ...cardHidden];
+  return hide.length ? options.filter(o => !hide.includes(String(o.value).toUpperCase())) : options;
+};
 
 // ── Crypto Balance module ──────────────────────────────────────────────────────
 // A transaction is "crypto" iff its deposit leg is CRYPTO or its withdrawal payout mode is

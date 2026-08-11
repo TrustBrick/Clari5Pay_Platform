@@ -212,6 +212,7 @@ export interface MemberGroup {
   totalAmount: number;             // sum within the active type filter
   latestStatus?: string | null;
   latestType?: string | null;
+  latestDepositType?: string | null;    // so a Card group's badge uses the Card status wording
   latestApproverRole?: string | null;   // so the group badge names the approver who owns it
 
   latestDate?: string | null;
@@ -320,7 +321,9 @@ export const transactionAPI = {
   },
   submitAccount: async (
     id: string,
-    data: { adminRef?: string; adminProof?: string; adminBankDetails?: string; adminBankImage?: string; adminUpiId?: string },
+    // `paymentLink` is the Card variant of this same step: the Admin submits the payment gateway
+    // link instead of an account, and the request moves Link Requested → Link Submitted.
+    data: { adminRef?: string; adminProof?: string; adminBankDetails?: string; adminBankImage?: string; adminUpiId?: string; paymentLink?: string },
   ) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/account-submit`, data);
     return res.data;
@@ -331,6 +334,13 @@ export const transactionAPI = {
   },
   markDone: async (id: string, data?: { adminProof?: string; adminUtr?: string }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/done`, data ?? {});
+    return res.data;
+  },
+  // Card deposits only: the requesting operator marks an approved request deposited (the Admin's
+  // Card involvement ends at the payment link). The backend re-checks ownership, role, type and
+  // that the reviewer actually approved it.
+  markCardDeposit: async (id: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/card/deposit`);
     return res.data;
   },
   // Supervisor (deposit) review-gate actions — remarks are mandatory.

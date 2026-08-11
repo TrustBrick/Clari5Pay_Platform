@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx, isCardDeposit } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
@@ -228,9 +228,25 @@ export const MerchantSlipModal: React.FC<{
   useEffect(() => { if (SEND_TO_APPROVAL_ENABLED) transactionAPI.approvers().then(setApprovers).catch(()=>{}); }, []);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
   const [imgs, setImgs] = useState<{ adminProof?: string | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
+  // ── Card deposit ────────────────────────────────────────────────────────────────────────────
+  // This same modal is the operator's Card workspace: the payment gateway link (copy / share), the
+  // reviewer's resubmission reason, the slip + UTR, and — once approved — Mark Deposit. Everything
+  // below it (upload, UTR, approver, submit) is shared with every other deposit type unchanged.
+  const isCard = isCardDeposit(tx);
+  // The link and the remarks trail are on the detail payload; hold the full record for them.
+  const [record, setRecord] = useState<Transaction>(tx);
+  const [depositing, setDepositing] = useState(false);
   useEffect(() => {
-    transactionAPI.getDetail(tx.id).then(d => setImgs({ adminProof: d.adminProof, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs })).catch(()=>{});
+    transactionAPI.getDetail(tx.id).then(d => { setImgs({ adminProof: d.adminProof, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs }); setRecord(d); }).catch(()=>{});
   }, [tx.id]);
+  const paymentLink = record.paymentLink || tx.paymentLink || '';
+  // Card is approved (awaiting Mark Deposit) once the reviewer has forwarded it — SLIP_SUBMITTED on
+  // a deposit means exactly that (see the backend's _reviewer_action).
+  const cardApproved = isCard && tx.status === 'SLIP_SUBMITTED';
+  // The reviewer's most recent Resubmit remark, shown while the request sits back with the operator.
+  const resubmitReason = (tx.status === 'RESUBMITTED'
+    ? [...(record.remarksHistory || [])].reverse().find(r => r.action === 'RESUBMITTED')?.remark
+    : '') || '';
 
   // Full account/payment details as shareable text (copy-all / share).
   const detailsText = [
@@ -249,6 +265,40 @@ export const MerchantSlipModal: React.FC<{
     const nav = navigator as Navigator & { share?: (d: { title?: string; text?: string }) => Promise<void> };
     if (nav.share) { try { await nav.share({ title: 'Clari5Pay payment details', text: detailsText }); return; } catch { /* cancelled */ } }
     await copy(detailsText, 'All details');
+  };
+  // Card — Share Link. Hands the link to the device's own share sheet (WhatsApp, Gmail, Messages,
+  // whatever the user has), which is what the Web Share API is; nothing is hard-coded to one app.
+  // Desktop browsers without it fall back to the same copy the Copy Link button performs, matching
+  // how Share All Details above already degrades.
+  const shareLink = async () => {
+    if (!paymentLink) return;
+    const nav = navigator as Navigator & { share?: (d: { title?: string; text?: string; url?: string }) => Promise<void> };
+    if (nav.share) {
+      try {
+        await nav.share({ title: 'Clari5Pay payment link', text: `Clari5Pay payment link for ${tx.ref} — ${fmt(tx.amount)}`, url: paymentLink });
+        return;
+      } catch { /* the user dismissed the share sheet */ }
+      return;
+    }
+    await copy(paymentLink, 'Payment link');
+  };
+
+  // Card — Mark Deposit (Phase 5). Only reachable once the Manager/Supervisor has approved; the
+  // backend re-checks ownership, role, type and approval, so this is the convenience, not the gate.
+  const markDeposit = async () => {
+    if (depositing) return;                       // a second click while in flight is ignored
+    setDepositing(true);
+    try {
+      await transactionAPI.markCardDeposit(tx.id);
+      fireConfetti();
+      showToast(`${tx.ref} marked deposited`);
+      onSubmitted?.();
+      onClose();
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to mark deposit', 'error');
+    } finally {
+      setDepositing(false);
+    }
   };
 
   // Both the UTR number and at least one payment proof are mandatory when submitting a slip; in demo
@@ -292,8 +342,24 @@ export const MerchantSlipModal: React.FC<{
     if (img) downloadDataUrl(img, `bank-details-${tx.ref}.png`);
   };
 
+  // Card names its steps after the phase the operator is in; every other type keeps its wording.
+  const modalTitle = isCard
+    ? (canSubmitSlip ? 'Pay & Upload Slip' : cardApproved ? 'Mark Deposit' : 'Request Details')
+    : (canSubmitSlip ? 'Pay & Submit Proof' : 'Request Details');
+
   return (
-    <Modal title={`${canSubmitSlip ? 'Pay & Submit Proof' : 'Request Details'} — ${tx.ref}`} onClose={onClose}>
+    <Modal title={`${modalTitle} — ${tx.ref}`} onClose={onClose}>
+      {/* Card — the reviewer returned this request; show WHY, right at the top, above the fields
+          that need correcting. */}
+      {isCard && resubmitReason && (
+        <div style={{ display:'flex',gap:10,alignItems:'flex-start',background:T.warningBg,border:`1px solid ${T.warning}55`,borderRadius:10,padding:'12px 14px',marginBottom:16 }}>
+          <span style={{ lineHeight:1 }}><Icon name="refresh" size={18} /></span>
+          <div>
+            <p style={{ margin:0,fontSize:12,fontWeight:800,color:T.warning,textTransform:'uppercase',letterSpacing:'0.05em' }}>Resubmission Reason</p>
+            <p style={{ margin:'3px 0 0',fontSize:13,color:T.textMain }}>{resubmitReason}</p>
+          </div>
+        </div>
+      )}
       {tx.highRisk && (
         <div style={{ display:'flex',gap:10,alignItems:'flex-start',background:'#fdecea',border:'1px solid #f5b5ae',borderRadius:10,padding:'12px 14px',marginBottom:16 }}>
           <span style={{ fontSize:20,lineHeight:1 }}><Icon name="warning" size={20} /></span>
@@ -316,8 +382,25 @@ export const MerchantSlipModal: React.FC<{
         <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>{adminLabel}</p>
         <div style={{ background:T.canvas,borderRadius:10,padding:12 }}>
           <SlipRow k="Amount" v={fmt(tx.amount)} />
-          <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" approverRole={tx.approverRole} />} />
+          <SlipRow k="Status" v={<Badge status={tx.status} type={tx.type} viewerRole="MERCHANT" approverRole={tx.approverRole} depositType={tx.depositType} />} />
           {tx.adminUtr && <SlipRow k="UTR Number" v={tx.adminUtr} copy={tx.adminUtr} />}
+          {/* Card — the payment gateway link the Admin submitted. The member pays through it, so
+              the operator needs to hand it over: Copy Link puts it on the clipboard, Share Link
+              opens the device's own share sheet. Both wrap so a long URL never widens the modal. */}
+          {isCard && (paymentLink ? (
+            <div style={{ padding:'10px 0 2px',borderBottom:`1px solid ${T.borderLight}` }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Payment Gateway Link</p>
+              <p style={{ fontSize:12.5,color:T.blue,margin:'0 0 10px',wordBreak:'break-all',lineHeight:1.5,fontWeight:600 }}>
+                <a href={paymentLink} target="_blank" rel="noopener noreferrer" style={{ color:T.blue }}>{paymentLink}</a>
+              </p>
+              <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
+                <Btn size="sm" variant="secondary" onClick={()=>copy(paymentLink, 'Payment link')}><Icon name="copy" size={14} /> Copy Link</Btn>
+                <Btn size="sm" variant="secondary" onClick={shareLink}><Icon name="share" size={14} /> Share Link</Btn>
+              </div>
+            </div>
+          ) : (
+            <p style={{ fontSize:12,color:T.textMuted,margin:'8px 0 0' }}>Awaiting the payment gateway link from Agent.</p>
+          ))}
           {/* Receiving account the merchant pays into — UPI ID (copyable) and/or bank details. */}
           {tx.adminUpiId && (
             <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
@@ -335,7 +418,8 @@ export const MerchantSlipModal: React.FC<{
               <p onCopy={e=>e.preventDefault()} style={{ fontSize:13,color:T.textMain,margin:0,whiteSpace:'pre-line',lineHeight:1.6,userSelect:'none',WebkitUserSelect:'none',MozUserSelect:'none' }}>{tx.adminBankDetails}</p>
             </div>
           )}
-          {!tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof && !bankImageSrc && !tx.hasAdminBankImage &&
+          {/* Card carries a payment link, not an account — it prints its own waiting line above. */}
+          {!isCard && !tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof && !bankImageSrc && !tx.hasAdminBankImage &&
             <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting updates from Agent.</p>}
         </div>
 
@@ -376,8 +460,20 @@ export const MerchantSlipModal: React.FC<{
           )}
           <p style={{ fontSize:11,color:canSubmit?T.success:T.textMuted,margin:'0 0 14px',fontWeight:600 }}>{helper}</p>
           <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={submit} disabled={loading||!canSubmit}>{loading?'Submitting...':'Submit Proof'}</Btn>
+            <Btn onClick={submit} disabled={loading||!canSubmit}>{loading?'Submitting...':(isCard?'Submit for Review':'Submit Proof')}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+          </div>
+        </div>
+      ) : cardApproved ? (
+        /* Card, Phase 5 — the Manager/Supervisor has approved; the operator closes it out. */
+        <div style={{ borderTop:`1px solid ${T.border}`,paddingTop:14 }}>
+          <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 12px' }}>
+            Approved by the {merchantRoleLabel(reviewerRoleCode(tx.type, tx.approverRole, 'SUPERVISOR')) || 'reviewer'}.
+            Mark this Card deposit as deposited to complete it.
+          </p>
+          <div style={{ display:'flex',gap:10,flexWrap:'wrap' }}>
+            <Btn onClick={markDeposit} disabled={depositing}>{depositing ? 'Marking...' : <><Icon name="approve" size={14} /> Mark Deposit</>}</Btn>
+            <Btn variant="secondary" onClick={onClose}>Close</Btn>
           </div>
         </div>
       ) : (
@@ -398,6 +494,7 @@ const METHOD_BUCKETS: Array<{ label: string; color: string; match: string[] }> =
   { label: 'UPI', color: T.info, match: ['UPI', 'QR'] },
   { label: 'Cash', color: T.warning, match: ['CASH'] },
   { label: 'Crypto', color: '#f97316', match: ['CRYPTO', 'USDT'] },
+  { label: 'Card', color: '#8b5cf6', match: ['CARD'] },
 ];
 
 export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: string) => void }> = ({ user, onNavigate }) => {
@@ -1265,7 +1362,7 @@ const ManagementPage: React.FC<{
                   <tr key={g.membershipId} style={{ background:i%2===0?T.surface:'#f8faff',cursor:'pointer' }} onClick={()=>openGroup(g)}>
                     <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{byCompany ? g.membershipId : memberLabel(g.membershipId, g.memberName)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800,color:T.blue }}>{g.requests}</td>
-                    <td style={{ padding:'11px 14px' }}>{g.latestStatus ? <Badge status={g.latestStatus as Transaction['status']} type={g.latestType || undefined} viewerRole="MERCHANT" approverRole={g.latestApproverRole}/> : '—'}</td>
+                    <td style={{ padding:'11px 14px' }}>{g.latestStatus ? <Badge status={g.latestStatus as Transaction['status']} type={g.latestType || undefined} viewerRole="MERCHANT" approverRole={g.latestApproverRole} depositType={g.latestDepositType}/> : '—'}</td>
                     <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(g.totalAmount)}</td>
                     <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={(e?:any)=>{ e?.stopPropagation?.(); openGroup(g); }}>View History</Btn></td>
                   </tr>
@@ -1660,9 +1757,13 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
       <DetailSection title="Transaction Information">
         <SlipRow k="Reference Number" v={d.ref} copy={d.ref} />
         <SlipRow k="Type" v={typeLabel(d.type)} />
-        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} viewerRole={viewerRole} approverRole={d.approverRole} />} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} viewerRole={viewerRole} approverRole={d.approverRole} depositType={d.depositType} />} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
         <SlipRow k="Payment Method" v={paymentMethod} />
+        {/* Card — the payment gateway link stays on the record, so it is still here after the
+            deposit completes (and after a logout/login), like every other transaction field. */}
+        {isCardDeposit(d) && d.paymentLink && <SlipRow k="Payment Gateway Link" v={<span style={{ wordBreak:'break-all' }}>{d.paymentLink}</span>} copy={d.paymentLink} />}
+        {isCardDeposit(d) && d.merchantRef && <SlipRow k="UTR Number" v={d.merchantRef} copy={d.merchantRef} />}
         {d.riskLevel && <SlipRow k="Risk Level" v={d.riskLevel} />}
         {d.highRisk && <SlipRow k="High Risk" v="Yes" />}
         <SlipRow k="Created Date & Time" v={created} />
@@ -1819,6 +1920,7 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
 
   const slips = (d.merchantProofs && d.merchantProofs.length) ? d.merchantProofs : (d.merchantProof ? [d.merchantProof] : []);
   const isDeposit = d.type.startsWith('DEPOSIT');
+  const isCard = isCardDeposit(d);
 
   const submit = async (remark: string) => {
     if (!action) return;
@@ -1830,7 +1932,9 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
       // this is identical to the previous role-based routing there.
       if (isDeposit) await transactionAPI.supervisorReview(tx.id, action, remark);
       else await transactionAPI.managerReview(tx.id, action, remark);
-      showToast(action === 'approve' ? 'Approved — forwarded to Admin' : action === 'reject' ? 'Request rejected' : 'Returned for resubmission');
+      // A Card approval goes back to the requesting operator to Mark Deposit, not on to the Admin.
+      const approved = isCard ? 'Approved — returned to the operator to mark deposit' : 'Approved — forwarded to Admin';
+      showToast(action === 'approve' ? approved : action === 'reject' ? 'Request rejected' : 'Returned for resubmission');
       onDone();
     } catch (e: any) {
       showToast(e?.response?.data?.detail || 'Action failed', 'error');
@@ -1839,9 +1943,12 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
 
   if (action) {
     const l = REMARK_LABELS[action];
+    // Same reason card, accurate wording: an approved Card request goes back to the operator to
+    // mark deposit, so it is never "forwarded to Admin".
+    const title = isCard && action === 'approve' ? 'Approve Card Deposit' : l.title;
     return (
       <ReasonModal
-        title={`${l.title} — ${d.ref}`} label={l.label} confirmLabel={l.confirm}
+        title={`${title} — ${d.ref}`} label={l.label} confirmLabel={l.confirm}
         requiredHint="Remarks are required" maxLength={1000} busy={busy}
         placeholder="Enter your remarks (mandatory)…"
         onSubmit={submit} onClose={() => setAction(null)} closeLabel="Back"
@@ -1856,10 +1963,12 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
         <SlipRow k="Member" v={memberLabel(d.memberId, d.member) || '—'} />
         <SlipRow k="Type" v={typeLabel(d.type)} />
         <SlipRow k="Amount" v={fmt(d.amount)} />
-        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} />} />
+        <SlipRow k="Status" v={<Badge status={d.status} type={d.type} approverRole={d.approverRole} depositType={d.depositType} />} />
         <SlipRow k="Reference" v={d.ref} copy={d.ref} />
-        {d.merchantRef && <SlipRow k="Payment / UTR Reference" v={d.merchantRef} />}
+        {d.merchantRef && <SlipRow k={isCardDeposit(d) ? 'UTR Number' : 'Payment / UTR Reference'} v={d.merchantRef} copy={d.merchantRef} />}
         {d.depositType && <SlipRow k="Payment Method" v={depositTypeLabel(d.depositType)} />}
+        {/* Card — the reviewer verifies the slip against the link the member actually paid through. */}
+        {isCardDeposit(d) && d.paymentLink && <SlipRow k="Payment Gateway Link" v={<span style={{ wordBreak:'break-all' }}>{d.paymentLink}</span>} copy={d.paymentLink} />}
         {d.payoutMode && <SlipRow k="Payout Mode" v={d.payoutMode} />}
         {d.bank && <SlipRow k="Bank" v={d.bank} />}
         {d.accountHolder && <SlipRow k="Account Holder" v={d.accountHolder} />}
@@ -1990,7 +2099,7 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
                     <td style={{ padding: '11px 14px', color: T.textMuted }}>{memberLabel(t.memberId, t.member) || '—'}</td>
                     <td style={{ padding: '11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding: '11px 14px', fontWeight: 800, color: T.textMain, whiteSpace: 'nowrap' }}>{fmt(t.amount)}</td>
-                    <td style={{ padding: '11px 14px' }}><Badge status={t.status} type={t.type} approverRole={t.approverRole} /></td>
+                    <td style={{ padding: '11px 14px' }}><Badge status={t.status} type={t.type} approverRole={t.approverRole} depositType={t.depositType} /></td>
                     <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{t.date} {t.time}</td>
                     <td style={{ padding: '11px 14px' }}><Btn size="sm" onClick={() => setActive(t)}>Review</Btn></td>
                   </tr>
@@ -2057,7 +2166,7 @@ export const CancelRequestPage: React.FC<{ user: User }> = () => {
                     <td style={{ padding:'11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding:'11px 14px',fontWeight:800 }}>{fmt(t.amount)}</td>
                     <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600 }}>{memberLabel(t.memberId, t.member)}</td>
-                    <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT" approverRole={t.approverRole}/></td>
+                    <td style={{ padding:'11px 14px' }}><Badge status={t.status} type={t.type} viewerRole="MERCHANT" approverRole={t.approverRole} depositType={t.depositType}/></td>
                     <td style={{ padding:'11px 14px' }}>
                       <Btn size="sm" variant="danger" disabled={busy===t.id} onClick={()=>setTarget(t)}>{busy===t.id?'Cancelling...':'⊘ Cancel'}</Btn>
                     </td>

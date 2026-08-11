@@ -229,6 +229,8 @@ class AccountSubmitRequest(BaseModel):
     adminBankDetails: Optional[str] = None
     adminBankImage: Optional[str] = None   # custom bank-details image (overrides the auto card)
     adminUpiId: Optional[str] = None
+    # CARD deposits only: the payment gateway link the Admin pastes in place of an account.
+    paymentLink: Optional[str] = None
 
 
 class SlipRequest(BaseModel):

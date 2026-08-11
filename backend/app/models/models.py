@@ -198,6 +198,11 @@ class Transaction(Base):
     # (loaded explicitly on the detail view, like the proof columns above).
     admin_bank_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)  # admin custom bank-details image (data URL) — overrides the auto card
     admin_upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)   # admin UPI ID (when merchant chose UPI)
+    # CARD deposits only: the payment gateway link the Admin generates externally and submits on the
+    # request (Link Requested → Link Submitted). It is the Card equivalent of the bank details /
+    # UPI ID the Admin sends for every other deposit type — none of which can hold a URL — so it
+    # gets its own column rather than overloading one of theirs. NULL on every non-Card row.
+    payment_link: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     admin_utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)       # agent's payment UTR (withdrawal/settlement payout)
     payout_mode: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)     # withdrawal: BANK / UPI / CASH / CRYPTO
     payout_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)        # withdrawal: mode-specific fields as JSON

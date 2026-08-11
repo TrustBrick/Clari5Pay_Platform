@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton, CopyButton } from './UI';
 import { Icon, type IconName } from './Icon';
 import type { Transaction } from '../types';
@@ -16,8 +16,25 @@ interface TxTableProps {
 }
 
 // Pick the per-row action button based on mode + transaction type + status.
-const rowAction = (mode: ActionMode, status: string, type: string): { label: string; action: string; variant: 'primary' | 'ghost'; icon: IconName } | null => {
+const rowAction = (mode: ActionMode, t: Transaction): { label: string; action: string; variant: 'primary' | 'ghost'; icon: IconName } | null => {
+  const { status, type } = t;
   const isDeposit = type.startsWith('DEPOSIT');
+  // ── Card deposit ──────────────────────────────────────────────────────────────────────────
+  // Same statuses as any other deposit, different owners: the Admin's only action is submitting
+  // the payment gateway link, and the final Mark Deposit belongs to the requesting operator.
+  // Both open the SAME modals as every other deposit — only the wording differs.
+  if (isCardDeposit(t)) {
+    if (mode === 'admin') {
+      if (status === 'ACCOUNT_REQUESTED') return { label: 'Submit Link', action: 'manage', variant: 'primary', icon: 'link' };
+      return { label: 'View Details', action: 'view', variant: 'ghost', icon: 'view' };
+    }
+    if (mode === 'merchant') {
+      if (status === 'ACCOUNT_SUBMITTED') return { label: 'Pay & Upload Slip', action: 'slip', variant: 'primary', icon: 'upload' };
+      if (status === 'RESUBMITTED') return { label: 'Re-upload Slip', action: 'slip', variant: 'primary', icon: 'refresh' };
+      if (status === 'SLIP_SUBMITTED') return { label: 'Mark Deposit', action: 'slip', variant: 'primary', icon: 'approve' };
+      return { label: 'View Details', action: 'view', variant: 'ghost', icon: 'view' };
+    }
+  }
   if (mode === 'admin') {
     // Deposits reach the admin (SLIP_SUBMITTED) only after Supervisor approval; withdrawals/
     // settlements (SLIP_SUBMITTED) only after Manager approval. Legacy withdrawals may still
@@ -96,7 +113,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
               <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(t.amount)}</td>
               <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{t.date} <span style={{ fontSize:10 }}>{t.time}</span></td>
               <td style={{ padding:'11px 14px' }}>
-                <Badge status={t.status} type={t.type} viewerRole={viewerRole} approverRole={t.approverRole}/>
+                <Badge status={t.status} type={t.type} viewerRole={viewerRole} approverRole={t.approverRole} depositType={t.depositType}/>
                 {t.highRisk && (
                   <span style={{ display:'inline-flex',alignItems:'center',gap:3,marginLeft:6,padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,background:'#fdecea',color:'#b71c1c',whiteSpace:'nowrap',letterSpacing:'0.04em' }}><Icon name="warning" size={11} weight="fill" /> HIGH RISK</span>
                 )}
@@ -104,7 +121,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
               {showAction && (
                 <td style={{ padding:'11px 14px' }}>
                   {(() => {
-                    const a = rowAction(actionMode, t.status, t.type);
+                    const a = rowAction(actionMode, t);
                     if (!a) return <span style={{ color:T.textLight }}>—</span>;
                     return <Btn size="sm" variant={a.variant} onClick={() => onAction!(t, a.action)}><Icon name={a.icon} size={14} /> {a.label}</Btn>;
                   })()}

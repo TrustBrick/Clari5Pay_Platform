@@ -518,7 +518,7 @@ const serverRange = (preset: string, from: string, to: string): ReportRange => {
     default: return {};
   }
 };
-const PAYMENT_METHODS = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'CASH', 'CRYPTO'];
+const PAYMENT_METHODS = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'CASH', 'CRYPTO', 'CARD'];
 
 interface RFilters {
   ref: string; memberId: string; memberName: string; combined: string; agentCode: string;

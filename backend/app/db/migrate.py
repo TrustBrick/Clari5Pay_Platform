@@ -40,6 +40,8 @@ _NEW_COLUMNS = [
     ("transactions", "admin_bank_details", "TEXT"),
     ("transactions", "admin_bank_image", "TEXT"),
     ("transactions", "admin_upi_id", "VARCHAR(64)"),
+    # CARD deposits: the payment gateway link the Admin submits (Link Requested → Link Submitted).
+    ("transactions", "payment_link", "VARCHAR(512)"),
     ("transactions", "utr", "VARCHAR(64)"),
     ("transactions", "notes", "TEXT"),
     ("transactions", "risk_analysis", "BOOLEAN DEFAULT FALSE NOT NULL"),
