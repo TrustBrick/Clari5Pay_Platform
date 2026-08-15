@@ -145,14 +145,17 @@ export const Btn: React.FC<{
 // ─── Input ───────────────────────────────────────────────────────────────────
 export const Input: React.FC<{
   label?: string; type?: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  placeholder?: string; required?: boolean; hint?: string; icon?: string; style?: CSSProperties; list?: string;
+  placeholder?: string; required?: boolean; hint?: string; style?: CSSProperties; list?: string;
+  /** Left adornment inside the field. A string is an Icon name (or literal text); a node is
+   *  rendered as-is, which is how a bank logo sits inside the Bank Name field. */
+  icon?: React.ReactNode;
   readOnly?: boolean; onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void; error?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
 }> = ({ label, type='text', value, onChange, placeholder, required, hint, icon, style={}, list, inputMode, readOnly, onBlur, error }) => (
   <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <div style={{ position:'relative' }}>
-      {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',display:'flex',alignItems:'center',fontSize:16,color:T.textMuted }}>{isIconName(icon) ? <Icon name={icon} size={16} color={T.textMuted} /> : icon}</span>}
+      {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',display:'flex',alignItems:'center',fontSize:16,color:T.textMuted,pointerEvents:'none' }}>{typeof icon === 'string' ? (isIconName(icon) ? <Icon name={icon} size={16} color={T.textMuted} /> : icon) : icon}</span>}
       <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode} readOnly={readOnly} aria-invalid={error?true:undefined}
         style={{ width:'100%',padding:icon?'10px 12px 10px 38px':'10px 14px',borderWidth:1.5,borderStyle:'solid',borderColor:error?T.danger:T.border,borderRadius:10,fontSize:14,color:T.textMain,background:readOnly?T.canvas:T.surface,cursor:readOnly?'not-allowed':'text',outline:'none',boxSizing:'border-box',transition:'border-color 0.2s,box-shadow 0.2s',fontFamily:'inherit' }}
         onFocus={e=>{ if(readOnly) return; e.target.style.borderColor=error?T.danger:T.blue;e.target.style.boxShadow=`0 0 0 3px ${error?T.danger:T.blue}18`;}}

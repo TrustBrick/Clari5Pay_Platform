@@ -59,14 +59,3 @@ export const BANK_NAMES = [
   'Saraswat Co-operative Bank', 'Cosmos Co-operative Bank', 'SVC Co-operative Bank',
   'Abhyudaya Co-operative Bank', 'TJSB Sahakari Bank', 'Bharat Co-operative Bank',
 ];
-
-const BADGE_COLORS = ['#0052cc', '#26d00c', '#00a3ff', '#6a5acd', '#e0245e', '#f59e0b', '#0a8a6a', '#8b5cf6'];
-/** Deterministic colour + initials badge for a bank name. */
-export const bankBadge = (name: string): { initials: string; color: string } => {
-  const n = (name || '').trim();
-  if (!n) return { initials: '🏦', color: '#94a3b8' };
-  const initials = n.split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
-  let h = 0;
-  for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0;
-  return { initials, color: BADGE_COLORS[h % BADGE_COLORS.length] };
-};

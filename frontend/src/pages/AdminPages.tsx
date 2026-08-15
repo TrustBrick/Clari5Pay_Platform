@@ -5,6 +5,7 @@ import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
+import { bankLogoIcon } from '../components/BankLogo';
 import TxTable from '../components/TxTable';
 import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
@@ -1744,7 +1745,8 @@ export const AdminAccountsPage: React.FC = () => {
             <Input label="Account Number" value={form.account_number} onChange={e=>set('account_number',e.target.value)} required/>
             <Input label="IFSC Code" value={form.ifsc_code} required hint="Auto-fills bank & branch"
               onChange={async e=>{ const up=e.target.value.toUpperCase(); set('ifsc_code',up); if(isValidIfsc(up)){ const info=await lookupIfsc(up); if(info) setForm(f=>({...f,ifsc_code:up,bank_name:info.bank,branch:info.branch})); } }}/>
-            <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} list="bank-names" required/>
+            <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} list="bank-names" required
+              icon={bankLogoIcon(form.bank_name, form.ifsc_code, isValidIfsc(form.ifsc_code || ''))}/>
             <Input label="Branch" value={form.branch} onChange={e=>set('branch',e.target.value)} required/>
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
