@@ -4,7 +4,9 @@ import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, file
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
-import { lookupIfsc, isValidIfsc, BANK_NAMES } from '../utils/ifsc';
+import { BANK_NAMES } from '../utils/ifsc';
+import { IfscField } from '../components/IfscField';
+import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import TxTable from '../components/TxTable';
 import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
@@ -1422,6 +1424,14 @@ export const AdminAccountsPage: React.FC = () => {
   const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0',highest_debit:'0' };
   const [form, setForm] = useState(empty);
   const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  // Standard IFSC capture — the same hook and field every bank form in the platform uses.
+  const ifscFill = useIfscAutoFill(
+    form.ifsc_code,
+    v => set('ifsc_code', v),
+    (bank, branch) => setForm(f => ({ ...f, bank_name: bank, branch })),
+    () => setForm(f => ({ ...f, bank_name: '', branch: '' })),
+  );
+  const closeCreate = () => { setShowCreate(false); ifscFill.reset(); };
 
   const [toggleAcc, setToggleAcc] = useState<Account | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1486,6 +1496,7 @@ export const AdminAccountsPage: React.FC = () => {
       await reload();
       setShowCreate(false);
       setForm(empty);
+      ifscFill.reset();
       showToast('Account created');
     } catch {
       showToast('Failed to create account','error');
@@ -1786,16 +1797,16 @@ export const AdminAccountsPage: React.FC = () => {
       )}
 
       {showCreate && (
-        <Modal title="Add Bank Account" onClose={()=>setShowCreate(false)} wide
+        <Modal title="Add Bank Account" onClose={closeCreate} wide
           onEnter={()=>{ if(form.account_name&&form.account_number&&form.ifsc_code&&form.bank_name&&form.branch) create(); }}>
+          {/* Standard bank-details order: Account Number → IFSC → auto-fetched Bank/Branch → name. */}
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
             <BankNamesDatalist names={BANK_NAMES}/>
-            <Input label="Account Name" value={form.account_name} onChange={e=>set('account_name',e.target.value)} required/>
             <Input label="Account Number" value={form.account_number} onChange={e=>set('account_number',e.target.value)} required/>
-            <Input label="IFSC Code" value={form.ifsc_code} required hint="Auto-fills bank & branch"
-              onChange={async e=>{ const up=e.target.value.toUpperCase(); set('ifsc_code',up); if(isValidIfsc(up)){ const info=await lookupIfsc(up); if(info) setForm(f=>({...f,ifsc_code:up,bank_name:info.bank,branch:info.branch})); } }}/>
-            <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} list="bank-names" required/>
-            <Input label="Branch" value={form.branch} onChange={e=>set('branch',e.target.value)} required/>
+            <IfscField value={form.ifsc_code} ifsc={ifscFill} required/>
+            <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked} required/>
+            <Input label="Branch" value={form.branch} onChange={e=>set('branch',e.target.value)} readOnly={ifscFill.locked} required/>
+            <Input label="Account Name" value={form.account_name} onChange={e=>set('account_name',e.target.value)} required/>
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
             <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>
@@ -1804,7 +1815,7 @@ export const AdminAccountsPage: React.FC = () => {
           </div>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>
-            <Btn variant="secondary" onClick={()=>setShowCreate(false)}>Cancel</Btn>
+            <Btn variant="secondary" onClick={closeCreate}>Cancel</Btn>
           </div>
         </Modal>
       )}

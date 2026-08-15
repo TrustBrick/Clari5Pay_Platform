@@ -17,7 +17,7 @@ import type { TxQuery, TxPagedQuery, MemberGroup, Paged } from '../services/api'
 import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
-import { lookupIfsc, isValidIfsc, bankBadge, BANK_NAMES } from '../utils/ifsc';
+import { bankBadge, BANK_NAMES } from '../utils/ifsc';
 import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry, Notification } from '../types';
 
 // The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
@@ -29,13 +29,24 @@ const emptyBank: BankForm = { accountHolder: '', accountNumber: '', ifsc: '', br
 
 const BankAccountFields: React.FC<{
   memberId: string;
-  bank: BankForm; onBank: (b: BankForm) => void; saveNew: boolean; onSaveNew: (v: boolean) => void;
+  // A SetStateAction dispatch, not a plain setter: the IFSC auto-fill writes the code and the
+  // bank/branch in separate updates, which would clobber each other via a captured object.
+  bank: BankForm; onBank: React.Dispatch<React.SetStateAction<BankForm>>; saveNew: boolean; onSaveNew: (v: boolean) => void;
 }> = ({ memberId, bank, onBank, saveNew, onSaveNew }) => {
   const [saved, setSaved] = useState<MerchantBankAccount[]>([]);
   const [sel, setSel] = useState<string>('NEW');
 
+  // Standard IFSC capture — the same hook and field every bank form in the platform uses.
+  const ifscFill = useIfscAutoFill(
+    bank.ifsc,
+    v => onBank(b => ({ ...b, ifsc: v })),
+    (name, branch) => onBank(b => ({ ...b, bankName: name, branch })),
+    () => onBank(b => ({ ...b, bankName: '', branch: '' })),
+  );
+
   // Saved accounts are specific to the entered Membership ID — refetch whenever it changes.
   useEffect(() => {
+    ifscFill.reset();      // details belong to the previous membership — start clean
     if (!memberId.trim()) { setSaved([]); setSel('NEW'); onBank(emptyBank); onSaveNew(true); return; }
     bankAccountAPI.listMine(memberId.trim()).then(all => {
       // Only real bank accounts here — UPI-only saved records would render as "null — null".
@@ -55,23 +66,14 @@ const BankAccountFields: React.FC<{
 
   const choose = (v: string) => {
     setSel(v);
+    ifscFill.reset();      // a different account's details are not ours to keep locked
     if (v === 'NEW') { onBank(emptyBank); onSaveNew(true); }
     else {
       const a = saved.find(x => String(x.id) === v);
       if (a) { onBank({ accountHolder:a.accountHolder, accountNumber:a.accountNumber, ifsc:a.ifsc, branch:a.branch, bankName:a.bankName || '' }); onSaveNew(false); }
     }
   };
-  const set = (k: keyof BankForm, v: string) => onBank({ ...bank, [k]: v });
-
-  // Typing an IFSC auto-fills the bank name + branch (Razorpay API; falls back to manual on failure).
-  const onIfsc = async (raw: string) => {
-    const up = raw.toUpperCase();
-    onBank({ ...bank, ifsc: up });
-    if (isValidIfsc(up)) {
-      const info = await lookupIfsc(up);
-      if (info) onBank({ ...bank, ifsc: up, bankName: info.bank, branch: info.branch });
-    }
-  };
+  const set = (k: keyof BankForm, v: string) => onBank(b => ({ ...b, [k]: v }));
 
   if (!memberId.trim()) {
     return (
@@ -91,18 +93,18 @@ const BankAccountFields: React.FC<{
       {sel === 'NEW' && (
         <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
           <BankNamesDatalist names={BANK_NAMES}/>
-          <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
           <Input label="Account Number" value={bank.accountNumber} onChange={e=>set('accountNumber',e.target.value)} required/>
-          <Input label="IFSC Code" value={bank.ifsc} onChange={e=>onIfsc(e.target.value)} required hint="Auto-fills bank & branch"/>
-          <Input label="Branch Name" value={bank.branch} onChange={e=>set('branch',e.target.value)} required/>
+          <IfscField value={bank.ifsc} ifsc={ifscFill} required/>
           <div style={{ marginBottom:16 }}>
-            <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)} list="bank-names" style={{ marginBottom:6 }}/>
+            <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked} style={{ marginBottom:6 }}/>
             {bank.bankName && (() => { const b = bankBadge(bank.bankName); return (
               <span style={{ display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:T.textMuted }}>
                 <span style={{ width:18,height:18,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
                 {bank.bankName}
               </span>); })()}
           </div>
+          <Input label="Branch Name" value={bank.branch} onChange={e=>set('branch',e.target.value)} readOnly={ifscFill.locked} required/>
+          <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
         </div>
       )}
       {sel !== 'NEW' && (
@@ -792,7 +794,8 @@ const PAYOUT_MODES = [
 ];
 // Mode-specific input fields the merchant fills. The agent uploads the proof/UTR/Hash afterward.
 const MODE_FIELDS: Record<string, { key:string; label:string; digits?: boolean; upper?: boolean; max?: number }[]> = {
-  BANK: [{key:'accountHolder',label:'Account Holder'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
+  // Standard bank-details order: Account Number → IFSC → auto-fetched Bank/Branch → holder name.
+  BANK: [{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true},{key:'accountHolder',label:'Account Holder Name'}],
   UPI: [{key:'upiId',label:'UPI ID'}],
   CASH: [{key:'village',label:'Village'},{key:'city',label:'City'},{key:'mobile',label:'Mobile Number',digits:true},{key:'pinCode',label:'PIN Code',digits:true,max:6}],
   CRYPTO: [{key:'walletAddress',label:'Wallet Address'},{key:'network',label:'Network (e.g. TRC20)'}],
@@ -806,6 +809,13 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [memberLocked, setMemberLocked] = useState(false);  // name auto-filled from an existing membership → read-only
   const [mode, setMode] = useState('BANK');
   const [details, setDetails] = useState<Record<string,string>>({});
+  // Standard IFSC capture — the same hook and field every bank form in the platform uses.
+  const ifscFill = useIfscAutoFill(
+    details.ifsc || '',
+    v => setDetails(d => ({ ...d, ifsc: v })),
+    (bank, branch) => setDetails(d => ({ ...d, bank, branch })),
+    () => setDetails(d => ({ ...d, bank: '', branch: '' })),
+  );
   const [available, setAvailable] = useState(0);
   const [maxWithdrawable, setMaxWithdrawable] = useState(0);
   const [summaryLoaded, setSummaryLoaded] = useState(false);  // balance known → safe to validate against it
@@ -973,18 +983,23 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
           <Sel label="Payout Mode" value={mode} onChange={e=>{ setMode(e.target.value); setDetails({}); }} options={payoutModes} required/>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'4px 0 8px' }}>{PAYOUT_MODES.find(m=>m.value===mode)?.label} Details</p>
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
-            {fields.map(f => (
+            <BankNamesDatalist names={BANK_NAMES}/>
+            {fields.map(f => f.key === 'ifsc' ? (
+              <React.Fragment key={f.key}>
+                <IfscField label={f.label} value={details.ifsc || ''} ifsc={ifscFill} required/>
+                {/* Auto-fetched from the IFSC — read-only while the lookup owns them. */}
+                <Input label="Bank Name" value={details.bank || ''} readOnly={ifscFill.locked} list={ifscFill.locked ? undefined : 'bank-names'}
+                  onChange={e=>setDetails(d => ({...d, bank:e.target.value}))}/>
+                <Input label="Branch Name" value={details.branch || ''} readOnly={ifscFill.locked}
+                  onChange={e=>setDetails(d => ({...d, branch:e.target.value}))}/>
+              </React.Fragment>
+            ) : (
               <Input key={f.key} label={f.label} value={details[f.key]||''} required
-                hint={f.key==='ifsc' ? 'Auto-fills bank & branch' : undefined}
-                onChange={async e=>{
+                onChange={e=>{
                   let v = e.target.value;
                   if (f.upper) v = v.toUpperCase();
                   if (f.digits) v = v.replace(/[^\d]/g,'').slice(0, f.max || 10);
                   setDetails(d => ({...d,[f.key]:v}));
-                  if (f.key==='ifsc' && isValidIfsc(v)) {
-                    const info = await lookupIfsc(v);
-                    if (info) setDetails(d => ({...d, ifsc:v, bank:info.bank, branch:info.branch}));
-                  }
                 }}/>
             ))}
           </div>

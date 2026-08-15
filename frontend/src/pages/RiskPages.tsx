@@ -2,8 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { T } from '../utils/theme';
 import { fmt, fileToDataUrl, memberLabel } from '../utils/helpers';
 import { downloadXlsx } from '../utils/xlsx';
-import { Card, StatCard, Btn, Input, Sel, Modal, Skeleton, CountUp } from '../components/UI';
+import { Card, StatCard, Btn, Input, Sel, Modal, Skeleton, CountUp, BankNamesDatalist } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
+import { IfscField } from '../components/IfscField';
+import { useIfscAutoFill } from '../utils/useIfscAutoFill';
+import { BANK_NAMES } from '../utils/ifsc';
 import { riskAPI } from '../services/api';
 import { usePoll } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -286,6 +289,13 @@ const ComplaintModal: React.FC<{ memberId: string; memberName: string; merchantN
     const [loadingBanks, setLoadingBanks] = useState(true);
     const [selIdx, setSelIdx] = useState(-1);            // -1 = manual entry
     const [manual, setManual] = useState<BankDetail>(EMPTY_BANK);
+    // Standard IFSC capture — the same hook and field every bank form in the platform uses.
+    const ifscFill = useIfscAutoFill(
+      manual.ifsc || '',
+      v => setManual(m => ({ ...m, ifsc: v })),
+      (bank, branch) => setManual(m => ({ ...m, bankName: bank, branch })),
+      () => setManual(m => ({ ...m, bankName: '', branch: '' })),
+    );
     const [saveBank, setSaveBank] = useState(true);
     const [desc, setDesc] = useState('');
     const [docs, setDocs] = useState<LocalDoc[]>([]);
@@ -371,11 +381,13 @@ const ComplaintModal: React.FC<{ memberId: string; memberName: string; merchantN
             </label>
             {selIdx < 0 && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 12, padding: '4px 2px 6px' }}>
-                <Input label="Account Holder" value={manual.accountHolder || ''} onChange={e => setManual(m => ({ ...m, accountHolder: e.target.value }))} />
+                {/* Standard bank-details order: Account Number → IFSC → auto-fetched Bank/Branch → holder name. */}
+                <BankNamesDatalist names={BANK_NAMES} />
                 <Input label="Account Number" value={manual.accountNumber || ''} onChange={e => setManual(m => ({ ...m, accountNumber: e.target.value }))} />
-                <Input label="Bank Name" value={manual.bankName || ''} onChange={e => setManual(m => ({ ...m, bankName: e.target.value }))} />
-                <Input label="Branch" value={manual.branch || ''} onChange={e => setManual(m => ({ ...m, branch: e.target.value }))} />
-                <Input label="IFSC Code" value={manual.ifsc || ''} onChange={e => setManual(m => ({ ...m, ifsc: e.target.value }))} />
+                <IfscField value={manual.ifsc || ''} ifsc={ifscFill} />
+                <Input label="Bank Name" value={manual.bankName || ''} readOnly={ifscFill.locked} list={ifscFill.locked ? undefined : 'bank-names'} onChange={e => setManual(m => ({ ...m, bankName: e.target.value }))} />
+                <Input label="Branch" value={manual.branch || ''} readOnly={ifscFill.locked} onChange={e => setManual(m => ({ ...m, branch: e.target.value }))} />
+                <Input label="Account Holder Name" value={manual.accountHolder || ''} onChange={e => setManual(m => ({ ...m, accountHolder: e.target.value }))} />
                 <Input label="UPI ID" value={manual.upiId || ''} onChange={e => setManual(m => ({ ...m, upiId: e.target.value }))} />
                 <label style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.5, color: T.textMuted }}>
                   <input type="checkbox" checked={saveBank} onChange={e => setSaveBank(e.target.checked)} /> Save this account against the membership for future use
