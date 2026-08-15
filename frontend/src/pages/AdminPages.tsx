@@ -1799,14 +1799,16 @@ export const AdminAccountsPage: React.FC = () => {
       {showCreate && (
         <Modal title="Add Bank Account" onClose={closeCreate} wide
           onEnter={()=>{ if(form.account_name&&form.account_number&&form.ifsc_code&&form.bank_name&&form.branch) create(); }}>
-          {/* Standard bank-details order: Account Number → IFSC → auto-fetched Bank/Branch → name. */}
+          {/* Platform-standard bank-details order: Account Holder → Account Number → IFSC →
+              auto-fetched Bank Name → Branch. ("Account Name" is this record's holder field —
+              account_master has no separate account_holder column.) */}
           <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
             <BankNamesDatalist names={BANK_NAMES}/>
+            <Input label="Account Name" value={form.account_name} onChange={e=>set('account_name',e.target.value)} required/>
             <Input label="Account Number" value={form.account_number} onChange={e=>set('account_number',e.target.value)} required/>
             <IfscField value={form.ifsc_code} ifsc={ifscFill} required/>
             <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked} required/>
             <Input label="Branch" value={form.branch} onChange={e=>set('branch',e.target.value)} readOnly={ifscFill.locked} required/>
-            <Input label="Account Name" value={form.account_name} onChange={e=>set('account_name',e.target.value)} required/>
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
             <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>

@@ -381,13 +381,14 @@ const ComplaintModal: React.FC<{ memberId: string; memberName: string; merchantN
             </label>
             {selIdx < 0 && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 12, padding: '4px 2px 6px' }}>
-                {/* Standard bank-details order: Account Number → IFSC → auto-fetched Bank/Branch → holder name. */}
+                {/* Platform-standard bank-details order: Account Holder → Account Number → IFSC →
+                    auto-fetched Bank Name → Branch. */}
                 <BankNamesDatalist names={BANK_NAMES} />
+                <Input label="Account Holder Name" value={manual.accountHolder || ''} onChange={e => setManual(m => ({ ...m, accountHolder: e.target.value }))} />
                 <Input label="Account Number" value={manual.accountNumber || ''} onChange={e => setManual(m => ({ ...m, accountNumber: e.target.value }))} />
                 <IfscField value={manual.ifsc || ''} ifsc={ifscFill} />
                 <Input label="Bank Name" value={manual.bankName || ''} readOnly={ifscFill.locked} list={ifscFill.locked ? undefined : 'bank-names'} onChange={e => setManual(m => ({ ...m, bankName: e.target.value }))} />
                 <Input label="Branch" value={manual.branch || ''} readOnly={ifscFill.locked} onChange={e => setManual(m => ({ ...m, branch: e.target.value }))} />
-                <Input label="Account Holder Name" value={manual.accountHolder || ''} onChange={e => setManual(m => ({ ...m, accountHolder: e.target.value }))} />
                 <Input label="UPI ID" value={manual.upiId || ''} onChange={e => setManual(m => ({ ...m, upiId: e.target.value }))} />
                 <label style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.5, color: T.textMuted }}>
                   <input type="checkbox" checked={saveBank} onChange={e => setSaveBank(e.target.checked)} /> Save this account against the membership for future use

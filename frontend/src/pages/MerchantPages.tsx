@@ -92,7 +92,10 @@ const BankAccountFields: React.FC<{
       )}
       {sel === 'NEW' && (
         <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+          {/* Platform-standard bank-details order: Account Holder → Account Number → IFSC →
+              auto-fetched Bank Name → Branch Name. */}
           <BankNamesDatalist names={BANK_NAMES}/>
+          <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
           <Input label="Account Number" value={bank.accountNumber} onChange={e=>set('accountNumber',e.target.value)} required/>
           <IfscField value={bank.ifsc} ifsc={ifscFill} required/>
           <div style={{ marginBottom:16 }}>
@@ -104,7 +107,6 @@ const BankAccountFields: React.FC<{
               </span>); })()}
           </div>
           <Input label="Branch Name" value={bank.branch} onChange={e=>set('branch',e.target.value)} readOnly={ifscFill.locked} required/>
-          <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
         </div>
       )}
       {sel !== 'NEW' && (
@@ -794,8 +796,9 @@ const PAYOUT_MODES = [
 ];
 // Mode-specific input fields the merchant fills. The agent uploads the proof/UTR/Hash afterward.
 const MODE_FIELDS: Record<string, { key:string; label:string; digits?: boolean; upper?: boolean; max?: number }[]> = {
-  // Standard bank-details order: Account Number → IFSC → auto-fetched Bank/Branch → holder name.
-  BANK: [{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true},{key:'accountHolder',label:'Account Holder Name'}],
+  // Platform-standard bank-details order: Account Holder → Account Number → IFSC. The IFSC entry
+  // renders the auto-fetched Bank Name + Branch Name straight after it, completing the order.
+  BANK: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
   UPI: [{key:'upiId',label:'UPI ID'}],
   CASH: [{key:'village',label:'Village'},{key:'city',label:'City'},{key:'mobile',label:'Mobile Number',digits:true},{key:'pinCode',label:'PIN Code',digits:true,max:6}],
   CRYPTO: [{key:'walletAddress',label:'Wallet Address'},{key:'network',label:'Network (e.g. TRC20)'}],
