@@ -8,6 +8,7 @@ import { usePoll, useDebouncedValue, useActivitySignal } from '../utils/usePoll'
 import { useToast } from '../context/ToastContext';
 import { Icon, type IconName } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
+import { bankLogoIcon } from '../components/BankLogo';
 import { TxnTimeline as TimelineRail, type TlStep } from '../components/TxnTimeline';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { today } from '../utils/helpers';
@@ -751,7 +752,8 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
                 <Input label="Account Holder" value={senderAccountHolder} onChange={e => setSenderAccountHolder(e.target.value)} required />
                 <Input label="Account Number" value={senderAccountNumber} onChange={e => setSenderAccountNumber(e.target.value)} required />
                 <IfscField label="IFSC Code" value={senderIfsc} ifsc={senderIfscFill} />
-                <Input label="Bank Name" value={senderBankName} onChange={e => setSenderBankName(e.target.value)} readOnly={senderIfscFill.locked} />
+                <Input label="Bank Name" value={senderBankName} onChange={e => setSenderBankName(e.target.value)} readOnly={senderIfscFill.locked}
+                  icon={bankLogoIcon(senderBankName, senderIfsc, senderIfscFill.locked)} />
                 <Input label="Branch" value={senderBranch} onChange={e => setSenderBranch(e.target.value)} readOnly={senderIfscFill.locked} />
               </div>
             )}
@@ -1194,7 +1196,8 @@ export const AgentWithdrawalRequestPage: React.FC<{
                   <Input label="Account Holder" value={payoutHolder} onChange={e => setPayoutHolder(e.target.value)} />
                   <Input label="Account Number" value={payoutNumber} onChange={e => setPayoutNumber(e.target.value)} />
                   <IfscField label="IFSC Code" value={payoutIfsc} ifsc={payoutIfscFill} />
-                  <Input label="Bank Name" value={payoutBank} onChange={e => setPayoutBank(e.target.value)} readOnly={payoutIfscFill.locked} />
+                  <Input label="Bank Name" value={payoutBank} onChange={e => setPayoutBank(e.target.value)} readOnly={payoutIfscFill.locked}
+                    icon={bankLogoIcon(payoutBank, payoutIfsc, payoutIfscFill.locked)} />
                   <Input label="Branch" value={payoutBranch} onChange={e => setPayoutBranch(e.target.value)} readOnly={payoutIfscFill.locked} />
                 </div>
               )

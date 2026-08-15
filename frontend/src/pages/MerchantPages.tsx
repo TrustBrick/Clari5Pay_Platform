@@ -17,7 +17,8 @@ import type { TxQuery, TxPagedQuery, MemberGroup, Paged } from '../services/api'
 import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
-import { bankBadge, BANK_NAMES } from '../utils/ifsc';
+import { BANK_NAMES } from '../utils/ifsc';
+import { bankLogoIcon } from '../components/BankLogo';
 import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry, Notification } from '../types';
 
 // The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
@@ -98,14 +99,8 @@ const BankAccountFields: React.FC<{
           <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
           <Input label="Account Number" value={bank.accountNumber} onChange={e=>set('accountNumber',e.target.value)} required/>
           <IfscField value={bank.ifsc} ifsc={ifscFill} required/>
-          <div style={{ marginBottom:16 }}>
-            <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked} style={{ marginBottom:6 }}/>
-            {bank.bankName && (() => { const b = bankBadge(bank.bankName); return (
-              <span style={{ display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:T.textMuted }}>
-                <span style={{ width:18,height:18,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
-                {bank.bankName}
-              </span>); })()}
-          </div>
+          <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked}
+            icon={bankLogoIcon(bank.bankName, bank.ifsc, ifscFill.locked)}/>
           <Input label="Branch Name" value={bank.branch} onChange={e=>set('branch',e.target.value)} readOnly={ifscFill.locked} required/>
         </div>
       )}
@@ -992,6 +987,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
                 <IfscField label={f.label} value={details.ifsc || ''} ifsc={ifscFill} required/>
                 {/* Auto-fetched from the IFSC — read-only while the lookup owns them. */}
                 <Input label="Bank Name" value={details.bank || ''} readOnly={ifscFill.locked} list={ifscFill.locked ? undefined : 'bank-names'}
+                  icon={bankLogoIcon(details.bank, details.ifsc, ifscFill.locked)}
                   onChange={e=>setDetails(d => ({...d, bank:e.target.value}))}/>
                 <Input label="Branch Name" value={details.branch || ''} readOnly={ifscFill.locked}
                   onChange={e=>setDetails(d => ({...d, branch:e.target.value}))}/>
@@ -1006,11 +1002,6 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
                 }}/>
             ))}
           </div>
-          {mode==='BANK' && details.bank && (() => { const b = bankBadge(details.bank); return (
-            <div style={{ display:'flex',alignItems:'center',gap:8,margin:'0 0 12px',fontSize:12,color:T.textMain }}>
-              <span style={{ width:20,height:20,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
-              <b>{details.bank}</b>{details.branch ? <span style={{ color:T.textMuted }}>· {details.branch}</span> : null}
-            </div>); })()}
         </>
       )}
       <div style={{ background:T.canvas,borderRadius:10,padding:'8px 12px',margin:'2px 0 16px',fontSize:11,color:T.textMuted }}>
@@ -1203,14 +1194,11 @@ export const SettlementForm: React.FC<{ user: User; onSubmitted?: () => void }> 
             {bankIsIndian
               ? <IfscField label={codeLabel} value={ifsc} ifsc={ifscFill} required/>
               : <Input label={codeLabel} value={ifsc} onChange={e=>setIfsc(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,11))} placeholder="e.g. HDFCINBB" required hint="8 or 11 characters"/>}
-            <Input label="Bank Name" value={bankName} onChange={e=>setBankName(e.target.value)} list="bank-names" required readOnly={bankIsIndian && ifscFill.locked}/>
+            {/* Indian banks only — a SWIFT/BIC destination is never identified by an IFSC lookup. */}
+            <Input label="Bank Name" value={bankName} onChange={e=>setBankName(e.target.value)} list="bank-names" required readOnly={bankIsIndian && ifscFill.locked}
+              icon={bankLogoIcon(bankName, ifsc, bankIsIndian && ifscFill.locked)}/>
             <Input label="Branch Name" value={branch} onChange={e=>setBranch(e.target.value)} required readOnly={bankIsIndian && ifscFill.locked}/>
           </div>
-          {bankName && (() => { const b = bankBadge(bankName); return (
-            <div style={{ display:'flex',alignItems:'center',gap:8,margin:'0 0 4px',fontSize:12,color:T.textMain }}>
-              <span style={{ width:20,height:20,borderRadius:5,background:b.color,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800 }}>{b.initials}</span>
-              <b>{bankName}</b>{branch ? <span style={{ color:T.textMuted }}>· {branch}</span> : null}
-            </div>); })()}
         </div>
       )}
 

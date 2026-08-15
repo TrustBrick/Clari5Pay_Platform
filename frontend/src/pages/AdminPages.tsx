@@ -6,6 +6,7 @@ import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart
 import { Icon, isIconName } from '../components/Icon';
 import { BANK_NAMES } from '../utils/ifsc';
 import { IfscField } from '../components/IfscField';
+import { BankLogo, bankLogoIcon } from '../components/BankLogo';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import TxTable from '../components/TxTable';
 import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
@@ -1760,7 +1761,11 @@ export const AdminAccountsPage: React.FC = () => {
           {[['Account Name',detail.accountName],['Account Number',detail.accountNumber],['IFSC Code',detail.ifscCode],['Bank Name',detail.bankName],['Branch',detail.branch],['Account Type',detail.accountType],['Reference Number',detail.referenceNumber],['Status',detail.status]].map(([k,v])=>(
             <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'10px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
               <span style={{ fontSize:12,color:T.textMuted }}>{k}</span>
-              <span style={{ fontSize:13,fontWeight:700,color:T.textMain,textAlign:'right' }}>{v}</span>
+              <span style={{ fontSize:13,fontWeight:700,color:T.textMain,textAlign:'right' }}>
+                {k==='Bank Name' && detail.bankName
+                  ? <BankLogo name={detail.bankName} ifsc={detail.ifscCode}/>
+                  : v}
+              </span>
             </div>
           ))}
           <div style={{ display:'flex',gap:10,marginTop:16 }}>
@@ -1807,7 +1812,8 @@ export const AdminAccountsPage: React.FC = () => {
             <Input label="Account Name" value={form.account_name} onChange={e=>set('account_name',e.target.value)} required/>
             <Input label="Account Number" value={form.account_number} onChange={e=>set('account_number',e.target.value)} required/>
             <IfscField value={form.ifsc_code} ifsc={ifscFill} required/>
-            <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked} required/>
+            <Input label="Bank Name" value={form.bank_name} onChange={e=>set('bank_name',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked} required
+              icon={bankLogoIcon(form.bank_name, form.ifsc_code, ifscFill.locked)}/>
             <Input label="Branch" value={form.branch} onChange={e=>set('branch',e.target.value)} readOnly={ifscFill.locked} required/>
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>

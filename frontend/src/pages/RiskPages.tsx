@@ -5,6 +5,7 @@ import { downloadXlsx } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, Skeleton, CountUp, BankNamesDatalist } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { IfscField } from '../components/IfscField';
+import { bankLogoIcon } from '../components/BankLogo';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { BANK_NAMES } from '../utils/ifsc';
 import { riskAPI } from '../services/api';
@@ -387,7 +388,8 @@ const ComplaintModal: React.FC<{ memberId: string; memberName: string; merchantN
                 <Input label="Account Holder Name" value={manual.accountHolder || ''} onChange={e => setManual(m => ({ ...m, accountHolder: e.target.value }))} />
                 <Input label="Account Number" value={manual.accountNumber || ''} onChange={e => setManual(m => ({ ...m, accountNumber: e.target.value }))} />
                 <IfscField value={manual.ifsc || ''} ifsc={ifscFill} />
-                <Input label="Bank Name" value={manual.bankName || ''} readOnly={ifscFill.locked} list={ifscFill.locked ? undefined : 'bank-names'} onChange={e => setManual(m => ({ ...m, bankName: e.target.value }))} />
+                <Input label="Bank Name" value={manual.bankName || ''} readOnly={ifscFill.locked} list={ifscFill.locked ? undefined : 'bank-names'} onChange={e => setManual(m => ({ ...m, bankName: e.target.value }))}
+                  icon={bankLogoIcon(manual.bankName, manual.ifsc, ifscFill.locked)} />
                 <Input label="Branch" value={manual.branch || ''} readOnly={ifscFill.locked} onChange={e => setManual(m => ({ ...m, branch: e.target.value }))} />
                 <Input label="UPI ID" value={manual.upiId || ''} onChange={e => setManual(m => ({ ...m, upiId: e.target.value }))} />
                 <label style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.5, color: T.textMuted }}>

@@ -8,6 +8,7 @@ import { BANK_NAMES } from '../utils/ifsc';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { useDebouncedValue } from '../utils/usePoll';
 import { IfscField } from '../components/IfscField';
+import { BankLogo, bankLogoIcon } from '../components/BankLogo';
 import { downloadXlsx } from '../utils/xlsx';
 import { AgentProfileModal } from './AgentTxnPages';
 import type { Col } from '../utils/xlsx';
@@ -1126,7 +1127,8 @@ const AccountForm: React.FC<{
                   stay editable, so previously saved accounts keep working. */}
               <IfscField label="IFSC / Routing" value={form.ifsc} ifsc={ifsc} required />
               <Input label="Bank Name" value={form.bankName} onChange={(e) => set('bankName', e.target.value)} required
-                list={ifsc.locked ? undefined : 'bank-names'} readOnly={ifsc.locked} />
+                list={ifsc.locked ? undefined : 'bank-names'} readOnly={ifsc.locked}
+                icon={bankLogoIcon(form.bankName, form.ifsc, ifsc.locked)} />
               <Input label="Branch" value={form.branch} onChange={(e) => set('branch', e.target.value)} readOnly={ifsc.locked} />
               <BankNamesDatalist names={BANK_NAMES} />
             </div>
@@ -1212,7 +1214,7 @@ const AccountView: React.FC<{ account: AgentAccount; agent: Agent; onBack: () =>
             <Field label="Account Holder" value={a.accountHolder} />
             <Field label="Account Number" value={a.accountNumber} />
             <Field label="IFSC / Routing" value={a.ifsc} />
-            <Field label="Bank Name" value={a.bankName} />
+            <Field label="Bank Name" value={a.bankName ? <BankLogo name={a.bankName} ifsc={a.ifsc || undefined} /> : undefined} />
             <Field label="Branch" value={a.branch} />
           </div>
         </Section>

@@ -203,7 +203,10 @@ export const enterSubmit = (canSubmit: boolean, submit: () => void) =>
 // ─── Input ───────────────────────────────────────────────────────────────────
 export const Input: React.FC<{
   label?: string; type?: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  placeholder?: string; required?: boolean; hint?: string; icon?: string; style?: CSSProperties; list?: string;
+  placeholder?: string; required?: boolean; hint?: string; style?: CSSProperties; list?: string;
+  /** Left adornment inside the field. A string is an Icon name (or literal text); a node is
+   *  rendered as-is, which is how a bank logo sits inside the Bank Name field. */
+  icon?: React.ReactNode;
   readOnly?: boolean; onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void; error?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>['inputMode'];
   /** Fired on any keydown (full control). */
@@ -215,7 +218,7 @@ export const Input: React.FC<{
   <div style={{ marginBottom:16,...style }}>
     {label && <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required&&<span style={{color:T.danger}}> *</span>}</label>}
     <div style={{ position:'relative' }}>
-      {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',display:'flex',alignItems:'center',fontSize:16,color:T.textMuted }}>{isIconName(icon) ? <Icon name={icon} size={16} color={T.textMuted} /> : icon}</span>}
+      {icon && <span style={{ position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',display:'flex',alignItems:'center',fontSize:16,color:T.textMuted,pointerEvents:'none' }}>{typeof icon === 'string' ? (isIconName(icon) ? <Icon name={icon} size={16} color={T.textMuted} /> : icon) : icon}</span>}
       <input type={type} value={value} onChange={onChange} placeholder={placeholder} required={required} list={list} inputMode={inputMode} readOnly={readOnly} aria-invalid={error?true:undefined}
         autoFocus={autoFocus} maxLength={maxLength} name={name}
         onKeyDown={e=>{ onKeyDown?.(e); if(e.key==='Enter' && !e.defaultPrevented && onEnter){ onEnter(); } }}
