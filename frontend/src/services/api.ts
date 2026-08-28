@@ -966,6 +966,14 @@ export const activeUsersAPI = {
 };
 
 export const supportManagementAPI = {
+  // Admin puts themselves on/off support duty. "OFF" clears it — an admin is not counted as
+  // available support until they explicitly go on duty, since having the portal open is not the
+  // same as being available to a merchant.
+  setMySupportDuty: async (availability: 'AVAILABLE' | 'BUSY' | 'ON_BREAK' | 'OFF') => {
+    const res = await api.patch<{ supportDuty: string | null }>(
+      '/api/support-management/me/support-duty', { availability });
+    return res.data;
+  },
   list: async () => {
     const res = await api.get<SupportMembersData>('/api/support-management/agents');
     return res.data;

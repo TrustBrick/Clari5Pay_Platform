@@ -567,6 +567,41 @@ async def close_conversation(
 
 
 # ─── Member self: availability toggle ─────────────────────────────────────────
+@router.patch("/me/support-duty")
+async def set_admin_support_duty(
+    data: AvailabilityRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """An Admin puts themselves ON or OFF support duty (drives the merchant availability pill).
+
+    Having the Admin Portal open is not the same as being available to a merchant — admins keep it
+    open all day for their own work — so an admin counts towards support availability only after
+    explicitly going on duty here. "OFF" clears the state (the default) and takes them out of the
+    count entirely; AVAILABLE / BUSY / ON_BREAK behave exactly as they do for a support member.
+
+    Deliberately NOT the support member's /me/availability: that route drains the conversation
+    QUEUE and notifies the member's creator, neither of which applies to an admin — admins are
+    never in the routing pool and are never assigned conversations.
+    """
+    value = str(data.availability or "").upper()
+    if value not in AVAILABILITY_VALUES + ("OFF",):
+        raise HTTPException(status_code=400, detail="availability must be AVAILABLE, BUSY, ON_BREAK or OFF")
+    was = actor.support_availability
+    actor.support_availability = None if value == "OFF" else value
+    actor.support_availability_at = datetime.utcnow()
+    # Going on duty stamps presence so the pill reflects it immediately rather than on the next beat.
+    if value != "OFF":
+        await presence.touch(db, actor)
+    await db.flush()
+    await log_event(db, "ADMIN_SUPPORT_DUTY_CHANGED",
+                    f"{actor.name} set support duty to {value}", actor=actor)
+    await record_audit(db, "ADMIN_SUPPORT_DUTY_CHANGED", actor=actor, entity_type="support",
+                       entity_id=actor.id, old=(was or "OFF"), new=value, ip=_ip(request))
+    return {"supportDuty": actor.support_availability}
+
+
 @router.patch("/me/availability")
 async def set_availability(
     data: AvailabilityRequest,

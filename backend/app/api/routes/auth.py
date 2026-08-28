@@ -155,6 +155,10 @@ def _user_to_out(u: User) -> dict:
         "supportDepartment": u.support_department,
         "supportShift": u.support_shift,
         "supportAvailability": str(u.support_availability or "AVAILABLE").upper(),
+        # RAW support-duty state: None = not on support duty. Distinct from supportAvailability
+        # above, which coerces None to "AVAILABLE" for the support portal's non-null union and so
+        # cannot express "opted out". Admins default to None until they go on duty.
+        "supportDuty": (str(u.support_availability).upper() if u.support_availability else None),
     }
 
 

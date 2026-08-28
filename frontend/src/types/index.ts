@@ -32,6 +32,9 @@ export interface User {
   merchantRole?: MerchantRole | string | null;
   merchantCode?: string | null;   // serial Merchant ID, e.g. MID000001
   whatsappEnabled?: boolean;       // "Receive WhatsApp Notifications" preference (internal users)
+  // Admin support duty: null = not on support duty (the default). Distinct from the support
+  // portal's supportAvailability, which cannot express "opted out".
+  supportDuty?: 'AVAILABLE' | 'BUSY' | 'ON_BREAK' | null;
   // Super Admin monitoring
   merchantCount?: number;
 }
