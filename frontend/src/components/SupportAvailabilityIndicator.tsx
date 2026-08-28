@@ -35,6 +35,13 @@ const SupportAvailabilityIndicator: React.FC<{ onOpen?: () => void }> = ({ onOpe
   const label = on ? 'Support Available' : 'Support Unavailable';
   const dot = on ? T.success : T.textLight;
 
+  // Availability is the OR of two pools — the Customer Support team and the Admins — so the
+  // tooltip names whichever is actually reachable rather than implying it is always the chat team.
+  const parts: string[] = [];
+  if ((state.support?.available ?? 0) > 0) parts.push(`${state.support!.available} Customer Support`);
+  if ((state.admin?.available ?? 0) > 0) parts.push(`${state.admin!.available} Admin`);
+  const detail = parts.length ? parts.join(' + ') + ' available' : `${state.availableAgents} available`;
+
   return (
     <>
       {/* Subtle two-part breathe: the dot's own opacity plus a soft halo. Slow (2.4s) and
@@ -56,7 +63,7 @@ const SupportAvailabilityIndicator: React.FC<{ onOpen?: () => void }> = ({ onOpe
         onClick={onOpen}
         className="c5-support-pill"
         title={on
-          ? `Support is online — ${state.availableAgents} member${state.availableAgents === 1 ? '' : 's'} available`
+          ? `Support is online — ${detail}`
           : 'No support member is available right now'}
         aria-label={label}
         style={{

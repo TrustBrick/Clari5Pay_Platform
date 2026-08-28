@@ -403,11 +403,22 @@ export interface AdminUpi {
 // Live Support Team availability (GET /api/support/availability) — the header indicator's
 // only input. `available` is true only while at least one support member could actually take a
 // new conversation right now (online, not Busy/On-Break, below their conversation limit).
+export interface SupportPoolStatus {
+  available: number;
+  online: number;
+  total: number;
+}
+
 export interface SupportTeamAvailability {
+  /** True when at least one person is available in EITHER pool (Customer Support or Admin). */
   available: boolean;
+  /** Combined across both pools. */
   availableAgents: number;
   onlineAgents: number;
   totalAgents: number;
+  /** Per-pool breakdown, so the indicator can say who is reachable. */
+  support?: SupportPoolStatus;
+  admin?: SupportPoolStatus;
 }
 
 export interface SupportMessage {

@@ -80,7 +80,9 @@ async def test_one_online_available_member_makes_support_available(db):
     await _agent(db, 1)
     out = await support_routing.availability_summary(db, now=NOW)
     assert out["available"] is True
-    assert out == {"available": True, "availableAgents": 1, "onlineAgents": 1, "totalAgents": 1}
+    assert out["availableAgents"] == 1 and out["onlineAgents"] == 1 and out["totalAgents"] == 1
+    assert out["support"] == {"available": 1, "online": 1, "total": 1}
+    assert out["admin"] == {"available": 0, "online": 0, "total": 0}
 
 
 @pytest.mark.asyncio
@@ -142,8 +144,10 @@ async def test_one_available_member_among_several_is_enough(db):
 
 @pytest.mark.asyncio
 async def test_no_support_members_at_all(db):
+    # No agents AND no admins — neither pool has anyone.
     out = await support_routing.availability_summary(db, now=NOW)
-    assert out == {"available": False, "availableAgents": 0, "onlineAgents": 0, "totalAgents": 0}
+    assert out["available"] is False
+    assert out["availableAgents"] == 0 and out["onlineAgents"] == 0 and out["totalAgents"] == 0
 
 
 @pytest.mark.asyncio
@@ -205,3 +209,106 @@ async def test_summary_agrees_with_derive_status_member_by_member(db):
     assert out["availableAgents"] == statuses.count("available")
     assert out["onlineAgents"] == sum(1 for s in statuses if s != "offline")
     assert out["totalAgents"] == len(agents)
+
+
+# ── 4. Two pools: Admin OR Customer Support ────────────────────────────────────────────────────
+#
+# The merchant header goes green when EITHER pool has someone reachable, and grey only when both
+# are empty. Admins are judged by the same derive_status rule, so this is not a second definition
+# of "available" — just a second pool it is applied to.
+
+
+async def _admin(db: AsyncSession, uid: int, *, online=True, active=True, last_seen_secs=5) -> User:
+    u = User(id=uid, username=f"adm{uid}", name=f"Admin {uid}", email=f"a{uid}@x.com",
+             hashed_password="x", role=UserRole.ADMIN, active=active)
+    db.add(u)
+    await db.flush()
+    if online:
+        db.add(UserSession(user_id=uid, login_at=NOW - timedelta(hours=1),
+                           last_activity_at=NOW - timedelta(seconds=last_seen_secs), active=True))
+        await db.flush()
+    return u
+
+
+@pytest.mark.asyncio
+async def test_admin_only_availability_makes_support_available(db):
+    """No Customer Support member is reachable, but an Admin is — the merchant sees Available."""
+    await _agent(db, 1, online=False)          # support team all offline
+    await _admin(db, 90)                       # one admin online
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is True
+    assert out["support"]["available"] == 0
+    assert out["admin"]["available"] == 1
+
+
+@pytest.mark.asyncio
+async def test_customer_support_only_availability_makes_support_available(db):
+    """The mirror case: no admin reachable, one support member is."""
+    await _agent(db, 1)                        # support member online
+    await _admin(db, 90, online=False)         # admin offline
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is True
+    assert out["support"]["available"] == 1
+    assert out["admin"]["available"] == 0
+
+
+@pytest.mark.asyncio
+async def test_both_pools_unavailable_shows_unavailable(db):
+    await _agent(db, 1, online=False)
+    await _admin(db, 90, online=False)
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is False
+    assert out["support"]["available"] == 0 and out["admin"]["available"] == 0
+    assert out["totalAgents"] == 2              # both pools counted in the totals
+
+
+@pytest.mark.asyncio
+async def test_a_stale_admin_session_is_offline_too(db):
+    """Admins are held to the same presence window — no free pass for being an admin."""
+    stale = int(presence.ONLINE_WINDOW.total_seconds()) + 30
+    await _admin(db, 90, last_seen_secs=stale)
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is False and out["admin"]["online"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_deactivated_admin_does_not_count(db):
+    await _admin(db, 90, active=False)
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is False and out["admin"]["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_super_admin_is_not_counted_as_support(db):
+    """Super Admin is a platform-owner role, not a support desk — counting it would advertise
+    cover nobody is staffing."""
+    u = User(id=95, username="sa", name="Super", email="sa@x.com", hashed_password="x",
+             role=UserRole.SUPER_ADMIN, active=True)
+    db.add(u)
+    db.add(UserSession(user_id=95, login_at=NOW, last_activity_at=NOW, active=True))
+    await db.flush()
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is False and out["totalAgents"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_busy_but_under_capacity_member_still_counts(db):
+    """The routing rules already say under-limit means assignable; availability must agree."""
+    await _agent(db, 1)
+    await _open_conversations(db, 1, 1)        # limit is 2, so one active chat is fine
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is True and out["support"]["available"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admins_are_not_added_to_the_routing_pool(db):
+    """Availability considers admins; conversation ROUTING must not.
+
+    _all_agents feeds auto-assignment — if an admin leaked into it, customer chats would start
+    being assigned to the Admin Portal, which is a change to the Support Center this must not make.
+    """
+    await _agent(db, 1)
+    await _admin(db, 90)
+    routing_pool = await support_routing._all_agents(db)
+    assert [u.id for u in routing_pool] == [1]
+    assert all(u.role == UserRole.SUPPORT_AGENT for u in routing_pool)

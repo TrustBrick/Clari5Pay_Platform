@@ -1758,13 +1758,16 @@ export const AdminAccountsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Highest Debit','Deposits Received','Commission','Available','Users','Status','Actions'].map(h=>(
+                {/* Deposits Received, Commission and Manual Adjustment deliberately live in the
+                    View popup, not here — the list stays scannable and the money detail sits with
+                    the account it belongs to. The underlying data is unchanged. */}
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Highest Debit','Available','Users','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={12} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={10} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
               {filtered.map((a,i)=>{ const bal = balMap[a.referenceNumber]; return (
                 <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                   <td style={{ padding:'11px 14px' }}>
@@ -1776,13 +1779,6 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.branch}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestCredit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestDebit ?? 0)}</td>
-                  <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{fmt(bal?.totalDeposited ?? 0)}</td>
-                  {/* Commission earned on this account's traffic — company profit, shown on its own
-                      because it is still sitting INSIDE Available (it never left the bank). */}
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.warning }}
-                      title="Company commission earned on this account's deposits and payouts. Already included in Available — it has not left the account.">
-                    {fmt(bal?.commission ?? 0)}
-                  </td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}>
                     {bal && (bal.userCount ?? 0) > 0
@@ -1792,12 +1788,7 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px' }}>
                     <Btn size="sm" variant={a.status==='ACTIVE'?'success':'danger'} onClick={()=>setToggleAcc(a)}>{a.status==='ACTIVE'?'● ACTIVE':'○ INACTIVE'}</Btn>
                   </td>
-                  <td style={{ padding:'11px 14px' }}>
-                    <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
-                      <Btn size="sm" variant="ghost" onClick={()=>setDetail(a)}>View</Btn>
-                      <Btn size="sm" variant="secondary" onClick={()=>setAdjustAcc(a)}><Icon name="amount" size={13} /> Manual Adjustment</Btn>
-                    </div>
-                  </td>
+                  <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={()=>setDetail(a)}>View</Btn></td>
                 </tr>
               );})}
             </tbody>
@@ -1880,17 +1871,8 @@ export const AdminAccountsPage: React.FC = () => {
                 <span>Settlements: <b style={{ color:T.textMain }}>{fmt(b.settlements ?? 0)}</b></span>
                 <span style={{ color:T.success }}>Available: <b>{fmt(b.available)}</b></span>
               </div>
-              {/* Commission split. Available above is the account's CASH — it still contains this
-                  profit, because commission is never paid out of the account. Shown here so the
-                  merchant-funds vs company-earnings share of that cash is visible. */}
-              {(b.commission ?? 0) > 0 && (
-                <div style={{ display:'flex',gap:18,flexWrap:'wrap',marginTop:6,fontSize:12,color:T.textMuted }}>
-                  <span style={{ color:T.warning }}>Commission earned: <b>{fmt(b.commission ?? 0)}</b></span>
-                  <span>Pay-In: <b style={{ color:T.textMain }}>{fmt(b.commissionPayIn ?? 0)}</b></span>
-                  <span>Pay-Out: <b style={{ color:T.textMain }}>{fmt(b.commissionPayOut ?? 0)}</b></span>
-                  <span style={{ fontSize:11 }}>(included in Available — commission stays in the account as profit)</span>
-                </div>
-              )}
+              {/* Commission is deliberately NOT repeated here — it lives in the account's View
+                  popup (Account Details), so the figure has exactly one home. */}
               {b.linkedUpis && b.linkedUpis.length > 0 && (
                 <div style={{ display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginTop:8 }}>
                   <span style={{ fontSize:11,color:T.textMuted }}>Linked UPIs:</span>
@@ -2026,6 +2008,45 @@ export const AdminAccountsPage: React.FC = () => {
               </span>
             </div>
           ))}
+
+          {/* ── Account Details ────────────────────────────────────────────────────────────
+              The money figures and the adjustment action, moved off the main list so they sit
+              with the account they describe. Same data, same modal, same components — only the
+              location changed. Current Balance is the account's CASH; Commission is the share of
+              that cash which is company profit (it never left the account, so it is not deducted). */}
+          {(() => {
+            const b = balMap[detail.referenceNumber];
+            return (
+              <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+                <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 10px' }}>Account Details</p>
+                <div style={{ display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:10,background:T.canvas,border:`1px solid ${T.border}`,marginBottom:12 }}>
+                  <BankLogo name={detail.bankName} ifsc={detail.ifscCode} />
+                  <div style={{ minWidth:0 }}>
+                    <p style={{ margin:0,fontSize:12.5,fontWeight:800,color:T.textMain }}>{detail.bankName}</p>
+                    <p style={{ margin:0,fontSize:11,color:T.textMuted }}>A/C {maskAccount(detail.accountNumber)}</p>
+                  </div>
+                </div>
+                <Row k="Current Balance" v={<span style={{ color:T.success }}>{fmt(b?.available ?? 0)}</span>} />
+                <Row k="Deposits Received" v={fmt(b?.totalDeposited ?? 0)} />
+                <Row k="Commission" v={
+                  <span style={{ color:T.warning }} title="Company commission earned on this account's deposits and payouts. Already included in Current Balance — it has not left the account.">
+                    {fmt(b?.commission ?? 0)}
+                  </span>} />
+                {(b?.commission ?? 0) > 0 && (
+                  <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>
+                    Pay-In {fmt(b?.commissionPayIn ?? 0)} · Pay-Out {fmt(b?.commissionPayOut ?? 0)} — included in Current Balance, as commission stays in the account as profit.
+                  </p>
+                )}
+                <div style={{ marginTop:12 }}>
+                  <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Manual Balance Adjustment</p>
+                  <Btn size="sm" variant="secondary" onClick={()=>{ setAdjustAcc(detail); setDetail(null); }}>
+                    <Icon name="amount" size={13} /> Make an Adjustment
+                  </Btn>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Accounting ledger ── every movement this account's balance has been through that is
               not an ordinary transaction: manual adjustments and recorded withdrawal payouts. */}
           <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>

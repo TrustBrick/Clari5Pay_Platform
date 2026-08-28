@@ -126,6 +126,24 @@ export const fetchMessages = (merchantId: number) => getJSON<Message[]>(`/api/su
 export const fetchMerchant = (merchantId: number) => getJSON<MerchantDetail>(`/api/support/merchant/${merchantId}`);
 export const fetchMerchantPresence = (merchantId: number) => getJSON<Presence>(`/api/support/merchant/${merchantId}/presence`);
 
+/**
+ * Presence heartbeat — keeps THIS support member marked online.
+ *
+ * A session goes stale after ~90s without activity (services/presence.ONLINE_WINDOW), and login
+ * alone only stamps it once. Every other portal bumps it from its own app shell; this portal is a
+ * separate build and never did, so a member who was signed in and actively chatting silently
+ * decayed to "offline" ~90 seconds later — which is what made the merchant header read
+ * "Support Unavailable" while someone was right there. Same endpoint the other portals use; no
+ * new presence mechanism.
+ *
+ * Best-effort: a failed beat must never surface an error in the chat UI.
+ */
+export async function heartbeat(): Promise<void> {
+  try {
+    await fetch(`${BASE_URL}/api/active-users/heartbeat`, { method: 'POST', headers: authHeaders() });
+  } catch { /* presence is best-effort */ }
+}
+
 export async function setAvailability(availability: Availability): Promise<Availability> {
   const res = await fetch(`${BASE_URL}/api/support-management/me/availability`, {
     method: 'PATCH',

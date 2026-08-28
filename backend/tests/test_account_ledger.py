@@ -795,3 +795,52 @@ async def test_a_manual_offline_payout_earns_no_account_commission(db):
     r = (await _balances(db))[0]
     assert r["available"] == 200000.0
     assert r["commissionPayOut"] == 0.0
+
+
+# ── 12. The adjustment Reason survives to the ledger the operator reads ────────────────────────
+
+@pytest.mark.asyncio
+async def test_reason_is_stored_and_returned_by_the_ledger_endpoint(db):
+    """Mandatory on the way in, and visible on the way out — through the real endpoint, not just
+    the serializer, since that listing is what the account's View popup renders."""
+    from app.api.routes import accounts as acct
+
+    await _merchant(db)
+    account = await _account(db)
+    await _deposit(db, "DEP000001", 100000, account.reference_number)
+    await _adjust(db, account.reference_number, adjustmentType="DEBIT", amount=10000.0,
+                  reason="Offline Payment", reference="OFF12345", remarks="paid in cash")
+
+    out = await acct.account_ledger_entries(account.reference_number, 50, db, _admin())
+    assert out["referenceNumber"] == account.reference_number
+    assert out["balance"] == 90000.0
+    entry = out["entries"][0]
+    assert entry["reason"] == "Offline Payment"       # the Reason the operator picked
+    assert entry["reference"] == "OFF12345"
+    assert entry["remarks"] == "paid in cash"
+    assert entry["balanceBefore"] == 100000.0 and entry["balanceAfter"] == 90000.0
+
+
+@pytest.mark.asyncio
+async def test_an_adjustment_cannot_be_submitted_without_a_reason(db):
+    """No reason, no adjustment — and nothing is written when it is refused."""
+    await _merchant(db)
+    account = await _account(db)
+    await _deposit(db, "DEP000001", 100000, account.reference_number)
+    # Blank / whitespace-only is refused by the route with a 400 ...
+    for missing in ("", "   "):
+        with pytest.raises(HTTPException) as e:
+            await _adjust(db, account.reference_number, reason=missing)
+        assert e.value.status_code == 400
+    # ... and an omitted reason never reaches the route at all: `reason` is a required field on
+    # AdjustmentCreate, so the request is rejected at validation (FastAPI answers 422).
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        await _adjust(db, account.reference_number, reason=None)
+    out = await acct_ledger_count(db)
+    assert out == 0
+
+
+async def acct_ledger_count(db):
+    from sqlalchemy import func, select as _select
+    return (await db.execute(_select(func.count()).select_from(AccountLedgerEntry))).scalar_one()
