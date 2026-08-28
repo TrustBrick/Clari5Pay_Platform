@@ -255,3 +255,86 @@ async def record_agent_reply(db: AsyncSession, customer_id: int, *, now: Optiona
     if conv and conv.first_response_at is None:
         conv.first_response_at = now
         await db.flush()
+
+
+# Admin-portal roles that count as reachable "Admin support" for the merchant header indicator.
+# ADMIN only: Super Admin is a platform-owner role, not a support desk, and counting it would
+# advertise cover that nobody is actually staffing.
+SUPPORT_ADMIN_ROLES = (UserRole.ADMIN,)
+
+
+async def _support_admins(db: AsyncSession) -> list[User]:
+    """Active Admin-portal users, the second pool the availability indicator considers.
+
+    Kept SEPARATE from ``_all_agents`` on purpose: that function feeds conversation ROUTING, and
+    adding admins to it would start auto-assigning customer chats to them. Admins are reachable
+    support, but they are not part of the Customer Support queue.
+    """
+    return (await db.execute(
+        select(User).where(User.role.in_(SUPPORT_ADMIN_ROLES), User.active == True)  # noqa: E712
+    )).scalars().all()
+
+
+def _tally(members: list[User], sessions: dict, counts: dict, cfg: SupportConfig, now: datetime) -> dict:
+    """available / online / total for one pool, using the shared ``derive_status`` rule.
+
+    Works unchanged for admins: they carry no ``support_availability`` (so they read as AVAILABLE
+    rather than Busy/On-Break) and are never assigned conversations (so their load is 0). What
+    actually decides an admin is therefore only whether their session is live — which is exactly
+    what "is an admin reachable right now" should mean.
+    """
+    statuses = [derive_status(m, sessions.get(m.id), counts.get(m.id, 0), cfg, now) for m in members]
+    return {
+        "available": sum(1 for s in statuses if s == "available"),
+        "online": sum(1 for s in statuses if s != "offline"),
+        "total": len(members),
+    }
+
+
+async def availability_summary(db: AsyncSession, *, now: Optional[datetime] = None) -> dict:
+    """Is support reachable right now, from EITHER pool?
+
+    The merchant header shows "Support Available" when at least one eligible person is available in
+    the Customer Support team **or** among the Admins — and "Support Unavailable" only when both
+    pools are empty of anyone reachable.
+
+    Both pools are judged by the SAME ``derive_status`` the auto-assignment uses (live presence +
+    manual Busy/On-Break + configured conversation capacity), so a member who could not be handed a
+    conversation is never advertised as available, and a member who is merely *busy but under their
+    limit* still counts — which is what the routing rules already say.
+
+    Being signed in as a merchant, or the Support Center page existing, has no bearing on any of it.
+    """
+    now = now or datetime.utcnow()
+    cfg = await get_config(db)
+    agents = await _all_agents(db)
+    admins = await _support_admins(db)
+
+    everyone = agents + admins
+    if not everyone:
+        return {
+            "available": False, "availableAgents": 0, "onlineAgents": 0, "totalAgents": 0,
+            "support": {"available": 0, "online": 0, "total": 0},
+            "admin": {"available": 0, "online": 0, "total": 0},
+        }
+
+    ids = [m.id for m in everyone]
+    sessions = await presence.latest_sessions(db, ids)
+    # Conversation load is a Customer-Support concept; admins are never assigned any, so the
+    # lookup covers only the agent pool and admins fall through to 0.
+    counts = await active_counts(db, [a.id for a in agents])
+
+    support = _tally(agents, sessions, counts, cfg, now)
+    admin = _tally(admins, sessions, counts, cfg, now)
+
+    return {
+        # The OR that the merchant header renders.
+        "available": (support["available"] + admin["available"]) > 0,
+        # Combined totals — the existing shape the indicator's tooltip reads.
+        "availableAgents": support["available"] + admin["available"],
+        "onlineAgents": support["online"] + admin["online"],
+        "totalAgents": support["total"] + admin["total"],
+        # Per-pool breakdown, so the indicator can say WHO is reachable.
+        "support": support,
+        "admin": admin,
+    }

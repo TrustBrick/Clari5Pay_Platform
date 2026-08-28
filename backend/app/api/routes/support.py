@@ -349,6 +349,22 @@ async def my_messages(
     return [_m(x) for x in msgs]
 
 
+@router.get("/availability")
+async def support_availability(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Is the Support Team reachable right now? — powers the Merchant Portal header indicator.
+
+    A thin, read-only projection of the SAME availability rule the auto-assignment uses
+    (services/support_routing.availability_summary → derive_status over live presence, manual
+    Busy/On-Break and per-member load). It reports the SUPPORT TEAM's real state: being signed in
+    as a merchant never makes this true. Open to any authenticated user so the one indicator can
+    sit in the shared header; it exposes only counts, never who is on shift.
+    """
+    return await support_routing.availability_summary(db)
+
+
 @router.get("/my-conversation")
 async def my_conversation(
     db: AsyncSession = Depends(get_db),

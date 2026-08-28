@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import {
   login, getUser, clearAuth, fetchConversations, fetchMessages, fetchMerchant,
-  fetchMerchantPresence, sendMessage, wsUrl, setAvailability, type Availability,
+  fetchMerchantPresence, sendMessage, wsUrl, setAvailability, heartbeat, type Availability,
   type Conversation, type Message, type MerchantDetail, type SupportUser,
 } from './api';
 import { ThemeToggle } from './theme';
@@ -164,6 +164,28 @@ const Console: React.FC<{ user: SupportUser; onLogout: () => void }> = ({ user, 
 
   useEffect(() => { refreshConvos(); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  // Presence heartbeat — this is what keeps the member counted as ONLINE.
+  //
+  // A session goes stale ~90s after its last activity, and signing in stamps it only once. Every
+  // other portal beats from its app shell; this one did not, so a member sitting in the chat
+  // dropped to "offline" about a minute and a half after login and the merchant header flipped to
+  // "Support Unavailable" while they were actually there. 25s matches the other portals and leaves
+  // room for a couple of missed beats inside the 90s window. Fires immediately on mount so the
+  // member is online from the moment the portal opens, not 25s later.
+  useEffect(() => {
+    heartbeat();
+    const id = window.setInterval(heartbeat, 25000);
+    // A backgrounded tab throttles timers, so beat again the moment it is looked at.
+    const onVisible = () => { if (document.visibilityState === 'visible') heartbeat(); };
+    window.addEventListener('focus', heartbeat);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('focus', heartbeat);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
 
   // WebSocket for real-time delivery
   useEffect(() => {

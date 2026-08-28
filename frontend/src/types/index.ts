@@ -353,6 +353,27 @@ export interface AdminUpi {
   createdTime: string;
 }
 
+// Live Support Team availability (GET /api/support/availability) — the header indicator's
+// only input. `available` is true when at least one person could actually take a conversation
+// right now in EITHER pool: the Customer Support team or the Admins.
+export interface SupportPoolStatus {
+  available: number;
+  online: number;
+  total: number;
+}
+
+export interface SupportTeamAvailability {
+  /** True when at least one person is available in EITHER pool (Customer Support or Admin). */
+  available: boolean;
+  /** Combined across both pools. */
+  availableAgents: number;
+  onlineAgents: number;
+  totalAgents: number;
+  /** Per-pool breakdown, so the indicator can say who is reachable. */
+  support?: SupportPoolStatus;
+  admin?: SupportPoolStatus;
+}
+
 export interface SupportMessage {
   id: number;
   merchantId: number;
