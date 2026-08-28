@@ -4,7 +4,7 @@ import { timeAgo, merchantRoleLabel, formatDateTime } from '../utils/helpers';
 import ThemeToggle from './ThemeToggle';
 import SupportAvailabilityIndicator from './SupportAvailabilityIndicator';
 import { Icon } from './Icon';
-import { notificationAPI } from '../services/api';
+import { notificationAPI, supportManagementAPI } from '../services/api';
 import type { Notification, User } from '../types';
 
 interface HeaderProps {
@@ -137,6 +137,21 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
   };
 
   const go = (pageKey: string) => { setMenu(null); onNavigate?.(pageKey); };
+
+  // ── Admin support duty ───────────────────────────────────────────────────
+  // Seeded from the signed-in user (null = off) and kept locally after a change, so the popup
+  // reflects the new state immediately without a re-login.
+  const [duty, setDuty] = useState<string | null>(user.supportDuty ?? null);
+  const [dutySaving, setDutySaving] = useState(false);
+  const changeDuty = async (value: 'AVAILABLE' | 'BUSY' | 'ON_BREAK' | 'OFF') => {
+    if (dutySaving) return;
+    setDutySaving(true);
+    try {
+      const res = await supportManagementAPI.setMySupportDuty(value);
+      setDuty(res.supportDuty ?? null);
+    } catch { /* leave the previous state showing */ }
+    finally { setDutySaving(false); }
+  };
 
   // Dashboard pages swap the static title for a personalised, time-aware greeting.
   const isDashboard = (page || '').toLowerCase().includes('dashboard');
@@ -273,6 +288,34 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
                   </span>
                 </div>
               </div>
+              {/* Support duty (Admins only). Having the Admin Portal open is not the same as being
+                  available to a merchant — admins keep it open all day for their own work — so an
+                  admin counts towards the merchant's Support Available pill only after explicitly
+                  going on duty here. Off is the default. */}
+              {(user.role === 'ADMIN') && (
+                <div style={{ padding:'10px 16px',borderBottom:`1px solid ${T.borderLight}` }}>
+                  <p style={{ fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Support Duty</p>
+                  <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
+                    {([['AVAILABLE','Available'],['BUSY','Busy'],['ON_BREAK','On Break'],['OFF','Off']] as const).map(([v,label]) => {
+                      const active = (duty ?? 'OFF') === v;
+                      return (
+                        <button
+                          key={v} type="button" disabled={dutySaving}
+                          onClick={() => changeDuty(v)}
+                          style={{ padding:'4px 9px',borderRadius:8,fontSize:10.5,fontWeight:700,fontFamily:'inherit',
+                                   cursor:dutySaving?'wait':'pointer',
+                                   border:`1px solid ${active ? (v==='AVAILABLE'?T.success:v==='OFF'?T.textMuted:T.warning) : T.border}`,
+                                   background: active ? `color-mix(in srgb, ${v==='AVAILABLE'?T.success:v==='OFF'?T.textMuted:T.warning} 14%, transparent)` : 'transparent',
+                                   color: active ? (v==='AVAILABLE'?T.success:v==='OFF'?T.textMuted:T.warning) : T.textMuted }}
+                        >{label}</button>
+                      );
+                    })}
+                  </div>
+                  <p style={{ fontSize:10,color:T.textMuted,margin:'6px 0 0' }}>
+                    {duty ? 'Merchants can see you as available support.' : 'You are not counted as available support.'}
+                  </p>
+                </div>
+              )}
               {/* Details — each row hidden when its value is absent */}
               <div style={{ padding:'10px 16px',borderBottom:`1px solid ${T.borderLight}`,display:'flex',flexDirection:'column',gap:7 }}>
                 {user.merchantCode && <ProfileRow k="Merchant ID" v={user.merchantCode} />}

@@ -264,14 +264,27 @@ SUPPORT_ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 async def _support_admins(db: AsyncSession) -> list[User]:
-    """Active Admin-portal users, the second pool the availability indicator considers.
+    """Admins who are ON SUPPORT DUTY — the second pool the availability indicator considers.
+
+    Opt-in, deliberately. An admin keeps the Admin Portal open all day to approve withdrawals and
+    manage accounts; having the portal open is NOT the same as being available to answer a
+    merchant. So an admin counts here only once they have explicitly set a support-duty state
+    (``support_availability`` non-NULL). NULL — the default for every admin — means "not on
+    support duty" and is excluded outright.
+
+    Once opted in they are judged exactly like a support member: ``derive_status`` applies live
+    presence and their chosen AVAILABLE / BUSY / ON_BREAK, so going Busy or On Break takes them
+    out of the count without opting out entirely.
 
     Kept SEPARATE from ``_all_agents`` on purpose: that function feeds conversation ROUTING, and
-    adding admins to it would start auto-assigning customer chats to them. Admins are reachable
-    support, but they are not part of the Customer Support queue.
+    adding admins to it would start auto-assigning customer chats to them.
     """
     return (await db.execute(
-        select(User).where(User.role.in_(SUPPORT_ADMIN_ROLES), User.active == True)  # noqa: E712
+        select(User).where(
+            User.role.in_(SUPPORT_ADMIN_ROLES),
+            User.active == True,                       # noqa: E712
+            User.support_availability.isnot(None),     # opted in to support duty
+        )
     )).scalars().all()
 
 
