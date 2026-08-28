@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, type CSSProperties } f
 import { T } from '../utils/theme';
 import { timeAgo, merchantRoleLabel, formatDateTime } from '../utils/helpers';
 import ThemeToggle from './ThemeToggle';
+import SupportAvailabilityIndicator from './SupportAvailabilityIndicator';
 import { Icon } from './Icon';
 import { notificationAPI } from '../services/api';
 import type { Notification, User } from '../types';
@@ -180,6 +181,12 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
       </div>
 
       <div style={{ display:'flex',alignItems:'center',gap:12 }}>
+        {/* Merchant Portal only: live Support Team availability. Placed in the shared header so
+            every merchant template carries it without any page-level change; clicking it opens the
+            existing Customer Support page. Other portals render exactly as before. */}
+        {user.role === 'MERCHANT' && (
+          <SupportAvailabilityIndicator onOpen={onNavigate ? () => go('support') : undefined} />
+        )}
         <ThemeToggle compact />
         <div style={{ position:'relative' }} ref={notifRef}>
           <div

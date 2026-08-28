@@ -18,7 +18,8 @@ from app.schemas.schemas import (
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
 from app.services import tg_notify as tgn
-from app.core.cache import cached_json
+from app.services import account_ledger as ledger
+from app.core.cache import cache_delete, cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
 from app.core.config import settings
@@ -596,13 +597,23 @@ async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, r
     only rises, so threshold ≤ highest_debit always → a debit can't be both a new high and below
     the threshold."""
     ty = tx.type.value
-    if not (ty.startswith("WITHDRAWAL") or ty.startswith("SETTLEMENT")) or not tx.member_id:
+    if not (ty.startswith("WITHDRAWAL") or ty.startswith("SETTLEMENT")):
         return
-    ref = (await db.execute(
-        select(AccountTransaction.reference_number)
-        .where(AccountTransaction.member_id == tx.member_id)
-        .order_by(AccountTransaction.id.desc()).limit(1)
-    )).scalar_one_or_none()
+    # A payout explicitly made MANUAL/offline came out of no managed account, so it can't move any
+    # account's high-water mark.
+    if (tx.payout_payment_method or "").upper() == "MANUAL":
+        return
+    # The account the payout step actually recorded wins; only fall back to the member's
+    # most-recent receiving account when there is none — the same rule /accounts/balances uses.
+    ref = tx.payout_account_ref
+    if not ref:
+        if not tx.member_id:
+            return
+        ref = (await db.execute(
+            select(AccountTransaction.reference_number)
+            .where(AccountTransaction.member_id == tx.member_id)
+            .order_by(AccountTransaction.id.desc()).limit(1)
+        )).scalar_one_or_none()
     if not ref:
         return
     acc = (await db.execute(
@@ -795,6 +806,12 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "adminUtr": t.admin_utr,
         "payoutMode": t.payout_mode,
         "payoutDetails": json.loads(t.payout_details) if t.payout_details else None,
+        # How the withdrawal was actually paid out, recorded at completion (NULL before that step
+        # and on every row completed before it existed).
+        "payoutPaymentMethod": t.payout_payment_method,
+        "payoutAccountRef": t.payout_account_ref,
+        "payoutManualReference": t.payout_manual_reference,
+        "payoutRemarks": t.payout_remarks,
         "depositDetails": json.loads(t.deposit_details) if t.deposit_details else None,
         "approvedBy": t.approved_by,
         "processedBy": t.processed_by,
@@ -2919,6 +2936,126 @@ def _settlement_needs_utr(tx: Transaction) -> bool:
     return (tx.payout_mode or "BANK").upper() != "CASH"
 
 
+# ─── Withdrawal payout accounting (Feature 2) ─────────────────────────────────
+# The Admin's existing "Pay & Complete" step is where a withdrawal is actually PAID. These helpers
+# add — without touching the approval state machine that got the request here — the record of HOW
+# it was paid, WHICH managed account was debited, and the immutable ledger entry proving the
+# balance before and after. Every check runs server-side; nothing the browser sends about the
+# balance, ownership or completion state is trusted.
+
+
+async def _payout_already_posted(db: AsyncSession, tx: Transaction):
+    """The ledger entry a previous completion of this withdrawal already wrote, if any.
+
+    This is the idempotency guard that makes "Mark as Done" safe to click twice: the ledger's
+    UNIQUE (entry_type, transaction_ref) means at most one payout entry can ever exist for a
+    reference, and a repeat call short-circuits on the one already there instead of debiting again.
+    """
+    return await ledger.find_payout_entry(db, tx.ref)
+
+
+async def _record_withdrawal_payout(
+    db: AsyncSession, tx: Transaction, data: CompleteRequest, actor: User, request: Request | None
+) -> None:
+    """Validate the payout details, debit the selected account and post the ledger entry.
+
+    Runs BEFORE the transaction is flipped to COMPLETED, so the balance snapshot it records is the
+    true "before" figure and `balance_after` is what the derived balance will read once this
+    request commits. Everything here shares the request's single session/transaction with the
+    status change, the notifications and the audit rows — so either all of it lands or none of it
+    does; a withdrawal can never end up completed with no debit, or debited with no completion.
+
+    Applies to WITHDRAWALS only. Deposits and settlements take exactly the path they always have.
+    """
+    method = (data.paymentMethod or "").strip().upper()
+    if method not in ledger.PAYMENT_METHODS:
+        raise HTTPException(status_code=400, detail="Payment Method must be Bank Account or Manual / Offline Payment.")
+
+    # Idempotency — a completion already recorded for this withdrawal is never repeated.
+    if await _payout_already_posted(db, tx):
+        return
+
+    amount = round(float(tx.amount or 0.0), 2)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="This withdrawal has no payable amount.")
+
+    if method == "MANUAL":
+        # Offline payment: deliberately NOT associated with a payout bank account, so no managed
+        # account is debited and the balance snapshot is N/A. The reference is what makes the
+        # payment traceable, so it is mandatory.
+        manual_ref = (data.manualReference or "").strip()
+        if not manual_ref:
+            raise HTTPException(status_code=400, detail="Manual Payment Reference is required for an offline payment.")
+        tx.payout_payment_method = "MANUAL"
+        tx.payout_account_ref = None
+        tx.payout_manual_reference = manual_ref[:64]
+        tx.payout_remarks = (data.payoutRemarks or "").strip() or None
+        await ledger.post_entry(
+            db,
+            entry_type=ledger.WITHDRAWAL_PAYOUT, direction=ledger.DEBIT, amount=amount,
+            account=None, balance_before=None,
+            transaction_ref=tx.ref, transaction_id=tx.id, payment_method="MANUAL",
+            reference=tx.payout_manual_reference, remarks=tx.payout_remarks,
+            description=f"Withdrawal {tx.ref} paid manually / offline",
+            performed_by=actor.name, performed_by_id=actor.id, performed_by_role=_actor_role_label(actor),
+            merchant_business=tx.merchant_name, merchant_id=tx.merchant_id, member_id=tx.member_id,
+            client_request_id=(data.clientRequestId or None),
+        )
+        await record_audit(db, "WITHDRAWAL_PAYOUT_MANUAL", actor=actor, entity_type=tx.type.value,
+                           entity_id=tx.ref, new=f"MANUAL {amount}", reason=manual_ref,
+                           ip=_client_ip(request))
+        return
+
+    # ── Bank payout ───────────────────────────────────────────────────────────────
+    ref = (data.payoutAccountRef or "").strip()
+    if not ref:
+        raise HTTPException(status_code=400, detail="Select the payout account this withdrawal was paid from.")
+    # Lock FIRST: two operators completing payouts from the same account serialise here, so the
+    # second reads the first's committed balance instead of the same stale figure.
+    acc = await ledger.lock_account(db, ref)
+    if acc is None:
+        raise HTTPException(status_code=404, detail="Payout account not found.")
+    if str(acc.status or "").upper() != "ACTIVE":
+        raise HTTPException(status_code=400, detail="That payout account is not active and cannot be used.")
+
+    before = await ledger.account_balance(db, ref)
+    if before < amount:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient balance in {acc.account_name}: available ₹{before:,.2f}, required ₹{amount:,.2f}.",
+        )
+
+    tx.payout_payment_method = "BANK"
+    tx.payout_account_ref = acc.reference_number
+    tx.payout_manual_reference = None
+    tx.payout_remarks = (data.payoutRemarks or "").strip() or None
+    await ledger.post_entry(
+        db,
+        entry_type=ledger.WITHDRAWAL_PAYOUT, direction=ledger.DEBIT, amount=amount,
+        account=acc, balance_before=before,
+        transaction_ref=tx.ref, transaction_id=tx.id, payment_method="BANK",
+        remarks=tx.payout_remarks,
+        description=f"Withdrawal {tx.ref} paid from {acc.account_name} (A/C {acc.account_number})",
+        performed_by=actor.name, performed_by_id=actor.id, performed_by_role=_actor_role_label(actor),
+        merchant_business=tx.merchant_name, merchant_id=tx.merchant_id, member_id=tx.member_id,
+        client_request_id=(data.clientRequestId or None),
+    )
+    await record_audit(db, "WITHDRAWAL_PAYOUT_BANK", actor=actor, entity_type=tx.type.value,
+                       entity_id=tx.ref, old=f"{before:.2f}", new=f"{round(before - amount, 2):.2f}",
+                       reason=f"Paid from {acc.reference_number} — {acc.account_name}",
+                       ip=_client_ip(request))
+    # Account Management's balances listing is cached for ~5s; drop it so the debited account
+    # reads correctly straight after the payout.
+    await cache_delete("c:accounts:balances")
+
+
+def _actor_role_label(user: User) -> str:
+    """The acting user's role as recorded on a ledger entry (Admin, or the merchant role)."""
+    if user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        return user.role.value
+    return str(user.merchant_role or user.role.value).upper()
+
+
 @router.post("/{tx_id}/done")
 async def mark_done(
     tx_id: str,
@@ -2932,6 +3069,15 @@ async def mark_done(
     tx = await _get_tx(tx_id, db)
     is_deposit = tx.type.value.startswith("DEPOSIT")
     is_settlement = tx.type.value.startswith("SETTLEMENT")
+    is_withdrawal = tx.type.value.startswith("WITHDRAWAL")
+
+    # ── Duplicate completion guard (idempotency) ──────────────────────────────────
+    # A double click, a retried request or a second operator arriving late must not debit the
+    # payout account twice, post a second ledger entry, or re-notify. An already-COMPLETED
+    # withdrawal simply returns its existing completed state.
+    if is_withdrawal and tx.status == TxStatus.COMPLETED:
+        await _refresh_with_images(db, tx)
+        return _t(tx)
     # Settlement final approval requires a settlement proof (image or PDF) and — for every method
     # except cash, which has no bank reference — a UTR number. The admin cannot complete a
     # settlement without them. Deposits/withdrawals keep prior behaviour.
@@ -2949,6 +3095,13 @@ async def mark_done(
             field="admin_proof")
     if data and data.adminUtr:
         tx.admin_utr = data.adminUtr.strip()
+    # Payout details + account debit + ledger entry. Runs BEFORE the status flips so the ledger's
+    # balance-before snapshot is the true pre-payout figure, and inside the same transaction as the
+    # completion — so the two can never diverge. Only reached when the caller supplies a payment
+    # method, which keeps every existing completion call behaving exactly as it did.
+    if is_withdrawal and data and (data.paymentMethod or "").strip():
+        await _record_withdrawal_payout(db, tx, data, actor, request)
+
     tx.status = TxStatus.DEPOSITED if is_deposit else TxStatus.COMPLETED
     tx.processed_by = actor.name
     tx.approved_by = tx.approved_by or actor.name

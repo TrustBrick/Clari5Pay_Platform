@@ -708,6 +708,33 @@ export const formatDateTimeIST = (d?: string | null) => {
   }) + ' IST';
 };
 
+/**
+ * A one-shot idempotency key for a financial submit (withdrawal completion, manual adjustment).
+ *
+ * Minted ONCE when a form opens and sent with the request, so a double-click, an impatient retry
+ * or a dropped-response replay all carry the SAME key: the backend recognises it and returns the
+ * entry it already wrote instead of debiting or adjusting a second time. `crypto.randomUUID` is
+ * used where available, with a plain random fallback for older browsers.
+ */
+/**
+ * A bank account number shown the way a statement shows it: the last four digits behind bullets
+ * (`••••8890`). Used wherever an account is being *identified* rather than
+ * entered — the payout picker, the adjustment dialog, the ledger. Short or empty values are
+ * returned untouched, since there is nothing to hide.
+ */
+export const maskAccount = (acc?: string | null): string => {
+  const s = (acc || '').trim();
+  if (s.length <= 4) return s;
+  return '••••' + s.slice(-4);
+};
+
+export const newRequestId = (): string => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  } catch { /* fall through */ }
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+};
+
 export const CHART_DATA = [
   { day: 'Mon', deposit: 125000, withdrawal: 45000 },
   { day: 'Tue', deposit: 98000, withdrawal: 32000 },

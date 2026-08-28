@@ -2,12 +2,13 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from app.db.session import get_db
-from app.models.models import AccountMaster, AccountTransaction, AdminUpi, Transaction, TxStatus, User, UserRole
+from app.models.models import AccountLedgerEntry, AccountMaster, AccountTransaction, AdminUpi, Transaction, TxStatus, User, UserRole
 from app.core.deps import get_current_admin
-from app.core.cache import cache_get, cache_set
-from app.schemas.schemas import AccountCreate, ReasonRequest
+from app.services import account_ledger as ledger
+from app.core.cache import cache_delete, cache_get, cache_set
+from app.schemas.schemas import AccountCreate, AdjustmentCreate, ReasonRequest
 from app.api.routes.system_logs import log_event, record_audit
 from app.api.routes.transactions import compute_balance, _COMPLETED_STATUSES, _kind, _completed, _member_label
 
@@ -33,6 +34,27 @@ def _monthly_average_balance(biz_txns: list[Transaction], pay_in_rate: float, pa
         days += 1
         day += timedelta(days=1)
     return round(total / days, 2) if days else 0.0
+
+
+def _norm_member(m: str | None) -> str:
+    """Member ids are compared trimmed + upper-cased, so a casing/spacing mismatch between a
+    deposit and a later withdrawal can never break account attribution."""
+    return (m or "").strip().upper()
+
+
+def _debit_account(t: Transaction, member_acct: dict[str, str]) -> str | None:
+    """Which managed account a completed withdrawal/settlement came out of.
+
+    The single attribution rule, shared by /balances, /statement and /users so all three always
+    agree: the EXPLICIT payout account recorded at completion wins; a payout explicitly made
+    MANUAL/offline belongs to no account at all; anything else (every row completed before the
+    payout step existed) falls back to the member's most-recent receiving account.
+    """
+    if (t.payout_payment_method or "").upper() == "MANUAL":
+        return None
+    if t.payout_account_ref:
+        return t.payout_account_ref
+    return member_acct.get(_norm_member(t.member_id))
 
 
 @router.get("/balances")
@@ -69,15 +91,12 @@ async def account_balances(
     # from the account↔transaction links AND — so a debit is never silently dropped when a link
     # row is missing — from the member's own deposit history (Transaction.admin_ref into a managed
     # account). Member ids are normalised (trim + upper) so a casing/spacing mismatch between a
-    # deposit and a later withdrawal can't break the attribution.
-    def _norm(m: str | None) -> str:
-        return (m or "").strip().upper()
-
+    # deposit and a later withdrawal can't break the attribution (module-level _norm_member).
     acct_refs = {a.reference_number for a in accounts}
     member_acct: dict[str, str] = {}
     links = (await db.execute(select(AccountTransaction).order_by(AccountTransaction.id.desc()))).scalars().all()
     for l in links:
-        key = _norm(l.member_id)
+        key = _norm_member(l.member_id)
         if key and l.reference_number and key not in member_acct:
             member_acct[key] = l.reference_number
     # Fallback (only where a link row is absent): the managed account a member most-recently
@@ -85,9 +104,26 @@ async def account_balances(
     for t in sorted(txns, key=lambda x: (x.created_at or datetime.min), reverse=True):
         if not t.type.value.startswith("DEPOSIT"):
             continue
-        key = _norm(t.member_id)
+        key = _norm_member(t.member_id)
         if key and t.admin_ref in acct_refs and key not in member_acct:
             member_acct[key] = t.admin_ref
+
+    # Net manual adjustments per account (Account Management → Manual Adjustment). Folded into
+    # Available here so this screen and services/account_ledger.account_balance — the figure the
+    # adjustment and payout paths validate against — can never disagree. One grouped query.
+    adj_rows = (await db.execute(
+        select(
+            AccountLedgerEntry.account_ref,
+            func.coalesce(func.sum(
+                case((AccountLedgerEntry.direction == "CREDIT", AccountLedgerEntry.amount),
+                     else_=-AccountLedgerEntry.amount)
+            ), 0.0),
+        )
+        .where(AccountLedgerEntry.entry_type == "MANUAL_ADJUSTMENT",
+               AccountLedgerEntry.account_ref.isnot(None))
+        .group_by(AccountLedgerEntry.account_ref)
+    )).all()
+    adj_by_acct: dict[str, float] = {ref: float(total or 0.0) for ref, total in adj_rows}
 
     # Linked UPIs grouped by their parent account.
     upis = (await db.execute(select(AdminUpi))).scalars().all()
@@ -120,14 +156,14 @@ async def account_balances(
                     dep_high[t.admin_ref] = t.amount
                 if t.admin_ref not in dep_low or t.amount < dep_low[t.admin_ref]:
                     dep_low[t.admin_ref] = t.amount
-        elif ty.startswith("WITHDRAWAL"):
-            acct = member_acct.get(_norm(t.member_id))
+        elif ty.startswith("WITHDRAWAL") or ty.startswith("SETTLEMENT"):
+            # A debit attributes to the account it was ACTUALLY paid from when the payout step
+            # recorded one; otherwise it falls back to the member's most-recent receiving account
+            # (the historical rule, so figures for older rows are unchanged). A withdrawal paid
+            # MANUAL/offline touched no managed account, so it is attributed to none.
+            acct = _debit_account(t, member_acct)
             if t.status == TxStatus.COMPLETED and acct:
-                acct_wd[acct] += t.amount
-        elif ty.startswith("SETTLEMENT"):
-            acct = member_acct.get(_norm(t.member_id))
-            if t.status == TxStatus.COMPLETED and acct:
-                acct_st[acct] += t.amount
+                (acct_wd if ty.startswith("WITHDRAWAL") else acct_st)[acct] += t.amount
 
     out = []
     for a in accounts:
@@ -171,7 +207,9 @@ async def account_balances(
             "highestDebit": round(a.highest_debit or 0.0, 2),
             "withdrawals": round(wd, 2),
             "settlements": round(st, 2),
-            "available": round(total_d - wd - st, 2),   # deposits − withdrawals − settlements
+            "adjustments": round(adj_by_acct.get(ref, 0.0), 2),   # net of manual credits/debits
+            # deposits − withdrawals − settlements + net manual adjustments
+            "available": round(total_d - wd - st + adj_by_acct.get(ref, 0.0), 2),
             "linkedUpis": upis_by_acct.get(ref, []),
             "userCount": len(acct_users.get(ref, set())),   # distinct depositing users (operators)
             "merchants": rows,
@@ -207,14 +245,16 @@ async def account_statement(
     )).scalars().all()
     member_acct: dict[str, str] = {}
     for l in links:
-        if l.member_id and l.reference_number and l.member_id not in member_acct:
-            member_acct[l.member_id] = l.reference_number
+        key = _norm_member(l.member_id)
+        if key and l.reference_number and key not in member_acct:
+            member_acct[key] = l.reference_number
 
     def _belongs(t: Transaction) -> bool:
         if _kind(t) == "deposit":
             return t.admin_ref == ref
-        # withdrawals / settlements attribute via the member's receiving account
-        return bool(t.member_id and member_acct.get(t.member_id) == ref)
+        # withdrawals / settlements: the recorded payout account, else the member's receiving
+        # account — the one shared rule (_debit_account), so the statement reconciles to /balances.
+        return _debit_account(t, member_acct) == ref
 
     rows = [{
         "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
@@ -269,8 +309,9 @@ async def account_users(
     )).scalars().all()
     member_acct: dict[str, str] = {}
     for l in links:
-        if l.member_id and l.reference_number and l.member_id not in member_acct:
-            member_acct[l.member_id] = l.reference_number
+        key = _norm_member(l.member_id)
+        if key and l.reference_number and key not in member_acct:
+            member_acct[key] = l.reference_number
 
     def _pid(t: Transaction) -> str:
         return (t.member_id or "").strip().upper()
@@ -288,7 +329,7 @@ async def account_users(
     for t in txns:
         ty = t.type.value
         if ty.startswith("WITHDRAWAL") and t.status == TxStatus.COMPLETED and t.member_id:
-            if member_acct.get(t.member_id) == ref:
+            if _debit_account(t, member_acct) == ref:
                 wd_by_member[_pid(t)] += t.amount
                 _mark_active(_pid(t), t.created_at)
 
@@ -467,6 +508,12 @@ async def last_account_for_member(
     return {"referenceNumber": acc.reference_number}
 
 
+@router.get("/adjustment-reasons")
+async def adjustment_reasons(_: User = Depends(get_current_admin)):
+    """The closed list of reasons the adjustment form offers (free text goes in Remarks)."""
+    return {"reasons": list(ledger.ADJUSTMENT_REASONS)}
+
+
 @router.get("/{reference_number}")
 async def get_account(
     reference_number: str,
@@ -585,3 +632,133 @@ async def toggle_account(
     await db.refresh(acc)
     name_map = await _merchant_name_map(db)
     return _a(acc, name_map.get(acc.reference_number))
+
+
+# ═══ Manual balance adjustment (Feature 3) ═══════════════════════════════════════
+# An authorised Credit/Debit correction on a managed account. The stored balance is NEVER
+# overwritten — there isn't one: the balance is derived, and an adjustment takes effect purely by
+# existing as an immutable ledger entry (services/account_ledger.account_balance sums them in).
+# History is therefore append-only by construction; a wrong adjustment is corrected with a
+# compensating adjustment, never by editing or deleting the original.
+#
+# Permissions reuse the module's existing gate: every Account Management route is
+# ``get_current_admin`` (Admin + Super Admin). Merchant users — of any merchant role — are
+# rejected with 403 by that dependency and can neither see nor call this.
+
+
+@router.get("/{ref}/ledger")
+async def account_ledger_entries(
+    ref: str,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Accounting ledger for one managed account: manual adjustments and withdrawal payouts,
+    newest first, with the balance before/after each movement. Read-only — entries are immutable."""
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == ref)
+    )).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    rows = (await db.execute(
+        select(AccountLedgerEntry)
+        .where(AccountLedgerEntry.account_ref == ref)
+        .order_by(AccountLedgerEntry.id.desc())
+        .limit(max(1, min(limit, 200)))
+    )).scalars().all()
+    return {
+        "referenceNumber": ref,
+        "accountName": acc.account_name,
+        "balance": await ledger.account_balance(db, ref),
+        "entries": [ledger.serialize(e) for e in rows],
+    }
+
+
+@router.post("/{ref}/adjustments")
+async def create_adjustment(
+    ref: str,
+    data: AdjustmentCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Post a manual Credit/Debit adjustment against a managed account.
+
+    Every figure is recomputed server-side. The amount, type and reason the browser sends are
+    validated; the balance it displayed is ignored entirely — ``balance_before`` is read from the
+    authoritative balance under the account's row lock, and ``balance_after`` is derived from it.
+
+    Ordering matters and is deliberate:
+      1. lock the account row (``SELECT … FOR UPDATE``) — this is what serialises two operators
+         adjusting the same account: the second blocks until the first commits, then reads the
+         real balance rather than the stale one it started from;
+      2. read the authoritative balance;
+      3. validate (amount > 0, reason known, a debit may not overdraw the account);
+      4. write the immutable ledger entry + audit rows.
+    All four share this request's single transaction, so a failure anywhere rolls the whole thing
+    back — there is no state in which the ledger and the balance disagree.
+    """
+    # Idempotency — a replayed submit (double click, retried request) resolves to the entry the
+    # first one already posted instead of adjusting twice.
+    if data.clientRequestId:
+        existing = await ledger.find_by_client_request(db, data.clientRequestId)
+        if existing is not None:
+            return {"duplicate": True, "entry": ledger.serialize(existing)}
+
+    kind = (data.adjustmentType or "").strip().upper()
+    if kind not in (ledger.CREDIT, ledger.DEBIT):
+        raise HTTPException(status_code=400, detail="Adjustment Type must be Credit or Debit.")
+    reason = (data.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required.")
+    if reason not in ledger.ADJUSTMENT_REASONS:
+        raise HTTPException(status_code=400, detail="Select a valid reason.")
+    try:
+        amount = round(float(data.amount), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Enter a valid amount.")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero.")
+
+    acc = await ledger.lock_account(db, ref)
+    if acc is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if str(acc.status or "").upper() != "ACTIVE":
+        raise HTTPException(status_code=400, detail="This account is not active and cannot be adjusted.")
+
+    before = await ledger.account_balance(db, ref)
+    after = round(before + amount if kind == ledger.CREDIT else before - amount, 2)
+    # A debit may not drive the account negative — the same rule the payout path enforces.
+    if kind == ledger.DEBIT and after < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient balance: available ₹{before:,.2f}, debit ₹{amount:,.2f} would leave ₹{after:,.2f}.",
+        )
+
+    entry = await ledger.post_entry(
+        db,
+        entry_type=ledger.MANUAL_ADJUSTMENT, direction=kind, amount=amount,
+        account=acc, balance_before=before,
+        reason=reason, reference=(data.reference or "").strip()[:64] or None,
+        remarks=(data.remarks or "").strip() or None,
+        description=f"Manual {kind.lower()} adjustment on {acc.account_name} — {reason}",
+        performed_by=actor.name, performed_by_id=actor.id,
+        performed_by_role=(actor.role.value if actor.role else None),
+        client_request_id=(data.clientRequestId or None),
+    )
+    ip = request.client.host if request and request.client else None
+    await log_event(
+        db, "ACCOUNT_ADJUSTED",
+        f"{entry.entry_ref}: {kind.title()} ₹{amount:,.2f} on {acc.reference_number} "
+        f"({acc.account_name}) by {actor.name} — {reason}",
+        actor=actor,
+    )
+    await record_audit(
+        db, f"ACCOUNT_ADJUSTMENT_{kind}", actor=actor, entity_type="account",
+        entity_id=acc.reference_number, old=f"{before:.2f}", new=f"{after:.2f}",
+        reason=f"{reason}{(' — ' + entry.reference) if entry.reference else ''}", ip=ip,
+    )
+    # The balances listing is cached for ~5s; drop it so Account Management shows the new
+    # figure immediately rather than the pre-adjustment one.
+    await cache_delete("c:accounts:balances")
+    return {"duplicate": False, "entry": ledger.serialize(entry)}

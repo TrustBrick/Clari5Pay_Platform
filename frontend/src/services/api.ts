@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -332,7 +332,14 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/slip`, data);
     return res.data;
   },
-  markDone: async (id: string, data?: { adminProof?: string; adminUtr?: string }) => {
+  // Final completion. For a withdrawal the payout details (how it was paid, and from which
+  // managed account) are recorded here — the backend validates the account, debits it and posts
+  // the ledger entry in the same transaction. `clientRequestId` makes a replayed submit a no-op.
+  markDone: async (id: string, data?: {
+    adminProof?: string; adminUtr?: string;
+    paymentMethod?: 'BANK' | 'MANUAL'; payoutAccountRef?: string;
+    manualReference?: string; payoutRemarks?: string; clientRequestId?: string;
+  }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/done`, data ?? {});
     return res.data;
   },
@@ -505,6 +512,28 @@ export const accountAPI = {
     const res = await api.patch<Account>(`/api/accounts/${ref}/toggle`, { reason });
     return res.data;
   },
+  // ── Accounting ledger + manual adjustment (Account Management) ──
+  // The immutable entries for one account (payout debits + manual adjustments), newest first,
+  // alongside the server's authoritative balance.
+  ledger: async (ref: string, limit = 50) => {
+    const res = await api.get<AccountLedger>(`/api/accounts/${ref}/ledger`, { params: { limit } });
+    return res.data;
+  },
+  adjustmentReasons: async () => {
+    const res = await api.get<{ reasons: string[] }>('/api/accounts/adjustment-reasons');
+    return res.data.reasons;
+  },
+  // Post a manual Credit/Debit. The backend recomputes the balance from its own authoritative
+  // figure under a row lock — the amount/type/reason are the only things it takes from here.
+  // `clientRequestId` is minted once per form so a double-click resolves to the same entry.
+  adjust: async (ref: string, data: {
+    adjustmentType: 'CREDIT' | 'DEBIT'; amount: number; reason: string;
+    reference?: string; remarks?: string; clientRequestId?: string;
+  }) => {
+    const res = await api.post<{ duplicate: boolean; entry: AccountLedgerEntry }>(
+      `/api/accounts/${ref}/adjustments`, data);
+    return res.data;
+  },
 };
 
 export const adminUpiAPI = {
@@ -561,6 +590,12 @@ export const supportAPI = {
   },
   myMessages: async () => {
     const res = await api.get<SupportMessage[]>('/api/support/my-messages');
+    return res.data;
+  },
+  // Live Support Team availability (header indicator). Derived server-side from the same rule
+  // that decides whether a conversation can be auto-assigned — never from "am I logged in".
+  availability: async () => {
+    const res = await api.get<SupportTeamAvailability>('/api/support/availability');
     return res.data;
   },
   myConversation: async () => {

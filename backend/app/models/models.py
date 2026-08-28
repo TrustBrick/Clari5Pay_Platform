@@ -232,6 +232,19 @@ class Transaction(Base):
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # ── Withdrawal payout (Admin "Pay & Complete") ────────────────────────────────
+    # WHICH managed account the payout was actually made from, and HOW it was paid. Before these
+    # columns a completed withdrawal carried no account at all and had to be *guessed* back to
+    # the member's most-recent receiving account; when set, this is the explicit, recorded answer
+    # and every balance/statement view attributes the debit here instead of guessing.
+    # payout_payment_method: BANK (an account_master account was debited) | MANUAL (offline —
+    # deliberately no account). NULL on every row completed before this step existed, which keeps
+    # the historical member-map attribution working untouched.
+    payout_account_ref: Mapped[Optional[str]] = mapped_column(String(40), index=True, nullable=True)
+    payout_payment_method: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    payout_manual_reference: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    payout_remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # ── Agent Management (Phase 4): which Non-EPS agent + agent account handles this transaction.
     # All nullable; only ever written by the demo-gated agent-assignment endpoint. Untouched (NULL)
     # on Production and by the existing deposit/withdrawal/settlement create/approval logic.
@@ -1052,3 +1065,92 @@ class TransactionAttachment(Base):
     # return for that file. NULL means the column still holds the inline copy and rollback is
     # still possible.
     source_cleared_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AccountLedgerEntry(Base):
+    """Immutable accounting ledger for the Admin-managed bank accounts (``account_master``).
+
+    ONE ledger for every non-transaction money movement against a managed account. Today it
+    records two entry types:
+
+      • ``WITHDRAWAL_PAYOUT``  — the account actually debited when a withdrawal is paid out
+        (Admin "Pay & Complete"). ``payment_method`` distinguishes a BANK payout from a
+        MANUAL/OFFLINE one; a manual payout is deliberately NOT tied to a bank account, so
+        ``account_ref`` and the balance snapshot are NULL on those rows.
+      • ``MANUAL_ADJUSTMENT``  — an authorised Credit/Debit correction made from Account
+        Management, with a mandatory reason.
+
+    This is an AUDIT ledger, not a second balance store. The platform's account balance stays
+    derived from the transaction history (``/api/accounts/balances``); this table adds the two
+    things a derived figure cannot express — the balance snapshot at the instant of a movement,
+    and manual adjustments, which have no transaction to be derived from. ``services/
+    account_ledger.account_balance`` is the single function that combines both.
+
+    Rows are WRITE-ONCE. History is never edited or deleted to correct a mistake: post a
+    compensating entry instead.
+
+    Two uniqueness guarantees, both enforced by the database rather than by application logic:
+      • ``uq_account_ledger_txn`` — at most one payout entry per (entry_type, transaction_ref),
+        so a withdrawal can never be debited twice however many times "Mark as Done" is clicked.
+        NULLs compare as distinct in Postgres, so manual adjustments (no transaction_ref) are
+        unaffected.
+      • ``client_request_id`` UNIQUE — a caller-supplied idempotency key; a replayed submit
+        (double click, retried request) resolves to the entry that already exists.
+    """
+    __tablename__ = "account_ledger"
+    __table_args__ = (
+        UniqueConstraint("entry_type", "transaction_ref", name="uq_account_ledger_txn"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    # System-generated, immutable serial ref — ADJ000001 (adjustment) / LED000001 (payout).
+    entry_ref: Mapped[str] = mapped_column(String(24), unique=True, index=True, nullable=False)
+
+    # WITHDRAWAL_PAYOUT | MANUAL_ADJUSTMENT
+    entry_type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    # CREDIT | DEBIT — the direction applied to the account's balance.
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # The debited/credited managed account. NULL only for a MANUAL/OFFLINE withdrawal payout,
+    # which by definition has no payout bank account.
+    account_ref: Mapped[Optional[str]] = mapped_column(
+        String(40), ForeignKey("account_master.reference_number"), index=True, nullable=True
+    )
+    account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Authoritative balance snapshot, computed server-side under a row lock. NULL when the entry
+    # has no account (manual/offline payout).
+    balance_before: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    balance_after: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Source transaction (withdrawal reference, e.g. WIT000123) for a payout entry.
+    transaction_ref: Mapped[Optional[str]] = mapped_column(String(32), index=True, nullable=True)
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # BANK | MANUAL — how the withdrawal was actually paid (payout entries only).
+    payment_method: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # Free-text/selected supporting fields: the operator's manual payment reference or the
+    # adjustment's Reference, the adjustment reason code, and remarks. All display-only.
+    reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    reference: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Who / when. `created_at_ist` is the human-facing IST display string, matching the
+    # convention every other operator-visible timestamp in the platform uses.
+    performed_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    performed_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    performed_by_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+
+    # Business scope of the movement (the withdrawal's merchant business for a payout). Recorded
+    # so the ledger answers "whose money moved through this account" without a join.
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    merchant_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    member_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Caller-supplied idempotency key (a UUID minted per form submission). UNIQUE, so a replay
+    # of the same submit returns the existing entry instead of posting a second one.
+    client_request_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)

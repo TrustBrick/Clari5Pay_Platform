@@ -245,6 +245,32 @@ class SlipRequest(BaseModel):
 class CompleteRequest(BaseModel):
     adminProof: Optional[str] = None  # payment receipt image for withdrawals/settlements
     adminUtr: Optional[str] = None    # agent's payment UTR number
+    # ── Withdrawal payout details (Feature 2) ─────────────────────────────────────
+    # How the withdrawal was actually paid, and from which managed account. All optional so the
+    # existing completion call (proof + UTR only) keeps working exactly as before; supplying
+    # paymentMethod is what opts a completion into the payout-accounting path.
+    paymentMethod: Optional[str] = None       # BANK | MANUAL
+    payoutAccountRef: Optional[str] = None    # account_master reference (BANK only)
+    manualReference: Optional[str] = None     # operator's offline payment reference (MANUAL only)
+    payoutRemarks: Optional[str] = None
+    # Idempotency key minted per submission — a replayed "Mark as Done" resolves to the entry
+    # already posted instead of debiting a second time.
+    clientRequestId: Optional[str] = None
+
+
+class AdjustmentCreate(BaseModel):
+    """A manual Credit/Debit adjustment on a managed account (Account Management).
+
+    The frontend's own "Balance After" preview is never trusted: the backend recomputes it from
+    the authoritative balance under a row lock. `clientRequestId` is a UUID the form mints once,
+    so a double-click or retried request resolves to the adjustment that already exists.
+    """
+    adjustmentType: str                       # CREDIT | DEBIT
+    amount: float
+    reason: str
+    reference: Optional[str] = None
+    remarks: Optional[str] = None
+    clientRequestId: Optional[str] = None
 
 
 class ReasonRequest(BaseModel):

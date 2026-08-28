@@ -124,6 +124,12 @@ export interface Transaction {
   paymentLink?: string | null;
   payoutMode?: string | null;
   payoutDetails?: Record<string, string> | null;
+  // Recorded at completion by the Admin's Pay & Complete step (null before it, and on every
+  // withdrawal completed before the payout-accounting step existed).
+  payoutPaymentMethod?: string | null;      // BANK | MANUAL
+  payoutAccountRef?: string | null;         // the managed account actually debited
+  payoutManualReference?: string | null;
+  payoutRemarks?: string | null;
   depositDetails?: Record<string, string> | null;
   qrExpiresAt?: string | null;
   utr?: string | null;
@@ -223,10 +229,45 @@ export interface AccountBalance {
   totalFees?: number;
   withdrawals?: number;
   settlements?: number;
-  available: number;        // deposits − withdrawals − settlements (all channels)
+  adjustments?: number;     // net of manual credits/debits posted from Account Management
+  available: number;        // deposits − withdrawals − settlements + net manual adjustments
   linkedUpis?: { id: number; label: string; upiId: string; status: string }[];
   userCount?: number;       // distinct users (operators) who deposited into this account
   merchants: AccountMerchantBalance[];
+}
+
+// One immutable entry in a managed account's accounting ledger (GET /api/accounts/{ref}/ledger).
+// Covers both a withdrawal payout debit and a manual Credit/Debit adjustment. `balanceBefore` /
+// `balanceAfter` are the server's authoritative snapshot; they are null for a MANUAL/offline
+// payout, which is deliberately not tied to any bank account.
+export interface AccountLedgerEntry {
+  id: number;
+  entryRef: string;                                     // ADJ000123 / LED000045
+  entryType: 'WITHDRAWAL_PAYOUT' | 'MANUAL_ADJUSTMENT';
+  direction: 'CREDIT' | 'DEBIT';
+  amount: number;
+  accountRef: string | null;
+  balanceBefore: number | null;
+  balanceAfter: number | null;
+  transactionRef: string | null;
+  paymentMethod: string | null;                         // BANK | MANUAL (payout entries)
+  reason: string | null;
+  reference: string | null;
+  remarks: string | null;
+  description: string | null;
+  performedBy: string | null;
+  performedByRole: string | null;
+  createdAt: string | null;
+  createdAtIst: string | null;
+  merchantBusiness: string | null;
+  memberId: string | null;
+}
+
+export interface AccountLedger {
+  referenceNumber: string;
+  accountName: string;
+  balance: number;
+  entries: AccountLedgerEntry[];
 }
 
 // Account → User → Player drill-down (Account Management popup). A "User" is the merchant
@@ -351,6 +392,16 @@ export interface AdminUpi {
   status: string;
   createdDate: string;
   createdTime: string;
+}
+
+// Live Support Team availability (GET /api/support/availability) — the header indicator's
+// only input. `available` is true only while at least one support member could actually take a
+// new conversation right now (online, not Busy/On-Break, below their conversation limit).
+export interface SupportTeamAvailability {
+  available: boolean;
+  availableAgents: number;
+  onlineAgents: number;
+  totalAgents: number;
 }
 
 export interface SupportMessage {

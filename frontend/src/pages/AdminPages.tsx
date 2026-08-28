@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
@@ -21,7 +21,7 @@ import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLo
 import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappStats, TelegramStatus } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts, MerchantAnalyticsRow } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
+import type { Transaction, User, Account, AccountBalance, AccountLedgerEntry, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
@@ -78,6 +78,19 @@ const RequestModal: React.FC<{
   const [bankImage, setBankImage] = useState<string | null>(null);   // optional custom bank-details image
   const [paymentLink, setPaymentLink] = useState('');                // Card: the generated gateway link
   const [payUtr, setPayUtr] = useState('');
+  // ── Payout details (withdrawal completion) ────────────────────────────────
+  // How the withdrawal was actually paid, and from which managed account. The account list is
+  // the SAME Account Management list the deposit step uses — the operator picks from it and can
+  // never type an arbitrary account. Every figure shown below is display-only: the backend
+  // recomputes the balance and validates the account before it debits anything.
+  const [payMethod, setPayMethod] = useState<'BANK' | 'MANUAL'>('BANK');
+  const [payoutAccountRef, setPayoutAccountRef] = useState('');
+  const [payoutBalances, setPayoutBalances] = useState<AccountBalance[]>([]);
+  const [manualRef, setManualRef] = useState('');
+  const [payoutRemarks, setPayoutRemarks] = useState('');
+  // One idempotency key per opened request: a double-click or retried submit resolves to the
+  // completion already recorded instead of debiting the account twice.
+  const payoutKey = useRef(newRequestId());
   const [saving, setSaving] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
@@ -102,6 +115,21 @@ const RequestModal: React.FC<{
   const chooseStep = canAct && isDeposit && !isCardDeposit && tx.status === 'ACCOUNT_REQUESTED'; // pick account → auto PNG
   const depositDoneStep = canAct && isDeposit && tx.status === 'SLIP_SUBMITTED'; // review slip → Deposited
   const payStep = canAct && !isDeposit && (tx.status === 'SLIP_SUBMITTED' || tx.status === 'ACCOUNT_REQUESTED'); // pay merchant → upload receipt → Completed
+  // Payout details are captured on a WITHDRAWAL completion only. Deposits and settlements keep
+  // exactly the completion they have always had.
+  const needsPayout = payStep && !isSettlement;
+  const payoutBalMap = Object.fromEntries(payoutBalances.map(b => [b.referenceNumber, b]));
+  const selectedPayoutAcc = accounts.find(a => a.referenceNumber === payoutAccountRef);
+  // Display-only: the balance the server last reported for the chosen account. The debit itself is
+  // validated against the authoritative balance server-side, under a row lock.
+  const selectedPayoutBal = payoutAccountRef ? (payoutBalMap[payoutAccountRef]?.available ?? null) : null;
+  // Human label for an ALREADY-recorded payout account (shown after completion). Uses the loaded
+  // account list when available and otherwise falls back to the stored reference, so the record
+  // still reads correctly on a request whose account list was never fetched.
+  const payoutAcc = accounts.find(a => a.referenceNumber === record.payoutAccountRef);
+  const payoutAccountLabel = payoutAcc
+    ? `${payoutAcc.bankName} — A/C ${maskAccount(payoutAcc.accountNumber)}`
+    : (record.payoutAccountRef || '—');
   const active = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'SLIP_SUBMITTED'].includes(tx.status);
   const canReject = canAct && active;
   const title = cardLinkStep ? 'Submit Payment Link' : chooseStep ? 'Choose Account' : depositDoneStep ? 'Review Payment Slip' : payStep ? 'Pay & Complete' : 'Request Details';
@@ -155,6 +183,17 @@ const RequestModal: React.FC<{
       }
     }).catch(()=>{});
   }, [chooseStep, tx.memberId]);
+
+  // Payout accounts for the completion step — the same Account Management accounts, active
+  // only. Loaded here (not in the deposit branch above) so a withdrawal gets the list without the
+  // deposit-only member/UPI lookups running.
+  useEffect(() => {
+    if (!payStep) return;
+    accountAPI.list()
+      .then(a => setAccounts(a.filter(x => (x.status || '').toUpperCase() === 'ACTIVE')))
+      .catch(() => {});
+    accountAPI.balances().then(setPayoutBalances).catch(() => {});
+  }, [payStep]);
 
   // Load UPIs that belong to an account — the agent can send one instead of a bank account.
   useEffect(() => {
@@ -234,12 +273,32 @@ const RequestModal: React.FC<{
   const complete = async (withReceipt: boolean) => {
     if (withReceipt && needReceipt && !receipt) { showToast('Upload the payment proof', 'error'); return; }
     if (withReceipt && needUtr && !payUtr.trim()) { showToast(isCryptoPayout ? 'Enter the transaction hash' : 'Enter the UTR number', 'error'); return; }
+    // Withdrawal payout details. Validated again server-side — these checks only keep the
+    // operator from submitting an obviously incomplete form.
+    if (needsPayout) {
+      if (payMethod === 'BANK' && !payoutAccountRef) { showToast('Select the payout account', 'error'); return; }
+      if (payMethod === 'MANUAL' && !manualRef.trim()) { showToast('Enter the manual payment reference', 'error'); return; }
+      if (payMethod === 'BANK' && selectedPayoutBal != null && selectedPayoutBal < tx.amount) {
+        showToast('That account does not have enough balance for this payout', 'error'); return;
+      }
+    }
+    if (saving) return;                       // guard the in-flight click; the key below guards the rest
     setSaving(true);
     try {
-      await transactionAPI.markDone(tx.id, withReceipt ? { adminProof: receipt || undefined, adminUtr: payUtr.trim() || undefined } : undefined);
+      await transactionAPI.markDone(tx.id, withReceipt ? {
+        adminProof: receipt || undefined,
+        adminUtr: payUtr.trim() || undefined,
+        ...(needsPayout ? {
+          paymentMethod: payMethod,
+          payoutAccountRef: payMethod === 'BANK' ? payoutAccountRef : undefined,
+          manualReference: payMethod === 'MANUAL' ? manualRef.trim() : undefined,
+          payoutRemarks: payoutRemarks.trim() || undefined,
+          clientRequestId: payoutKey.current,
+        } : {}),
+      } : undefined);
       showToast(`${tx.ref} ${isDeposit ? 'deposited' : 'completed'}`);
       onDone?.(); onClose();
-    } catch { showToast('Failed to complete', 'error'); }
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to complete', 'error'); }
     finally { setSaving(false); }
   };
 
@@ -361,6 +420,19 @@ const RequestModal: React.FC<{
         </div>
       )}
 
+      {/* Payout record ── how a completed withdrawal was actually paid, and from which managed
+          account. Present only once the completion step has recorded it. */}
+      {record.payoutPaymentMethod && (
+        <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Payout Record</p>
+          <Row k="Payment Method" v={record.payoutPaymentMethod === 'MANUAL' ? 'Manual / Offline Payment' : 'Bank Account'} />
+          {record.payoutAccountRef && <Row k="Payout Account" v={payoutAccountLabel} />}
+          {record.payoutManualReference && <Row k="Manual Payment Reference" v={record.payoutManualReference} />}
+          <Row k="Amount Debited" v={fmt(tx.amount)} />
+          {record.payoutRemarks && <Row k="Remarks" v={record.payoutRemarks} />}
+        </div>
+      )}
+
       {/* Approval record — Created/Supervisor/Manager/Admin trail + remarks history. */}
       {(record.supervisorName || record.managerName || record.approvedBy || record.processedBy || (record.remarksHistory && record.remarksHistory.length > 0)) && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
@@ -470,6 +542,63 @@ const RequestModal: React.FC<{
         </div>
       )}
 
+      {/* PAYOUT DETAILS ── which account the money actually left, or an offline payment.
+          Selection only: an arbitrary account can never be typed in, and the backend re-validates
+          the account, its status and its balance before debiting. */}
+      {needsPayout && (
+        <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Payout Details</p>
+
+          <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Payment Method<span style={{ color:T.danger }}> *</span></label>
+          <div style={{ display:'flex',gap:8,marginBottom:14,flexWrap:'wrap' }}>
+            <Btn size="sm" variant={payMethod === 'BANK' ? 'primary' : 'ghost'} onClick={()=>setPayMethod('BANK')}><Icon name="bank" size={14} /> Bank Account</Btn>
+            <Btn size="sm" variant={payMethod === 'MANUAL' ? 'primary' : 'ghost'} onClick={()=>setPayMethod('MANUAL')}><Icon name="amount" size={14} /> Manual / Offline Payment</Btn>
+          </div>
+
+          {payMethod === 'BANK' ? (
+            <>
+              <Sel label="Payout Account" required value={payoutAccountRef} onChange={e=>setPayoutAccountRef(e.target.value)}
+                options={[{ value:'', label:'— Select Bank Account —' }, ...accounts.map(a => ({
+                  value: a.referenceNumber,
+                  label: `${a.bankName} — A/C ${maskAccount(a.accountNumber)}`,
+                }))]} />
+              {selectedPayoutAcc && (
+                <div style={{ display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:10,background:T.canvas,border:`1px solid ${T.border}`,marginBottom:12 }}>
+                  <BankLogo name={selectedPayoutAcc.bankName} size={26} />
+                  <div style={{ minWidth:0 }}>
+                    <p style={{ margin:0,fontSize:12.5,fontWeight:800,color:T.textMain }}>{selectedPayoutAcc.bankName}</p>
+                    <p style={{ margin:0,fontSize:11,color:T.textMuted }}>A/C {maskAccount(selectedPayoutAcc.accountNumber)}</p>
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <Input label="Manual Payment Reference" required value={manualRef} onChange={e=>setManualRef(e.target.value)}
+                placeholder="e.g. OFF12345"
+                hint="An offline payment is not tied to a payout bank account; this reference is what makes it traceable." />
+            </>
+          )}
+
+          <Input label="Remarks" value={payoutRemarks} onChange={e=>setPayoutRemarks(e.target.value)} placeholder="Optional note recorded on the ledger entry" />
+
+          {/* Summary — the amounts this completion will record. Display only. */}
+          <div style={{ background:T.canvas,borderRadius:10,padding:'10px 14px',marginBottom:4 }}>
+            <Row k="Withdrawal Amount" v={fmt(tx.amount)} />
+            {payMethod === 'BANK' && selectedPayoutAcc && (
+              <Row k="Selected Payout Account" v={<span>{selectedPayoutAcc.bankName}<br /><span style={{ fontWeight:600,color:T.textMuted }}>A/C {maskAccount(selectedPayoutAcc.accountNumber)}</span></span>} />
+            )}
+            {payMethod === 'BANK' && selectedPayoutBal != null && (
+              <Row k="Account Balance" v={<span style={{ color: selectedPayoutBal < tx.amount ? T.danger : T.textMain }}>{fmt(selectedPayoutBal)}</span>} />
+            )}
+            <Row k="Amount to Debit" v={payMethod === 'BANK' ? fmt(tx.amount) : `${fmt(tx.amount)} (offline)`} />
+          </div>
+          {payMethod === 'BANK' && selectedPayoutBal != null && selectedPayoutBal < tx.amount && (
+            <p style={{ fontSize:11,color:T.danger,fontWeight:700,margin:'6px 0 0' }}>This account does not have enough balance for the payout.</p>
+          )}
+        </div>
+      )}
+
       {payStep && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Pay & Confirm{tx.payoutMode ? ` — ${PAYOUT_MODE_LABELS[payoutMode] || payoutMode}` : ''}</p>
@@ -481,7 +610,7 @@ const RequestModal: React.FC<{
             {receipt && <img src={receipt} alt="Receipt" style={{ width:'auto',maxWidth:240,maxHeight:200,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,margin:'12px 0',background:T.canvas }} />}
           </>}
           <div style={{ display:'flex',gap:10,marginTop:12 }}>
-            <Btn onClick={()=>complete(true)} disabled={saving||(needReceipt&&!receipt)||(needUtr&&!payUtr.trim())}>{saving ? 'Saving...' : '<Icon name="approve" size={14} /> Complete'}</Btn>
+            <Btn onClick={()=>complete(true)} disabled={saving||(needReceipt&&!receipt)||(needUtr&&!payUtr.trim())||(needsPayout&&payMethod==='BANK'&&!payoutAccountRef)||(needsPayout&&payMethod==='MANUAL'&&!manualRef.trim())}>{saving ? 'Saving...' : '<Icon name="approve" size={14} /> Complete'}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
         </div>
@@ -1403,12 +1532,116 @@ export const AdminMerchantsPage: React.FC = () => {
 };
 
 // ─── Admin Account Management ───────────────────────────────────────────────────
+// ─── Manual Balance Adjustment ─────────────────────────────
+// An authorised Credit/Debit correction on a managed account. Nothing here is authoritative: the
+// "Balance After Adjustment" line is a PREVIEW for the operator, and the backend recomputes it
+// from its own balance under a row lock before writing an immutable ledger entry. The balance is
+// never overwritten — the adjustment takes effect purely by that entry existing.
+const AdjustmentModal: React.FC<{
+  account: Account;
+  balance: number;
+  onClose: () => void;
+  onDone: () => void;
+}> = ({ account, balance, onClose, onDone }) => {
+  const { showToast } = useToast();
+  const [kind, setKind] = useState<'CREDIT' | 'DEBIT'>('CREDIT');
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [reference, setReference] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [reasons, setReasons] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  // Minted once per opened dialog: a double-click or a retried request carries the same key, so
+  // the backend returns the adjustment it already posted instead of applying a second one.
+  const requestId = useRef(newRequestId());
+
+  useEffect(() => { accountAPI.adjustmentReasons().then(setReasons).catch(()=>{}); }, []);
+
+  const value = parseFloat(parseIndianAmount(amount)) || 0;
+  const after = kind === 'CREDIT' ? balance + value : balance - value;
+  const overdraw = kind === 'DEBIT' && value > 0 && after < 0;
+  const canSubmit = !saving && value > 0 && !!reason && !overdraw;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSaving(true);
+    try {
+      const res = await accountAPI.adjust(account.referenceNumber, {
+        adjustmentType: kind, amount: value, reason,
+        reference: reference.trim() || undefined,
+        remarks: remarks.trim() || undefined,
+        clientRequestId: requestId.current,
+      });
+      showToast(res.duplicate
+        ? `Already recorded as ${res.entry.entryRef}`
+        : `${res.entry.entryRef}: ${kind === 'CREDIT' ? 'credited' : 'debited'} ${fmt(res.entry.amount)}`);
+      onDone(); onClose();
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to post the adjustment', 'error');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title="Manual Balance Adjustment" icon="amount" onClose={onClose} dirty={value > 0 || !!reason}>
+      <div style={{ display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderRadius:10,background:T.canvas,border:`1px solid ${T.border}`,marginBottom:16 }}>
+        <BankLogo name={account.bankName} size={28} />
+        <div style={{ minWidth:0,flex:1 }}>
+          <p style={{ margin:0,fontSize:13,fontWeight:800,color:T.textMain }}>{account.bankName}</p>
+          <p style={{ margin:0,fontSize:11,color:T.textMuted }}>{account.accountName} — A/C {maskAccount(account.accountNumber)}</p>
+        </div>
+        <div style={{ textAlign:'right' }}>
+          <p style={{ margin:0,fontSize:10,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',fontWeight:800 }}>Current Balance</p>
+          <p style={{ margin:0,fontSize:14,fontWeight:800,color:T.textMain }}>{fmt(balance)}</p>
+        </div>
+      </div>
+
+      <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Adjustment Type<span style={{ color:T.danger }}> *</span></label>
+      <div style={{ display:'flex',gap:8,marginBottom:16 }}>
+        <Btn size="sm" variant={kind === 'CREDIT' ? 'green' : 'ghost'} onClick={()=>setKind('CREDIT')}>Credit</Btn>
+        <Btn size="sm" variant={kind === 'DEBIT' ? 'danger' : 'ghost'} onClick={()=>setKind('DEBIT')}>Debit</Btn>
+      </div>
+
+      <Input label="Amount" required value={amount} inputMode="decimal"
+        onChange={e=>setAmount(formatIndianAmountInput(e.target.value))} placeholder="0" icon="amount"
+        error={overdraw ? 'This debit would leave the account with a negative balance.' : undefined} />
+
+      <Sel label="Reason" required value={reason} onChange={e=>setReason(e.target.value)}
+        options={[{ value:'', label:'— Select Reason —' }, ...reasons.map(r => ({ value:r, label:r }))]} />
+
+      <Input label="Reference" value={reference} onChange={e=>setReference(e.target.value)} placeholder="e.g. OFF12345" />
+      <Input label="Remarks" value={remarks} onChange={e=>setRemarks(e.target.value)} placeholder="Optional note recorded on the ledger entry" />
+
+      <div style={{ background:T.canvas,borderRadius:10,padding:'10px 14px',marginBottom:16 }}>
+        <div style={{ display:'flex',justifyContent:'space-between',gap:12 }}>
+          <span style={{ fontSize:12,color:T.textMuted }}>Balance After Adjustment</span>
+          <span style={{ fontSize:13,fontWeight:800,color: overdraw ? T.danger : kind === 'CREDIT' ? T.success : T.textMain }}>{fmt(after)}</span>
+        </div>
+        <p style={{ margin:'6px 0 0',fontSize:10.5,color:T.textMuted }}>Preview only — the final balance is recalculated on the server from the authoritative account balance.</p>
+      </div>
+
+      <div style={{ display:'flex',gap:10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={submit} disabled={!canSubmit}>{saving ? 'Saving...' : 'Confirm Adjustment'}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
 export const AdminAccountsPage: React.FC = () => {
   const { showToast } = useToast();
   const { user } = useAuth();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [search, setSearch] = useState('');
   const [detail, setDetail] = useState<Account | null>(null);
+  // Accounting ledger for the account whose Details popup is open: manual adjustments and
+  // withdrawal payouts, newest first. Read-only — entries are immutable, so there is nothing to
+  // edit here; a wrong adjustment is corrected with a compensating one.
+  const [detailLedger, setDetailLedger] = useState<AccountLedgerEntry[]>([]);
+  useEffect(() => {
+    if (!detail) { setDetailLedger([]); return; }
+    accountAPI.ledger(detail.referenceNumber, 25)
+      .then(r => setDetailLedger(r.entries)).catch(() => setDetailLedger([]));
+  }, [detail]);
   // Per-account bank statement (reuses the shared Agent Ledger renderer).
   const [stmtAcc, setStmtAcc] = useState<Account | null>(null);
   const [stmtRows, setStmtRows] = useState<ReportRow[]>([]);
@@ -1434,6 +1667,9 @@ export const AdminAccountsPage: React.FC = () => {
   );
   const closeCreate = () => { setShowCreate(false); ifscFill.reset(); };
 
+  // Manual Adjustment dialog (Account Management). Only reachable from this Admin-only page, so
+  // it inherits the module's existing permission gate — merchant users never see or reach it.
+  const [adjustAcc, setAdjustAcc] = useState<Account | null>(null);
   const [toggleAcc, setToggleAcc] = useState<Account | null>(null);
   const [busy, setBusy] = useState(false);
   const [balances, setBalances] = useState<AccountBalance[]>([]);
@@ -1477,7 +1713,7 @@ export const AdminAccountsPage: React.FC = () => {
   };
   const acctName = (ref?: string | null) => accounts.find(a => a.referenceNumber === ref)?.accountName;
   useEffect(() => { reload(); }, []);
-  usePoll(() => { if (!detail && !showCreate && !toggleAcc && !stmtAcc && !usersAcct) reload(); });
+  usePoll(() => { if (!detail && !showCreate && !toggleAcc && !stmtAcc && !usersAcct && !adjustAcc) reload(); });
 
   const doToggle = async (reason: string) => {
     if (!toggleAcc) return;
@@ -1522,7 +1758,7 @@ export const AdminAccountsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Highest Debit','Deposits Received','Available','Users','Status','Details'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Highest Debit','Deposits Received','Available','Users','Status','Actions'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -1550,7 +1786,12 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px' }}>
                     <Btn size="sm" variant={a.status==='ACTIVE'?'success':'danger'} onClick={()=>setToggleAcc(a)}>{a.status==='ACTIVE'?'● ACTIVE':'○ INACTIVE'}</Btn>
                   </td>
-                  <td style={{ padding:'11px 14px' }}><Btn size="sm" variant="ghost" onClick={()=>setDetail(a)}>View</Btn></td>
+                  <td style={{ padding:'11px 14px' }}>
+                    <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
+                      <Btn size="sm" variant="ghost" onClick={()=>setDetail(a)}>View</Btn>
+                      <Btn size="sm" variant="secondary" onClick={()=>setAdjustAcc(a)}><Icon name="amount" size={13} /> Manual Adjustment</Btn>
+                    </div>
+                  </td>
                 </tr>
               );})}
             </tbody>
@@ -1768,6 +2009,36 @@ export const AdminAccountsPage: React.FC = () => {
               </span>
             </div>
           ))}
+          {/* Accounting ledger ── every movement this account's balance has been through that is
+              not an ordinary transaction: manual adjustments and recorded withdrawal payouts. */}
+          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+            <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Accounting Ledger</p>
+            {detailLedger.length === 0 ? (
+              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>No adjustments or recorded payouts on this account yet.</p>
+            ) : detailLedger.map(e => (
+              <div key={e.id} style={{ borderLeft:`3px solid ${e.direction === 'CREDIT' ? T.success : T.danger}`,paddingLeft:10,marginBottom:10 }}>
+                <div style={{ display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap' }}>
+                  <span style={{ fontSize:12,fontWeight:800,color:T.textMain }}>
+                    {e.entryRef} — {e.direction === 'CREDIT' ? 'Credit' : 'Debit'} {fmt(e.amount)}
+                  </span>
+                  <span style={{ fontSize:11,color:T.textMuted }}>
+                    {e.balanceBefore != null && e.balanceAfter != null
+                      ? `${fmt(e.balanceBefore)} → ${fmt(e.balanceAfter)}`
+                      : 'No account balance affected'}
+                  </span>
+                </div>
+                <p style={{ margin:'2px 0 0',fontSize:11.5,color:T.textMuted }}>
+                  {e.entryType === 'MANUAL_ADJUSTMENT' ? (e.reason || 'Manual adjustment') : `Withdrawal ${e.transactionRef || ''} $— ${e.paymentMethod === 'MANUAL' ? 'manual / offline' : 'bank payout'}`}
+                  {e.reference ? ` — Ref ${e.reference}` : ''}
+                </p>
+                {e.remarks && <p style={{ margin:'2px 0 0',fontSize:11.5,color:T.textMuted }}>{e.remarks}</p>}
+                <p style={{ margin:'2px 0 0',fontSize:10,color:T.textMuted }}>
+                  {e.performedBy || 'system'}{e.performedByRole ? ` (${merchantRoleLabel(e.performedByRole) || e.performedByRole})` : ''}{e.createdAtIst ? ` — ${e.createdAtIst}` : ''}
+                </p>
+              </div>
+            ))}
+          </div>
+
           <div style={{ display:'flex',gap:10,marginTop:16 }}>
             <Btn onClick={()=>openStatement(detail)}><Icon name="ledger" size={14} /> View Statement</Btn>
             <Btn variant="secondary" onClick={()=>setDetail(null)}>Close</Btn>
@@ -1833,6 +2104,14 @@ export const AdminAccountsPage: React.FC = () => {
           label={toggleAcc.status==='ACTIVE' ? 'Reason for Deactivation' : 'Reason for Activation'}
           confirmLabel={toggleAcc.status==='ACTIVE' ? 'Deactivate' : 'Activate'}
           busy={busy} onSubmit={doToggle} onClose={()=>setToggleAcc(null)}
+        />
+      )}
+      {adjustAcc && (
+        <AdjustmentModal
+          account={adjustAcc}
+          balance={balMap[adjustAcc.referenceNumber]?.available ?? 0}
+          onClose={()=>setAdjustAcc(null)}
+          onDone={reload}
         />
       )}
     </div>

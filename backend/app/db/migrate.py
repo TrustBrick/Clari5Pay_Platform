@@ -51,6 +51,13 @@ _NEW_COLUMNS = [
     ("transactions", "admin_utr", "VARCHAR(64)"),
     ("transactions", "payout_mode", "VARCHAR(24)"),
     ("transactions", "payout_details", "TEXT"),
+    # Withdrawal payout accounting (Admin "Pay & Complete"): WHICH managed account was debited and
+    # HOW it was paid. NULL on every historical row, which keeps the legacy member-map attribution
+    # in place for them — nothing already completed changes value.
+    ("transactions", "payout_account_ref", "VARCHAR(40)"),
+    ("transactions", "payout_payment_method", "VARCHAR(16)"),
+    ("transactions", "payout_manual_reference", "VARCHAR(64)"),
+    ("transactions", "payout_remarks", "TEXT"),
     # Deposit type-specific fields (CASH / CRYPTO) stored as JSON.
     ("transactions", "deposit_details", "TEXT"),
     # Reporting: approver / processor / creating-agent tracking.
@@ -386,6 +393,12 @@ _NEW_INDEXES = [
     ("ix_agenttxn_type",             "agent_transaction", "(txn_type)"),
     ("ix_agenttxn_membership_id",    "agent_transaction", "(membership_id)"),
     ("ix_agenttxn_agent_master_id",  "agent_transaction", "(agent_master_id)"),
+    # account_ledger — the managed-account accounting ledger (per-account statement + balance).
+    ("ix_acctledger_account_created", "account_ledger",   "(account_ref, created_at DESC)"),
+    ("ix_acctledger_txn_ref",         "account_ledger",   "(transaction_ref)"),
+    # Withdrawal payout attribution: the balance/statement views filter completed debits by the
+    # account they were actually paid from.
+    ("ix_txn_payout_account_ref",     "transactions",     "(payout_account_ref)"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -436,6 +449,9 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         # fresh database's first transaction of each type is …000001.
         for seq in ("deposit_ref_seq", "withdrawal_ref_seq", "settlement_ref_seq"):
             await conn.execute(text(f"CREATE SEQUENCE IF NOT EXISTS {seq} START WITH 1"))
+        # Account ledger entry references (ADJ000001 / LED000001). Its OWN sequence, in its own
+        # namespace: no existing DEP/WIT/SET transaction reference is read, reused or renumbered.
+        await conn.execute(text("CREATE SEQUENCE IF NOT EXISTS account_ledger_ref_seq START WITH 1"))
         # Backfill created_at from the legacy created date for existing rows.
         await conn.execute(
             text("UPDATE users SET created_at = created::timestamp WHERE created_at IS NULL")

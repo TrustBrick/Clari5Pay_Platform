@@ -255,3 +255,32 @@ async def record_agent_reply(db: AsyncSession, customer_id: int, *, now: Optiona
     if conv and conv.first_response_at is None:
         conv.first_response_at = now
         await db.flush()
+
+
+async def availability_summary(db: AsyncSession, *, now: Optional[datetime] = None) -> dict:
+    """Is the Support Team reachable right now, and by how many members?
+
+    The ONE source of truth for "is support available", derived from exactly the same inputs the
+    auto-assignment uses — ``derive_status`` over live presence + manual Busy/On-Break + per-agent
+    load. It is deliberately a thin projection of ``_available_agents`` so a member who could NOT
+    be assigned a conversation can never be advertised as available.
+
+    ``available`` is True only when at least one member could take a new conversation this instant:
+    being logged in as a merchant, or the Support Center page merely existing, has no bearing on it.
+    """
+    now = now or datetime.utcnow()
+    cfg = await get_config(db)
+    agents = await _all_agents(db)
+    if not agents:
+        return {"available": False, "availableAgents": 0, "onlineAgents": 0, "totalAgents": 0}
+    ids = [a.id for a in agents]
+    sessions = await presence.latest_sessions(db, ids)
+    counts = await active_counts(db, ids)
+    statuses = [derive_status(a, sessions.get(a.id), counts.get(a.id, 0), cfg, now) for a in agents]
+    available = sum(1 for s in statuses if s == "available")
+    return {
+        "available": available > 0,
+        "availableAgents": available,
+        "onlineAgents": sum(1 for s in statuses if s != "offline"),
+        "totalAgents": len(agents),
+    }
