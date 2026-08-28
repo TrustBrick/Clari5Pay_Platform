@@ -703,3 +703,95 @@ async def test_serialize_exposes_the_full_audit_shape(db):
                 "createdAtIst", "merchantBusiness"):
         assert key in out
     assert out["balanceAfter"] == 115000.0
+
+
+# ── 11. Commission is reported, never deducted ─────────────────────────────────────────────────
+#
+# Commission is the company's PROFIT. It does not leave the bank account when a merchant is paid —
+# it stays in it. So the account's cash figure must keep including it, and the commission number is
+# reported alongside purely so the merchant-funds vs company-earnings share of that cash is
+# visible. These pin the distinction, because getting it backwards would silently understate every
+# account's real cash and block legitimate payouts.
+
+async def _merchant(db: AsyncSession, name="BELLAGIO", *, pay_in=5.0, pay_out=5.0, settle=None):
+    u = User(username=name.lower(), name=name, email=f"{name.lower()}@x.com", hashed_password="x",
+             role=UserRole.MERCHANT, active=True,
+             pay_in_fee=pay_in, pay_out_fee=pay_out, settlement_fee=settle)
+    db.add(u)
+    await db.flush()
+    return u
+
+
+async def _balances(db):
+    from app.api.routes import accounts as acct
+    return await acct.account_balances(db, None)
+
+
+@pytest.mark.asyncio
+async def test_commission_is_reported_and_split_by_leg(db):
+    await _merchant(db, pay_in=5.0, pay_out=5.0)
+    acc = await _account(db)
+    await _deposit(db, "DEP000001", 200000, acc.reference_number)
+    await _withdrawal(db, "WIT000001", 50000, status=TxStatus.COMPLETED,
+                      payout_ref=acc.reference_number, method="BANK")
+
+    r = (await _balances(db))[0]
+    assert r["commissionPayIn"] == 10000.0        # 5% of the 200,000 deposited in
+    assert r["commissionPayOut"] == 2500.0        # 5% of the 50,000 paid out
+    assert r["commission"] == 12500.0
+
+
+@pytest.mark.asyncio
+async def test_commission_is_not_deducted_from_available(db):
+    """The property that matters: Available is cash, and cash still contains the profit."""
+    await _merchant(db, pay_in=5.0, pay_out=5.0)
+    acc = await _account(db)
+    await _deposit(db, "DEP000001", 200000, acc.reference_number)
+    await _withdrawal(db, "WIT000001", 50000, status=TxStatus.COMPLETED,
+                      payout_ref=acc.reference_number, method="BANK")
+
+    r = (await _balances(db))[0]
+    assert r["available"] == 150000.0             # 200,000 - 50,000, fees NOT applied
+    assert r["commission"] == 12500.0             # reported, but not subtracted
+    # …and the service the payout/adjustment paths validate against agrees with the screen.
+    assert await ledger.account_balance(db, acc.reference_number) == r["available"]
+
+
+@pytest.mark.asyncio
+async def test_a_merchant_with_no_configured_fee_earns_no_commission(db):
+    await _merchant(db, pay_in=None, pay_out=None)
+    acc = await _account(db)
+    await _deposit(db, "DEP000001", 200000, acc.reference_number)
+    r = (await _balances(db))[0]
+    assert r["commission"] == 0.0
+    assert r["available"] == 200000.0
+
+
+@pytest.mark.asyncio
+async def test_settlement_commission_uses_the_settlement_fee(db):
+    """A settlement is charged at settlement_fee, not the pay-out rate."""
+    await _merchant(db, pay_in=0.0, pay_out=5.0, settle=0.5)
+    acc = await _account(db)
+    await _deposit(db, "DEP000001", 200000, acc.reference_number)
+    st = await _withdrawal(db, "SET000001", 100000, status=TxStatus.COMPLETED,
+                           payout_ref=acc.reference_number, method="BANK")
+    st.type = TxType.SETTLEMENT_REQUEST
+    await db.flush()
+
+    r = (await _balances(db))[0]
+    assert r["settlements"] == 100000.0
+    assert r["commissionPayOut"] == 500.0         # 0.5% settlement fee, not 5% pay-out
+    assert r["available"] == 100000.0             # still pure cash
+
+
+@pytest.mark.asyncio
+async def test_a_manual_offline_payout_earns_no_account_commission(db):
+    """It touched no managed account, so it contributes neither a debit nor commission here."""
+    await _merchant(db, pay_in=0.0, pay_out=5.0)
+    acc = await _account(db)
+    await _deposit(db, "DEP000001", 200000, acc.reference_number)
+    await _withdrawal(db, "WIT000001", 50000, status=TxStatus.COMPLETED, method="MANUAL")
+
+    r = (await _balances(db))[0]
+    assert r["available"] == 200000.0
+    assert r["commissionPayOut"] == 0.0

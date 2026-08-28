@@ -512,7 +512,7 @@ const RequestModal: React.FC<{
                     options={[{ value:'', label:'— Select a UPI —' }, ...linkedUpis.map(u => ({ value:u.upiId, label:`${u.upiId}  ·  ${u.label}` }))]} />}
               <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>The deposit is credited to this UPI's parent account. No QR is sent.</p>
               <div style={{ display:'flex',gap:10 }}>
-                <Btn onClick={sendUpi} disabled={saving||!upiId}>{saving ? 'Sending...' : '<Icon name="upi" size={14} /> Send UPI'}</Btn>
+                <Btn onClick={sendUpi} disabled={saving||!upiId}>{saving ? 'Sending...' : <><Icon name="upi" size={14} /> Send UPI</>}</Btn>
                 <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
               </div>
             </>
@@ -610,7 +610,7 @@ const RequestModal: React.FC<{
             {receipt && <img src={receipt} alt="Receipt" style={{ width:'auto',maxWidth:240,maxHeight:200,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,margin:'12px 0',background:T.canvas }} />}
           </>}
           <div style={{ display:'flex',gap:10,marginTop:12 }}>
-            <Btn onClick={()=>complete(true)} disabled={saving||(needReceipt&&!receipt)||(needUtr&&!payUtr.trim())||(needsPayout&&payMethod==='BANK'&&!payoutAccountRef)||(needsPayout&&payMethod==='MANUAL'&&!manualRef.trim())}>{saving ? 'Saving...' : '<Icon name="approve" size={14} /> Complete'}</Btn>
+            <Btn onClick={()=>complete(true)} disabled={saving||(needReceipt&&!receipt)||(needUtr&&!payUtr.trim())||(needsPayout&&payMethod==='BANK'&&!payoutAccountRef)||(needsPayout&&payMethod==='MANUAL'&&!manualRef.trim())}>{saving ? 'Saving...' : <><Icon name="approve" size={14} /> Complete</>}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
         </div>
@@ -1758,13 +1758,13 @@ export const AdminAccountsPage: React.FC = () => {
           <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
             <thead>
               <tr style={{ background:T.canvas }}>
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Highest Debit','Deposits Received','Available','Users','Status','Actions'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Highest Debit','Deposits Received','Commission','Available','Users','Status','Actions'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={11} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={12} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
               {filtered.map((a,i)=>{ const bal = balMap[a.referenceNumber]; return (
                 <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                   <td style={{ padding:'11px 14px' }}>
@@ -1777,6 +1777,12 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestCredit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestDebit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMain }}>{fmt(bal?.totalDeposited ?? 0)}</td>
+                  {/* Commission earned on this account's traffic — company profit, shown on its own
+                      because it is still sitting INSIDE Available (it never left the bank). */}
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.warning }}
+                      title="Company commission earned on this account's deposits and payouts. Already included in Available — it has not left the account.">
+                    {fmt(bal?.commission ?? 0)}
+                  </td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}>
                     {bal && (bal.userCount ?? 0) > 0
@@ -1874,6 +1880,17 @@ export const AdminAccountsPage: React.FC = () => {
                 <span>Settlements: <b style={{ color:T.textMain }}>{fmt(b.settlements ?? 0)}</b></span>
                 <span style={{ color:T.success }}>Available: <b>{fmt(b.available)}</b></span>
               </div>
+              {/* Commission split. Available above is the account's CASH — it still contains this
+                  profit, because commission is never paid out of the account. Shown here so the
+                  merchant-funds vs company-earnings share of that cash is visible. */}
+              {(b.commission ?? 0) > 0 && (
+                <div style={{ display:'flex',gap:18,flexWrap:'wrap',marginTop:6,fontSize:12,color:T.textMuted }}>
+                  <span style={{ color:T.warning }}>Commission earned: <b>{fmt(b.commission ?? 0)}</b></span>
+                  <span>Pay-In: <b style={{ color:T.textMain }}>{fmt(b.commissionPayIn ?? 0)}</b></span>
+                  <span>Pay-Out: <b style={{ color:T.textMain }}>{fmt(b.commissionPayOut ?? 0)}</b></span>
+                  <span style={{ fontSize:11 }}>(included in Available — commission stays in the account as profit)</span>
+                </div>
+              )}
               {b.linkedUpis && b.linkedUpis.length > 0 && (
                 <div style={{ display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginTop:8 }}>
                   <span style={{ fontSize:11,color:T.textMuted }}>Linked UPIs:</span>
@@ -2859,7 +2876,7 @@ export const WhatsAppSettingsPage: React.FC = () => {
           ))}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
-          <Btn size="sm" onClick={sendTest} disabled={testing || !connected}>{testing ? 'Sending…' : '<Icon name="send-test" size={14} /> Send Test Telegram Notification'}</Btn>
+          <Btn size="sm" onClick={sendTest} disabled={testing || !connected}>{testing ? 'Sending…' : <><Icon name="send-test" size={14} /> Send Test Telegram Notification</>}</Btn>
           <span style={{ fontSize: 11, color: T.textMuted }}>Bot credentials are configured securely on the server. Sends a test Telegram notification to your linked Telegram account.</span>
         </div>
       </Card>

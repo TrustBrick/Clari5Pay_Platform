@@ -230,6 +230,12 @@ export interface AccountBalance {
   withdrawals?: number;
   settlements?: number;
   adjustments?: number;     // net of manual credits/debits posted from Account Management
+  // Commission (company profit) earned on this account's traffic, split by leg. Reported
+  // alongside `available` and NEVER deducted from it — commission does not leave the bank
+  // account, so the cash figure legitimately still contains it.
+  commissionPayIn?: number;
+  commissionPayOut?: number;
+  commission?: number;
   available: number;        // deposits − withdrawals − settlements + net manual adjustments
   linkedUpis?: { id: number; label: string; upiId: string; status: string }[];
   userCount?: number;       // distinct users (operators) who deposited into this account

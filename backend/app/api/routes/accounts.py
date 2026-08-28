@@ -142,6 +142,23 @@ async def account_balances(
     dep_low: dict[str, float] = {}    # account → lowest single successful deposit ever received
     acct_wd: dict[str, float] = defaultdict(float)
     acct_st: dict[str, float] = defaultdict(float)
+    # Commission (the company's profit) earned on the money routed through each account, split by
+    # leg. DISPLAY ONLY, and deliberately NOT subtracted from `available`: commission never leaves
+    # the bank account — it IS the profit sitting in it, so the cash figure must keep including
+    # it. What this adds is visibility of how much of that cash is company earnings rather than
+    # merchant funds. Rates are the per-business pay-in / pay-out / settlement fee percentages read
+    # from the same representative merchant row the AB/RB/MAB figures above use, so every number on
+    # this screen comes from one source.
+    comm_in: dict[str, float] = defaultdict(float)    # account — pay-in commission (deposits)
+    comm_out: dict[str, float] = defaultdict(float)   # account — pay-out + settlement commission
+
+    def _fee(merchant_name: str, leg: str) -> float:
+        """The business's fee rate for one leg, as a fraction. An unset fee reads as 0."""
+        rep = rep_by_name.get(merchant_name)
+        if rep is None:
+            return 0.0
+        pct = {"in": rep.pay_in_fee, "out": rep.pay_out_fee, "settle": rep.settlement_fee}.get(leg)
+        return (pct or 0.0) / 100
     # Only completed transactions affect an account's balance. A deposit completes as COMPLETED
     # (legacy) or DEPOSITED (new admin final-approval); withdrawals/settlements complete as COMPLETED.
     for t in txns:
@@ -156,6 +173,7 @@ async def account_balances(
                     dep_high[t.admin_ref] = t.amount
                 if t.admin_ref not in dep_low or t.amount < dep_low[t.admin_ref]:
                     dep_low[t.admin_ref] = t.amount
+                comm_in[t.admin_ref] += t.amount * _fee(t.merchant_name, "in")
         elif ty.startswith("WITHDRAWAL") or ty.startswith("SETTLEMENT"):
             # A debit attributes to the account it was ACTUALLY paid from when the payout step
             # recorded one; otherwise it falls back to the member's most-recent receiving account
@@ -163,7 +181,9 @@ async def account_balances(
             # MANUAL/offline touched no managed account, so it is attributed to none.
             acct = _debit_account(t, member_acct)
             if t.status == TxStatus.COMPLETED and acct:
-                (acct_wd if ty.startswith("WITHDRAWAL") else acct_st)[acct] += t.amount
+                is_wd = ty.startswith("WITHDRAWAL")
+                (acct_wd if is_wd else acct_st)[acct] += t.amount
+                comm_out[acct] += t.amount * _fee(t.merchant_name, "out" if is_wd else "settle")
 
     out = []
     for a in accounts:
@@ -208,6 +228,11 @@ async def account_balances(
             "withdrawals": round(wd, 2),
             "settlements": round(st, 2),
             "adjustments": round(adj_by_acct.get(ref, 0.0), 2),   # net of manual credits/debits
+            # Commission earned on this account's traffic, split by leg. Reported ALONGSIDE
+            # `available`, never deducted from it — see the accumulator comment above.
+            "commissionPayIn": round(comm_in.get(ref, 0.0), 2),
+            "commissionPayOut": round(comm_out.get(ref, 0.0), 2),
+            "commission": round(comm_in.get(ref, 0.0) + comm_out.get(ref, 0.0), 2),
             # deposits − withdrawals − settlements + net manual adjustments
             "available": round(total_d - wd - st + adj_by_acct.get(ref, 0.0), 2),
             "linkedUpis": upis_by_acct.get(ref, []),

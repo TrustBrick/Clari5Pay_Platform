@@ -1453,7 +1453,7 @@ const SettlementCompleteModal: React.FC<{ tx: Transaction; onClose: () => void; 
           style={{ width: '100%', minHeight: 70, padding: '10px 12px', borderRadius: 10, border: `1.5px solid ${T.border}`, background: T.surface, color: T.textMain, fontSize: 13, resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit' }} />
       </div>
       <div style={{ display: 'flex', gap: 10, borderTop: `1px solid ${T.border}`, paddingTop: 14 }}>
-        <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : '<Icon name="approve" size={14} /> Complete Settlement'}</Btn>
+        <Btn variant="success" onClick={submit} disabled={busy}>{busy ? 'Completing…' : <><Icon name="approve" size={14} /> Complete Settlement</>}</Btn>
         <Btn variant="ghost" onClick={onClose}>Cancel</Btn>
       </div>
     </Modal>
