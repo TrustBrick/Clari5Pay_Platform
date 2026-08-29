@@ -57,6 +57,10 @@ def derive_status(agent: User, sess, count: int, cfg: SupportConfig, now: dateti
     if not presence.is_online(sess, now):
         return "offline"
     manual = str(agent.support_availability or "AVAILABLE").upper()
+    if manual == "OFF":
+        # Only an Admin can hold this: they explicitly declined support duty, so they are not
+        # reachable support even though they are signed in. Support members never set it.
+        return "offline"
     if manual == "ON_BREAK":
         return "break"
     if manual == "BUSY":
@@ -264,17 +268,21 @@ SUPPORT_ADMIN_ROLES = (UserRole.ADMIN,)
 
 
 async def _support_admins(db: AsyncSession) -> list[User]:
-    """Admins who are ON SUPPORT DUTY — the second pool the availability indicator considers.
+    """Admins the availability indicator considers — every active Admin.
 
-    Opt-in, deliberately. An admin keeps the Admin Portal open all day to approve withdrawals and
-    manage accounts; having the portal open is NOT the same as being available to answer a
-    merchant. So an admin counts here only once they have explicitly set a support-duty state
-    (``support_availability`` non-NULL). NULL — the default for every admin — means "not on
-    support duty" and is excluded outright.
+    A signed-in Admin IS reachable support. The merchant pill is green when at least one eligible
+    Admin OR one eligible Customer Support member is available, and grey only when neither pool
+    has anyone, so an Admin at their desk must count. Presence still decides it: an Admin who is
+    not signed in is simply offline, exactly like a support member.
 
-    Once opted in they are judged exactly like a support member: ``derive_status`` applies live
-    presence and their chosen AVAILABLE / BUSY / ON_BREAK, so going Busy or On Break takes them
-    out of the count without opting out entirely.
+    Being in this pool does not force anyone to be advertised. ``derive_status`` still applies the
+    member’s own state, so an Admin who sets Busy, On Break, or explicitly declines support duty
+    (OFF) drops out without affecting anybody else.
+
+    This replaces an earlier opt-IN rule, where an Admin counted only after setting a support-duty
+    state and NULL (the default for every Admin) excluded them outright. That inverted the
+    intended behaviour: an Admin who had never opened the Support Duty control was reported as
+    unreachable while sitting online in the Admin Portal.
 
     Kept SEPARATE from ``_all_agents`` on purpose: that function feeds conversation ROUTING, and
     adding admins to it would start auto-assigning customer chats to them.
@@ -283,7 +291,6 @@ async def _support_admins(db: AsyncSession) -> list[User]:
         select(User).where(
             User.role.in_(SUPPORT_ADMIN_ROLES),
             User.active == True,                       # noqa: E712
-            User.support_availability.isnot(None),     # opted in to support duty
         )
     )).scalars().all()
 
@@ -291,10 +298,11 @@ async def _support_admins(db: AsyncSession) -> list[User]:
 def _tally(members: list[User], sessions: dict, counts: dict, cfg: SupportConfig, now: datetime) -> dict:
     """available / online / total for one pool, using the shared ``derive_status`` rule.
 
-    Works unchanged for admins: they carry no ``support_availability`` (so they read as AVAILABLE
-    rather than Busy/On-Break) and are never assigned conversations (so their load is 0). What
-    actually decides an admin is therefore only whether their session is live — which is exactly
-    what "is an admin reachable right now" should mean.
+    Works unchanged for admins: they are never assigned conversations (so their load is 0), and
+    they carry a support_availability only if they have opened the Support Duty control — NULL
+    reads as AVAILABLE, so what actually decides an Admin is whether their session is live, which
+    is exactly what "is an Admin reachable right now" should mean. An Admin who chose Busy, On
+    Break or OFF is judged by that choice instead.
     """
     statuses = [derive_status(m, sessions.get(m.id), counts.get(m.id, 0), cfg, now) for m in members]
     return {
@@ -309,7 +317,8 @@ async def availability_summary(db: AsyncSession, *, now: Optional[datetime] = No
 
     The merchant header shows "Support Available" when at least one eligible person is available in
     the Customer Support team **or** among the Admins — and "Support Unavailable" only when both
-    pools are empty of anyone reachable.
+    pools are empty of anyone reachable. A signed-in Admin is enough on its own; so is a signed-in
+    support member. Only when NEITHER has anyone reachable does the pill go grey.
 
     Both pools are judged by the SAME ``derive_status`` the auto-assignment uses (live presence +
     manual Busy/On-Break + configured conversation capacity), so a member who could not be handed a

@@ -34,7 +34,9 @@ export interface User {
   whatsappEnabled?: boolean;       // "Receive WhatsApp Notifications" preference (internal users)
   // Admin support duty: null = not on support duty (the default). Distinct from the support
   // portal's supportAvailability, which cannot express "opted out".
-  supportDuty?: 'AVAILABLE' | 'BUSY' | 'ON_BREAK' | null;
+  // Admin support duty. null = never opened the control, which counts as AVAILABLE while
+  // signed in; 'OFF' is an explicit opt-out and never counts.
+  supportDuty?: 'AVAILABLE' | 'BUSY' | 'ON_BREAK' | 'OFF' | null;
   // Super Admin monitoring
   merchantCount?: number;
 }

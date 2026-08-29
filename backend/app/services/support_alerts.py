@@ -2,8 +2,8 @@
 
 The Merchant Portal header already reports whether support is reachable — the OR of the two pools
 ``support_routing.availability_summary`` evaluates (an eligible Customer Support member **or** an
-eligible Admin on support duty). This module bolts a *state machine* onto that same answer so the
-Super Admin learns about an outage without watching the pill.
+eligible Admin). This module bolts a *state machine* onto that same answer so the Super Admin
+learns about an outage without watching the pill.
 
 What it is careful about
 ------------------------

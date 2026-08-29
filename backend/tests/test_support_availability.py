@@ -13,6 +13,9 @@ What these pin down:
      report unavailable rather than defaulting to green.
   3. **The counts are honest** — availableAgents / onlineAgents / totalAgents describe the team,
      and available is exactly ``availableAgents > 0``.
+  4. **Either pool is enough** — an eligible Admin alone keeps the pill green, an eligible Customer
+     Support member alone keeps it green, and only both being empty turns it grey. A signed-in
+     Admin counts by default; stepping out (Busy / On Break / OFF) is the deliberate act.
 
 Run from the backend directory:
 
@@ -219,9 +222,9 @@ async def test_summary_agrees_with_derive_status_member_by_member(db):
 
 
 async def _admin(db: AsyncSession, uid: int, *, online=True, active=True, last_seen_secs=5,
-                 duty="AVAILABLE") -> User:
-    """`duty=None` models an admin who has NOT gone on support duty — the default for a real
-    admin, and the state that keeps them out of the availability count entirely."""
+                 duty=None) -> User:
+    """`duty=None` models an Admin who has never opened the Support Duty control — the default for
+    every real Admin, and the state that COUNTS while they are signed in."""
     u = User(id=uid, username=f"adm{uid}", name=f"Admin {uid}", email=f"a{uid}@x.com",
              hashed_password="x", role=UserRole.ADMIN, active=active,
              support_availability=duty)
@@ -318,23 +321,27 @@ async def test_admins_are_not_added_to_the_routing_pool(db):
     assert all(u.role == UserRole.SUPPORT_AGENT for u in routing_pool)
 
 
-# ── 5. Admin support duty is OPT-IN ────────────────────────────────────────────────────────────
+# ── 5. A signed-in Admin counts; stepping out is explicit ─────────────────────────────
 #
-# Having the Admin Portal open is not the same as being available to a merchant: admins keep it
-# open all day for their own work. So an admin counts only once they have explicitly gone on
-# support duty. This is the difference between "someone is logged in" and "someone is on shift".
+# The pill is green when an eligible Admin OR an eligible Customer Support member is reachable, and
+# grey only when NEITHER pool has anyone. So an Admin sitting in the Admin Portal counts, without
+# having to find and flip a switch first. Stepping out is the deliberate act: Busy, On Break, or an
+# explicit OFF.
+#
+# This inverts an earlier opt-IN rule (count only after setting a support-duty state, NULL excluded
+# outright), which reported an online Admin as unreachable and is what these now pin against.
 
 @pytest.mark.asyncio
-async def test_an_admin_who_never_went_on_duty_does_not_count(db):
-    """The default state for every admin — online, working, but not offering support."""
+async def test_an_admin_who_never_opened_the_control_still_counts(db):
+    """The default state for every real Admin: signed in, never touched Support Duty."""
     await _admin(db, 90, duty=None)
     out = await support_routing.availability_summary(db, now=NOW)
-    assert out["available"] is False
-    assert out["admin"] == {"available": 0, "online": 0, "total": 0}
+    assert out["available"] is True
+    assert out["admin"] == {"available": 1, "online": 1, "total": 1}
 
 
 @pytest.mark.asyncio
-async def test_an_admin_on_duty_and_online_counts(db):
+async def test_an_admin_who_set_themselves_available_counts(db):
     await _admin(db, 90, duty="AVAILABLE")
     out = await support_routing.availability_summary(db, now=NOW)
     assert out["available"] is True and out["admin"]["available"] == 1
@@ -342,40 +349,94 @@ async def test_an_admin_on_duty_and_online_counts(db):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duty", ["BUSY", "ON_BREAK"])
-async def test_an_admin_on_duty_but_busy_or_on_break_does_not_count(db, duty):
-    """Opted in, so they are visible in the pool — but not available right now."""
+async def test_an_admin_who_is_busy_or_on_break_does_not_count(db, duty):
+    """In the pool, present — but not available right now."""
     await _admin(db, 90, duty=duty)
     out = await support_routing.availability_summary(db, now=NOW)
     assert out["available"] is False
     assert out["admin"]["available"] == 0
-    assert out["admin"]["online"] == 1        # on duty and present, just not takeable
+    assert out["admin"]["online"] == 1        # present, just not takeable
 
 
 @pytest.mark.asyncio
-async def test_an_on_duty_admin_who_is_offline_does_not_count(db):
-    """Going on duty is not enough — presence still has to be live."""
-    await _admin(db, 90, duty="AVAILABLE", online=False)
+async def test_an_admin_who_declined_support_duty_does_not_count(db):
+    """OFF is stored as itself, not as NULL, precisely so it can mean this: an Admin who is signed
+    in and working but has opted out of being reachable support."""
+    await _admin(db, 90, duty="OFF")
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is False
+    assert out["admin"]["available"] == 0
+    assert out["admin"]["online"] == 0        # opted out reads as not present for support
+
+
+@pytest.mark.asyncio
+async def test_declining_is_distinguishable_from_never_having_chosen(db):
+    """The whole reason OFF is a stored value: NULL (untouched) and OFF (declined) must not be the
+    same state, because they now mean opposite things."""
+    await _admin(db, 90, duty=None)
+    assert (await support_routing.availability_summary(db, now=NOW))["admin"]["available"] == 1
+
+    await _admin(db, 91, duty="OFF")
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["admin"] == {"available": 1, "online": 1, "total": 2}
+
+
+@pytest.mark.asyncio
+async def test_an_admin_who_is_offline_does_not_count(db):
+    """Counting by default is not the same as counting always — presence still has to be live."""
+    await _admin(db, 90, duty=None, online=False)
     out = await support_routing.availability_summary(db, now=NOW)
     assert out["available"] is False and out["admin"]["available"] == 0
 
 
 @pytest.mark.asyncio
-async def test_a_room_full_of_off_duty_admins_reads_unavailable(db):
-    """The case that prompted this: several admins with the portal open, nobody on support duty."""
+async def test_a_stale_admin_heartbeat_stops_counting(db):
+    stale = int(presence.ONLINE_WINDOW.total_seconds()) + 30
+    await _admin(db, 90, duty=None, last_seen_secs=stale)
+    out = await support_routing.availability_summary(db, now=NOW)
+    assert out["available"] is False and out["admin"]["online"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_room_full_of_signed_in_admins_reads_available(db):
+    """The case that prompted the change: several admins with the portal open and no support member
+    online. Merchants can reach an Admin, so the pill must say so."""
     for i in range(4):
         await _admin(db, 90 + i, duty=None)
     await _agent(db, 1, online=False)
     out = await support_routing.availability_summary(db, now=NOW)
-    assert out["available"] is False
-    assert out["admin"]["total"] == 0 and out["support"]["available"] == 0
+    assert out["available"] is True
+    assert out["admin"]["available"] == 4 and out["support"]["available"] == 0
 
 
 @pytest.mark.asyncio
-async def test_one_admin_going_on_duty_flips_the_pill(db):
-    """Off duty -> unavailable; the same admin on duty -> available. Nothing else changes."""
+async def test_the_last_admin_stepping_out_flips_the_pill(db):
+    """Available -> unavailable happens when the last reachable person opts out, not before."""
     admin = await _admin(db, 90, duty=None)
+    assert (await support_routing.availability_summary(db, now=NOW))["available"] is True
+
+    admin.support_availability = "OFF"
+    await db.flush()
     assert (await support_routing.availability_summary(db, now=NOW))["available"] is False
 
-    admin.support_availability = "AVAILABLE"
+
+@pytest.mark.asyncio
+async def test_support_stays_up_while_either_pool_has_someone(db):
+    """The OR, end to end: an Admin alone holds it up, a support member alone holds it up, and only
+    both stepping out takes it down."""
+    admin = await _admin(db, 90, duty=None)
+    agent = await _agent(db, 1)
+    assert (await support_routing.availability_summary(db, now=NOW))["available"] is True
+
+    admin.support_availability = "OFF"          # support member alone
     await db.flush()
     assert (await support_routing.availability_summary(db, now=NOW))["available"] is True
+
+    admin.support_availability = None           # admin alone
+    agent.support_availability = "ON_BREAK"
+    await db.flush()
+    assert (await support_routing.availability_summary(db, now=NOW))["available"] is True
+
+    admin.support_availability = "OFF"          # neither
+    await db.flush()
+    assert (await support_routing.availability_summary(db, now=NOW))["available"] is False

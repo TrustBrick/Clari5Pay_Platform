@@ -288,16 +288,17 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
                   </span>
                 </div>
               </div>
-              {/* Support duty (Admins only). Having the Admin Portal open is not the same as being
-                  available to a merchant — admins keep it open all day for their own work — so an
-                  admin counts towards the merchant's Support Available pill only after explicitly
-                  going on duty here. Off is the default. */}
+              {/* Support duty (Admins only). A signed-in Admin counts towards the merchant's
+                  Support Available pill BY DEFAULT — the pill is green when an eligible Admin or an
+                  eligible Customer Support member is reachable. This control is how an Admin steps
+                  out of that: Busy, On Break, or Off to decline support duty entirely. */}
               {(user.role === 'ADMIN') && (
                 <div style={{ padding:'10px 16px',borderBottom:`1px solid ${T.borderLight}` }}>
                   <p style={{ fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Support Duty</p>
                   <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
                     {([['AVAILABLE','Available'],['BUSY','Busy'],['ON_BREAK','On Break'],['OFF','Off']] as const).map(([v,label]) => {
-                      const active = (duty ?? 'OFF') === v;
+                      // Never touched = Available: an Admin at their desk is reachable support.
+                      const active = (duty ?? 'AVAILABLE') === v;
                       return (
                         <button
                           key={v} type="button" disabled={dutySaving}
@@ -312,7 +313,9 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
                     })}
                   </div>
                   <p style={{ fontSize:10,color:T.textMuted,margin:'6px 0 0' }}>
-                    {duty ? 'Merchants can see you as available support.' : 'You are not counted as available support.'}
+                    {(duty ?? 'AVAILABLE') === 'AVAILABLE'
+                      ? 'Merchants can see you as available support while you are signed in.'
+                      : 'You are not counted as available support.'}
                   </p>
                 </div>
               )}

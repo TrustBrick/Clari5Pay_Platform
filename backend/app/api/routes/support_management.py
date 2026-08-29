@@ -589,12 +589,17 @@ async def set_admin_support_duty(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """An Admin puts themselves ON or OFF support duty (drives the merchant availability pill).
+    """An Admin sets how they appear to the merchant availability pill.
 
-    Having the Admin Portal open is not the same as being available to a merchant — admins keep it
-    open all day for their own work — so an admin counts towards support availability only after
-    explicitly going on duty here. "OFF" clears the state (the default) and takes them out of the
-    count entirely; AVAILABLE / BUSY / ON_BREAK behave exactly as they do for a support member.
+    A signed-in Admin counts as reachable support by DEFAULT — that is the whole rule the pill
+    reports (an eligible Admin OR an eligible Customer Support member). This control exists to
+    step OUT of that: "OFF" declines support duty, and AVAILABLE / BUSY / ON_BREAK behave exactly
+    as they do for a support member.
+
+    OFF is stored as the literal value rather than NULL. NULL is also what every Admin who has
+    never opened this control holds, and those two must not mean the same thing: the untouched
+    default counts while signed in, an explicit OFF never does. ``derive_status`` reads OFF as
+    offline.
 
     Deliberately NOT the support member's /me/availability: that route drains the conversation
     QUEUE and notifies the member's creator, neither of which applies to an admin — admins are
@@ -604,7 +609,7 @@ async def set_admin_support_duty(
     if value not in AVAILABILITY_VALUES + ("OFF",):
         raise HTTPException(status_code=400, detail="availability must be AVAILABLE, BUSY, ON_BREAK or OFF")
     was = actor.support_availability
-    actor.support_availability = None if value == "OFF" else value
+    actor.support_availability = value          # OFF included — see the docstring
     actor.support_availability_at = datetime.utcnow()
     # Going on duty stamps presence so the pill reflects it immediately rather than on the next beat.
     if value != "OFF":
