@@ -28,7 +28,7 @@ import re
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,7 +42,7 @@ from app.schemas.schemas import (
     SupportMemberCreate, SupportMemberUpdate, AvailabilityRequest, ReasonRequest,
     SupportConfigUpdate, ReassignConversationRequest,
 )
-from app.services import presence, support_routing
+from app.services import presence, support_routing, support_alerts
 from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/support-management", tags=["support-management"])
@@ -390,6 +390,7 @@ async def force_availability(
     member_id: int,
     data: AvailabilityRequest,
     request: Request,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     caller: User = Depends(get_current_admin),
 ):
@@ -405,6 +406,7 @@ async def force_availability(
     db.add(Notification(user_id=m.id, message=f"An administrator set your status to {value.title().replace('_', ' ')}", icon="🎧"))
     await log_event(db, "SUPPORT_AVAILABILITY_FORCED", f"{caller.name} set {m.name} to {value}", actor=caller)
     await record_audit(db, "SUPPORT_AVAILABILITY_FORCED", actor=caller, entity_type="support", entity_id=m.id, new=value, ip=_ip(request))
+    _flag_availability_change(background)
     return await _one(db, m)
 
 
@@ -566,11 +568,24 @@ async def close_conversation(
     return {"ok": True}
 
 
+def _flag_availability_change(background: BackgroundTasks) -> None:
+    """Re-run the support-outage state machine after this response is sent.
+
+    The merchant availability pill is polled, so a change would be picked up within a beat anyway;
+    calling it here means the LAST member stepping off duty is noticed the instant they do it,
+    rather than on somebody else's next poll. It runs as a background task on committed state, so
+    it neither joins this request's transaction nor delays its response, and it decides nothing —
+    de-duplication and the alert itself live in services/support_alerts.
+    """
+    support_alerts.schedule(background)
+
+
 # ─── Member self: availability toggle ─────────────────────────────────────────
 @router.patch("/me/support-duty")
 async def set_admin_support_duty(
     data: AvailabilityRequest,
     request: Request,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
@@ -599,6 +614,7 @@ async def set_admin_support_duty(
                     f"{actor.name} set support duty to {value}", actor=actor)
     await record_audit(db, "ADMIN_SUPPORT_DUTY_CHANGED", actor=actor, entity_type="support",
                        entity_id=actor.id, old=(was or "OFF"), new=value, ip=_ip(request))
+    _flag_availability_change(background)
     return {"supportDuty": actor.support_availability}
 
 
@@ -606,6 +622,7 @@ async def set_admin_support_duty(
 async def set_availability(
     data: AvailabilityRequest,
     request: Request,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     member: User = Depends(get_current_support),
 ):
@@ -624,6 +641,7 @@ async def set_availability(
     await log_event(db, "SUPPORT_AVAILABILITY_CHANGED", f"{member.name} set availability to {value}", actor=member)
     await record_audit(db, "SUPPORT_AVAILABILITY_CHANGED", actor=member, entity_type="support", entity_id=member.id,
                        new=value, ip=_ip(request))
+    _flag_availability_change(background)
     return {"availability": value}
 
 

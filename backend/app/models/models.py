@@ -538,6 +538,46 @@ class SupportConfig(Base):
     last_assigned_support_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # round-robin pointer
 
 
+class SupportAvailabilityState(Base):
+    """Singleton (id=1) latch holding the LAST OBSERVED support-availability state.
+
+    Purely a de-duplication device for the outage alert (see services/support_alerts): the
+    availability answer itself is always derived live from presence, never read from here. The row
+    exists so that "support just went offline" is a state TRANSITION the backend detects once —
+    across every worker, merchant poll and page refresh — instead of something each caller decides
+    for itself. It moves by compare-and-set, so exactly one caller can ever claim a given change.
+    """
+    __tablename__ = "support_availability_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)          # AVAILABLE | UNAVAILABLE
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SupportAvailabilityEvent(Base):
+    """One row per support-availability TRANSITION — the outage/recovery audit trail.
+
+    Written in the same transaction that moves ``SupportAvailabilityState``, so an outage is always
+    recorded even if the Telegram send later fails; the notification columns are patched in once the
+    send finishes (or fails). Written for both directions: an outage carries a notification, a
+    recovery is logged only.
+    """
+    __tablename__ = "support_availability_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    previous_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    new_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Trigger time, stored naive-UTC like every other timestamp, plus the IST rendering that went
+    # into the alert (kept verbatim so the record and the message can never disagree).
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    occurred_at_ist: Mapped[Optional[str]] = mapped_column(String(48), nullable=True)
+    available_admins: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    available_support: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # SENT | FAILED | PENDING | SKIPPED | NOT_CONFIGURED | NO_RECIPIENT (NULL on a recovery).
+    telegram_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    telegram_failure_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 class BlogPost(Base):
     """A simple company news/update post (News-style), authored by an admin / super admin.
     Category is a plain string drawn from a fixed list (no separate categories table)."""

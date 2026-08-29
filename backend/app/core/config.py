@@ -124,6 +124,15 @@ class Settings(BaseSettings):
     # incoming webhook call (X-Telegram-Bot-Api-Secret-Token header). Empty → check skipped.
     TELEGRAM_WEBHOOK_SECRET: str = ""
 
+    # ── Support-outage alert (Support Availability → Telegram) ──
+    # When every eligible Admin and Customer Support member becomes unavailable, ONE Telegram
+    # alert is sent to the Super Admin(s) who have linked Telegram (see services/support_alerts).
+    # Set this to a chat id — or a comma-separated list — to divert every outage alert THERE
+    # instead: the safe test destination, so development and UAT never page a real Super Admin.
+    # Empty → the alert routes to the linked Super Admin accounts. Server-side only; the chat id
+    # and bot token are never returned by any API.
+    SUPPORT_ALERT_TELEGRAM_CHAT_ID: str = ""
+
     # ── KYC verification (Melento.ai for Aadhaar/PAN/Passport/OCR + DigiLocker) ──
     # All empty by default → the KYC service layer stays inert: endpoints validate input
     # and return a clear "provider not configured yet" response, and the Merchant KYC

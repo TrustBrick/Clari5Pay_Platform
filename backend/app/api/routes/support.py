@@ -9,7 +9,7 @@ import base64
 import json
 import re
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db, AsyncSessionLocal
@@ -18,7 +18,7 @@ from app.core.security import decode_token, token_version_matches
 from app.core.deps import get_current_user
 from app.schemas.schemas import SupportMessageCreate
 from app.api.routes.transactions import compute_balance
-from app.services import support_routing, presence
+from app.services import support_routing, presence, support_alerts
 
 router = APIRouter(prefix="/api/support", tags=["support"])
 
@@ -351,6 +351,7 @@ async def my_messages(
 
 @router.get("/availability")
 async def support_availability(
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -362,7 +363,12 @@ async def support_availability(
     as a merchant never makes this true. Open to any authenticated user so the one indicator can
     sit in the shared header; it exposes only counts, never who is on shift.
     """
-    return await support_routing.availability_summary(db)
+    summary = await support_routing.availability_summary(db)
+    # Same answer, fed to the outage state machine: it alerts the Super Admin on the
+    # AVAILABLE → UNAVAILABLE transition only. Queued as a background task, so this endpoint never
+    # waits on Telegram, and de-duplicated centrally, so polling can never multiply the alert.
+    support_alerts.schedule(background, summary)
+    return summary
 
 
 @router.get("/my-conversation")
