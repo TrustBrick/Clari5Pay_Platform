@@ -1637,7 +1637,19 @@ export const AdminAccountsPage: React.FC = () => {
   // withdrawal payouts, newest first. Read-only — entries are immutable, so there is nothing to
   // edit here; a wrong adjustment is corrected with a compensating one.
   const [detailLedger, setDetailLedger] = useState<AccountLedgerEntry[]>([]);
+  // Account Limits (Highest Credit / Highest Debit) editing, inside the Details popup.
+  // CONFIGURATION only: these never enter a balance calculation, so saving them cannot move
+  // Current Balance, Deposits Received, Commission or the accounting ledger below.
+  // Admin-gated here for presentation; the backend enforces the same rule independently, so a
+  // hidden button is never the security control.
+  const canEditLimits = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+  const [editLimits, setEditLimits] = useState(false);
+  const [limitForm, setLimitForm] = useState({ credit:'', debit:'' });
+  const [limitErr, setLimitErr] = useState<{ credit?: string; debit?: string }>({});
+  const [savingLimits, setSavingLimits] = useState(false);
   useEffect(() => {
+    // Opening a different account, or closing the popup, always lands back on the read-only view.
+    setEditLimits(false); setLimitErr({});
     if (!detail) { setDetailLedger([]); return; }
     accountAPI.ledger(detail.referenceNumber, 25)
       .then(r => setDetailLedger(r.entries)).catch(() => setDetailLedger([]));
@@ -1725,6 +1737,40 @@ export const AdminAccountsPage: React.FC = () => {
 
   const filtered = accounts.filter(a => !search || (a.accountName || '').toLowerCase().includes(search.toLowerCase()));
   const balMap = Object.fromEntries(balances.map(b => [b.referenceNumber, b]));
+
+  const openEditLimits = () => {
+    if (!detail) return;
+    setLimitForm({
+      credit: formatIndianAmountInput(String(detail.highestCredit ?? 0)),
+      debit: formatIndianAmountInput(String(detail.highestDebit ?? 0)),
+    });
+    setLimitErr({});
+    setEditLimits(true);
+  };
+
+  // Mirrors the server's rule (required, numeric, greater than zero) so the red state appears
+  // before a round-trip. The backend re-checks all of it — this is convenience, not the gate.
+  const saveLimits = async () => {
+    if (!detail) return;
+    const rawC = parseIndianAmount(limitForm.credit), rawD = parseIndianAmount(limitForm.debit);
+    const credit = parseFloat(rawC), debit = parseFloat(rawD);
+    const errs: { credit?: string; debit?: string } = {};
+    if (!rawC) errs.credit = 'Highest Credit is required';
+    else if (!Number.isFinite(credit) || credit <= 0) errs.credit = 'Enter an amount greater than 0';
+    if (!rawD) errs.debit = 'Highest Debit is required';
+    else if (!Number.isFinite(debit) || debit <= 0) errs.debit = 'Enter an amount greater than 0';
+    setLimitErr(errs);
+    if (errs.credit || errs.debit) return;
+    setSavingLimits(true);
+    try {
+      const updated = await accountAPI.updateLimits(detail.referenceNumber, { highest_credit: credit, highest_debit: debit });
+      setDetail(updated);          // the server's values, not the ones typed
+      reload();                    // the main table reads the same figures
+      showToast('Account limits updated successfully');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to update account limits', 'error');
+    } finally { setSavingLimits(false); }
+  };
 
   const create = async () => {
     if(!form.account_name||!form.account_number||!form.ifsc_code||!form.bank_name||!form.branch){ showToast('Fill all fields','error'); return; }
@@ -2008,6 +2054,49 @@ export const AdminAccountsPage: React.FC = () => {
               </span>
             </div>
           ))}
+
+          {/* ── Account Limits ────────────────────────────────────────
+              The account's configured Highest Credit / Highest Debit.
+              Deliberately its own section, above the money: these are CONFIGURATION, and editing
+              them changes no balance. Current Balance below is derived (deposits − withdrawals −
+              settlements + manual adjustments) and reads neither field, so a limit change leaves
+              it exactly where it was. The Edit control is Admin-only and the API enforces that
+              independently — a merchant cannot call it even with the button hidden. */}
+          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10 }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>
+                {editLimits ? 'Edit Account Limits' : 'Account Limits'}
+              </p>
+              {canEditLimits && !editLimits && (
+                <Btn size="sm" variant="secondary" onClick={openEditLimits}><Icon name="edit" size={13} /> Edit Limits</Btn>
+              )}
+            </div>
+            {!editLimits ? (
+              <>
+                <Row k="Highest Credit" v={fmt(detail.highestCredit ?? 0)} />
+                <Row k="Highest Debit" v={fmt(detail.highestDebit ?? 0)} />
+              </>
+            ) : (
+              <>
+                <Input label="Highest Credit (₹)" required type="text" inputMode="decimal"
+                  value={limitForm.credit} error={limitErr.credit}
+                  onChange={e=>{ setLimitForm(f=>({...f,credit:formatIndianAmountInput(e.target.value)})); setLimitErr(x=>({...x,credit:undefined})); }}
+                  onEnter={saveLimits}/>
+                <Input label="Highest Debit (₹)" required type="text" inputMode="decimal"
+                  value={limitForm.debit} error={limitErr.debit}
+                  onChange={e=>{ setLimitForm(f=>({...f,debit:formatIndianAmountInput(e.target.value)})); setLimitErr(x=>({...x,debit:undefined})); }}
+                  onEnter={saveLimits}/>
+                <p style={{ margin:'0 0 12px',fontSize:11,color:T.textMuted }}>
+                  Limits only — the account balance is not affected by this change.
+                </p>
+                <div style={{ display:'flex',gap:8 }}>
+                  <Btn size="sm" variant="secondary" disabled={savingLimits}
+                    onClick={()=>{ setEditLimits(false); setLimitErr({}); }}>Cancel</Btn>
+                  <Btn size="sm" onClick={saveLimits} disabled={savingLimits}>{savingLimits ? 'Saving…' : 'Save Changes'}</Btn>
+                </div>
+              </>
+            )}
+          </div>
 
           {/* ── Account Details ────────────────────────────────────────────────────────────
               The money figures and the adjustment action, moved off the main list so they sit

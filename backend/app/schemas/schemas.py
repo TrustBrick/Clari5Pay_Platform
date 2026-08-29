@@ -334,6 +334,18 @@ class AccountCreate(BaseModel):
     highest_debit: Optional[float] = 0.0
 
 
+class AccountLimitsUpdate(BaseModel):
+    """Admin edit of one account's configured Highest Credit / Highest Debit.
+
+    Both are required and re-validated server-side (see accounts.update_account_limits) — the
+    browser's copy of them is never trusted. Declaring them as ``float`` is the first gate:
+    anything non-numeric is rejected before the route runs.
+    """
+    highest_credit: float
+    highest_debit: float
+    reason: Optional[str] = None       # optional note carried into the audit trail
+
+
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────
 class SupportMessageCreate(BaseModel):
     merchant_id: Optional[int] = None  # required when sent by a support agent

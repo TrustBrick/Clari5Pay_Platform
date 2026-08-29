@@ -1,3 +1,4 @@
+import math
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,9 +9,11 @@ from app.models.models import AccountLedgerEntry, AccountMaster, AccountTransact
 from app.core.deps import get_current_admin
 from app.services import account_ledger as ledger
 from app.core.cache import cache_delete, cache_get, cache_set
-from app.schemas.schemas import AccountCreate, AdjustmentCreate, ReasonRequest
+from app.schemas.schemas import AccountCreate, AccountLimitsUpdate, AdjustmentCreate, ReasonRequest
 from app.api.routes.system_logs import log_event, record_audit
-from app.api.routes.transactions import compute_balance, _COMPLETED_STATUSES, _kind, _completed, _member_label
+from app.api.routes.transactions import (
+    compute_balance, _COMPLETED_STATUSES, _kind, _completed, _member_label, _inr, _ist_now,
+)
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -656,6 +659,100 @@ async def toggle_account(
                        old=was, new=acc.status, reason=reason, ip=ip)
     await db.refresh(acc)
     name_map = await _merchant_name_map(db)
+    return _a(acc, name_map.get(acc.reference_number))
+
+
+# ═══ Account limits (Highest Credit / Highest Debit) ═══════════════════════════
+# These two are CONFIGURATION, not money: the account balance is derived elsewhere
+# (services/account_ledger + /balances = deposits − withdrawals − settlements + adjustments) and
+# reads neither field, so editing them cannot move a balance, a deposit, a withdrawal or a
+# settlement. Nothing about the transaction workflow changes either: a larger completed deposit or
+# debit still raises the corresponding mark exactly as it does today (transactions._track_account_
+# credit / _track_account_debit) — this route only lets an Admin set the value directly.
+
+
+def _limit(value: float, field: str) -> float:
+    """Validate one limit and round it to paise. Rejects anything a currency amount cannot be."""
+    try:
+        amount = round(float(value), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field} must be a valid amount.")
+    if not math.isfinite(amount):
+        raise HTTPException(status_code=400, detail=f"{field} must be a valid amount.")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail=f"{field} must be greater than zero.")
+    return amount
+
+
+@router.patch("/{reference_number}/limits")
+async def update_account_limits(
+    reference_number: str,
+    data: AccountLimitsUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Admin edit of ONE account's Highest Credit / Highest Debit configuration.
+
+    Nothing from the browser is trusted: both values are re-validated here (numeric, finite,
+    greater than zero, rounded to paise) and the account is resolved from the URL alone, so a
+    request can only ever touch the account it addresses — there is no account id in the body to
+    point somewhere else. Permission is the module's existing gate, ``get_current_admin``: every
+    other Account Management route uses it, and it rejects merchant users of every merchant role
+    (DEO / Supervisor / Manager / operators) and support members with 403 before this body runs.
+
+    Because these are financial limits, a change writes an append-only audit pair — a SystemLog
+    line and an AuditLog row carrying both before/after values — alongside the same
+    ``ACCOUNT_HIGHEST_*`` history the automatic high-water updates already write. Nothing is ever
+    overwritten.
+
+    ``debit_alert_threshold`` is deliberately left alone: it is the FIXED low-debit alert level
+    seeded at account creation, and moving it here would silently change which debits raise an
+    alert — a behaviour change nobody asked for.
+    """
+    credit = _limit(data.highest_credit, "Highest Credit")
+    debit = _limit(data.highest_debit, "Highest Debit")
+
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == reference_number)
+    )).scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    prev_credit = round(acc.highest_credit or 0.0, 2)
+    prev_debit = round(acc.highest_debit or 0.0, 2)
+    name_map = await _merchant_name_map(db)
+    if (prev_credit, prev_debit) == (credit, debit):
+        return _a(acc, name_map.get(acc.reference_number))   # nothing changed — nothing to audit
+
+    acc.highest_credit = credit
+    acc.highest_debit = debit
+    await db.flush()
+
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    ip = request.client.host if request and request.client else None
+    note = (data.reason or "").strip() or "Account limits updated by Admin"
+    await log_event(
+        db, "ACCOUNT_LIMITS_UPDATED",
+        f"{acc.reference_number} ({acc.account_name}) limits updated by {actor.name} — "
+        f"Highest Credit {_inr(prev_credit)} → {_inr(credit)}, "
+        f"Highest Debit {_inr(prev_debit)} → {_inr(debit)}",
+        actor=actor,
+    )
+    # Account ID + Name, both before/after pairs, who changed it, when (created_at, rendered IST
+    # in the audit viewer) and the reason — the full record the change is required to leave.
+    await record_audit(
+        db, "ACCOUNT_LIMITS_UPDATED", actor=actor,
+        entity_type="account", entity_id=acc.reference_number,
+        old=f"Highest Credit {_inr(prev_credit)} · Highest Debit {_inr(prev_debit)}",
+        new=f"Highest Credit {_inr(credit)} · Highest Debit {_inr(debit)}",
+        reason=f"{acc.account_name} · {note} · {ts}", ip=ip,
+    )
+    # The account list and balances are served from a short-lived cache; drop both so the updated
+    # limits show in the Account Management table on the very next load rather than up to 5s later.
+    await cache_delete("c:accounts:balances")
+    await cache_delete("c:accounts:list")
+    await db.refresh(acc)
     return _a(acc, name_map.get(acc.reference_number))
 
 

@@ -201,6 +201,10 @@ export interface Account {
   createdTime: string;
   lastMaintenanceDate?: string | null;
   lastMaintenanceTime?: string | null;
+  // Configured account limits (also returned by /balances). Admin-editable from the account's
+  // Details popup; they are configuration, never part of any balance calculation.
+  highestCredit?: number;
+  highestDebit?: number;
   merchantName: string;
 }
 

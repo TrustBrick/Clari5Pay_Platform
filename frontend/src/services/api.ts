@@ -512,6 +512,13 @@ export const accountAPI = {
     const res = await api.patch<Account>(`/api/accounts/${ref}/toggle`, { reason });
     return res.data;
   },
+  // Admin edit of an account's configured Highest Credit / Highest Debit. Limits only — the
+  // balance is derived server-side and is untouched by this call. The backend re-validates both
+  // values and rejects any caller that is not an Admin, so hiding the button is not the control.
+  updateLimits: async (ref: string, data: { highest_credit: number; highest_debit: number; reason?: string }) => {
+    const res = await api.patch<Account>(`/api/accounts/${ref}/limits`, data);
+    return res.data;
+  },
   // ── Accounting ledger + manual adjustment (Account Management) ──
   // The immutable entries for one account (payout debits + manual adjustments), newest first,
   // alongside the server's authoritative balance.
