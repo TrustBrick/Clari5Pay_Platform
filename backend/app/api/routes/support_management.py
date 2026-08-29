@@ -581,6 +581,20 @@ def _flag_availability_change(background: BackgroundTasks) -> None:
 
 
 # ─── Member self: availability toggle ─────────────────────────────────────────
+@router.get("/me/support-duty")
+async def get_admin_support_duty(actor: User = Depends(get_current_admin)):
+    """The Admin's own stored support-duty value — what the control must show.
+
+    The portal cannot take this from the signed-in user object: that is a snapshot written at
+    login and kept in localStorage, and an Admin session never expires on its own, so a session
+    older than this field carries no value for it and a page refresh does not correct that.
+    Reading it here means the control always reflects what the server actually holds.
+
+    ``null`` = the Admin has never opened the control, which counts as on duty (see the PATCH).
+    """
+    return {"supportDuty": actor.support_availability}
+
+
 @router.patch("/me/support-duty")
 async def set_admin_support_duty(
     data: AvailabilityRequest,

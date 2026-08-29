@@ -5,6 +5,8 @@ import ThemeToggle from './ThemeToggle';
 import SupportAvailabilityIndicator from './SupportAvailabilityIndicator';
 import { Icon } from './Icon';
 import { notificationAPI, supportManagementAPI } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import type { Notification, User } from '../types';
 
 interface HeaderProps {
@@ -34,6 +36,12 @@ const glass: CSSProperties = {
   boxShadow: '0 24px 60px rgba(0,0,0,0.28)',
   animation: 'c5menuin 0.2s ease',
 };
+
+// One ordered list drives the duty buttons and the message that confirms a change.
+const DUTY_OPTIONS: ReadonlyArray<readonly ['AVAILABLE' | 'BUSY' | 'ON_BREAK' | 'OFF', string]> = [
+  ['AVAILABLE', 'Available'], ['BUSY', 'Busy'], ['ON_BREAK', 'On Break'], ['OFF', 'Off'],
+];
+const dutyLabel = (v: string) => DUTY_OPTIONS.find(([k]) => k === v)?.[1] ?? v;
 
 const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, page, onNavigate, onLogout }) => {
   // A single menu is open at a time (opening one closes the other).
@@ -139,18 +147,57 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
   const go = (pageKey: string) => { setMenu(null); onNavigate?.(pageKey); };
 
   // ── Admin support duty ───────────────────────────────────────────────────
-  // Seeded from the signed-in user (null = off) and kept locally after a change, so the popup
-  // reflects the new state immediately without a re-login.
+  // The SERVER is the source of truth here, not `user`. That object is a snapshot written to
+  // localStorage at login, and an Admin session never expires on its own (see App.tsx), so a
+  // session that began before this field existed carries no value for it — and refreshing the
+  // page just re-reads the same stale snapshot. The popup therefore reads the stored value every
+  // time it opens and writes each confirmed change back into the session.
+  //
+  // Failures are SHOWN. The previous silent catch made a click that failed indistinguishable
+  // from a click that never happened, which is precisely what made this control undiagnosable.
+  const { updateUser } = useAuth();
+  const { showToast } = useToast();
   const [duty, setDuty] = useState<string | null>(user.supportDuty ?? null);
-  const [dutySaving, setDutySaving] = useState(false);
+  const [dutySaving, setDutySaving] = useState<string | null>(null);
+  const [dutyError, setDutyError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (menu !== 'profile' || user.role !== 'ADMIN') return;
+    setDutyError(null);          // reopening starts clean; the read below is the truth
+    let live = true;
+    supportManagementAPI.getMySupportDuty()
+      .then((res) => {
+        if (!live) return;
+        const saved = (res.supportDuty ?? null) as User['supportDuty'];
+        setDuty(saved ?? null);
+        updateUser({ supportDuty: saved });
+      })
+      .catch(() => { /* keep the last known state on screen; a change reports its own failure */ });
+    return () => { live = false; };
+  }, [menu, user.role, updateUser]);
+
   const changeDuty = async (value: 'AVAILABLE' | 'BUSY' | 'ON_BREAK' | 'OFF') => {
     if (dutySaving) return;
-    setDutySaving(true);
+    const previous = duty;
+    setDutySaving(value);
+    setDutyError(null);
+    setDuty(value);                       // optimistic — a click always changes something on screen
     try {
       const res = await supportManagementAPI.setMySupportDuty(value);
-      setDuty(res.supportDuty ?? null);
-    } catch { /* leave the previous state showing */ }
-    finally { setDutySaving(false); }
+      const saved = (res.supportDuty ?? null) as User['supportDuty'];
+      setDuty(saved ?? null);
+      updateUser({ supportDuty: saved }); // so a refresh doesn't fall back to the login snapshot
+      showToast(`Support duty set to ${dutyLabel(value)}`, 'success');
+    } catch (e: any) {
+      setDuty(previous);                  // the server still holds the old value
+      // No `response` means the request never got an answer at all (blocked, offline, proxy);
+      // say that rather than reporting a server error the server never sent.
+      const msg = e?.response?.data?.detail
+        || (e?.response ? `Could not change support duty (HTTP ${e.response.status})`
+                        : 'Could not reach the server to change support duty');
+      setDutyError(msg);
+      showToast(msg, 'error');
+    } finally { setDutySaving(null); }
   };
 
   // Dashboard pages swap the static title for a personalised, time-aware greeting.
@@ -296,12 +343,12 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
                 <div style={{ padding:'10px 16px',borderBottom:`1px solid ${T.borderLight}` }}>
                   <p style={{ fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Support Duty</p>
                   <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
-                    {([['AVAILABLE','Available'],['BUSY','Busy'],['ON_BREAK','On Break'],['OFF','Off']] as const).map(([v,label]) => {
+                    {DUTY_OPTIONS.map(([v,label]) => {
                       // Never touched = Available: an Admin at their desk is reachable support.
                       const active = (duty ?? 'AVAILABLE') === v;
                       return (
                         <button
-                          key={v} type="button" disabled={dutySaving}
+                          key={v} type="button" disabled={dutySaving !== null}
                           onClick={() => changeDuty(v)}
                           style={{ padding:'4px 9px',borderRadius:8,fontSize:10.5,fontWeight:700,fontFamily:'inherit',
                                    cursor:dutySaving?'wait':'pointer',
@@ -317,6 +364,11 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
                       ? 'Merchants can see you as available support while you are signed in.'
                       : 'You are not counted as available support.'}
                   </p>
+                  {/* A change that fails says so here as well as in the toast — the popup may
+                      already be closed by the time the toast lands. */}
+                  {dutyError && (
+                    <p style={{ fontSize:10,color:T.danger,fontWeight:700,margin:'4px 0 0' }}>{dutyError}</p>
+                  )}
                 </div>
               )}
               {/* Details — each row hidden when its value is absent */}
