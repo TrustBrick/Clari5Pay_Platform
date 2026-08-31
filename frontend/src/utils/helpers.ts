@@ -88,6 +88,8 @@ export const statusStyle = (s: TxStatus) => {
     MANAGER_REVIEW: { color: T.blue, bg: T.infoBg },
     RESUBMITTED: { color: T.warning, bg: T.warningBg },
     DEPOSITED: { color: T.success, bg: T.successBg },
+    // Nobody can pay until an Admin frees capacity — it reads as the blocker it is.
+    NO_ELIGIBLE_ACCOUNT: { color: T.danger, bg: T.dangerBg },
   };
   return map[s] || { color: T.textMuted, bg: T.borderLight };
 };

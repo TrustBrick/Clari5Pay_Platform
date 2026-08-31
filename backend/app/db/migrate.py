@@ -425,6 +425,8 @@ _NEW_ENUM_VALUES = [
     ("COMPLETED", "MANAGER_REVIEW"),
     ("COMPLETED", "RESUBMITTED"),
     ("COMPLETED", "DEPOSITED"),
+    # Automatic deposit allocation: the exception state for a request no account was eligible for.
+    ("COMPLETED", "NO_ELIGIBLE_ACCOUNT"),
 ]
 
 

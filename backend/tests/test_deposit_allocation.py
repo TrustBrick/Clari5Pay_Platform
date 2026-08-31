@@ -13,8 +13,10 @@ that would cost money if they broke:
      pool and every Bank of Baroda account is evaluated — but if none can take the money, none is
      used.
   4. **Nearest suitable capacity wins**, and ties break deterministically.
-  5. **A no-account outcome is explicit.** Nothing is assigned, the deposit keeps its existing
-     state, and the decision is recorded with the reason.
+  5. **A no-account outcome is an EXCEPTION, not a queue.** Nothing is assigned and the request
+     goes to NO_ELIGIBLE_ACCOUNT with the reason journalled — never back to ACCOUNT_REQUESTED,
+     which used to mean "waiting for an Admin to pick an account" and is no longer a normal
+     waiting state for a deposit.
   6. **The existing workflow is untouched.** An allocated deposit lands in ACCOUNT_SUBMITTED —
      the same state the Admin's manual send has always produced — and Cash/Crypto/Card requests
      never go near the engine.
@@ -34,6 +36,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -250,7 +253,9 @@ async def test_no_account_can_handle_the_amount(db):
 
     result = await _allocate(db, 90000)
     assert result.allocated is False
-    assert result.detail["failure"] == "NO_ELIGIBLE_ACCOUNT"
+    # The amount is past every ceiling, so waiting for tomorrow would not help either — the reason
+    # says so rather than blaming today's usage.
+    assert result.detail["failure"] == alloc.FAIL_AMOUNT_TOO_LARGE
     assert result.candidates and all(not c.eligible for c in result.candidates)
 
 
@@ -259,7 +264,58 @@ async def test_no_accounts_configured_at_all(db):
     """An empty catalogue is a clear no-account state, not a crash (negative scenario 1)."""
     result = await _allocate(db, 1000)
     assert result.allocated is False
-    assert result.detail["failure"] == "NO_ACCOUNTS_CONFIGURED"
+    assert result.detail["failure"] == alloc.FAIL_NO_ACCOUNTS
+
+
+@pytest.mark.asyncio
+async def test_the_failure_reason_names_the_problem_the_admin_has_to_fix(db):
+    """Each way of finding nothing has a DIFFERENT fix, so each gets its own reason.
+
+    "No eligible account" alone sends an Admin hunting. Activating an account, setting a limit,
+    waiting for midnight and adding a bigger account are four different actions.
+    """
+    # (a) nothing configured
+    r = await _allocate(db, 1000)
+    assert r.detail["failure"] == alloc.FAIL_NO_ACCOUNTS
+    assert "No accounts are configured" in r.reason
+
+    # (b) everything switched off → activate one
+    off = await _account(db, "ACC1", name="off", credit=100000.0, status="INACTIVE")
+    r = await _allocate(db, 1000)
+    assert r.detail["failure"] == alloc.FAIL_ALL_UNAVAILABLE
+    assert "INACTIVE" in r.reason and "Activate" in r.reason
+
+    # (c) available but no limit set → configure one
+    off.status = "ACTIVE"
+    off.highest_credit = 0.0
+    await db.flush()
+    r = await _allocate(db, 1000)
+    assert r.detail["failure"] == alloc.FAIL_NO_LIMITS
+    assert "Highest Credit" in r.reason
+
+    # (d) limit set but used up today → it frees itself at midnight
+    off.highest_credit = 50000.0
+    await db.flush()
+    await _deposit(db, "1", 48000, "ACC1", member="OTHER")
+    r = await _allocate(db, 10000)
+    assert r.detail["failure"] == alloc.FAIL_LIMIT_REACHED
+    assert "midnight IST" in r.reason and "2,000.00" in r.reason
+
+    # (e) the deposit is bigger than any ceiling → no amount of waiting helps
+    r = await _allocate(db, 500000)
+    assert r.detail["failure"] == alloc.FAIL_AMOUNT_TOO_LARGE
+    assert "larger than every account" in r.reason
+
+
+@pytest.mark.asyncio
+async def test_a_failed_note_request_is_named_in_the_reason(db):
+    """"No eligible account" and "the bank you asked for has none" send an Admin to different places."""
+    await _account(db, "ACC1", name="bob", bank="Bank of Baroda", credit=1000.0)
+
+    r = await _allocate(db, 45000, member_id="OLDM", note="Use Bank of Baroda")
+    assert r.allocated is False
+    assert "Bank of Baroda" in r.reason and "unavailable" in r.reason
+    assert r.requested_unavailable is True
 
 
 # ═══ Rule 3 — availability ══════════════════════════════════════════════════════════════════════
@@ -629,33 +685,80 @@ async def test_tomorrow_starts_with_the_full_limit_available(db):
 # ═══ Payment-method capability ══════════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_a_upi_deposit_requires_an_account_with_an_active_linked_upi(db):
-    """The account's payment-method capability is the platform's existing AdminUpi link."""
-    await _account(db, "ACC1", name="no-upi", credit=200000.0)
-    await _account(db, "ACC2", name="has-upi", credit=100000.0)
+async def test_a_upi_deposit_prefers_an_account_with_a_linked_upi(db):
+    """A linked UPI is a PREFERENCE. ACC1 has the nearer capacity and would win on ranking alone;
+    the UPI-capable account takes it instead, because that is what the merchant can actually pay."""
+    await _account(db, "ACC1", name="no-upi", credit=60000.0)
+    await _account(db, "ACC2", name="has-upi", credit=200000.0)
     db.add(AdminUpi(label="has-upi", upi_id="sindu@ybl", account_ref="ACC2", status="ACTIVE",
                     created_date=date.today(), created_time="10:00:00"))
     await db.flush()
 
     result = await _allocate(db, 45000, deposit_type="UPI", member_id="OLDM")
     assert result.account.reference_number == "ACC2"
+    assert result.rule == alloc.RULES.UPI_CAPABLE
     assert result.upi_id == "sindu@ybl"
     # The UPI card names the account but withholds its bank details, as the manual UPI send does.
     snap = result.snapshot()
     assert snap["upiId"] == "sindu@ybl" and "accountNumber" not in snap
 
-    # An inactive UPI link is not a capability.
-    result = await _allocate(db, 45000, deposit_type="BANK", member_id="OLDM")
-    assert result.account.reference_number == "ACC2"   # bank transfer works on any account
+
+@pytest.mark.asyncio
+async def test_a_upi_deposit_still_allocates_when_no_account_has_a_linked_upi(db):
+    """THE REGRESSION THIS EXISTS FOR.
+
+    A linked UPI was once a HARD filter. With no admin_upis configured — the state every fresh
+    deployment is in — that disqualified every account on the deposit form's DEFAULT type, so every
+    UPI request fell through to the Admin queue: exactly the manual assignment this engine removes.
+    An account without a linked UPI is a perfectly good destination; the merchant is simply sent
+    its bank details instead of a VPA.
+    """
+    await _account(db, "ACC1", name="no-upi-at-all", credit=200000.0)
+
+    result = await _allocate(db, 45000, deposit_type="UPI", member_id="OLDM")
+    assert result.allocated is True
+    assert result.account.reference_number == "ACC1"
+    assert result.upi_id is None
+    snap = result.snapshot()
+    assert snap["accountNumber"] == "ACACC1" and "upiId" not in snap
 
 
 @pytest.mark.asyncio
-async def test_a_upi_deposit_with_no_upi_enabled_account_allocates_nothing(db):
-    await _account(db, "ACC1", name="no-upi", credit=200000.0)
+async def test_a_bank_deposit_is_never_sent_a_upi_even_when_the_account_has_one(db):
+    """The merchant is told to pay the way they said they would pay.
 
-    result = await _allocate(db, 45000, deposit_type="UPI")
-    assert result.allocated is False
-    assert result.detail["accounts"][0]["rejectReason"] == alloc.REJECT_NO_UPI
+    Candidates carry a linked UPI whatever the deposit type (it is a ranking preference for UPI
+    requests). Without gating on the request's own type, a BANK/IMPS/NEFT/RTGS deposit into a
+    UPI-linked account would be handed a VPA and have its bank details withheld — the wrong
+    payment instructions entirely.
+    """
+    await _account(db, "ACC1", name="has-upi", credit=200000.0)
+    db.add(AdminUpi(label="has-upi", upi_id="sindu@ybl", account_ref="ACC1", status="ACTIVE",
+                    created_date=date.today(), created_time="10:00:00"))
+    await db.flush()
+
+    for dtype in ("BANK", "IMPS", "NEFT", "RTGS"):
+        result = await _allocate(db, 45000, deposit_type=dtype, member_id="OLDM")
+        assert result.account.reference_number == "ACC1"
+        assert result.upi_id is None, dtype
+        snap = result.snapshot()
+        assert "upiId" not in snap and snap["ifsc"] == "HDFC0001234", dtype
+
+    # The same account DOES send its UPI when the request is a UPI one.
+    assert (await _allocate(db, 45000, deposit_type="UPI", member_id="OLDM")).upi_id == "sindu@ybl"
+
+
+@pytest.mark.asyncio
+async def test_a_upi_deposit_through_the_endpoint_is_allocated_with_no_upi_configured(db):
+    """The same regression at the route level, on the deposit form's default type."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1", name="sindu", credit=800000.0, atype=AccountType.SAVINGS)
+
+    out = await txr.create_deposit(_payload(10000, depositType="UPI"), db, merchant)
+
+    assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
+    assert out["adminRef"] == "ACC1"
+    assert out["allocationSnapshot"]["accountNumber"] == "ACACC1"
 
 
 # ═══ Concurrency ════════════════════════════════════════════════════════════════════════════════
@@ -710,7 +813,7 @@ async def test_concurrent_route_level_deposits_never_oversubscribe_one_account(d
     assert used <= 50000.0
     rows = (await db.execute(select(Transaction).order_by(Transaction.id))).scalars().all()
     assert [t.admin_ref for t in rows] == ["ACC1", None]
-    assert [t.status for t in rows] == [TxStatus.ACCOUNT_SUBMITTED, TxStatus.ACCOUNT_REQUESTED]
+    assert [t.status for t in rows] == [TxStatus.ACCOUNT_SUBMITTED, TxStatus.NO_ELIGIBLE_ACCOUNT]
 
 
 # ═══ The deposit endpoint — the existing workflow, automated ════════════════════════════════════
@@ -738,20 +841,79 @@ async def test_a_deposit_request_is_allocated_and_lands_in_account_submitted(db)
 
 
 @pytest.mark.asyncio
-async def test_a_deposit_with_no_eligible_account_waits_for_the_admin(db):
-    """Negative scenario 2 — nothing is assigned and the request keeps its existing state, so the
-    Admin's manual send still handles it. No limit is bent to make a request succeed."""
+async def test_a_deposit_with_no_eligible_account_lands_in_the_exception_state(db):
+    """Negative scenario 2 — nothing is assigned, and the request goes to NO_ELIGIBLE_ACCOUNT.
+
+    NOT back to ACCOUNT_REQUESTED. That state used to mean "waiting for an Admin to choose an
+    account", and with allocation automatic it is no longer a normal waiting state for a deposit:
+    a request sitting here is a configuration problem, not a queue item.
+    """
     merchant = await _merchant(db)
     await _account(db, "ACC1", name="sindu", credit=10000.0)
 
     out = await txr.create_deposit(_payload(45000), db, merchant)
 
-    assert out["status"] == TxStatus.ACCOUNT_REQUESTED
+    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
     assert out["adminRef"] is None
     assert out["allocationSnapshot"] is None
     journal = (await db.execute(select(DepositAllocation))).scalars().one()
     assert journal.outcome == alloc.OUTCOME_NO_ACCOUNT
     assert journal.account_ref is None
+    assert journal.reason and "Raise a limit" in journal.reason
+
+
+@pytest.mark.asyncio
+async def test_the_admin_resolves_the_exception_by_retrying_not_by_choosing(db):
+    """The one remaining Admin task on a deposit: fix the configuration, press retry, and the
+    engine picks the account. The Admin never names one — raising the limit is the whole
+    intervention."""
+    merchant = await _merchant(db)
+    acc = await _account(db, "ACC1", name="sindu", credit=10000.0)
+    admin = User(id=99, username="admin1", name="Admin One", role=UserRole.ADMIN,
+                 hashed_password="x", email="admin1@test.local")
+    db.add(admin)
+    await db.flush()
+
+    out = await txr.create_deposit(_payload(45000), db, merchant)
+    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+
+    # Retrying while still misconfigured changes nothing, and says so rather than pretending.
+    with pytest.raises(HTTPException) as exc:
+        await txr.retry_allocation(out["id"], db, admin)
+    assert exc.value.status_code == 409
+
+    acc.highest_credit = 100000.0          # the Admin raises the limit
+    await db.flush()
+
+    retried = await txr.retry_allocation(out["id"], db, admin)
+    assert retried["status"] == TxStatus.ACCOUNT_SUBMITTED
+    assert retried["adminRef"] == "ACC1"
+    assert retried["allocationSnapshot"]["bankName"] == "HDFC Bank"
+    # EVERY attempt is journalled — the original failure, the retry that still found nothing, and
+    # the retry that succeeded. That sequence IS the history of the exception.
+    rows = (await db.execute(select(DepositAllocation).order_by(DepositAllocation.id))).scalars().all()
+    assert [r.outcome for r in rows] == [
+        alloc.OUTCOME_NO_ACCOUNT, alloc.OUTCOME_NO_ACCOUNT, alloc.OUTCOME_ALLOCATED]
+
+
+@pytest.mark.asyncio
+async def test_retry_refuses_a_request_that_already_has_an_account(db):
+    """Re-allocating a placed deposit would move money to a different bank after the merchant was
+    told where to pay, and would double-count the first account's consumed capacity."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1", name="sindu", credit=100000.0)
+    admin = User(id=99, username="admin1", name="Admin One", role=UserRole.ADMIN,
+                 hashed_password="x", email="admin1@test.local")
+    db.add(admin)
+    await db.flush()
+
+    out = await txr.create_deposit(_payload(45000), db, merchant)
+    assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
+
+    with pytest.raises(HTTPException) as exc:
+        await txr.retry_allocation(out["id"], db, admin)
+    assert exc.value.status_code == 400
+    assert "already has an account" in exc.value.detail
 
 
 @pytest.mark.asyncio
@@ -766,7 +928,7 @@ async def test_allocation_consumes_capacity_immediately_for_the_next_request(db)
 
     second = await txr.create_deposit(_payload(10000, memberId="M2"), db, merchant)
     assert second["adminRef"] is None
-    assert second["status"] == TxStatus.ACCOUNT_REQUESTED
+    assert second["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
 
 
 @pytest.mark.asyncio
@@ -838,7 +1000,8 @@ async def test_a_failed_allocation_is_recorded_too(db):
     row = (await db.execute(select(DepositAllocation))).scalars().one()
     assert row.outcome == alloc.OUTCOME_NO_ACCOUNT
     assert row.candidates_considered == 1 and row.candidates_eligible == 0
-    assert "No account can accept" in row.reason
+    # The stored reason names the fix, not just the symptom.
+    assert "larger than every account" in row.reason and "Raise a limit" in row.reason
     assert alloc.REJECT_NO_CAPACITY in row.detail
 
 

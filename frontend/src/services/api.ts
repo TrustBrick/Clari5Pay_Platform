@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -317,6 +317,20 @@ export const transactionAPI = {
   },
   reject: async (id: string, reason: string) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/reject`, { reason });
+    return res.data;
+  },
+  // The latest allocation decision for a deposit — what was chosen, or why nothing was.
+  // Admin-only server-side: it carries the account's daily credit position and the per-account
+  // rejection reasons, which never belong in a merchant payload.
+  allocationDecision: async (id: string) => {
+    const res = await api.get<{ decision: AllocationDecision | null }>(`/api/transactions/${id}/allocation`);
+    return res.data.decision;
+  },
+  // Re-run the automatic allocation engine for a deposit it could not place. The Admin fixes the
+  // configuration (raises a limit, activates an account) and retries; the engine still chooses
+  // WHICH account, so this is not a manual assignment. Admin-gated server-side.
+  retryAllocation: async (id: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/retry-allocation`, {});
     return res.data;
   },
   submitAccount: async (

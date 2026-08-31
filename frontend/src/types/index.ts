@@ -87,7 +87,10 @@ export type TxStatus =
   | 'SUPERVISOR_REVIEW'
   | 'MANAGER_REVIEW'
   | 'RESUBMITTED'
-  | 'DEPOSITED';
+  | 'DEPOSITED'
+  // Automatic deposit allocation found no eligible account. An EXCEPTION, not a queue — the only
+  // deposit case that still needs an Admin, who frees capacity (or adds an account) and retries.
+  | 'NO_ELIGIBLE_ACCOUNT';
 
 export type TxType =
   | 'DEPOSIT'
@@ -108,6 +111,27 @@ export interface AllocatedAccount {
   ifsc?: string;            // omitted on a UPI allocation
   branch?: string;          // omitted on a UPI allocation
   upiId?: string;           // present only when the deposit is paid to a linked UPI
+}
+
+// One automatic-allocation decision (GET /api/transactions/{id}/allocation — ADMIN ONLY).
+// Carries the account's daily credit position at the moment of the decision, so it is never part
+// of a merchant-facing payload.
+export interface AllocationDecision {
+  transactionRef: string;
+  outcome: 'ALLOCATED' | 'NO_ACCOUNT';
+  accountRef: string | null;
+  accountName: string | null;
+  bankName: string | null;
+  requestedAmount: number;
+  highestCredit: number | null;
+  creditUsedToday: number | null;
+  remainingCapacity: number | null;
+  rule: string | null;
+  reason: string | null;
+  customerType: string | null;
+  candidatesConsidered: number | null;
+  candidatesEligible: number | null;
+  createdAtIst: string | null;
 }
 
 export interface Transaction {

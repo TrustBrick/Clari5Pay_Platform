@@ -50,6 +50,11 @@ class TxStatus(str, enum.Enum):
     MANAGER_REVIEW = "MANAGER_REVIEW"          # withdrawal assigned to a Manager
     RESUBMITTED = "RESUBMITTED"                # reviewer sent it back to the Data Operator
     DEPOSITED = "DEPOSITED"                     # admin final-approved a deposit
+    # Automatic deposit allocation could not place this request: no account was eligible for the
+    # amount. An EXCEPTION, not a queue — ACCOUNT_REQUESTED is no longer a normal waiting state
+    # for a deposit, because the engine assigns an account the moment the request is created. This
+    # is the only deposit case that still needs an Admin, and the allocation journal records why.
+    NO_ELIGIBLE_ACCOUNT = "NO_ELIGIBLE_ACCOUNT"
 
 
 class AccountType(str, enum.Enum):

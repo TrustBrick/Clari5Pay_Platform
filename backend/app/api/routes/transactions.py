@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, case, func, text, literal, union_all
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction, DepositAllocation
 from app.core.deps import (
     get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer,
     get_current_supervisor, get_current_manager, OVERSIGHT_MERCHANT_ROLES,
@@ -930,6 +930,9 @@ def _paginate(stmt, limit=None, offset=None):
 # large datasets stay performant (single ORDER BY), and every portal that lists
 # all transactions (Admin / Supervisor / Manager) shares one identical ordering.
 _STATUS_PRIORITY = [
+    # An automatic allocation that found nothing blocks the merchant entirely — no account means no
+    # payment — and only an Admin can clear it, so it outranks every other queue.
+    TxStatus.NO_ELIGIBLE_ACCOUNT,
     TxStatus.ACCOUNT_REQUESTED,
     TxStatus.PENDING_APPROVAL,
     TxStatus.ACCOUNT_SUBMITTED,
@@ -1837,6 +1840,7 @@ async def merchant_stats(
 # In-flight (not yet completed / rejected / cancelled) statuses. Mirrors ACTIVE_STATUSES in the
 # frontend — the two must stay in step, since both answer "what is still awaiting action?".
 _ACTIVE_STATUSES = [
+    TxStatus.NO_ELIGIBLE_ACCOUNT,
     TxStatus.ACCOUNT_REQUESTED, TxStatus.ACCOUNT_SUBMITTED, TxStatus.PENDING_APPROVAL,
     TxStatus.SUPERVISOR_REVIEW, TxStatus.MANAGER_REVIEW, TxStatus.SLIP_SUBMITTED,
     TxStatus.RESUBMITTED, TxStatus.PENDING, TxStatus.ADMIN_APPROVED,
@@ -2547,20 +2551,28 @@ async def _auto_allocate_deposit_account(db: AsyncSession, tx: Transaction) -> b
     await alloc.record_allocation(db, result, transaction=tx)
 
     if not result.allocated:
-        # Nothing eligible. No account is assigned — a limit is never crossed to satisfy a
-        # request, and a merchant is never sent an account that cannot take the money. The
-        # deposit waits in ACCOUNT_REQUESTED, where the Admin sees and handles it as before.
-        msg = (f"{tx.ref}: no eligible account for {_inr(tx.amount)} — {result.reason} "
-               f"Send an account manually from the request.")
+        # Nothing eligible. No account is assigned — a limit is never crossed to satisfy a request,
+        # and a merchant is never sent an account that cannot take the money.
+        #
+        # The request goes to NO_ELIGIBLE_ACCOUNT, an explicit EXCEPTION state, NOT back to
+        # ACCOUNT_REQUESTED. That distinction is the point: ACCOUNT_REQUESTED used to mean "waiting
+        # for an Admin to choose an account", and with allocation automatic it is no longer a
+        # normal waiting state for a deposit. A request sitting here is a configuration problem an
+        # Admin must look at — every account full, unavailable, or none configured — and it is the
+        # only deposit case that still needs one. The reason is on the allocation journal.
+        tx.status = TxStatus.NO_ELIGIBLE_ACCOUNT
+        msg = (f"{tx.ref}: NO ELIGIBLE ACCOUNT for {_inr(tx.amount)} — {result.reason} "
+               f"Free up capacity or add an account, then retry the allocation.")
         for uid in await _all_admin_ids(db):
             db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
-        await log_event(db, "DEPOSIT_ALLOCATION_FAILED",
+        await log_event(db, "DEPOSIT_NO_ELIGIBLE_ACCOUNT",
                         f"{tx.ref}: automatic account allocation found no eligible account "
                         f"({_inr(tx.amount)}) — {result.reason}", actor=None)
-        await record_audit(db, "DEPOSIT_ALLOCATION_FAILED", actor=None, entity_type=tx.type.value,
-                           entity_id=tx.ref, new="NO_ACCOUNT", reason=result.reason)
+        await record_audit(db, "DEPOSIT_NO_ELIGIBLE_ACCOUNT", actor=None, entity_type=tx.type.value,
+                           entity_id=tx.ref, old="ACCOUNT_REQUESTED", new="NO_ELIGIBLE_ACCOUNT",
+                           reason=result.reason)
         await db.flush()
-        return False
+        return False   # the caller raises the Admin's Telegram — one notification, one place
 
     snapshot = result.snapshot() or {}
     acc = result.account
@@ -3027,6 +3039,75 @@ async def account_submit(
     await log_event(db, "ACCOUNT_SUBMITTED", f"{tx.ref}: account details sent to {tx.merchant_name}", actor=actor)
     await record_audit(db, "ACCOUNT_SUBMITTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="ACCOUNT_SUBMITTED")
     await _refresh_with_images(db, tx)
+    return _t(tx)
+
+
+@router.get("/{tx_id}/allocation")
+async def get_allocation_decision(
+    tx_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """The latest automatic-allocation decision for one deposit — what was chosen, or why nothing was.
+
+    ADMIN-ONLY, and deliberately its own endpoint rather than a field on the transaction payload:
+    the journal carries the account's daily credit position and the per-account rejection reasons,
+    which are internal figures a merchant must never receive. Keeping them off ``_t()`` means they
+    cannot leak into a merchant response by accident.
+    """
+    tx = await _get_tx(tx_id, db)
+    row = (await db.execute(
+        select(DepositAllocation)
+        .where(DepositAllocation.transaction_ref == tx.ref)
+        .order_by(DepositAllocation.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    if row is None:
+        return {"decision": None}
+    return {"decision": alloc.serialize(row)}
+
+
+@router.post("/{tx_id}/retry-allocation")
+async def retry_allocation(
+    tx_id: str,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Re-run the allocation engine for a deposit that could not be placed.
+
+    This is how the ONE remaining Admin task on a deposit is meant to be done. A request lands in
+    NO_ELIGIBLE_ACCOUNT because of configuration — every account at its daily limit, all of them
+    inactive, or none carrying a Highest Credit — so the Admin fixes the configuration (raise a
+    limit, activate an account, add one) and presses retry. The engine then picks the account, by
+    the same rules as every other deposit. The Admin still never chooses WHICH account.
+
+    Re-running is safe to repeat: the engine re-reads today's usage under a row lock every time, so
+    a retry cannot allocate capacity that has since been taken, and a retry that still finds
+    nothing simply leaves the request where it is with a fresh journal row explaining why.
+    """
+    tx = await _get_tx(tx_id, db)
+    if not tx.type.value.startswith("DEPOSIT"):
+        raise HTTPException(status_code=400, detail="Only a deposit request is allocated an account.")
+    # Only an unplaced request may be retried. A deposit that already has an account is left alone
+    # — re-allocating it would move money to a different bank after the merchant was told where to
+    # pay, and would double-count the first account's consumed capacity.
+    if tx.status not in (TxStatus.NO_ELIGIBLE_ACCOUNT, TxStatus.ACCOUNT_REQUESTED):
+        raise HTTPException(status_code=400, detail="This request already has an account.")
+    if (tx.deposit_type or "").upper() not in alloc.ALLOCATABLE_DEPOSIT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="This deposit type is not paid into a managed bank account.")
+
+    allocated = await _auto_allocate_deposit_account(db, tx)
+    await _refresh_with_images(db, tx)
+    if not allocated:
+        # Still nothing. Report it plainly rather than pretending something changed.
+        raise HTTPException(
+            status_code=409,
+            detail="Still no eligible account — every account is unavailable or has reached its "
+                   "daily credit limit for this amount.")
+    await log_event(db, "DEPOSIT_ALLOCATION_RETRIED",
+                    f"{tx.ref}: allocation retried by {actor.name} — {tx.admin_ref} assigned",
+                    actor=actor)
     return _t(tx)
 
 

@@ -21,14 +21,14 @@ import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLo
 import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappStats, TelegramStatus } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts, MerchantAnalyticsRow } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, AccountLedgerEntry, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
+import type { Transaction, User, Account, AccountBalance, AccountLedgerEntry, AllocationDecision, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
 const REQUEST_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'PENDING_APPROVAL', 'SUPERVISOR_REVIEW', 'MANAGER_REVIEW', 'SLIP_SUBMITTED', 'RESUBMITTED', 'REJECTED', 'DEPOSITED', 'COMPLETED', 'CANCELLED'];
 
 // Active (pending) workflow statuses — anything not yet completed/deposited/cancelled.
-const ACTIVE_STATUSES = ['ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'PENDING_APPROVAL', 'SUPERVISOR_REVIEW', 'MANAGER_REVIEW', 'SLIP_SUBMITTED', 'RESUBMITTED', 'PENDING', 'ADMIN_APPROVED'];
+const ACTIVE_STATUSES = ['NO_ELIGIBLE_ACCOUNT', 'ACCOUNT_REQUESTED', 'ACCOUNT_SUBMITTED', 'PENDING_APPROVAL', 'SUPERVISOR_REVIEW', 'MANAGER_REVIEW', 'SLIP_SUBMITTED', 'RESUBMITTED', 'PENDING', 'ADMIN_APPROVED'];
 const isActive = (s: string) => ACTIVE_STATUSES.includes(s);
 
 const roleLabel = (r?: string | null) => merchantRoleLabel(r) || '—';
@@ -112,7 +112,13 @@ const RequestModal: React.FC<{
   // own step and is excluded from the account picker. Every later step is shared, so the
   // reviewer-approved (SLIP_SUBMITTED) hop below covers Card exactly like any other deposit.
   const cardLinkStep = canAct && isCardDeposit && tx.status === 'ACCOUNT_REQUESTED';
-  const chooseStep = canAct && isDeposit && !isCardDeposit && tx.status === 'ACCOUNT_REQUESTED'; // pick account → auto PNG
+  // Automatic allocation assigns the account the moment a deposit is created, so ACCOUNT_REQUESTED
+  // is no longer a normal deposit state. The account picker below is now reached only through the
+  // EXCEPTION — NO_ELIGIBLE_ACCOUNT — plus any request raised before allocation existed, which
+  // must stay actionable. Retrying the engine is the intended fix; the picker is the last resort.
+  const allocationFailed = canAct && isDeposit && !isCardDeposit && tx.status === 'NO_ELIGIBLE_ACCOUNT';
+  const chooseStep = canAct && isDeposit && !isCardDeposit
+    && (tx.status === 'ACCOUNT_REQUESTED' || tx.status === 'NO_ELIGIBLE_ACCOUNT');
   const depositDoneStep = canAct && isDeposit && tx.status === 'SLIP_SUBMITTED'; // review slip → Deposited
   const payStep = canAct && !isDeposit && (tx.status === 'SLIP_SUBMITTED' || tx.status === 'ACCOUNT_REQUESTED'); // pay merchant → upload receipt → Completed
   // Payout details are captured on a WITHDRAWAL completion only. Deposits and settlements keep
@@ -216,6 +222,28 @@ const RequestModal: React.FC<{
     if (!f) return;
     if (!BANK_IMG_TYPES.includes(f.type)) { showToast('Allowed image types: JPG, JPEG, PNG, WEBP', 'error'); return; }
     setBankImage(await fileToDataUrl(f));
+  };
+
+  // The intended fix for a request the engine could not place: correct the configuration, then
+  // re-run the engine. The Admin never names an account here — that is the whole point.
+  // The recorded reason the engine could not place this request. Fetched only for the exception
+  // state, from the admin-only endpoint — it carries daily credit figures that never go to a
+  // merchant. Shown verbatim so the Admin sees the actual problem, not a guess at it.
+  const [allocFail, setAllocFail] = useState<AllocationDecision | null>(null);
+  useEffect(() => {
+    if (!allocationFailed) { setAllocFail(null); return; }
+    transactionAPI.allocationDecision(tx.id).then(setAllocFail).catch(() => setAllocFail(null));
+  }, [allocationFailed, tx.id]);
+
+  const retryAllocation = async () => {
+    setSaving(true);
+    try {
+      const updated = await transactionAPI.retryAllocation(tx.id);
+      showToast(`${tx.ref} — account allocated automatically (${updated.adminRef})`);
+      onDone?.(); onClose();
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Allocation still found no eligible account', 'error');
+    } finally { setSaving(false); }
   };
 
   const sendAccount = async () => {
@@ -474,6 +502,29 @@ const RequestModal: React.FC<{
         </div>
       )}
 
+      {/* The allocation exception. This is the ONE deposit case that still needs an Admin, and the
+          fix is configuration — raise a Highest Credit, activate an account, add one — followed by
+          a retry. Choosing an account by hand is offered underneath as the last resort, not the
+          first move. */}
+      {allocationFailed && (
+        <div style={{ display:'flex',gap:10,alignItems:'flex-start',background:T.dangerBg,border:`1px solid ${T.danger}55`,borderRadius:10,padding:'12px 14px',marginTop:18 }}>
+          <span style={{ lineHeight:1 }}><Icon name="warning" size={18} /></span>
+          <div style={{ flex:1,minWidth:0 }}>
+            <p style={{ margin:0,fontSize:12,fontWeight:800,color:T.danger,textTransform:'uppercase',letterSpacing:'0.05em' }}>No Eligible Account</p>
+            <p style={{ margin:'3px 0 0',fontSize:12.5,color:T.textMain,lineHeight:1.5 }}>
+              {allocFail?.reason
+                || `The automatic allocation could not place ${fmt(tx.amount)}.`}
+            </p>
+            <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted,lineHeight:1.5 }}>
+              Fix the account configuration, then retry — the engine picks the account, not you.
+              {allocFail?.candidatesConsidered != null && ` ${allocFail.candidatesConsidered} account(s) evaluated, ${allocFail.candidatesEligible ?? 0} eligible.`}
+            </p>
+            <div style={{ marginTop:10 }}>
+              <Btn size="sm" onClick={retryAllocation} disabled={saving}>{saving ? 'Retrying…' : <><Icon name="refresh" size={13} /> Retry Automatic Allocation</>}</Btn>
+            </div>
+          </div>
+        </div>
+      )}
       {chooseStep && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <div style={{ display:'flex',gap:8,marginBottom:12 }}>
@@ -482,7 +533,9 @@ const RequestModal: React.FC<{
           </div>
           {sendVia === 'BANK' ? (
             <>
-              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Select an account to send ({accounts.length} active)</p>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>
+                {allocationFailed ? 'Or send an account manually' : 'Select an account to send'} ({accounts.length} active)
+              </p>
               {/* Each option carries the account's REMAINING credit capacity for today, from the
                   same figure the allocation engine enforces. This send is the manual escape valve
                   for a request the engine could not place, so it is deliberately not blocked —

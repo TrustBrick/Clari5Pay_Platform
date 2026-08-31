@@ -79,9 +79,17 @@ DEPOSIT_TYPES = (TxType.DEPOSIT, TxType.DEPOSIT_REQUEST)
 # through a payment-gateway link the Admin submits, not an account. All three are untouched here.
 ALLOCATABLE_DEPOSIT_TYPES = ("UPI", "BANK", "IMPS", "NEFT", "RTGS")
 
-# A UPI deposit is paid to a UPI ID, so a candidate account must actually have one linked and
-# active — the platform's existing per-account payment-method capability (AdminUpi.account_ref).
-# Every other allocatable type is a bank transfer, which every managed account supports.
+# A UPI deposit is PREFERABLY paid to a linked UPI ID (the platform's existing per-account
+# payment-method capability, AdminUpi.account_ref) — but that is a preference, never a
+# requirement. Every managed account can receive money by bank transfer, so an account without a
+# linked UPI is still a perfectly good destination for a UPI-typed request; the merchant is simply
+# sent its bank details instead of a VPA.
+#
+# This was originally written as a HARD filter and it was wrong: with no admin_upis rows
+# configured, every UPI deposit — the deposit form's DEFAULT type — was disqualified on every
+# account and fell back to the Admin queue, which is precisely the manual assignment this engine
+# exists to remove. Capability may narrow a choice between eligible accounts; it must never be the
+# reason there is no eligible account.
 UPI_DEPOSIT_TYPE = "UPI"
 
 
@@ -93,6 +101,7 @@ class RULES:
     NEW_SAVINGS_FALLBACK = "NEW_CUSTOMER_SAVINGS_FALLBACK"
     OLD_ACCOUNT_HISTORY = "EXISTING_CUSTOMER_ACCOUNT_HISTORY"
     NEAREST_CAPACITY = "NEAREST_SUITABLE_CAPACITY"
+    UPI_CAPABLE = "UPI_DEPOSIT_UPI_ENABLED_ACCOUNT"
 
 
 _RULE_TEXT = {
@@ -103,6 +112,7 @@ _RULE_TEXT = {
         "New customer + no unused account + eligible Savings account + nearest suitable credit capacity"),
     RULES.OLD_ACCOUNT_HISTORY: "Existing customer + previously used account + nearest suitable credit capacity",
     RULES.NEAREST_CAPACITY: "Eligible + nearest remaining credit capacity",
+    RULES.UPI_CAPABLE: "UPI deposit + account with a linked UPI + nearest suitable credit capacity",
 }
 
 # Why a candidate was rejected — recorded per account on the allocation journal, so a support
@@ -111,8 +121,61 @@ _RULE_TEXT = {
 REJECT_INACTIVE = "ACCOUNT_NOT_AVAILABLE"
 REJECT_NO_LIMIT = "NO_CREDIT_LIMIT_CONFIGURED"
 REJECT_NO_CAPACITY = "DAILY_CREDIT_LIMIT_REACHED"
-REJECT_NO_UPI = "NO_ACTIVE_UPI_LINKED"
 REJECT_LOCKED = "CONCURRENTLY_ALLOCATED"
+
+# The distinct ways an allocation can find nothing. Recorded on the journal and shown to the Admin,
+# because each one has a different fix: activate an account, raise a limit, add an account, or wait
+# for tomorrow. A single "no eligible account" sentence tells them none of that.
+FAIL_NO_ACCOUNTS = "NO_ACCOUNTS_CONFIGURED"
+FAIL_ALL_UNAVAILABLE = "ALL_ACCOUNTS_UNAVAILABLE"
+FAIL_NO_LIMITS = "NO_CREDIT_LIMITS_CONFIGURED"
+FAIL_LIMIT_REACHED = "ALL_ACCOUNTS_AT_DAILY_LIMIT"
+FAIL_AMOUNT_TOO_LARGE = "AMOUNT_EXCEEDS_EVERY_REMAINING_CAPACITY"
+FAIL_MIXED = "NO_ELIGIBLE_ACCOUNT"
+FAIL_RACE = "CAPACITY_TAKEN_CONCURRENTLY"
+
+
+def _failure(candidates: list["Candidate"], amount: float) -> tuple[str, str]:
+    """(code, human sentence) for why nothing could be allocated.
+
+    Distinguishes the cases an Admin resolves differently: an account that is switched off is
+    activated, an unconfigured limit is set, a limit that is merely used up frees itself tomorrow,
+    and an amount larger than every ceiling needs a bigger account. Derived from the per-account
+    rejection reasons already recorded, so it can never disagree with them.
+    """
+    if not candidates:
+        return FAIL_NO_ACCOUNTS, "No accounts are configured in Account Management."
+    reasons = [c.reject_reason for c in candidates]
+    n = len(candidates)
+    money = f"₹{amount:,.2f}"
+
+    if all(r == REJECT_INACTIVE for r in reasons):
+        return FAIL_ALL_UNAVAILABLE, (
+            f"All {n} account(s) are unavailable — every one is set INACTIVE. "
+            f"Activate an account in Account Management.")
+    if all(r == REJECT_NO_LIMIT for r in reasons):
+        return FAIL_NO_LIMITS, (
+            f"No account has a Highest Credit configured, so none can accept a deposit. "
+            f"Set a daily credit limit in Account Management.")
+
+    # Only accounts that were otherwise usable say anything about capacity.
+    capacity_blocked = [c for c in candidates if c.reject_reason == REJECT_NO_CAPACITY]
+    if capacity_blocked:
+        # Distinguish "used up today" from "this deposit is bigger than the account has ever held":
+        # the first clears at midnight IST, the second needs a larger limit.
+        biggest_ceiling = max(_money(c.account.highest_credit) for c in capacity_blocked)
+        if _money(amount) > biggest_ceiling:
+            return FAIL_AMOUNT_TOO_LARGE, (
+                f"{money} is larger than every account's Highest Credit "
+                f"(the largest is ₹{biggest_ceiling:,.2f}). Raise a limit or add an account.")
+        left = max(c.remaining for c in capacity_blocked)
+        return FAIL_LIMIT_REACHED, (
+            f"Every eligible account has reached its daily credit limit for {money} — the most any "
+            f"has left today is ₹{left:,.2f}. Capacity resets at midnight IST, or raise a limit.")
+
+    return FAIL_MIXED, (
+        f"No account can accept {money} — all {n} are unavailable or out of daily credit capacity.")
+
 
 # Outcomes recorded on the allocation journal.
 OUTCOME_ALLOCATED = "ALLOCATED"
@@ -536,7 +599,7 @@ class Candidate:
 
 def _evaluate(
     account: AccountMaster, amount: float, *, used_today: float, deposits_today: int,
-    member_deposits: int, unused: bool, upi_id: Optional[str], needs_upi: bool,
+    member_deposits: int, unused: bool, upi_id: Optional[str],
 ) -> Candidate:
     """Apply every HARD rule to one account. Cheapest disqualification first.
 
@@ -554,11 +617,6 @@ def _evaluate(
     # Rule 3 — availability. An inactive/disabled account can never be sent to a merchant.
     if (account.status or "").upper() != "ACTIVE":
         cand.reject_reason = REJECT_INACTIVE
-        return cand
-
-    # Payment-method capability: a UPI deposit needs an account with an active linked UPI.
-    if needs_upi and not upi_id:
-        cand.reject_reason = REJECT_NO_UPI
         return cand
 
     # An account with no configured ceiling has no capacity to give. Treated as not eligible
@@ -593,8 +651,9 @@ async def evaluate_accounts(
     used = await credit_used_today(db, refs, on=on)
     counts = await deposit_counts_today(db, refs, on=on)
     unused = await unused_account_refs(db, refs)
-    needs_upi = (deposit_type or "").upper() == UPI_DEPOSIT_TYPE
-    upis = await upi_by_account(db, refs) if needs_upi else {}
+    # Loaded for every deposit type: a linked UPI is what gets SENT when the request is a UPI one,
+    # and it is a ranking preference — never a filter (see UPI_DEPOSIT_TYPE above).
+    upis = await upi_by_account(db, refs)
     if history is None:
         history = await member_history(db, member_id, exclude_tx_id=exclude_tx_id)
     return [
@@ -605,7 +664,6 @@ async def evaluate_accounts(
             member_deposits=history.per_account_deposits.get(a.reference_number, 0),
             unused=a.reference_number in unused,
             upi_id=upis.get(a.reference_number),
-            needs_upi=needs_upi,
         )
         for a in accounts
     ]
@@ -677,13 +735,22 @@ class AllocationResult:
         return out
 
 
-def _tiers(candidates: list[Candidate], history: MemberHistory,
-           note: NoteRequest) -> list[tuple[str, list[Candidate]]]:
+def _tiers(candidates: list[Candidate], history: MemberHistory, note: NoteRequest,
+           *, deposit_type: Optional[str] = None) -> list[tuple[str, list[Candidate]]]:
     """The ordered preference pools, most preferred first. Every pool is already hard-filtered, so
     a rule can only ever change WHICH eligible account is picked — never whether an ineligible one
-    becomes acceptable.
+    becomes acceptable. Each pool is a subset of the eligible set, and the last pool is always the
+    full eligible set, so a preference can narrow the choice but can never empty it.
     """
     tiers: list[tuple[str, list[Candidate]]] = []
+
+    # A UPI request prefers an account that can actually be paid by UPI, when one is eligible.
+    # A PREFERENCE, expressed as a pool — not a filter: if no eligible account has a linked UPI the
+    # later pools still cover every eligible account and the merchant is sent bank details instead.
+    if (deposit_type or "").upper() == UPI_DEPOSIT_TYPE:
+        with_upi = [c for c in candidates if c.upi_id]
+        if with_upi and len(with_upi) < len(candidates):
+            tiers.append((RULES.UPI_CAPABLE, with_upi))
 
     if history.is_new:
         # Rule 1 — a new customer prefers an account that has never been used, determined from
@@ -796,8 +863,7 @@ async def allocate_deposit_account(
     }
 
     if not accounts:
-        result.reason = "No managed accounts are configured."
-        result.detail["failure"] = "NO_ACCOUNTS_CONFIGURED"
+        result.detail["failure"], result.reason = _failure([], amount)
         return result
 
     candidates = await evaluate_accounts(
@@ -808,14 +874,26 @@ async def allocate_deposit_account(
     result.detail["accounts"] = [c.snapshot() for c in candidates]
 
     if not eligible:
-        result.reason = (f"No account can accept ₹{amount:,.2f} — every account is unavailable or "
-                         f"has reached its daily credit limit.")
-        result.detail["failure"] = "NO_ELIGIBLE_ACCOUNT"
+        code, sentence = _failure(candidates, amount)
+        result.detail["failure"] = code
+        # A note that named a bank or an account is worth repeating back: "no eligible account" and
+        # "the bank you asked for has no eligible account" send an Admin looking in different places.
+        wanted = parsed.bank_name or parsed.account_ref
+        if wanted:
+            sentence = f"{sentence} (requested: {wanted} — unavailable)"
+            result.requested_unavailable = True
+        result.reason = sentence
         return result
+
+    is_upi_request = (deposit_type or "").upper() == UPI_DEPOSIT_TYPE
 
     def _finish(cand: Candidate, rule: str, extra: str = "") -> AllocationResult:
         result.account = cand.account
-        result.upi_id = cand.upi_id
+        # The linked UPI is SENT only when the merchant said they are paying by UPI. Candidates
+        # carry it whatever the deposit type (it is a ranking preference for UPI requests), so
+        # without this gate a BANK/IMPS/NEFT/RTGS deposit into a UPI-linked account would be
+        # handed a VPA and have its bank details withheld — the wrong instructions entirely.
+        result.upi_id = cand.upi_id if is_upi_request else None
         result.rule = rule
         result.reason = _RULE_TEXT.get(rule, rule) + (f" ({extra})" if extra else "")
         result.highest_credit = _money(cand.account.highest_credit)
@@ -866,7 +944,7 @@ async def allocate_deposit_account(
             result.detail["requestedBankUnavailable"] = parsed.bank_name or parsed.account_ref
 
     # ── Rules 1 / 12 / 6 — preference tiers, then nearest suitable capacity ──
-    for rule, tier in _tiers(pool, history, parsed):
+    for rule, tier in _tiers(pool, history, parsed, deposit_type=deposit_type):
         ordered = tier if rule == RULES.OLD_ACCOUNT_HISTORY else rank(tier)
         claimed, skipped = await _claim(db, ordered, amount, on=on)
         if skipped:
@@ -882,8 +960,8 @@ async def allocate_deposit_account(
     # Every eligible account lost its capacity to a concurrent request between the read and the
     # lock. No account is assigned — the deposit stays unallocated rather than breaching a limit.
     result.reason = (f"No account could be reserved for ₹{amount:,.2f} — the remaining capacity was "
-                     f"taken by concurrent requests.")
-    result.detail["failure"] = "CAPACITY_TAKEN_CONCURRENTLY"
+                     f"taken by concurrent requests. Retry the allocation.")
+    result.detail["failure"] = FAIL_RACE
     return result
 
 
