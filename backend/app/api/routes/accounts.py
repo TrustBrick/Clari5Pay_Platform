@@ -60,6 +60,56 @@ def _debit_account(t: Transaction, member_acct: dict[str, str]) -> str | None:
     return member_acct.get(_norm_member(t.member_id))
 
 
+async def _member_account_map(db: AsyncSession, txns: list[Transaction]) -> dict[str, str]:
+    """Member → the managed account their money actually came in through.
+
+    Shared by /balances, /statement and /users so all three attribute a debit identically.
+
+    A link row (AccountTransaction) is written the moment an admin SENDS account details
+    (transactions.py, on ACCOUNT_SUBMITTED). It records where a deposit was *directed*, not
+    where money *arrived* — a deposit that is later CANCELLED leaves its link row behind. The
+    member's raw deposit history has the same hole: a request that never completed still names
+    an admin_ref. Trusting either unchecked charges an account for money it never received, so
+    both paths are confirmed the same way: only a COMPLETED deposit that actually credited that
+    account establishes attribution.
+
+    Member ids are normalised (trim + upper) so a casing/spacing mismatch between a deposit and
+    a later withdrawal can't break the attribution.
+    """
+    acct_refs = set(
+        (await db.execute(select(AccountMaster.reference_number))).scalars().all()
+    )
+    tx_by_ref = {t.ref: t for t in txns}
+
+    def _credited(t: Transaction | None, ref: str) -> bool:
+        """True when `t` is a completed deposit that credited account `ref`."""
+        return bool(
+            t is not None
+            and t.type.value.startswith("DEPOSIT")
+            and t.status in _COMPLETED_STATUSES
+            and t.admin_ref == ref
+        )
+
+    member_acct: dict[str, str] = {}
+    # Confirmed link rows first, newest link wins.
+    links = (await db.execute(
+        select(AccountTransaction).order_by(AccountTransaction.id.desc())
+    )).scalars().all()
+    for l in links:
+        key = _norm_member(l.member_id)
+        if not key or not l.reference_number or key in member_acct:
+            continue
+        if _credited(tx_by_ref.get(l.transaction_reference_number), l.reference_number):
+            member_acct[key] = l.reference_number
+    # Then the member's own deposit history, so a debit is never dropped merely because its
+    # link row is missing. Scanned newest-first so the latest receiving account wins.
+    for t in sorted(txns, key=lambda x: (x.created_at or datetime.min), reverse=True):
+        key = _norm_member(t.member_id)
+        if key and key not in member_acct and t.admin_ref in acct_refs and _credited(t, t.admin_ref):
+            member_acct[key] = t.admin_ref
+    return member_acct
+
+
 @router.get("/balances")
 async def account_balances(
     db: AsyncSession = Depends(get_db),
@@ -89,27 +139,8 @@ async def account_balances(
         summ["mab"] = _monthly_average_balance(biz_txns, (user.pay_in_fee or 0) / 100, (user.pay_out_fee or 0) / 100)
         bal_by_name[name] = summ
 
-    # Member → most recent receiving account. A completed withdrawal/settlement carries no
-    # admin_ref, so it is drawn from the account the member deposits into. That mapping is built
-    # from the account↔transaction links AND — so a debit is never silently dropped when a link
-    # row is missing — from the member's own deposit history (Transaction.admin_ref into a managed
-    # account). Member ids are normalised (trim + upper) so a casing/spacing mismatch between a
-    # deposit and a later withdrawal can't break the attribution (module-level _norm_member).
-    acct_refs = {a.reference_number for a in accounts}
-    member_acct: dict[str, str] = {}
-    links = (await db.execute(select(AccountTransaction).order_by(AccountTransaction.id.desc()))).scalars().all()
-    for l in links:
-        key = _norm_member(l.member_id)
-        if key and l.reference_number and key not in member_acct:
-            member_acct[key] = l.reference_number
-    # Fallback (only where a link row is absent): the managed account a member most-recently
-    # deposited into. Deposits scanned newest-first so the latest receiving account wins.
-    for t in sorted(txns, key=lambda x: (x.created_at or datetime.min), reverse=True):
-        if not t.type.value.startswith("DEPOSIT"):
-            continue
-        key = _norm_member(t.member_id)
-        if key and t.admin_ref in acct_refs and key not in member_acct:
-            member_acct[key] = t.admin_ref
+    # Member → the account their money came in through; drives debit attribution below.
+    member_acct = await _member_account_map(db, txns)
 
     # Net manual adjustments per account (Account Management → Manual Adjustment). Folded into
     # Available here so this screen and services/account_ledger.account_balance — the figure the
@@ -266,16 +297,9 @@ async def account_statement(
 
     txns = (await db.execute(select(Transaction))).scalars().all()
 
-    # Member → most recent receiving account — same source as account_balances, so a member's
-    # withdrawals/settlements attribute back to the account they deposit into.
-    links = (await db.execute(
-        select(AccountTransaction).order_by(AccountTransaction.id.desc())
-    )).scalars().all()
-    member_acct: dict[str, str] = {}
-    for l in links:
-        key = _norm_member(l.member_id)
-        if key and l.reference_number and key not in member_acct:
-            member_acct[key] = l.reference_number
+    # Same source as account_balances, so a member's withdrawals/settlements attribute back to
+    # the account they deposit into and the statement reconciles to the account list.
+    member_acct = await _member_account_map(db, txns)
 
     def _belongs(t: Transaction) -> bool:
         if _kind(t) == "deposit":
@@ -330,16 +354,9 @@ async def account_users(
 
     txns = (await db.execute(select(Transaction))).scalars().all()
 
-    # Member → most recent receiving account — same source as /balances, so a member's
-    # withdrawals attribute back to the account they deposit into.
-    links = (await db.execute(
-        select(AccountTransaction).order_by(AccountTransaction.id.desc())
-    )).scalars().all()
-    member_acct: dict[str, str] = {}
-    for l in links:
-        key = _norm_member(l.member_id)
-        if key and l.reference_number and key not in member_acct:
-            member_acct[key] = l.reference_number
+    # Same source as /balances, so a member's withdrawals attribute back to the account they
+    # deposit into.
+    member_acct = await _member_account_map(db, txns)
 
     def _pid(t: Transaction) -> str:
         return (t.member_id or "").strip().upper()
