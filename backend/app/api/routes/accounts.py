@@ -1,3 +1,4 @@
+import bisect
 import math
 from collections import defaultdict
 from datetime import date, datetime, timedelta
@@ -45,69 +46,68 @@ def _norm_member(m: str | None) -> str:
     return (m or "").strip().upper()
 
 
-def _debit_account(t: Transaction, member_acct: dict[str, str]) -> str | None:
+def _debit_account(t: Transaction, funding: dict[str, tuple[list[datetime], list[str]]]) -> str | None:
     """Which managed account a completed withdrawal/settlement came out of.
 
     The single attribution rule, shared by /balances, /statement and /users so all three always
     agree: the EXPLICIT payout account recorded at completion wins; a payout explicitly made
     MANUAL/offline belongs to no account at all; anything else (every row completed before the
-    payout step existed) falls back to the member's most-recent receiving account.
+    payout step existed) is inferred from the member's funding history.
+
+    That inference is made AS AT the debit's own moment — the account the member was depositing
+    into when the money left, not whichever account they happen to use today. A member who funds
+    two accounts in turn would otherwise have their whole history charged to the later one, which
+    reads it down and reads the earlier one up; and a debit that predates the member's first
+    deposit would be charged to an account that had not yet received anything from them.
     """
     if (t.payout_payment_method or "").upper() == "MANUAL":
         return None
     if t.payout_account_ref:
         return t.payout_account_ref
-    return member_acct.get(_norm_member(t.member_id))
+    seq = funding.get(_norm_member(t.member_id))
+    if not seq:
+        return None
+    times, refs = seq
+    # Deposits at exactly this instant count as already received.
+    i = bisect.bisect_right(times, t.created_at or datetime.min)
+    return refs[i - 1] if i else None
 
 
-async def _member_account_map(db: AsyncSession, txns: list[Transaction]) -> dict[str, str]:
-    """Member → the managed account their money actually came in through.
+async def _member_account_timeline(
+    db: AsyncSession, txns: list[Transaction],
+) -> dict[str, tuple[list[datetime], list[str]]]:
+    """Member → their funding history: every completed deposit into a managed account, oldest
+    first, as parallel (times, account refs) lists ready for a bisect in _debit_account.
 
     Shared by /balances, /statement and /users so all three attribute a debit identically.
 
-    A link row (AccountTransaction) is written the moment an admin SENDS account details
-    (transactions.py, on ACCOUNT_SUBMITTED). It records where a deposit was *directed*, not
-    where money *arrived* — a deposit that is later CANCELLED leaves its link row behind. The
-    member's raw deposit history has the same hole: a request that never completed still names
-    an admin_ref. Trusting either unchecked charges an account for money it never received, so
-    both paths are confirmed the same way: only a COMPLETED deposit that actually credited that
-    account establishes attribution.
+    Only a COMPLETED deposit is a funding event. An abandoned request still names an admin_ref,
+    and the AccountTransaction link row written when an admin SENDS account details (on
+    ACCOUNT_SUBMITTED) records where a deposit was *directed*, never that money arrived — a
+    deposit later CANCELLED leaves its link row behind. Attributing off either drove an account's
+    Available Balance negative: it was charged for money it never received. Link rows are
+    deliberately not consulted here; a link that survives confirmation describes a completed
+    deposit, which is already in this timeline under its own date.
 
-    Member ids are normalised (trim + upper) so a casing/spacing mismatch between a deposit and
-    a later withdrawal can't break the attribution.
+    Member ids are normalised (trim + upper) so a casing/spacing mismatch between a deposit and a
+    later withdrawal can't break the attribution.
     """
     acct_refs = set(
         (await db.execute(select(AccountMaster.reference_number))).scalars().all()
     )
-    tx_by_ref = {t.ref: t for t in txns}
-
-    def _credited(t: Transaction | None, ref: str) -> bool:
-        """True when `t` is a completed deposit that credited account `ref`."""
-        return bool(
-            t is not None
-            and t.type.value.startswith("DEPOSIT")
-            and t.status in _COMPLETED_STATUSES
-            and t.admin_ref == ref
-        )
-
-    member_acct: dict[str, str] = {}
-    # Confirmed link rows first, newest link wins.
-    links = (await db.execute(
-        select(AccountTransaction).order_by(AccountTransaction.id.desc())
-    )).scalars().all()
-    for l in links:
-        key = _norm_member(l.member_id)
-        if not key or not l.reference_number or key in member_acct:
-            continue
-        if _credited(tx_by_ref.get(l.transaction_reference_number), l.reference_number):
-            member_acct[key] = l.reference_number
-    # Then the member's own deposit history, so a debit is never dropped merely because its
-    # link row is missing. Scanned newest-first so the latest receiving account wins.
-    for t in sorted(txns, key=lambda x: (x.created_at or datetime.min), reverse=True):
-        key = _norm_member(t.member_id)
-        if key and key not in member_acct and t.admin_ref in acct_refs and _credited(t, t.admin_ref):
-            member_acct[key] = t.admin_ref
-    return member_acct
+    events: dict[str, list[tuple[datetime, str]]] = defaultdict(list)
+    for t in txns:
+        if (t.type.value.startswith("DEPOSIT")
+                and t.status in _COMPLETED_STATUSES
+                and t.admin_ref in acct_refs):
+            key = _norm_member(t.member_id)
+            if key:
+                events[key].append((t.created_at or datetime.min, t.admin_ref))
+    funding: dict[str, tuple[list[datetime], list[str]]] = {}
+    for key, rows in events.items():
+        rows.sort(key=lambda r: r[0])
+        funding[key] = ([r[0] for r in rows], [r[1] for r in rows])
+    return funding
 
 
 @router.get("/balances")
@@ -139,8 +139,8 @@ async def account_balances(
         summ["mab"] = _monthly_average_balance(biz_txns, (user.pay_in_fee or 0) / 100, (user.pay_out_fee or 0) / 100)
         bal_by_name[name] = summ
 
-    # Member → the account their money came in through; drives debit attribution below.
-    member_acct = await _member_account_map(db, txns)
+    # Member → their funding history; each debit is attributed as at its own date, below.
+    funding = await _member_account_timeline(db, txns)
 
     # Net manual adjustments per account (Account Management → Manual Adjustment). Folded into
     # Available here so this screen and services/account_ledger.account_balance — the figure the
@@ -213,7 +213,7 @@ async def account_balances(
             # recorded one; otherwise it falls back to the member's most-recent receiving account
             # (the historical rule, so figures for older rows are unchanged). A withdrawal paid
             # MANUAL/offline touched no managed account, so it is attributed to none.
-            acct = _debit_account(t, member_acct)
+            acct = _debit_account(t, funding)
             if t.status == TxStatus.COMPLETED and acct:
                 is_wd = ty.startswith("WITHDRAWAL")
                 (acct_wd if is_wd else acct_st)[acct] += t.amount
@@ -298,15 +298,15 @@ async def account_statement(
     txns = (await db.execute(select(Transaction))).scalars().all()
 
     # Same source as account_balances, so a member's withdrawals/settlements attribute back to
-    # the account they deposit into and the statement reconciles to the account list.
-    member_acct = await _member_account_map(db, txns)
+    # the account they were funding at the time and the statement reconciles to the account list.
+    funding = await _member_account_timeline(db, txns)
 
     def _belongs(t: Transaction) -> bool:
         if _kind(t) == "deposit":
             return t.admin_ref == ref
         # withdrawals / settlements: the recorded payout account, else the member's receiving
         # account — the one shared rule (_debit_account), so the statement reconciles to /balances.
-        return _debit_account(t, member_acct) == ref
+        return _debit_account(t, funding) == ref
 
     rows = [{
         "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
@@ -355,8 +355,8 @@ async def account_users(
     txns = (await db.execute(select(Transaction))).scalars().all()
 
     # Same source as /balances, so a member's withdrawals attribute back to the account they
-    # deposit into.
-    member_acct = await _member_account_map(db, txns)
+    # were funding at the time.
+    funding = await _member_account_timeline(db, txns)
 
     def _pid(t: Transaction) -> str:
         return (t.member_id or "").strip().upper()
@@ -374,7 +374,7 @@ async def account_users(
     for t in txns:
         ty = t.type.value
         if ty.startswith("WITHDRAWAL") and t.status == TxStatus.COMPLETED and t.member_id:
-            if _debit_account(t, member_acct) == ref:
+            if _debit_account(t, funding) == ref:
                 wd_by_member[_pid(t)] += t.amount
                 _mark_active(_pid(t), t.created_at)
 
