@@ -116,7 +116,12 @@ const RequestModal: React.FC<{
   // is no longer a normal deposit state. The account picker below is now reached only through the
   // EXCEPTION — NO_ELIGIBLE_ACCOUNT — plus any request raised before allocation existed, which
   // must stay actionable. Retrying the engine is the intended fix; the picker is the last resort.
-  const allocationFailed = canAct && isDeposit && !isCardDeposit && tx.status === 'NO_ELIGIBLE_ACCOUNT';
+  // The retry banner covers BOTH unplaced states: the engine's own exception, and any request
+  // raised before automatic allocation existed and left sitting in the old Admin queue. One click
+  // places those too, which beats asking an Admin to pick an account by hand.
+  const allocationFailed = canAct && isDeposit && !isCardDeposit
+    && (tx.status === 'NO_ELIGIBLE_ACCOUNT' || tx.status === 'ACCOUNT_REQUESTED');
+  const allocationExplicitFailure = canAct && isDeposit && !isCardDeposit && tx.status === 'NO_ELIGIBLE_ACCOUNT';
   const chooseStep = canAct && isDeposit && !isCardDeposit
     && (tx.status === 'ACCOUNT_REQUESTED' || tx.status === 'NO_ELIGIBLE_ACCOUNT');
   const depositDoneStep = canAct && isDeposit && tx.status === 'SLIP_SUBMITTED'; // review slip → Deposited
@@ -231,9 +236,9 @@ const RequestModal: React.FC<{
   // merchant. Shown verbatim so the Admin sees the actual problem, not a guess at it.
   const [allocFail, setAllocFail] = useState<AllocationDecision | null>(null);
   useEffect(() => {
-    if (!allocationFailed) { setAllocFail(null); return; }
+    if (!allocationExplicitFailure) { setAllocFail(null); return; }
     transactionAPI.allocationDecision(tx.id).then(setAllocFail).catch(() => setAllocFail(null));
-  }, [allocationFailed, tx.id]);
+  }, [allocationExplicitFailure, tx.id]);
 
   const retryAllocation = async () => {
     setSaving(true);
@@ -510,17 +515,20 @@ const RequestModal: React.FC<{
         <div style={{ display:'flex',gap:10,alignItems:'flex-start',background:T.dangerBg,border:`1px solid ${T.danger}55`,borderRadius:10,padding:'12px 14px',marginTop:18 }}>
           <span style={{ lineHeight:1 }}><Icon name="warning" size={18} /></span>
           <div style={{ flex:1,minWidth:0 }}>
-            <p style={{ margin:0,fontSize:12,fontWeight:800,color:T.danger,textTransform:'uppercase',letterSpacing:'0.05em' }}>No Eligible Account</p>
+            <p style={{ margin:0,fontSize:12,fontWeight:800,color:T.danger,textTransform:'uppercase',letterSpacing:'0.05em' }}>
+              {allocationExplicitFailure ? 'No Eligible Account' : 'No Account Assigned Yet'}
+            </p>
             <p style={{ margin:'3px 0 0',fontSize:12.5,color:T.textMain,lineHeight:1.5 }}>
-              {allocFail?.reason
-                || `The automatic allocation could not place ${fmt(tx.amount)}.`}
+              {allocationExplicitFailure
+                ? (allocFail?.reason || `The automatic allocation could not place ${fmt(tx.amount)}.`)
+                : 'This request was raised before automatic allocation and has no account. Run the allocation to place it.'}
             </p>
             <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted,lineHeight:1.5 }}>
               Fix the account configuration, then retry — the engine picks the account, not you.
               {allocFail?.candidatesConsidered != null && ` ${allocFail.candidatesConsidered} account(s) evaluated, ${allocFail.candidatesEligible ?? 0} eligible.`}
             </p>
             <div style={{ marginTop:10 }}>
-              <Btn size="sm" onClick={retryAllocation} disabled={saving}>{saving ? 'Retrying…' : <><Icon name="refresh" size={13} /> Retry Automatic Allocation</>}</Btn>
+              <Btn size="sm" onClick={retryAllocation} disabled={saving}>{saving ? 'Allocating…' : <><Icon name="refresh" size={13} /> {allocationExplicitFailure ? 'Retry' : 'Run'} Automatic Allocation</>}</Btn>
             </div>
           </div>
         </div>
