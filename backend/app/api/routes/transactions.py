@@ -19,6 +19,7 @@ from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
 from app.services import tg_notify as tgn
 from app.services import account_ledger as ledger
+from app.services import deposit_allocation as alloc
 from app.core.cache import cache_delete, cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
@@ -545,11 +546,25 @@ def _inr(n: float | None) -> str:
 
 
 async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, request: Request | None) -> None:
-    """After a deposit is approved & credited to an account, update that account's recorded
-    Highest Credit high-water mark. When a new record is set: persist the new value, notify every
-    admin (same rule as tx events) and write a "system" audit entry. Purely additive — it never
-    alters the deposit, its status, or any workflow. Updated only when the deposit exceeds the
-    current highest."""
+    """After a deposit is approved & credited to an account, check that account's Highest Credit.
+
+    Highest Credit is the account's HARD DAILY CREDIT LIMIT — the ceiling the Admin configures in
+    Account Management and the allocation engine enforces on every request. This function used to
+    RAISE it to match any larger deposit, which is precisely what a ceiling must never do: a limit
+    that moves up to accommodate whatever arrives is not a limit, and one manual send above it
+    would have silently re-configured the account for every request that followed. It no longer
+    writes the value. The configured limit is now changed in exactly one place — an Admin editing
+    it (PATCH /api/accounts/{ref}/limits), which is audited.
+
+    What it does instead is report a breach. The engine cannot cause one; only a manually sent
+    account or a row that predates this rule can, so a breach is worth an Admin's attention. The
+    notification, the system log and the "system" audit entry are the same plumbing as before, and
+    nothing here touches the deposit, its status, or any workflow.
+
+    The account's largest single deposit is still reported — it is derived from the transactions
+    themselves and served as `highestDeposit` by /api/accounts/balances, so no stored high-water
+    mark was needed for it.
+    """
     if not tx.type.value.startswith("DEPOSIT") or not tx.admin_ref:
         return
     acc = (await db.execute(
@@ -557,25 +572,28 @@ async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, 
     )).scalar_one_or_none()
     if acc is None:
         return
-    amt = round(tx.amount, 2)
-    if amt <= (acc.highest_credit or 0):
-        return
-    prev = acc.highest_credit or 0.0
-    acc.highest_credit = amt
+    limit = round(acc.highest_credit or 0.0, 2)
+    if limit <= 0:
+        return                                  # no ceiling configured — nothing to measure against
+    used = (await alloc.credit_used_today(db, [acc.reference_number], on=tx.tx_date)).get(
+        acc.reference_number, 0.0)
+    if round(used, 2) <= limit:
+        return                                  # within the configured daily limit
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
     ip = _client_ip(request)
-    msg = (f"New Highest Credit Recorded — {acc.account_name} · Previous {_inr(prev)} → "
-           f"New {_inr(amt)} · {tx.ref} · {ts}")
+    msg = (f"Daily Credit Limit Exceeded — {acc.account_name} · Credited today {_inr(used)} "
+           f"against a Highest Credit of {_inr(limit)} · {tx.ref} · {ts}")
     for uid in await _all_admin_ids(db):
-        db.add(Notification(user_id=uid, message=msg, icon="📈"))
-    # Audit: Account ID, Holder, Previous, New, Deposit Ref, Updated By = System, IST time.
-    await record_audit(db, "ACCOUNT_HIGHEST_CREDIT", actor=None,
+        db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
+    # Audit: Account ID, Holder, configured limit vs the day's credited total, Deposit Ref,
+    # Updated By = System, IST time.
+    await record_audit(db, "ACCOUNT_CREDIT_LIMIT_EXCEEDED", actor=None,
                        entity_type="account", entity_id=acc.reference_number,
-                       old=_inr(prev), new=_inr(amt),
+                       old=_inr(limit), new=_inr(used),
                        reason=f"{acc.account_name} · Deposit {tx.ref} · {ts}", ip=ip)
-    await log_event(db, "ACCOUNT_HIGHEST_CREDIT",
-                    f"{acc.reference_number} ({acc.account_name}) new highest credit "
-                    f"{_inr(amt)} (was {_inr(prev)}) via {tx.ref}", actor=None)
+    await log_event(db, "ACCOUNT_CREDIT_LIMIT_EXCEEDED",
+                    f"{acc.reference_number} ({acc.account_name}) credited {_inr(used)} today "
+                    f"against a Highest Credit of {_inr(limit)} via {tx.ref}", actor=None)
     await db.flush()
 
 
@@ -799,6 +817,12 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "adminRef": t.admin_ref,
         "adminBankDetails": t.admin_bank_details,
         "adminUpiId": t.admin_upi_id,
+        # The receiving account the allocation engine selected, exactly as it stood when it was
+        # sent: bank, account name, number, IFSC, branch and account type (a UPI allocation carries
+        # the UPI ID instead of the bank details). Snapshotted on the row, so this costs no query
+        # and a later edit to the account cannot rewrite what a past deposit was told to pay.
+        # NULL on every manually-sent and historical row, which keeps their rendering unchanged.
+        "allocationSnapshot": json.loads(t.allocation_snapshot) if t.allocation_snapshot else None,
         # CARD deposits: the payment gateway link the Admin submitted. Carried by the same
         # already-authorized payloads as every other field here (own transactions, oversight roles
         # and admins), so it is never exposed more widely than the request it belongs to.
@@ -2463,6 +2487,143 @@ async def list_approvers(
     ]
 
 
+# ─── Automatic deposit account allocation ─────────────────────────────────────
+# The Admin no longer picks a receiving account for each deposit request: they configure the
+# accounts and their daily credit limits in Account Management, and the engine
+# (services/deposit_allocation) chooses. This helper is the ONE place the engine's decision is
+# applied to a deposit, and it takes exactly the same steps the Admin's manual "Send Account" has
+# always taken — the same columns, the same ACCOUNT_REQUESTED → ACCOUNT_SUBMITTED transition, the
+# same account_transaction link, the same notifications and the same audit actions. No new state
+# and no new workflow: only who decides has changed.
+#
+# The manual send is deliberately left in place. It is what handles the case the engine reports
+# honestly rather than fudging — no account eligible for this amount — where the deposit stays in
+# ACCOUNT_REQUESTED for the Admin, exactly as every deposit did before this feature.
+
+# Who the workflow records as having sent the account. The manual path records the Admin's name;
+# an automatic allocation had no human actor and says so, so no operator is ever credited with a
+# decision they did not make.
+AUTO_ALLOCATION_ACTOR = "System (Auto Allocation)"
+
+
+def _account_summary(snapshot: dict) -> str:
+    """The bank-details text sent to the merchant, in the platform's established field order.
+
+    Mirrors the summary the Admin's send builds in the browser, plus the Account Type the
+    automatic card carries. A UPI allocation has no bank details to print (the merchant pays a UPI
+    ID) and yields an empty string, which the caller stores as NULL — the same thing the manual
+    UPI send does.
+    """
+    if snapshot.get("upiId"):
+        return ""
+    return "\n".join([
+        f"Account Name: {snapshot.get('accountName') or '—'}",
+        f"Bank: {snapshot.get('bankName') or '—'}",
+        f"A/C: {snapshot.get('accountNumber') or '—'}",
+        f"IFSC: {snapshot.get('ifsc') or '—'}",
+        f"Branch: {snapshot.get('branch') or '—'}",
+        f"Account Type: {snapshot.get('accountType') or '—'}",
+    ])
+
+
+async def _auto_allocate_deposit_account(db: AsyncSession, tx: Transaction) -> bool:
+    """Run the allocation engine for one freshly created deposit and apply its decision.
+
+    Returns True when an account was allocated (the request is now ACCOUNT_SUBMITTED and the
+    merchant can pay), False when none was eligible (the request stays ACCOUNT_REQUESTED).
+
+    Everything happens inside the caller's transaction — the row lock the engine takes, the
+    account assignment, the usage the assignment consumes and the audit trail all commit together,
+    which is what stops two simultaneous requests from spending the same remaining capacity.
+    """
+    result = await alloc.allocate_deposit_account(
+        db,
+        amount=tx.amount,
+        member_id=tx.member_id,
+        deposit_type=tx.deposit_type,
+        note=tx.notes,
+        exclude_tx_id=tx.id,          # this deposit is not part of its own member history
+    )
+    await alloc.record_allocation(db, result, transaction=tx)
+
+    if not result.allocated:
+        # Nothing eligible. No account is assigned — a limit is never crossed to satisfy a
+        # request, and a merchant is never sent an account that cannot take the money. The
+        # deposit waits in ACCOUNT_REQUESTED, where the Admin sees and handles it as before.
+        msg = (f"{tx.ref}: no eligible account for {_inr(tx.amount)} — {result.reason} "
+               f"Send an account manually from the request.")
+        for uid in await _all_admin_ids(db):
+            db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
+        await log_event(db, "DEPOSIT_ALLOCATION_FAILED",
+                        f"{tx.ref}: automatic account allocation found no eligible account "
+                        f"({_inr(tx.amount)}) — {result.reason}", actor=None)
+        await record_audit(db, "DEPOSIT_ALLOCATION_FAILED", actor=None, entity_type=tx.type.value,
+                           entity_id=tx.ref, new="NO_ACCOUNT", reason=result.reason)
+        await db.flush()
+        return False
+
+    snapshot = result.snapshot() or {}
+    acc = result.account
+    tx.allocation_snapshot = json.dumps(snapshot)
+    tx.admin_ref = acc.reference_number
+    if result.upi_id:
+        # A UPI deposit is paid to the account's linked UPI; the deposit still credits the parent
+        # account, so bank + UPI traffic rolls up together exactly as the manual UPI send does.
+        tx.admin_upi_id = result.upi_id
+        tx.admin_bank_details = None
+    else:
+        tx.admin_bank_details = _account_summary(snapshot)
+    tx.status = TxStatus.ACCOUNT_SUBMITTED
+    tx.approved_by = AUTO_ALLOCATION_ACTOR
+    # Remember which managed account served this Member ID — the platform's existing account usage
+    # record, which both the reuse lookup and per-account reporting read.
+    if tx.member_id:
+        db.add(AccountTransaction(
+            reference_number=acc.reference_number, member_id=tx.member_id,
+            transaction_reference_number=tx.ref, transaction_date=_ist_now().date(),
+            transaction_time=_ist_now().strftime("%H:%M:%S"),
+        ))
+    await db.flush()
+
+    # The same two notifications the manual send raises: the creator can now pay, and the Admins
+    # get the record of what was sent — here with the account and the rule that chose it, so an
+    # automatic decision is visible rather than silent.
+    await _notify_merchant(db, tx, f"{tx.ref}: account details received — you can now make the payment and submit your slip", "🏦")
+    for uid in await _all_admin_ids(db):
+        db.add(Notification(
+            user_id=uid,
+            # The remaining figure is stated AFTER this deposit's own capacity is taken, which is
+            # what the account has left for the rest of today.
+            message=(f"{tx.ref}: {acc.account_name} ({acc.bank_name}) auto-allocated for "
+                     f"{_inr(tx.amount)} — {_inr(max(0.0, (result.remaining or 0.0) - tx.amount))} "
+                     f"of today's credit limit still free"),
+            icon="🏦",
+        ))
+    # Telegram (demo, next-step only): the account is out, so the requesting user owns the next
+    # step. Without allocation this deposit would have notified the Admin to upload account details.
+    await tgn.notify(db, tx, "USER", "account_submitted")
+    await log_event(
+        db, "DEPOSIT_ACCOUNT_AUTO_ALLOCATED",
+        f"{tx.ref}: {acc.reference_number} ({acc.account_name}, {acc.bank_name}) auto-allocated to "
+        f"{tx.merchant_name} for {_inr(tx.amount)} — {result.reason}", actor=None,
+    )
+    # Audited as ACCOUNT_SUBMITTED as well, so an auto-allocated deposit appears in the existing
+    # transaction audit trail in the same place, and with the same action, as a manual send.
+    await record_audit(
+        db, "DEPOSIT_ACCOUNT_AUTO_ALLOCATED", actor=None, entity_type=tx.type.value,
+        entity_id=tx.ref, old="NO ACCOUNT", new=f"{acc.reference_number} · {acc.account_name}",
+        reason=(f"{result.reason} · Highest Credit {_inr(result.highest_credit)} · "
+                f"used today {_inr(result.credit_used)} · remaining {_inr(result.remaining)} · "
+                f"{_ist_now().strftime('%d %b %Y, %I:%M %p')} IST"),
+    )
+    await record_audit(db, "ACCOUNT_SUBMITTED", actor=None, entity_type=tx.type.value,
+                       entity_id=tx.ref, new="ACCOUNT_SUBMITTED", reason=AUTO_ALLOCATION_ACTOR)
+    # The account list/balances are served from a short-lived cache; drop them so Account
+    # Management shows the consumed capacity on the very next load.
+    await cache_delete("c:accounts:balances")
+    return True
+
+
 @router.post("/deposit")
 async def create_deposit(
     data: DepositCreate,
@@ -2489,6 +2650,10 @@ async def create_deposit(
     # A Card request is NOT one of them: it waits for the Admin's payment link (ACCOUNT_REQUESTED,
     # shown as "Link Requested"), exactly like a bank deposit waits for account details.
     direct_review = dep_type in ("CASH", "CRYPTO")
+    # Whether this request needs a receiving bank account allocated. Cash/Crypto carry their own
+    # proof and skip the account hop; Card is paid through the Admin's payment-gateway link. All
+    # three keep the exact flow they have today.
+    needs_account = dep_type in alloc.ALLOCATABLE_DEPOSIT_TYPES
     tx = Transaction(
         ref="TEMP",
         type=TxType.DEPOSIT_REQUEST,
@@ -2530,14 +2695,21 @@ async def create_deposit(
     if data.senderUpiId:
         await _save_member_upi(db, current_user, data.memberId, data.senderUpiId.strip())
     await db.flush()
+    # Automatic account allocation. The engine evaluates every managed account against this
+    # request — availability, payment-method capability and, above all, the account's REMAINING
+    # daily credit capacity — and assigns the best eligible one, moving the request straight to
+    # ACCOUNT_SUBMITTED so the merchant can pay. When nothing is eligible it assigns nothing and
+    # the request waits in ACCOUNT_REQUESTED for the Admin, exactly as it did before.
+    allocated = await _auto_allocate_deposit_account(db, tx) if needs_account else False
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
-    # Telegram (demo, next-step only): route to whoever owns the NEXT step. A normal deposit
-    # waits for the Admin to upload account details (ACCOUNT_REQUESTED); a Cash/Crypto deposit
-    # skips that hop and lands straight in the Supervisor's review queue (SLIP_SUBMITTED), so the
-    # next-step person is the Supervisor, not the Admin.
+    # Telegram (demo, next-step only): route to whoever owns the NEXT step. A Cash/Crypto deposit
+    # skips the account hop and lands straight in the Supervisor's review queue (SLIP_SUBMITTED).
+    # An auto-allocated deposit already has its account, so the next step belongs to the requesting
+    # user — the allocation itself sends that message. Only a request still waiting for an account
+    # (allocation found none, or the type is not account-based) calls the Admin in.
     if direct_review:
         await tgn.notify(db, tx, "SUPERVISOR", "deposit_request_review")
-    else:
+    elif not allocated:
         await tgn.notify(db, tx, "ADMIN", "deposit_request")
     # Cash / Crypto get their own audit action + a rich detail line (membership, member, type, amount).
     if direct_review:

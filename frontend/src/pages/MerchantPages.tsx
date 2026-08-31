@@ -18,8 +18,8 @@ import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { BANK_NAMES } from '../utils/ifsc';
-import { bankLogoIcon } from '../components/BankLogo';
-import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry, Notification } from '../types';
+import { BankLogo, bankLogoIcon } from '../components/BankLogo';
+import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry, Notification, AllocatedAccount } from '../types';
 
 // The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
 export { ReportsPage } from './ReportsPage';
@@ -211,6 +211,41 @@ const SlipRow = ({ k, v, copy }: { k: string; v: React.ReactNode; copy?: string 
   </div>
 );
 
+// ─── Allocated receiving account (automatic deposit allocation) ───────────────
+// The account the platform selected for THIS deposit, rendered as the payment card the merchant
+// actually uses. It shows only what is needed in order to pay — the real bank mark, the account
+// itself, and its type. None of the allocation's internals (remaining capacity, ranking, the
+// other candidates that were evaluated, any other merchant's account) reaches the browser: the
+// backend never puts them in this payload.
+//
+// The figures come from the snapshot stored on the transaction, so they are what was sent at the
+// time; an Admin editing the account later cannot rewrite what a past deposit was told to pay.
+const AllocatedAccountCard: React.FC<{ acct: AllocatedAccount; amount: number }> = ({ acct, amount }) => {
+  // Bank details are deliberately not selectable/copyable here, matching the existing rule for
+  // the text block this card replaces. The UPI ID stays copyable — it is what gets pasted into a
+  // payment app, and the platform has always allowed copying it.
+  const noCopy: React.CSSProperties = { userSelect:'none', WebkitUserSelect:'none', MozUserSelect:'none' };
+  return (
+    <div style={{ border:`1px solid ${T.border}`,borderRadius:12,overflow:'hidden',marginTop:10 }}>
+      <div style={{ display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:T.canvas,borderBottom:`1px solid ${T.border}` }}>
+        <BankLogo name={acct.bankName} ifsc={acct.ifsc} size={30} withName={false} />
+        <div style={{ minWidth:0,flex:1 }}>
+          <p style={{ margin:0,fontSize:13,fontWeight:800,color:T.textMain }}>{acct.bankName}</p>
+          <p style={{ margin:0,fontSize:11,color:T.textMuted }}>Pay {fmt(amount)} to this account</p>
+        </div>
+      </div>
+      <div style={{ padding:'2px 14px 10px' }} onCopy={e=>e.preventDefault()}>
+        {acct.upiId && <SlipRow k="UPI ID" v={acct.upiId} copy={acct.upiId} />}
+        <SlipRow k="Account Name" v={<span style={noCopy}>{acct.accountName}</span>} />
+        {acct.accountNumber && <SlipRow k="Account Number" v={<span style={noCopy}>{acct.accountNumber}</span>} />}
+        {acct.ifsc && <SlipRow k="IFSC Code" v={<span style={noCopy}>{acct.ifsc}</span>} />}
+        {acct.branch && <SlipRow k="Branch" v={<span style={noCopy}>{acct.branch}</span>} />}
+        <SlipRow k="Account Type" v={<span style={noCopy}>{acct.accountType}</span>} />
+      </div>
+    </div>
+  );
+};
+
 export const MerchantSlipModal: React.FC<{
   tx: Transaction;
   onClose: () => void;
@@ -239,6 +274,8 @@ export const MerchantSlipModal: React.FC<{
     transactionAPI.getDetail(tx.id).then(d => { setImgs({ adminProof: d.adminProof, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs }); setRecord(d); }).catch(()=>{});
   }, [tx.id]);
   const paymentLink = record.paymentLink || tx.paymentLink || '';
+  // The receiving account the allocation engine chose for this deposit, if it was auto-allocated.
+  const allocated = record.allocationSnapshot || tx.allocationSnapshot || null;
   // The reviewer's most recent Resubmit remark, shown while the request sits back with the operator.
   const resubmitReason = (tx.status === 'RESUBMITTED'
     ? [...(record.remarksHistory || [])].reverse().find(r => r.action === 'RESUBMITTED')?.remark
@@ -389,15 +426,20 @@ export const MerchantSlipModal: React.FC<{
               </span>
             </div>
           )}
-          {tx.adminBankDetails && (
-            <div style={{ marginTop:8 }}>
-              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Bank Details</p>
-              {/* Security: bank-detail fields cannot be copied/selected (UPI ID stays copyable above). */}
-              <p onCopy={e=>e.preventDefault()} style={{ fontSize:13,color:T.textMain,margin:0,whiteSpace:'pre-line',lineHeight:1.6,userSelect:'none',WebkitUserSelect:'none',MozUserSelect:'none' }}>{tx.adminBankDetails}</p>
-            </div>
-          )}
+          {/* The account the platform allocated for this deposit, as a proper payment card with the
+              real bank mark. Present on auto-allocated requests only; a manually sent or historical
+              one has no snapshot and falls through to the text block below, unchanged. */}
+          {allocated
+            ? <AllocatedAccountCard acct={allocated} amount={tx.amount} />
+            : tx.adminBankDetails && (
+              <div style={{ marginTop:8 }}>
+                <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Bank Details</p>
+                {/* Security: bank-detail fields cannot be copied/selected (UPI ID stays copyable above). */}
+                <p onCopy={e=>e.preventDefault()} style={{ fontSize:13,color:T.textMain,margin:0,whiteSpace:'pre-line',lineHeight:1.6,userSelect:'none',WebkitUserSelect:'none',MozUserSelect:'none' }}>{tx.adminBankDetails}</p>
+              </div>
+            )}
           {/* Card carries a payment link, not an account — it prints its own waiting line above. */}
-          {!isCard && !tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof && !bankImageSrc && !tx.hasAdminBankImage &&
+          {!isCard && !allocated && !tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof && !bankImageSrc && !tx.hasAdminBankImage &&
             <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting updates from Agent.</p>}
         </div>
 
@@ -768,8 +810,16 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         : <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>)}
       <div style={{ marginBottom:14 }}>
         <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Agent (optional)</label>
-        <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder="Any message for the agent reviewing this request"
+        <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder='Any message for the agent — e.g. "Use HDFC" or "Same account"'
           style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:60 }}/>
+        {/* The receiving account is chosen by the platform, not typed in here. A bank named in the
+            note is treated as a preference: it is honoured when an account at that bank can take
+            the payment, and quietly passed over when none can. */}
+        {isBankLike && (
+          <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted,lineHeight:1.5 }}>
+            The receiving account is selected automatically. Naming a bank ("Use Bank of Baroda") or asking for the "same account" is treated as a preference where one is available.
+          </p>
+        )}
       </div>
       <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,marginBottom:16,cursor:'pointer' }}>
         <input type="checkbox" checked={riskAnalysis} onChange={e=>setRiskAnalysis(e.target.checked)}/> Perform Risk Analysis

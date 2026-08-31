@@ -9,8 +9,11 @@ from app.db.session import get_db
 from app.models.models import AccountLedgerEntry, AccountMaster, AccountTransaction, AdminUpi, Transaction, TxStatus, User, UserRole
 from app.core.deps import get_current_admin
 from app.services import account_ledger as ledger
+from app.services import deposit_allocation as alloc
 from app.core.cache import cache_delete, cache_get, cache_set
-from app.schemas.schemas import AccountCreate, AccountLimitsUpdate, AdjustmentCreate, ReasonRequest
+from app.schemas.schemas import (
+    AccountCreate, AccountLimitsUpdate, AccountOwnFlagUpdate, AdjustmentCreate, ReasonRequest,
+)
 from app.api.routes.system_logs import log_event, record_audit
 from app.api.routes.transactions import (
     compute_balance, _COMPLETED_STATUSES, _kind, _completed, _member_label, _inr, _ist_now,
@@ -159,6 +162,14 @@ async def account_balances(
     )).all()
     adj_by_acct: dict[str, float] = {ref: float(total or 0.0) for ref, total in adj_rows}
 
+    # Today's credit position per account, from the deposit allocation engine — the SAME function
+    # that decides whether a deposit may be routed here, so what Account Management shows and what
+    # the engine enforces cannot disagree. Display only: the backend remains authoritative, and a
+    # figure on this screen never grants or withholds capacity.
+    acct_refs = [a.reference_number for a in accounts]
+    used_today = await alloc.credit_used_today(db, acct_refs)
+    count_today = await alloc.deposit_counts_today(db, acct_refs)
+
     # Linked UPIs grouped by their parent account.
     upis = (await db.execute(select(AdminUpi))).scalars().all()
     upis_by_acct: dict[str, list] = defaultdict(list)
@@ -255,10 +266,18 @@ async def account_balances(
             "totalDeposited": round(total_d, 2),
             "highestDeposit": round(dep_high.get(ref, 0.0), 2),
             "lowestDeposit": round(dep_low.get(ref, 0.0), 2),
-            # Recorded high-water marks (stored on the account, auto-updated on completion):
-            # highestCredit on deposit approval, highestDebit on a completed withdrawal/settlement.
+            # Highest Credit is the account's configured HARD DAILY CREDIT LIMIT; Highest Debit
+            # remains the recorded high-water mark, auto-raised by a larger completed debit.
             "highestCredit": round(a.highest_credit or 0.0, 2),
             "highestDebit": round(a.highest_debit or 0.0, 2),
+            "isOwnAccount": bool(a.is_own_account),
+            # Where this account stands against its daily credit limit RIGHT NOW. "Used" counts
+            # every deposit routed here today that has not been rejected or cancelled — an
+            # allocated request holds its capacity from the moment it is sent, not from the moment
+            # the money lands, which is what stops the limit being oversubscribed.
+            "creditUsedToday": round(used_today.get(ref, 0.0), 2),
+            "remainingCredit": alloc.remaining_credit(a, used_today.get(ref, 0.0)),
+            "depositsToday": count_today.get(ref, 0),
             "withdrawals": round(wd, 2),
             "settlements": round(st, 2),
             "adjustments": round(adj_by_acct.get(ref, 0.0), 2),   # net of manual credits/debits
@@ -480,8 +499,11 @@ def _a(a: AccountMaster, merchant_name: str | None = None) -> dict:
         "createdTime": a.created_time,
         "lastMaintenanceDate": str(a.last_maintenance_date) if a.last_maintenance_date else None,
         "lastMaintenanceTime": a.last_maintenance_time,
+        # Highest Credit is the account's HARD DAILY CREDIT LIMIT — the ceiling the deposit
+        # allocation engine enforces on every request (services/deposit_allocation).
         "highestCredit": round(a.highest_credit or 0.0, 2),
         "highestDebit": round(a.highest_debit or 0.0, 2),
+        "isOwnAccount": bool(a.is_own_account),
         "merchantName": merchant_name or a.account_name,
     }
 
@@ -613,6 +635,7 @@ async def create_account(
         # threshold stays put so "debit below the set amount" alerts remain stable.
         highest_debit=max(0.0, data.highest_debit or 0.0),
         debit_alert_threshold=max(0.0, data.highest_debit or 0.0),
+        is_own_account=bool(data.is_own_account),
     )
     db.add(acc)
     await db.flush()
@@ -769,6 +792,59 @@ async def update_account_limits(
     # limits show in the Account Management table on the very next load rather than up to 5s later.
     await cache_delete("c:accounts:balances")
     await cache_delete("c:accounts:list")
+    await db.refresh(acc)
+    return _a(acc, name_map.get(acc.reference_number))
+
+
+@router.patch("/{reference_number}/own-account")
+async def update_own_account_flag(
+    reference_number: str,
+    data: AccountOwnFlagUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Admin edit of ONE account's "Own Account" classification.
+
+    The flag is configuration, not money: no balance, deposit, withdrawal or settlement reads it,
+    and neither does the ranking in the deposit allocation engine. It is recorded on the account,
+    carried into every allocation decision and stored on the allocation journal, so the
+    information is preserved and visible without inventing a priority the platform has never
+    defined — which would silently change which account real money is sent to.
+
+    Permission is the module's existing gate, ``get_current_admin``; the account is resolved from
+    the URL alone, so a request can only touch the account it addresses. A change writes the same
+    append-only SystemLog + AuditLog pair every other account edit does.
+    """
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == reference_number)
+    )).scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    name_map = await _merchant_name_map(db)
+    was = bool(acc.is_own_account)
+    now = bool(data.is_own_account)
+    if was == now:
+        return _a(acc, name_map.get(acc.reference_number))      # nothing changed — nothing to audit
+
+    acc.is_own_account = now
+    await db.flush()
+    label = {True: "Own Account", False: "Not an Own Account"}
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    ip = request.client.host if request and request.client else None
+    note = (data.reason or "").strip() or "Own Account flag updated by Admin"
+    await log_event(
+        db, "ACCOUNT_OWN_FLAG_UPDATED",
+        f"{acc.reference_number} ({acc.account_name}) set {label[now]} by {actor.name}", actor=actor,
+    )
+    await record_audit(
+        db, "ACCOUNT_OWN_FLAG_UPDATED", actor=actor,
+        entity_type="account", entity_id=acc.reference_number,
+        old=label[was], new=label[now], reason=f"{acc.account_name} · {note} · {ts}", ip=ip,
+    )
+    await cache_delete("c:accounts:list")
+    await cache_delete("c:accounts:balances")
     await db.refresh(acc)
     return _a(acc, name_map.get(acc.reference_number))
 

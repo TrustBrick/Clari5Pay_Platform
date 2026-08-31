@@ -97,6 +97,19 @@ export type TxType =
   | 'WITHDRAWAL_REQUEST'
   | 'SETTLEMENT_REQUEST';
 
+// The receiving account the deposit allocation engine selected and sent to the merchant. Exactly
+// what the merchant needs in order to pay — no capacity figures, no ranking, no other candidate.
+export interface AllocatedAccount {
+  bankName: string;
+  accountName: string;
+  accountType: string;
+  referenceNumber: string;
+  accountNumber?: string;   // omitted on a UPI allocation
+  ifsc?: string;            // omitted on a UPI allocation
+  branch?: string;          // omitted on a UPI allocation
+  upiId?: string;           // present only when the deposit is paid to a linked UPI
+}
+
 export interface Transaction {
   id: string;
   ref: string;
@@ -124,6 +137,11 @@ export interface Transaction {
   adminRef?: string | null;
   adminBankDetails?: string | null;
   adminUpiId?: string | null;
+  // The receiving account the allocation engine selected, snapshotted as it stood when it was
+  // sent. Present only on auto-allocated deposits; a manually sent or historical request has
+  // null here and keeps rendering from adminBankDetails alone. A UPI allocation carries upiId
+  // instead of the bank account number / IFSC / branch.
+  allocationSnapshot?: AllocatedAccount | null;
   adminUtr?: string | null;
   // Card deposits: the payment gateway link the Admin submitted (Link Requested → Link Submitted).
   paymentLink?: string | null;
@@ -205,8 +223,13 @@ export interface Account {
   lastMaintenanceTime?: string | null;
   // Configured account limits (also returned by /balances). Admin-editable from the account's
   // Details popup; they are configuration, never part of any balance calculation.
+  // highestCredit is the account's HARD DAILY CREDIT LIMIT — the ceiling the deposit allocation
+  // engine enforces server-side on every request.
   highestCredit?: number;
   highestDebit?: number;
+  // The Admin's "Own Account" classification. Recorded and carried into every allocation
+  // decision; it is deliberately not a ranking input, so changing it moves no money.
+  isOwnAccount?: boolean;
   merchantName: string;
 }
 
@@ -233,8 +256,14 @@ export interface AccountBalance {
   totalDeposited: number;
   highestDeposit?: number;
   lowestDeposit?: number;
-  highestCredit?: number;   // recorded high-water mark (stored, auto-updated on deposit approval)
+  highestCredit?: number;   // configured HARD DAILY CREDIT LIMIT (Admin-editable)
   highestDebit?: number;    // recorded high-water mark (stored, auto-updated on a completed debit)
+  isOwnAccount?: boolean;
+  // Where the account stands against its daily credit limit right now. Display only — the
+  // backend recomputes all three from the transaction data before allocating anything.
+  creditUsedToday?: number;
+  remainingCredit?: number;
+  depositsToday?: number;
   totalFees?: number;
   withdrawals?: number;
   settlements?: number;

@@ -169,6 +169,9 @@ const RequestModal: React.FC<{
 
   useEffect(() => {
     if (!chooseStep) return;
+    // Remaining daily credit capacity per account — the same server figure the allocation engine
+    // enforces, shown so a manual send is an informed one.
+    accountAPI.balances().then(setPayoutBalances).catch(() => {});
     accountAPI.list().then(a => {
       const active = a.filter(x => (x.status || '').toUpperCase() === 'ACTIVE');
       setAccounts(active);
@@ -480,8 +483,25 @@ const RequestModal: React.FC<{
           {sendVia === 'BANK' ? (
             <>
               <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Select an account to send ({accounts.length} active)</p>
+              {/* Each option carries the account's REMAINING credit capacity for today, from the
+                  same figure the allocation engine enforces. This send is the manual escape valve
+                  for a request the engine could not place, so it is deliberately not blocked —
+                  blocking it would strand exactly the requests that need it. What it does is make
+                  a breach visible before the click, and the warning below names it outright. */}
               <Sel label="Account" value={accountRef} onChange={e=>setAccountRef(e.target.value)}
-                options={[{ value:'', label:'— Select an account —' }, ...accounts.map(a => ({ value:a.referenceNumber, label:`${a.accountName} — ${a.bankName} (A/C ${a.accountNumber})` }))]} />
+                options={[{ value:'', label:'— Select an account —' }, ...accounts.map(a => {
+                  const left = payoutBalances.find(b => b.referenceNumber === a.referenceNumber)?.remainingCredit;
+                  const room = left === undefined ? '' : `  ·  ${fmt(left)} left today`;
+                  return { value:a.referenceNumber, label:`${a.accountName} — ${a.bankName} (A/C ${a.accountNumber})${room}` };
+                })]} />
+              {(() => {
+                const left = payoutBalances.find(b => b.referenceNumber === accountRef)?.remainingCredit;
+                return accountRef && left !== undefined && left < tx.amount ? (
+                  <p style={{ fontSize:11,color:T.danger,margin:'-8px 0 10px',fontWeight:700 }}>
+                    <Icon name="warning" size={12} /> This account has only {fmt(left)} left against today's Highest Credit — sending {fmt(tx.amount)} here exceeds its daily limit.
+                  </p>
+                ) : null;
+              })()}
               {reusedRef && accountRef === reusedRef && (
                 <p style={{ fontSize:11,color:T.success,margin:'-8px 0 10px',fontWeight:600 }}><Icon name="refresh" size={12} /> Reused from Member {tx.memberId}'s previous deposit — change it if needed.</p>
               )}
@@ -1647,6 +1667,7 @@ export const AdminAccountsPage: React.FC = () => {
   const [limitForm, setLimitForm] = useState({ credit:'', debit:'' });
   const [limitErr, setLimitErr] = useState<{ credit?: string; debit?: string }>({});
   const [savingLimits, setSavingLimits] = useState(false);
+  const [savingOwn, setSavingOwn] = useState(false);
   useEffect(() => {
     // Opening a different account, or closing the popup, always lands back on the read-only view.
     setEditLimits(false); setLimitErr({});
@@ -1667,9 +1688,9 @@ export const AdminAccountsPage: React.FC = () => {
     finally { setStmtLoading(false); }
   };
   const [showCreate, setShowCreate] = useState(false);
-  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0',highest_debit:'0' };
+  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0',highest_debit:'0',is_own_account:false };
   const [form, setForm] = useState(empty);
-  const set = (k: string, v: string) => setForm(f => ({...f,[k]:v}));
+  const set = (k: keyof typeof empty, v: string) => setForm(f => ({...f,[k]:v}));
   // Standard IFSC capture — the same hook and field every bank form in the platform uses.
   const ifscFill = useIfscAutoFill(
     form.ifsc_code,
@@ -1772,6 +1793,21 @@ export const AdminAccountsPage: React.FC = () => {
     } finally { setSavingLimits(false); }
   };
 
+  // Own Account is configuration: the backend records it and carries it into every allocation
+  // decision, but it is not a ranking input, so this cannot change where a deposit is sent.
+  const saveOwnAccount = async (value: boolean) => {
+    if (!detail) return;
+    setSavingOwn(true);
+    try {
+      const updated = await accountAPI.updateOwnAccount(detail.referenceNumber, value);
+      setDetail(updated);        // the server's value, not the one clicked
+      reload();
+      showToast(value ? 'Marked as an Own Account' : 'No longer an Own Account');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to update the Own Account flag', 'error');
+    } finally { setSavingOwn(false); }
+  };
+
   const create = async () => {
     if(!form.account_name||!form.account_number||!form.ifsc_code||!form.bank_name||!form.branch){ showToast('Fill all fields','error'); return; }
     try {
@@ -1807,13 +1843,13 @@ export const AdminAccountsPage: React.FC = () => {
                 {/* Deposits Received, Commission and Manual Adjustment deliberately live in the
                     View popup, not here — the list stays scannable and the money detail sits with
                     the account it belongs to. The underlying data is unchanged. */}
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Highest Debit','Available','Users','Status','Details'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Used Today','Remaining','Highest Debit','Available','Users','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={10} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={12} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
               {filtered.map((a,i)=>{ const bal = balMap[a.referenceNumber]; return (
                 <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                   <td style={{ padding:'11px 14px' }}>
@@ -1823,7 +1859,16 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.accountNumber}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.ifscCode}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.branch}</td>
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestCredit ?? 0)}</td>
+                  {/* Highest Credit is the account's HARD DAILY CREDIT LIMIT; the two columns
+                      after it are where it stands against that limit right now. An account with
+                      no remaining capacity is never allocated another deposit today, which is
+                      what the red figure says at a glance. */}
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(a.highestCredit ?? 0)}</td>
+                  <td style={{ padding:'11px 14px',color:T.textMuted }}>
+                    {fmt(bal?.creditUsedToday ?? 0)}
+                    {(bal?.depositsToday ?? 0) > 0 && <span style={{ fontSize:10,marginLeft:5 }}>({bal?.depositsToday})</span>}
+                  </td>
+                  <td style={{ padding:'11px 14px',fontWeight:800,color: (bal?.remainingCredit ?? 0) > 0 ? T.success : T.danger }}>{fmt(bal?.remainingCredit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestDebit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
                   <td style={{ padding:'11px 14px' }}>
@@ -2075,6 +2120,57 @@ export const AdminAccountsPage: React.FC = () => {
               <>
                 <Row k="Highest Credit" v={fmt(detail.highestCredit ?? 0)} />
                 <Row k="Highest Debit" v={fmt(detail.highestDebit ?? 0)} />
+                {/* The Admin's "Own Account" classification. Recorded on every deposit allocation
+                    decision; it is not a ranking input, so toggling it moves no money and changes
+                    no account's eligibility. */}
+                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
+                  <span style={{ fontSize:12,color:T.textMuted }}>Own Account</span>
+                  {canEditLimits ? (
+                    <label style={{ display:'inline-flex',alignItems:'center',gap:8,fontSize:13,fontWeight:700,color:T.textMain,cursor:savingOwn?'wait':'pointer' }}>
+                      <input type="checkbox" checked={!!detail.isOwnAccount} disabled={savingOwn}
+                        onChange={e=>saveOwnAccount(e.target.checked)} />
+                      {detail.isOwnAccount ? 'Yes' : 'No'}
+                    </label>
+                  ) : (
+                    <span style={{ fontSize:13,fontWeight:700,color:T.textMain }}>{detail.isOwnAccount ? 'Yes' : 'No'}</span>
+                  )}
+                </div>
+                {/* ── Today's position against the daily credit limit ──
+                    Highest Credit is a HARD DAILY CEILING: a deposit is only routed here while
+                    Used Today + the deposit stays within it. These three are DISPLAY figures —
+                    the backend recomputes all of them from the transaction data, under a row
+                    lock, before it allocates anything. */}
+                {(() => {
+                  const b = balMap[detail.referenceNumber];
+                  const limit = detail.highestCredit ?? 0;
+                  const used = b?.creditUsedToday ?? 0;
+                  const left = b?.remainingCredit ?? Math.max(0, limit - used);
+                  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+                  const full = limit > 0 && left <= 0;
+                  return (
+                    <div style={{ marginTop:12,background:T.canvas,borderRadius:10,padding:'12px 14px' }}>
+                      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:8 }}>
+                        <span style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Today's Credit Usage</span>
+                        <span style={{ fontSize:11,color:T.textMuted }}>{b?.depositsToday ?? 0} deposit{(b?.depositsToday ?? 0) === 1 ? '' : 's'} today</span>
+                      </div>
+                      <div style={{ height:6,borderRadius:3,background:T.border,overflow:'hidden',marginBottom:10 }}>
+                        <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.success,transition:'width .3s' }} />
+                      </div>
+                      <Row k="Credit Used Today" v={fmt(used)} />
+                      <Row k="Remaining Capacity" v={<span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>} />
+                      {limit <= 0 && (
+                        <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
+                          No Highest Credit configured — this account is never allocated a deposit. Set a limit above.
+                        </p>
+                      )}
+                      {full && (
+                        <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
+                          Daily credit limit reached — no further deposit is allocated here until tomorrow.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </>
             ) : (
               <>
@@ -2216,9 +2312,15 @@ export const AdminAccountsPage: React.FC = () => {
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
             <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>
-            <Input label="Highest Credit (₹)" type="text" inputMode="decimal" value={form.highest_credit} onChange={e=>set('highest_credit',formatIndianAmountInput(e.target.value))} hint="Default 0 — auto-updates on higher deposits"/>
+            <Input label="Highest Credit (₹)" type="text" inputMode="decimal" value={form.highest_credit} onChange={e=>set('highest_credit',formatIndianAmountInput(e.target.value))} hint="Hard DAILY credit limit — leave at 0 and no deposit is ever routed here"/>
             <Input label="Highest Debit (₹)" type="text" inputMode="decimal" value={form.highest_debit} onChange={e=>set('highest_debit',formatIndianAmountInput(e.target.value))} hint="Starting value — auto-rises on a larger debit; alerts on any debit below it"/>
           </div>
+          {/* Own Account is recorded on the account and carried into every allocation decision.
+              It is not a ranking input, so setting it here changes no account's eligibility. */}
+          <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,margin:'2px 0 16px',cursor:'pointer' }}>
+            <input type="checkbox" checked={form.is_own_account} onChange={e=>setForm(f=>({...f,is_own_account:e.target.checked}))}/>
+            Own Account
+          </label>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>
             <Btn variant="secondary" onClick={closeCreate}>Cancel</Btn>

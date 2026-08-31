@@ -60,6 +60,9 @@ _NEW_COLUMNS = [
     ("transactions", "payout_remarks", "TEXT"),
     # Deposit type-specific fields (CASH / CRYPTO) stored as JSON.
     ("transactions", "deposit_details", "TEXT"),
+    # Automatic deposit allocation: immutable snapshot of the receiving account actually sent
+    # to the merchant. NULL on every manually-sent and historical row.
+    ("transactions", "allocation_snapshot", "TEXT"),
     # Reporting: approver / processor / creating-agent tracking.
     ("transactions", "approved_by", "VARCHAR(128)"),
     ("transactions", "processed_by", "VARCHAR(128)"),
@@ -146,6 +149,9 @@ _NEW_COLUMNS = [
     # Fixed "Highest Debit" value the admin sets at creation; when >0 a completed debit BELOW it
     # raises a low-debit alert. Default 0 (no alert). Existing accounts keep 0 → no backfill.
     ("account_master", "debit_alert_threshold", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    # Automatic deposit allocation: the Admin's "Own Account" classification. DEFAULT FALSE so
+    # every existing account keeps behaving exactly as it does today until an Admin sets it.
+    ("account_master", "is_own_account", "BOOLEAN DEFAULT FALSE NOT NULL"),
     # ── Isolated Agent Transaction subsystem: the deposit chain that mirrors the merchant
     # workflow (Account Request → Account Submitted → Slip → Supervisor Approval → Mark Deposit).
     # All additive & nullable, so existing agent rows are untouched.
@@ -399,6 +405,13 @@ _NEW_INDEXES = [
     # Withdrawal payout attribution: the balance/statement views filter completed debits by the
     # account they were actually paid from.
     ("ix_txn_payout_account_ref",     "transactions",     "(payout_account_ref)"),
+    # Automatic deposit allocation. The engine's hot path is "today's credit used per account",
+    # which filters deposits by (admin_ref, tx_date) — this is the index that keeps that a lookup
+    # rather than a scan as the transaction table grows.
+    ("ix_txn_admin_ref_date",         "transactions",     "(admin_ref, tx_date)"),
+    # deposit_allocation — the allocation audit journal (per-deposit lookup + per-account history).
+    ("ix_depalloc_txn_ref",           "deposit_allocation", "(transaction_ref)"),
+    ("ix_depalloc_account_created",   "deposit_allocation", "(account_ref, created_at DESC)"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -566,10 +579,16 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "UPDATE transactions SET status = 'SLIP_SUBMITTED' "
             "WHERE status::text IN ('SUPERVISOR_REVIEW', 'MANAGER_REVIEW') AND type::text LIKE 'SETTLEMENT%'"
         ))
-        # Seed each account's recorded Highest Credit high-water mark from its existing completed
-        # deposits, so already-deployed accounts show a real value immediately instead of 0. Only
-        # touches accounts still at the 0 default → never overwrites an admin-configured value, and
-        # is a no-op on every subsequent startup (the value is non-zero by then).
+        # Seed each account's Highest Credit from its existing completed deposits, so an account
+        # deployed before the limit existed starts with a workable value instead of 0. Only touches
+        # accounts still at the 0 default → never overwrites an admin-configured value, and is a
+        # no-op on every subsequent startup (the value is non-zero by then).
+        #
+        # Highest Credit is now the account's HARD DAILY CREDIT LIMIT (services/deposit_allocation),
+        # and an account at 0 has no capacity and is never allocated a deposit. Seeding it from the
+        # largest single deposit the account has actually taken is therefore the conservative
+        # starting point — a ceiling the account is known to have handled — and an Admin sets the
+        # real figure from Account Management → the account's Details popup.
         await conn.execute(text(
             "UPDATE account_master a SET highest_credit = s.hi "
             "FROM ("

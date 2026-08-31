@@ -519,6 +519,13 @@ export const accountAPI = {
     const res = await api.patch<Account>(`/api/accounts/${ref}/limits`, data);
     return res.data;
   },
+  // Admin edit of an account's "Own Account" classification. Configuration only: it is recorded
+  // on every allocation decision but is not a ranking input, so this moves no money. Admin-gated
+  // server-side like every other Account Management route.
+  updateOwnAccount: async (ref: string, isOwnAccount: boolean, reason?: string) => {
+    const res = await api.patch<Account>(`/api/accounts/${ref}/own-account`, { is_own_account: isOwnAccount, reason });
+    return res.data;
+  },
   // ── Accounting ledger + manual adjustment (Account Management) ──
   // The immutable entries for one account (payout debits + manual adjustments), newest first,
   // alongside the server's authoritative balance.

@@ -254,6 +254,15 @@ class Transaction(Base):
     assigned_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # ── Automatic deposit account allocation ──────────────────────────────────────
+    # An immutable JSON snapshot of the receiving account the allocation engine selected and sent
+    # to the merchant: bank name, account name/number, IFSC, branch and account type. The account
+    # itself is the live record and an Admin may edit it later; this is what was ACTUALLY sent for
+    # this deposit, so the merchant's payment card and the audit trail stay true to the moment of
+    # allocation. Written once, at allocation; NULL on every manually-sent and historical row,
+    # which keeps their existing `admin_bank_details` rendering exactly as it is.
+    allocation_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     merchant_user: Mapped["User"] = relationship("User", back_populates="transactions", foreign_keys=[merchant_id])
@@ -296,6 +305,12 @@ class AccountMaster(Base):
     highest_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     highest_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     debit_alert_threshold: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # "Own Account" — the Admin's classification of this account, configured in Account
+    # Management alongside the rest of the account's details. It is carried through the deposit
+    # allocation engine and recorded on every allocation decision, but it is deliberately NOT a
+    # ranking input: the platform defines no Own Account priority, and inventing one would change
+    # which account real money is sent to. Preserved and surfaced; never silently acted upon.
+    is_own_account: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class AccountTransaction(Base):
@@ -1194,3 +1209,71 @@ class AccountLedgerEntry(Base):
     # Caller-supplied idempotency key (a UUID minted per form submission). UNIQUE, so a replay
     # of the same submit returns the existing entry instead of posting a second one.
     client_request_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
+
+
+class DepositAllocation(Base):
+    """Append-only journal of every AUTOMATIC deposit account allocation decision.
+
+    One row per allocation ATTEMPT — successful or not. A failed attempt is the more valuable of
+    the two: "no eligible account for ₹45,000" is exactly the question support gets asked, and
+    without a record the only answer is a re-run against data that has since moved on.
+
+    This is NOT a second accounting system. It stores no balance and no money movement: the
+    account's balance stays derived (``services/account_ledger``) and the deposit stays the single
+    record of the money. What is captured here is the DECISION — which account was chosen, out of
+    how many, under which rule, and what the account's daily credit position was at that instant.
+    Those figures are point-in-time and unreproducible later (today's usage changes with every
+    deposit, and an Admin may re-configure the limit tomorrow), which is precisely why they are
+    snapshotted rather than recomputed.
+
+    Rows are write-once. A superseded decision is never edited: the next attempt writes its own
+    row, so the sequence of rows IS the history.
+    """
+    __tablename__ = "deposit_allocation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # ── What was being allocated ──
+    transaction_ref: Mapped[str] = mapped_column(String(32), index=True, nullable=False)   # DEP000123
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    member_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    requested_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    deposit_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    merchant_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # ── The decision ──
+    # ALLOCATED — an account was selected. NO_ACCOUNT — nothing was eligible; the deposit stays in
+    # ACCOUNT_REQUESTED for the Admin to handle manually. No account is ever assigned on a
+    # NO_ACCOUNT row, so a failed allocation consumes no capacity.
+    outcome: Mapped[str] = mapped_column(String(24), index=True, nullable=False)
+    account_ref: Mapped[Optional[str]] = mapped_column(String(40), index=True, nullable=True)
+    account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    account_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    is_own_account: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # ── The account's daily credit position AT SELECTION TIME (point-in-time, unreproducible) ──
+    highest_credit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    credit_used_today: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    remaining_capacity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ── Why ──
+    # `rule` is the machine-readable rule that fired (see services/deposit_allocation.RULES);
+    # `reason` is its human sentence, e.g. "Bank requested by merchant note + eligible + nearest
+    # remaining credit capacity". `detail` is the JSON evaluation trace: the customer
+    # classification, the parsed note, the deposit counts, and why each rejected account failed.
+    rule: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    customer_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)       # NEW | OLD
+    candidates_considered: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    candidates_eligible: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    member_deposit_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # ── When ──
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)

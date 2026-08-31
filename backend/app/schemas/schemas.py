@@ -332,6 +332,10 @@ class AccountCreate(BaseModel):
     # is auto-tracked thereafter.
     highest_credit: Optional[float] = 0.0
     highest_debit: Optional[float] = 0.0
+    # The Admin's "Own Account" classification. Recorded on the account and carried into every
+    # deposit allocation decision; it is deliberately not a ranking input (see
+    # services/deposit_allocation), so setting it cannot change which account receives money.
+    is_own_account: bool = False
 
 
 class AccountLimitsUpdate(BaseModel):
@@ -344,6 +348,17 @@ class AccountLimitsUpdate(BaseModel):
     highest_credit: float
     highest_debit: float
     reason: Optional[str] = None       # optional note carried into the audit trail
+
+
+class AccountOwnFlagUpdate(BaseModel):
+    """Admin edit of one account's "Own Account" classification.
+
+    Its own route rather than a field on AccountLimitsUpdate: the limits edit documents exactly
+    what it touches (two money ceilings) and folding an unrelated flag into it would make that
+    promise false. Both remain Admin-only and both are audited.
+    """
+    is_own_account: bool
+    reason: Optional[str] = None
 
 
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────
