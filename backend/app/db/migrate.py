@@ -63,6 +63,12 @@ _NEW_COLUMNS = [
     # Automatic deposit allocation: immutable snapshot of the receiving account actually sent
     # to the merchant. NULL on every manually-sent and historical row.
     ("transactions", "allocation_snapshot", "TEXT"),
+    # Automatic withdrawal payout allocation: which transaction modes an account can PAY by, and
+    # which leg of a (possibly split) payout a ledger entry settles. Both NULL on existing rows —
+    # a NULL payout_modes means "every mode", so no account is disqualified by the migration, and
+    # leg_no is backfilled to 1 for existing payout entries below.
+    ("account_master", "payout_modes", "VARCHAR(64)"),
+    ("account_ledger", "leg_no", "INTEGER"),
     # Reporting: approver / processor / creating-agent tracking.
     ("transactions", "approved_by", "VARCHAR(128)"),
     ("transactions", "processed_by", "VARCHAR(128)"),
@@ -412,6 +418,21 @@ _NEW_INDEXES = [
     # deposit_allocation — the allocation audit journal (per-deposit lookup + per-account history).
     ("ix_depalloc_txn_ref",           "deposit_allocation", "(transaction_ref)"),
     ("ix_depalloc_account_created",   "deposit_allocation", "(account_ref, created_at DESC)"),
+    # withdrawal_payout_leg — the payout allocation. The engine's hot path is "today's debit used
+    # per account", which filters live legs by (account_ref, leg_date); the per-withdrawal lookup
+    # reads them by transaction_ref.
+    ("ix_wdleg_account_date",         "withdrawal_payout_leg", "(account_ref, leg_date)"),
+    ("ix_wdleg_txn_ref",              "withdrawal_payout_leg", "(transaction_ref)"),
+    ("ix_wdleg_status",               "withdrawal_payout_leg", "(status)"),
+    # At most ONE LIVE leg per (withdrawal, account). Partial by design: RELEASED legs are history
+    # and a withdrawal can legitimately hold several against one account (allocated, returned,
+    # re-allocated, returned again), so a constraint spanning every status would break
+    # re-allocation. A double debit is blocked separately, by the ledger's own uniqueness.
+    ("uq_wd_leg_live",                "withdrawal_payout_leg",
+     "(transaction_ref, account_ref) WHERE status = 'ALLOCATED'", True),
+    # withdrawal_allocation — the payout allocation journal.
+    ("ix_wdalloc_txn_ref",            "withdrawal_allocation", "(transaction_ref)"),
+    ("ix_wdalloc_account_created",    "withdrawal_allocation", "(account_ref, created_at DESC)"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -467,6 +488,25 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         # Account ledger entry references (ADJ000001 / LED000001). Its OWN sequence, in its own
         # namespace: no existing DEP/WIT/SET transaction reference is read, reused or renumbered.
         await conn.execute(text("CREATE SEQUENCE IF NOT EXISTS account_ledger_ref_seq START WITH 1"))
+        # ── Withdrawal payout legs: the ledger's double-debit guard widens to cover a SPLIT ──
+        # A withdrawal paid from several accounts posts one entry per account, so uniqueness moves
+        # from (entry_type, transaction_ref) to (entry_type, transaction_ref, leg_no). Existing
+        # payout entries are backfilled to leg 1 FIRST: Postgres treats NULLs in a UNIQUE index as
+        # distinct, so leaving them NULL would silently weaken the guarantee that a withdrawal
+        # cannot be debited twice. Manual adjustments have no transaction_ref and stay NULL, which
+        # is what lets an account hold any number of them.
+        await conn.execute(text(
+            "UPDATE account_ledger SET leg_no = 1 "
+            "WHERE leg_no IS NULL AND transaction_ref IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE account_ledger DROP CONSTRAINT IF EXISTS uq_account_ledger_txn"))
+        await conn.execute(text(
+            "DO $$ BEGIN "
+            "  ALTER TABLE account_ledger ADD CONSTRAINT uq_account_ledger_txn_leg "
+            "    UNIQUE (entry_type, transaction_ref, leg_no); "
+            "EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; END $$;"
+        ))
         # Backfill created_at from the legacy created date for existing rows.
         await conn.execute(
             text("UPDATE users SET created_at = created::timestamp WHERE created_at IS NULL")
@@ -637,10 +677,13 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         # CREATE INDEX CONCURRENTLY cannot run in a transaction and must not abort startup
         # if one fails (e.g. a prior interrupted build left an INVALID index): log & continue,
         # each is retried on the next startup. IF NOT EXISTS makes an already-built index a no-op.
-        for name, table, cols in _NEW_INDEXES:
+        for name, table, cols, *unique in _NEW_INDEXES:
+            # An optional 4th element marks the index UNIQUE (a partial one carries its own
+            # WHERE inside `cols`). Everything else about the build is unchanged.
+            kind = "UNIQUE INDEX" if (unique and unique[0]) else "INDEX"
             try:
                 await conn.execute(
-                    text(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {table} {cols}")
+                    text(f"CREATE {kind} CONCURRENTLY IF NOT EXISTS {name} ON {table} {cols}")
                 )
             except Exception as exc:  # noqa: BLE001 — never let index creation block boot
                 import logging

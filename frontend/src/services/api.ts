@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -333,6 +333,21 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/retry-allocation`, {});
     return res.data;
   },
+  // The latest PAYOUT allocation for a withdrawal — which accounts pay it, or why none can.
+  // Admin-only server-side: it carries every account's daily debit position, available balance
+  // and rejection reason, which never belong in a merchant payload. What the merchant does get —
+  // which account pays them, and how much — travels on the transaction as `payoutLegs`.
+  payoutAllocation: async (id: string) => {
+    const res = await api.get<PayoutAllocation>(`/api/transactions/${id}/payout-allocation`);
+    return res.data;
+  },
+  // Re-run the automatic payout allocation for a withdrawal it could not place. The Admin fixes
+  // the cause (raises a limit, activates an account, enables a mode, funds an account) and
+  // retries; the ENGINE still chooses which account, so this is not a manual assignment.
+  retryPayoutAllocation: async (id: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/retry-payout-allocation`, {});
+    return res.data;
+  },
   submitAccount: async (
     id: string,
     // `paymentLink` is the Card variant of this same step: the Admin submits the payment gateway
@@ -531,6 +546,13 @@ export const accountAPI = {
   // values and rejects any caller that is not an Admin, so hiding the button is not the control.
   updateLimits: async (ref: string, data: { highest_credit: number; highest_debit: number; reason?: string }) => {
     const res = await api.patch<Account>(`/api/accounts/${ref}/limits`, data);
+    return res.data;
+  },
+  // Admin edit of which transaction modes an account can PAY OUT by. The withdrawal allocation
+  // engine excludes an account that cannot process a request's mode, so this is a financial
+  // control and is audited as one. An EMPTY list means every mode — the unconfigured default.
+  updatePayoutModes: async (ref: string, payoutModes: string[], reason?: string) => {
+    const res = await api.patch<Account>(`/api/accounts/${ref}/payout-modes`, { payoutModes, reason });
     return res.data;
   },
   // Admin edit of an account's "Own Account" classification. Configuration only: it is recorded

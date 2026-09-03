@@ -21,12 +21,15 @@ insert → account/transaction update → audit) runs inside the request's singl
 surrounding ``get_db`` commit makes it all-or-nothing.
 """
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Sequence
 
 from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import AccountLedgerEntry, AccountMaster, AccountTransaction, Transaction, TxStatus, TxType
+from app.models.models import (
+    AccountLedgerEntry, AccountMaster, AccountTransaction, Transaction, TxStatus, TxType,
+    WithdrawalPayoutLeg,
+)
 
 # Entry types.
 WITHDRAWAL_PAYOUT = "WITHDRAWAL_PAYOUT"
@@ -39,6 +42,13 @@ DEBIT = "DEBIT"
 # Payout payment methods (Feature 2). BANK debits a managed account; MANUAL is an offline payment
 # that deliberately has no payout account.
 PAYMENT_METHODS = ("BANK", "MANUAL")
+
+# Payout-leg lifecycle (see models.WithdrawalPayoutLeg). ALLOCATED holds capacity, PAID has moved
+# money, RELEASED has given the capacity back. Defined here because both the ledger and the
+# allocation engine need them and the ledger is the lower layer.
+LEG_ALLOCATED = "ALLOCATED"
+LEG_PAID = "PAID"
+LEG_RELEASED = "RELEASED"
 
 # The reasons an authorised user may pick for a manual adjustment. A closed list keeps the ledger
 # reportable — free text goes in Remarks.
@@ -139,11 +149,30 @@ async def account_balance(db: AsyncSession, ref: str) -> float:
     )).scalar_one()
 
     # Debits explicitly recorded against this account by the payout step.
+    #
+    # A withdrawal SPLIT across several accounts cannot be expressed by the single
+    # `payout_account_ref` column — each account paid only its own share — so those rows are
+    # excluded here and counted through their legs below instead. A single-account payout writes
+    # BOTH the column (which every existing screen reads) and one leg, so it would otherwise be
+    # counted twice; excluding every legged row and adding the legs back is what keeps exactly one
+    # of the two in the total, whichever shape the payout took.
+    legged = select(WithdrawalPayoutLeg.transaction_ref).where(
+        WithdrawalPayoutLeg.status == LEG_PAID).scalar_subquery()
     explicit = (await db.execute(
         select(func.coalesce(func.sum(Transaction.amount), 0.0)).where(
             Transaction.type.in_(_WITHDRAWAL_TYPES + _SETTLEMENT_TYPES),
             Transaction.status == TxStatus.COMPLETED,
             Transaction.payout_account_ref == ref,
+            Transaction.ref.notin_(legged),
+        )
+    )).scalar_one()
+
+    # This account's share of every withdrawal actually paid from it — the authoritative figure for
+    # a split payout, and the same figure as `explicit` for a single-account one.
+    legs = (await db.execute(
+        select(func.coalesce(func.sum(WithdrawalPayoutLeg.amount), 0.0)).where(
+            WithdrawalPayoutLeg.account_ref == ref,
+            WithdrawalPayoutLeg.status == LEG_PAID,
         )
     )).scalar_one()
 
@@ -163,7 +192,9 @@ async def account_balance(db: AsyncSession, ref: str) -> float:
             )
         )).scalar_one()
 
-    return round(float(deposits) - float(explicit) - float(legacy) + await adjustments_net(db, ref), 2)
+    return round(
+        float(deposits) - float(explicit) - float(legs) - float(legacy)
+        + await adjustments_net(db, ref), 2)
 
 
 _ENTRY_PREFIX = {MANUAL_ADJUSTMENT: "ADJ", WITHDRAWAL_PAYOUT: "LED"}
@@ -191,13 +222,153 @@ async def find_by_client_request(db: AsyncSession, client_request_id: Optional[s
 
 
 async def find_payout_entry(db: AsyncSession, transaction_ref: str) -> Optional[AccountLedgerEntry]:
-    """The payout entry already posted for this withdrawal, if any (idempotency lookup)."""
+    """The FIRST payout entry already posted for this withdrawal, if any.
+
+    The idempotency lookup: a withdrawal with any payout entry has already been paid, whether it
+    was settled from one account or split across several. Callers use it as a boolean guard, so
+    returning the first of a split's entries is the right answer — "this has been paid".
+    """
     return (await db.execute(
-        select(AccountLedgerEntry).where(
+        select(AccountLedgerEntry)
+        .where(
             AccountLedgerEntry.entry_type == WITHDRAWAL_PAYOUT,
             AccountLedgerEntry.transaction_ref == transaction_ref,
         )
+        .order_by(AccountLedgerEntry.id)
+        .limit(1)
     )).scalar_one_or_none()
+
+
+async def find_payout_entries(db: AsyncSession, transaction_ref: str) -> list[AccountLedgerEntry]:
+    """EVERY payout entry posted for this withdrawal, in leg order — one per account it was paid
+    from. A single-account payout returns one entry; a three-way split returns three."""
+    return list((await db.execute(
+        select(AccountLedgerEntry)
+        .where(
+            AccountLedgerEntry.entry_type == WITHDRAWAL_PAYOUT,
+            AccountLedgerEntry.transaction_ref == transaction_ref,
+        )
+        .order_by(AccountLedgerEntry.id)
+    )).scalars().all())
+
+
+async def reserved_by_legs(db: AsyncSession, refs: Optional[Sequence[str]] = None) -> dict[str, float]:
+    """{account reference -> rupees already promised out of it by ALLOCATED-but-unpaid legs}.
+
+    Money that is spoken for but has not moved yet. It is deliberately NOT part of
+    :func:`account_balance`, which reports the account's real accounting balance and must keep
+    agreeing with the Account Management screen. It is what the ALLOCATION engine subtracts before
+    deciding whether an account can carry another withdrawal, so two requests arriving seconds
+    apart cannot each be allocated the same headroom.
+    """
+    stmt = (
+        select(WithdrawalPayoutLeg.account_ref,
+               func.coalesce(func.sum(WithdrawalPayoutLeg.amount), 0.0))
+        .where(WithdrawalPayoutLeg.status == LEG_ALLOCATED)
+        .group_by(WithdrawalPayoutLeg.account_ref)
+    )
+    if refs is not None:
+        refs = list(refs)
+        if not refs:
+            return {}
+        stmt = stmt.where(WithdrawalPayoutLeg.account_ref.in_(refs))
+    return {ref: round(float(total or 0.0), 2) for ref, total in (await db.execute(stmt)).all() if ref}
+
+
+async def account_balances(db: AsyncSession, refs: Sequence[str]) -> dict[str, float]:
+    """{account reference -> authoritative balance}, for MANY accounts in a fixed number of queries.
+
+    Exactly the arithmetic :func:`account_balance` performs, evaluated for a whole set at once.
+    The allocation engine measures every configured account on every withdrawal — fifteen or more
+    of them — and calling the single-account function in a loop would issue five queries per
+    account on the hot path of every request. The two must never disagree, so this is the same
+    four terms in the same order, grouped instead of filtered.
+    """
+    refs = list(refs)
+    if not refs:
+        return {}
+
+    deposits = dict((await db.execute(
+        select(Transaction.admin_ref, func.coalesce(func.sum(Transaction.amount), 0.0))
+        .where(
+            Transaction.type.in_(_DEPOSIT_TYPES),
+            Transaction.status.in_(_COMPLETED_DEPOSIT),
+            Transaction.admin_ref.in_(refs),
+        )
+        .group_by(Transaction.admin_ref)
+    )).all())
+
+    legged = select(WithdrawalPayoutLeg.transaction_ref).where(
+        WithdrawalPayoutLeg.status == LEG_PAID).scalar_subquery()
+    explicit = dict((await db.execute(
+        select(Transaction.payout_account_ref, func.coalesce(func.sum(Transaction.amount), 0.0))
+        .where(
+            Transaction.type.in_(_WITHDRAWAL_TYPES + _SETTLEMENT_TYPES),
+            Transaction.status == TxStatus.COMPLETED,
+            Transaction.payout_account_ref.in_(refs),
+            Transaction.ref.notin_(legged),
+        )
+        .group_by(Transaction.payout_account_ref)
+    )).all())
+
+    legs = dict((await db.execute(
+        select(WithdrawalPayoutLeg.account_ref,
+               func.coalesce(func.sum(WithdrawalPayoutLeg.amount), 0.0))
+        .where(WithdrawalPayoutLeg.account_ref.in_(refs), WithdrawalPayoutLeg.status == LEG_PAID)
+        .group_by(WithdrawalPayoutLeg.account_ref)
+    )).all())
+
+    adjustments = dict((await db.execute(
+        select(
+            AccountLedgerEntry.account_ref,
+            func.coalesce(func.sum(
+                case((AccountLedgerEntry.direction == CREDIT, AccountLedgerEntry.amount),
+                     else_=-AccountLedgerEntry.amount)
+            ), 0.0),
+        )
+        .where(AccountLedgerEntry.entry_type == MANUAL_ADJUSTMENT,
+               AccountLedgerEntry.account_ref.in_(refs))
+        .group_by(AccountLedgerEntry.account_ref)
+    )).all())
+
+    # Legacy debits: a completed withdrawal/settlement that names no payout account is charged to
+    # the member's most-recent receiving account, exactly as the single-account function does.
+    member_map = await _member_accounts(db)
+    wanted = set(refs)
+    members_by_ref: dict[str, list[str]] = {}
+    for member, acct in member_map.items():
+        if acct in wanted:
+            members_by_ref.setdefault(acct, []).append(member)
+    legacy: dict[str, float] = {}
+    if members_by_ref:
+        all_members = [m for members in members_by_ref.values() for m in members]
+        rows = (await db.execute(
+            select(
+                func.upper(func.trim(func.coalesce(Transaction.member_id, ""))),
+                func.coalesce(func.sum(Transaction.amount), 0.0),
+            )
+            .where(
+                Transaction.type.in_(_WITHDRAWAL_TYPES + _SETTLEMENT_TYPES),
+                Transaction.status == TxStatus.COMPLETED,
+                Transaction.payout_account_ref.is_(None),
+                Transaction.payout_payment_method.is_distinct_from("MANUAL"),
+                func.upper(func.trim(func.coalesce(Transaction.member_id, ""))).in_(all_members),
+            )
+            .group_by(func.upper(func.trim(func.coalesce(Transaction.member_id, ""))))
+        )).all()
+        by_member = {m: float(total or 0.0) for m, total in rows}
+        for ref, members in members_by_ref.items():
+            legacy[ref] = sum(by_member.get(m, 0.0) for m in members)
+
+    return {
+        ref: round(
+            float(deposits.get(ref, 0.0)) - float(explicit.get(ref, 0.0))
+            - float(legs.get(ref, 0.0)) - float(legacy.get(ref, 0.0))
+            + float(adjustments.get(ref, 0.0)),
+            2,
+        )
+        for ref in refs
+    }
 
 
 async def post_entry(
@@ -213,6 +384,7 @@ async def post_entry(
     performed_by_role: Optional[str] = None,
     transaction_ref: Optional[str] = None,
     transaction_id: Optional[int] = None,
+    leg_no: Optional[int] = None,
     payment_method: Optional[str] = None,
     reason: Optional[str] = None,
     reference: Optional[str] = None,
@@ -233,6 +405,14 @@ async def post_entry(
     the withdrawal/account update and the audit record, or not at all.
     """
     amount = round(float(amount), 2)
+    # A payout entry ALWAYS carries a leg number, defaulting to 1 — the single-account case. That
+    # default is what keeps the double-debit guarantee intact now that uniqueness spans the leg:
+    # Postgres treats NULLs in a UNIQUE index as distinct, so leaving it NULL would have let a
+    # replayed completion insert a second entry for the same withdrawal. With the default, the
+    # second attempt collides on (WITHDRAWAL_PAYOUT, WIT000123, 1) and the database refuses it.
+    # Manual adjustments have no transaction and stay NULL, so an account may hold any number.
+    if leg_no is None and transaction_ref:
+        leg_no = 1
     after = None if balance_before is None else round(
         balance_before + amount if direction == CREDIT else balance_before - amount, 2
     )
@@ -247,6 +427,7 @@ async def post_entry(
         balance_after=after,
         transaction_ref=transaction_ref,
         transaction_id=transaction_id,
+        leg_no=leg_no,
         payment_method=payment_method,
         reason=reason,
         reference=reference,
@@ -279,6 +460,7 @@ def serialize(e: AccountLedgerEntry) -> dict:
         "balanceBefore": None if e.balance_before is None else round(e.balance_before, 2),
         "balanceAfter": None if e.balance_after is None else round(e.balance_after, 2),
         "transactionRef": e.transaction_ref,
+        "legNo": e.leg_no,
         "paymentMethod": e.payment_method,
         "reason": e.reason,
         "reference": e.reference,

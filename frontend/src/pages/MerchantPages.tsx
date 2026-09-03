@@ -4,6 +4,7 @@ import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPO
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
+import { PayoutAllocationPanel } from '../components/PayoutAllocation';
 import { IfscField } from '../components/IfscField';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { fireConfetti } from '../utils/confetti';
@@ -833,8 +834,20 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
 };
 
 // ─── Withdrawal form (payout-mode driven) ──────────────────────────────────────
+// The Transaction Mode a withdrawal is paid by. IMPS / NEFT / RTGS are the platform's own
+// existing modes — the same three the Deposit Type list already offers and that
+// PAYMENT_METHOD_GROUPS already labels as "Bank Transfer" — so naming them here invents nothing.
+// What it adds is precision the payout engine can act on: an account is only allocated a
+// withdrawal it can actually send (services/withdrawal_allocation enforces this server-side).
+// "Bank Transfer" stays, and means "any bank rail", which is what every existing row carries.
+// The payout modes that move money over a bank rail, and therefore carry a bank beneficiary.
+const BANK_RAIL_MODES = ['BANK', 'IMPS', 'NEFT', 'RTGS'];
+
 const PAYOUT_MODES = [
   { value:'BANK', label:'Bank Transfer' },
+  { value:'IMPS', label:'IMPS' },
+  { value:'NEFT', label:'NEFT' },
+  { value:'RTGS', label:'RTGS' },
   { value:'UPI', label:'UPI' },
   { value:'CASH', label:'Cash' },
   { value:'CRYPTO', label:'Crypto (USDT)' },
@@ -844,6 +857,10 @@ const MODE_FIELDS: Record<string, { key:string; label:string; digits?: boolean; 
   // Platform-standard bank-details order: Account Holder → Account Number → IFSC. The IFSC entry
   // renders the auto-fetched Bank Name + Branch Name straight after it, completing the order.
   BANK: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
+  // IMPS / NEFT / RTGS are bank rails, so they collect exactly the bank fields BANK does.
+  IMPS: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
+  NEFT: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
+  RTGS: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
   UPI: [{key:'upiId',label:'UPI ID'}],
   CASH: [{key:'village',label:'Village'},{key:'city',label:'City'},{key:'mobile',label:'Mobile Number',digits:true},{key:'pinCode',label:'PIN Code',digits:true,max:6}],
   CRYPTO: [{key:'walletAddress',label:'Wallet Address'},{key:'network',label:'Network (e.g. TRC20)'}],
@@ -885,7 +902,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
     if (kind === 'UPI') { setDestId(`upi-${row.id}`); setMode('UPI'); setDetails({ upiId: row.upiId || '' }); }
-    else { setDestId(`bank-${row.id}`); setMode('BANK'); setDetails({ accountHolder: row.accountHolder || '', accountNumber: row.accountNumber || '', ifsc: row.ifsc || '', bank: row.bankName || '', branch: row.branch || '' }); }
+    else { setDestId(`bank-${row.id}`); setMode(m => (BANK_RAIL_MODES.includes(m) ? m : 'BANK')); setDetails({ accountHolder: row.accountHolder || '', accountNumber: row.accountNumber || '', ifsc: row.ifsc || '', bank: row.bankName || '', branch: row.branch || '' }); }
   };
 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); setSummaryLoaded(true); }).catch(()=>{}); }, []);
@@ -961,7 +978,17 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     setLoading(true);
     try {
       const payload: Record<string, unknown> = { amount: amountNum, memberId, memberName: memberName.trim(), payoutMode: mode, payoutDetails: details };
-      if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
+      // Every bank rail mirrors its beneficiary onto the top-level columns. The payout allocation
+      // engine reads the receiver off those columns to decide which account can pay, so an
+      // IMPS/NEFT/RTGS withdrawal that only carried them inside payoutDetails would arrive with
+      // no readable beneficiary and be refused as an exception.
+      if (BANK_RAIL_MODES.includes(mode)) {
+        payload.accountHolder = details.accountHolder;
+        payload.accountNumber = details.accountNumber;
+        payload.ifsc = details.ifsc;
+        payload.bankName = details.bank;
+        payload.branch = details.branch;
+      }
       if (SEND_TO_APPROVAL_ENABLED && approverId) { payload.sentForApproval = true; payload.approverUserId = Number(approverId); }
       const created = await transactionAPI.createWithdrawal(payload);
       fireConfetti();
@@ -1811,6 +1838,19 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         {isSettlement && <SlipRow k="Settlement Amount" v={fmt(d.amount)} />}
       </DetailSection>
 
+      {/* WHERE this withdrawal is paid from — chosen automatically by the backend the moment the
+          request was raised, so the merchant sees it here without waiting for an Admin. A cash or
+          crypto payout comes out of no managed account and renders nothing at all. */}
+      {isWithdrawal && (d.payoutMode || '').toUpperCase() !== 'CASH'
+        && (d.payoutMode || '').toUpperCase() !== 'CRYPTO' && (
+        <PayoutAllocationPanel
+          legs={d.payoutLegs} amount={d.amount} mode={d.payoutTransactionMode || d.payoutMode}
+          emptyNote={d.status === 'NO_ELIGIBLE_ACCOUNT'
+            ? 'No payout account is available for this request yet. Our team has been notified and will place it shortly.'
+            : undefined}
+        />
+      )}
+
       {/* Crypto Balance module — a dedicated section grouping every crypto-specific field
           (Currency / Network / Wallet Address / Transaction Hash / Business Amount). Status,
           Created Date & Time and Approval Details already render in their own sections above/
@@ -1996,6 +2036,18 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
         {d.senderUpiId && <SlipRow k="Sender UPI" v={d.senderUpiId} />}
         {d.payoutDetails && Object.entries(d.payoutDetails).map(([k, v]) => v ? <SlipRow key={k} k={k} v={String(v)} /> : null)}
       </div>
+
+      {/* The account(s) this withdrawal will be paid FROM, allocated automatically at creation.
+          The reviewer approves the REQUEST; they never choose the paying account, and neither
+          does the Admin who pays it. */}
+      {d.type.startsWith('WITHDRAWAL') && (
+        <PayoutAllocationPanel
+          legs={d.payoutLegs} amount={d.amount} mode={d.payoutTransactionMode || d.payoutMode}
+          emptyNote={d.status === 'NO_ELIGIBLE_ACCOUNT'
+            ? 'No payout account could be allocated for this amount. An Admin is reviewing it.'
+            : undefined}
+        />
+      )}
 
       {/* Timeline (created → reviewer → admin). */}
       <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>

@@ -258,6 +258,17 @@ class CompleteRequest(BaseModel):
     clientRequestId: Optional[str] = None
 
 
+class AccountPayoutModesUpdate(BaseModel):
+    """Admin edit of ONE account's payout capability — which transaction modes it can send by.
+
+    An EMPTY list means "every mode", which is the unconfigured default. That is deliberate: a
+    capability read as "supports nothing" would disqualify every account on a platform where no
+    Admin has configured one and send every withdrawal to the exception queue.
+    """
+    payoutModes: list[str] = []
+    reason: Optional[str] = None
+
+
 class AdjustmentCreate(BaseModel):
     """A manual Credit/Debit adjustment on a managed account (Account Management).
 
@@ -332,6 +343,9 @@ class AccountCreate(BaseModel):
     # is auto-tracked thereafter.
     highest_credit: Optional[float] = 0.0
     highest_debit: Optional[float] = 0.0
+    # Which transaction modes this account can pay out by (UPI / IMPS / NEFT / RTGS). Empty or
+    # omitted means every mode — see AccountPayoutModesUpdate.
+    payout_modes: Optional[list[str]] = None
     # The Admin's "Own Account" classification. Recorded on the account and carried into every
     # deposit allocation decision; it is deliberately not a ranking input (see
     # services/deposit_allocation), so setting it cannot change which account receives money.

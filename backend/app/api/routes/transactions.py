@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, case, func, text, literal, union_all
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction, DepositAllocation
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction, DepositAllocation, WithdrawalAllocation, WithdrawalPayoutLeg
 from app.core.deps import (
     get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer,
     get_current_supervisor, get_current_manager, OVERSIGHT_MERCHANT_ROLES,
@@ -20,6 +20,7 @@ from app.services.membership import lookup_member_name, resolve_member_name, nor
 from app.services import tg_notify as tgn
 from app.services import account_ledger as ledger
 from app.services import deposit_allocation as alloc
+from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
@@ -598,22 +599,29 @@ async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, 
 
 
 async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, request: Request | None) -> None:
-    """After a withdrawal/settlement (a debit) completes against a managed account, run TWO
-    independent, additive checks on that account. Neither alters the transaction or any workflow;
-    each notifies every Admin AND Super Admin (Account Management is admin-facing) with a system
+    """After a withdrawal/settlement (a debit) completes, check the paying account's daily position.
+
+    Highest Debit is the account's HARD DAILY DEBIT LIMIT — the ceiling the Admin configures in
+    Account Management and the withdrawal allocation engine enforces on every request. This
+    function used to RAISE it to match any larger completed debit, which is precisely what a
+    ceiling must never do: a limit that moves up to accommodate whatever arrives is not a limit,
+    and one manually completed payout above it would have silently re-configured the account for
+    every withdrawal that followed. It no longer writes the value. The configured limit is now
+    changed in exactly one place — an Admin editing it (PATCH /api/accounts/{ref}/limits), which
+    is audited. This is the same correction Highest Credit received on the deposit side.
+
+    What it does instead is report a breach. The engine cannot cause one; only a manually
+    completed payout, a settlement (which is never allocated) or a row that predates this rule
+    can, so a breach is worth an Admin's attention. Two additive checks remain, neither altering
+    the transaction or any workflow, each notifying every Admin and Super Admin with a system
     audit + event entry:
 
-      (A) Highest Debit high-water mark — raised whenever this debit exceeds the current value
-          (never decreased); a new record notifies.
-      (B) Low-debit alert — when the account has a set Highest Debit threshold (>0) and this debit
-          is BELOW it, notify. The threshold is the fixed value the admin entered at creation, so
-          the alert stays stable even as (A) drifts upward.
+      (A) Daily debit limit exceeded — the day's total from this account is over its Highest Debit.
+      (B) Low-debit alert — the account has a set threshold (>0) and this debit is BELOW it. The
+          threshold is the fixed value the admin entered at creation, unaffected by (A).
 
-    A debit carries no admin_ref, so the account it is drawn from is the member's most-recent
-    receiving account — the exact attribution /accounts/balances uses for withdrawals/settlements.
-    (A) and (B) are mutually exclusive in practice: the threshold seeds highest_debit and the mark
-    only rises, so threshold ≤ highest_debit always → a debit can't be both a new high and below
-    the threshold."""
+    The account is the one the payout step recorded; only a row that names none falls back to the
+    member's most-recent receiving account, the historical attribution /accounts/balances uses."""
     ty = tx.type.value
     if not (ty.startswith("WITHDRAWAL") or ty.startswith("SETTLEMENT")):
         return
@@ -651,23 +659,26 @@ async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, r
     )).scalars().all()
     changed = False
 
-    # (A) New Highest Debit record.
-    if amt > (acc.highest_debit or 0):
-        prev = acc.highest_debit or 0.0
-        acc.highest_debit = amt
-        msg = (f"Highest Debit Updated — {acc.account_name} · Previous {_inr(prev)} → "
-               f"New {_inr(amt)} · {tx.ref} · {ts}")
-        for uid in recipient_ids:
-            db.add(Notification(user_id=uid, message=msg, icon="📉"))
-        # Audit: Account ID, Holder, Previous, New, Transaction Ref, Updated By = System, IST time.
-        await record_audit(db, "ACCOUNT_HIGHEST_DEBIT", actor=None,
-                           entity_type="account", entity_id=acc.reference_number,
-                           old=_inr(prev), new=_inr(amt),
-                           reason=f"{acc.account_name} · {tx.ref} · {ts}", ip=ip)
-        await log_event(db, "ACCOUNT_HIGHEST_DEBIT",
-                        f"{acc.reference_number} ({acc.account_name}) new highest debit "
-                        f"{_inr(amt)} (was {_inr(prev)}) via {tx.ref}", actor=None)
-        changed = True
+    # (A) Daily debit limit exceeded. Measured the way the limit is defined — the day's TOTAL
+    # against the ceiling, never this one debit against it — so it agrees exactly with what the
+    # allocation engine enforces. Nothing is written to the limit itself.
+    limit = round(acc.highest_debit or 0.0, 2)
+    if limit > 0:
+        used = (await walloc.debit_used_today(db, [acc.reference_number], on=tx.tx_date)).get(
+            acc.reference_number, 0.0)
+        if round(used, 2) > limit:
+            msg = (f"Daily Debit Limit Exceeded — {acc.account_name} · Debited today {_inr(used)} "
+                   f"against a Highest Debit of {_inr(limit)} · {tx.ref} · {ts}")
+            for uid in recipient_ids:
+                db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
+            await record_audit(db, "ACCOUNT_DEBIT_LIMIT_EXCEEDED", actor=None,
+                               entity_type="account", entity_id=acc.reference_number,
+                               old=_inr(limit), new=_inr(used),
+                               reason=f"{acc.account_name} · {tx.ref} · {ts}", ip=ip)
+            await log_event(db, "ACCOUNT_DEBIT_LIMIT_EXCEEDED",
+                            f"{acc.reference_number} ({acc.account_name}) debited {_inr(used)} today "
+                            f"against a Highest Debit of {_inr(limit)} via {tx.ref}", actor=None)
+            changed = True
 
     # (B) Low-debit alert — debit below the account's set Highest Debit threshold.
     if threshold > 0 and amt < threshold:
@@ -876,6 +887,24 @@ def _t(t: Transaction, full: bool = True) -> dict:
 async def _refresh_with_images(db: AsyncSession, tx: Transaction) -> None:
     await db.refresh(tx)
     await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_bank_image"])
+
+
+async def _with_payout_legs(db: AsyncSession, tx: Transaction, *, unmask: bool = False) -> dict:
+    """``_t(tx)`` plus the withdrawal's payout allocation — which account(s) pay it, and how much.
+
+    One extra query, and only for withdrawals: every other type returns the payload it always has.
+    The account number is MASKED by default, because this is the payload the merchant sees and the
+    platform has never exposed a payout account's full number; the Admin's own detail view passes
+    ``unmask=True``, which is the same information the Admin already has in Account Management.
+    """
+    out = _t(tx)
+    if not tx.type.value.startswith("WITHDRAWAL"):
+        return out
+    legs = await walloc.live_legs(db, tx.ref)
+    out["payoutLegs"] = [walloc.serialize_leg(l, mask=not unmask) for l in legs]
+    out["payoutAllocatedTotal"] = round(sum(l.amount for l in legs), 2) if legs else None
+    out["payoutTransactionMode"] = _withdrawal_mode(tx)
+    return out
 
 
 # ─── Server-side search & date/time filtering (shared by every list endpoint) ───
@@ -1558,7 +1587,13 @@ async def get_transaction_detail(
     # never drag them). This detail view is the one place they're needed — load them explicitly
     # here; async SQLAlchemy can't lazy-load them on attribute access.
     await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_bank_image"])
-    payload = _t(tx, full=True)
+    # The withdrawal's payout allocation travels with the detail view: which account(s) pay it and
+    # how much. An Admin sees the account numbers unmasked — the same information Account
+    # Management already shows them — and every other viewer, the owning merchant included, sees
+    # them masked, which is the platform's existing rule for a payout account.
+    payload = await _with_payout_legs(
+        db, tx, unmask=current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN))
+    payload.update({k: v for k, v in _t(tx, full=True).items() if k not in payload})
     # Enrich with the creating merchant's risk level for the details view (not stored on the row).
     creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
     payload["riskLevel"] = (creator.risk.value if creator and creator.risk else None)
@@ -2636,6 +2671,188 @@ async def _auto_allocate_deposit_account(db: AsyncSession, tx: Transaction) -> b
     return True
 
 
+# ─── Automatic withdrawal payout account allocation ───────────────────────────
+# The Admin no longer picks the paying account for each withdrawal: they configure the accounts,
+# their daily DEBIT limits and their payout capabilities in Account Management, and the engine
+# (services/withdrawal_allocation) chooses. This helper is the ONE place the engine's decision is
+# applied to a withdrawal.
+#
+# What changed in the workflow is one hop. A Manager-approved withdrawal used to land in
+# ACCOUNT_REQUESTED, which for a withdrawal meant "an Admin must now choose which account pays
+# this" — the manual step this feature removes. It now lands in ACCOUNT_SUBMITTED, the platform's
+# existing "the account is assigned" state, with the paying account(s) already attached; or, when
+# nothing is eligible, in NO_ELIGIBLE_ACCOUNT, the existing EXCEPTION state the deposit engine
+# already uses. No new state, and no new workflow.
+#
+# The Admin's "Pay & Complete" step is untouched: it still pays, still uploads the receipt and
+# still completes. It simply no longer chooses.
+
+AUTO_PAYOUT_ACTOR = "System (Auto Allocation)"
+
+
+def _withdrawal_mode(tx: Transaction) -> str:
+    """The transaction mode this withdrawal is to be paid by.
+
+    Read off the existing ``payout_mode`` column — the platform's own field, holding the same
+    modes it always has. Nothing new is invented; UPI/IMPS/NEFT/RTGS are the four the deposit side
+    already uses, and BANK remains the generic bank-transfer value older rows carry.
+    """
+    return walloc.normalize_mode(tx.payout_mode)
+
+
+def _needs_payout_account(tx: Transaction) -> bool:
+    """Whether this withdrawal is paid out of a managed bank account at all.
+
+    Cash is handed over in person and crypto leaves a wallet — neither debits a managed account,
+    so neither goes near the engine and both keep the manual workflow they have always had. This
+    is also what preserves the Admin's Manual / Offline payment option: a withdrawal can still be
+    completed as MANUAL at the payment step whatever was allocated for it.
+    """
+    return (tx.payout_mode or "BANK").upper() not in walloc.NON_BANK_PAYOUT_MODES
+
+
+def _tx_beneficiary(tx: Transaction) -> "walloc.Beneficiary":
+    """The receiver this withdrawal pays, read off the request's own columns."""
+    details = json.loads(tx.payout_details) if tx.payout_details else None
+    return walloc.read_beneficiary(
+        mode=_withdrawal_mode(tx), account_number=tx.account_number, ifsc=tx.ifsc,
+        name=tx.account_holder, bank_name=tx.bank_name, payout_details=details,
+    )
+
+
+def _payout_summary(legs) -> str:
+    """One human line naming where a withdrawal is being paid from — for notifications and audit."""
+    if not legs:
+        return "no account"
+    if len(legs) == 1:
+        return f"{legs[0].account_name} ({legs[0].bank_name})"
+    return " + ".join(f"{l.account_name} {_inr(l.amount)}" for l in legs)
+
+
+async def _auto_allocate_withdrawal(
+    db: AsyncSession, tx: Transaction, *, actor: User | None = None, announce: bool = True,
+) -> bool:
+    """Run the allocation engine for one withdrawal and apply its decision.
+
+    Returns True when the withdrawal now has a paying account (or combination of accounts), False
+    when none was eligible. The caller decides what that means for the status — this helper never
+    moves a withdrawal through the state machine, because it is called from two different points
+    in it (creation, and the Manager's approval).
+
+    Everything happens inside the caller's transaction — the row locks the engine takes, the legs
+    it writes, the capacity those legs consume and the audit trail all commit together, which is
+    what stops two simultaneous withdrawals from spending the same remaining capacity.
+    """
+    result = await walloc.allocate_withdrawal_accounts(
+        db,
+        amount=tx.amount,
+        mode=_withdrawal_mode(tx),
+        member_id=tx.member_id,
+        merchant_id=tx.merchant_id,
+        note=tx.notes,
+        beneficiary=_tx_beneficiary(tx),
+        exclude_tx_id=tx.id,          # this withdrawal is not part of its own payout history
+    )
+    await walloc.record_allocation(
+        db, result, transaction=tx, triggered_by=(actor.name if actor else AUTO_PAYOUT_ACTOR))
+
+    if not result.allocated:
+        # Nothing eligible. No account is assigned and no leg is written — a limit is never crossed
+        # to satisfy a request, and a withdrawal is never part-paid to fit the capacity available.
+        # Any legs a previous attempt left standing are released, so a failed re-allocation cannot
+        # leave the old ones silently holding capacity.
+        await walloc.release_legs(db, tx.ref, reason=walloc.RELEASE_REALLOCATED)
+        tx.payout_account_ref = None
+        await db.flush()
+        if announce:
+            msg = (f"{tx.ref}: NO ELIGIBLE PAYOUT ACCOUNT for {_inr(tx.amount)} — {result.reason}")
+            for uid in await _all_admin_ids(db):
+                db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
+            await log_event(db, "WITHDRAWAL_NO_ELIGIBLE_ACCOUNT",
+                            f"{tx.ref}: automatic payout allocation found no eligible account "
+                            f"({_inr(tx.amount)}) — {result.reason}", actor=actor)
+            await record_audit(db, "WITHDRAWAL_NO_ELIGIBLE_ACCOUNT", actor=actor,
+                               entity_type=tx.type.value, entity_id=tx.ref, new="NO_ELIGIBLE_ACCOUNT",
+                               reason=result.reason)
+        return False
+
+    legs = await walloc.write_legs(
+        db, result, transaction=tx, allocated_by=(actor.name if actor else AUTO_PAYOUT_ACTOR))
+    # The single paying account is ALSO recorded on the existing `payout_account_ref` column, so
+    # every screen, balance view and report that already reads it keeps working unchanged. A SPLIT
+    # cannot be expressed by one column — each account paid only its own share — so it stays NULL
+    # there and the legs are the record; the balance service knows to read them instead.
+    tx.payout_account_ref = legs[0].account_ref if len(legs) == 1 else None
+    await db.flush()
+
+    where = _payout_summary(legs)
+    if announce:
+        await _notify_merchant(
+            db, tx, f"{tx.ref}: payout account assigned automatically — {where}", "🏦")
+        for uid in await _all_admin_ids(db):
+            db.add(Notification(
+                user_id=uid,
+                message=(f"{tx.ref}: {where} auto-allocated to pay {_inr(tx.amount)} "
+                         f"({result.mode}) for {tx.merchant_name}"),
+                icon="🏦",
+            ))
+    await log_event(
+        db, "WITHDRAWAL_PAYOUT_AUTO_ALLOCATED",
+        f"{tx.ref}: {where} auto-allocated to pay {_inr(tx.amount)} for {tx.merchant_name} "
+        f"— {result.reason}", actor=actor,
+    )
+    await record_audit(
+        db, "WITHDRAWAL_PAYOUT_AUTO_ALLOCATED", actor=actor, entity_type=tx.type.value,
+        entity_id=tx.ref, old="NO ACCOUNT", new=where,
+        reason=(f"{result.reason} · {result.mode} · "
+                + " · ".join(
+                    f"{l.account_ref} {_inr(l.amount)} (Highest Debit {_inr(l.highest_debit)}, "
+                    f"used today {_inr(l.debit_used_today)}, remaining {_inr(l.remaining_capacity)})"
+                    for l in legs)
+                + f" · {_ist_now().strftime('%d %b %Y, %I:%M %p')} IST"),
+    )
+    # Account Management's balances listing is cached for ~5s; drop it so the consumed debit
+    # capacity shows on the very next load.
+    await cache_delete("c:accounts:balances")
+    return True
+
+
+async def _release_payout_capacity(db: AsyncSession, tx: Transaction, *, reason: str) -> None:
+    """Give back the payout capacity a withdrawal was holding, and say so in the audit trail.
+
+    Only ALLOCATED legs are released; a PAID one is history and is never touched. Safe on any
+    transaction type and on a withdrawal that never had an allocation — both are no-ops.
+    """
+    if not tx.type.value.startswith("WITHDRAWAL"):
+        return
+    released = await walloc.release_legs(db, tx.ref, reason=reason)
+    if not released:
+        return
+    tx.payout_account_ref = None
+    await db.flush()
+    await record_audit(db, "WITHDRAWAL_PAYOUT_RELEASED", actor=None, entity_type=tx.type.value,
+                       entity_id=tx.ref, old=f"{released} allocated leg(s)", new="RELEASED",
+                       reason=reason)
+    await cache_delete("c:accounts:balances")
+
+
+async def _ensure_withdrawal_allocation(
+    db: AsyncSession, tx: Transaction, *, actor: User | None = None,
+) -> bool:
+    """The withdrawal's paying account(s), allocating them now if it has none.
+
+    Idempotent: a withdrawal allocated at creation keeps exactly the accounts it was given, so the
+    Manager's approval does not re-open a decision that has already been made and whose capacity
+    is already being held. Only a withdrawal with no live legs — one raised before this feature,
+    or one whose first attempt found nothing — is allocated here.
+    """
+    if not _needs_payout_account(tx):
+        return True                     # cash/crypto never needs one; nothing to allocate
+    if await walloc.live_legs(db, tx.ref):
+        return True
+    return await _auto_allocate_withdrawal(db, tx, actor=actor)
+
+
 @router.post("/deposit")
 async def create_deposit(
     data: DepositCreate,
@@ -2812,6 +3029,18 @@ async def create_withdrawal(
     elif _wd_mode == "UPI":
         await _save_member_upi(db, current_user, data.memberId, (data.payoutDetails or {}).get("upiId"))
     await db.flush()
+    # ── Automatic payout account allocation ───────────────────────────────────
+    # Runs the moment the request exists, so the merchant sees WHICH account will pay them on the
+    # request they just raised rather than after an Admin gets to it. The withdrawal still enters
+    # the Manager's review queue exactly as before — allocation decides who pays, not whether the
+    # request is approved — and the capacity it reserves is released automatically if the Manager
+    # rejects it.
+    #
+    # A failure here is deliberately NOT fatal to the request. The withdrawal is a legitimate one;
+    # what is missing is payout capacity, which is an operational problem an Admin resolves (and is
+    # told about). Blocking creation would make the merchant carry a configuration failure, and the
+    # Manager's approval retries the allocation anyway.
+    allocated = await _auto_allocate_withdrawal(db, tx) if _needs_payout_account(tx) else True
     # Route to the chosen Authorized Approver only (demo) — else the whole Manager queue (prod).
     await _notify_approver_or_role(db, tx, "MANAGER", f"Withdrawal {tx.ref} from {tx.merchant_name} — awaiting your review", "↑")
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
@@ -2821,8 +3050,12 @@ async def create_withdrawal(
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
     if tx.approver_name:
         await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=tx.approver_name, ip=_client_ip(request))
+    if not allocated:
+        # Telegram (demo): the Admin owns the next step — free up payout capacity, then the
+        # allocation is retried. The in-app notification and the journal entry are already written.
+        await tgn.notify(db, tx, "ADMIN", "withdrawal_request")
     await _refresh_with_images(db, tx)
-    return _t(tx)
+    return await _with_payout_legs(db, tx)
 
 
 # ─── Settlement destination (Settlement Method + its fields) ───────────────────────
@@ -3111,6 +3344,84 @@ async def retry_allocation(
     return _t(tx)
 
 
+@router.get("/{tx_id}/payout-allocation")
+async def get_payout_allocation(
+    tx_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """The latest automatic payout allocation for one withdrawal — which accounts pay it, or why
+    none can.
+
+    ADMIN-ONLY, and deliberately its own endpoint rather than a field on the transaction payload:
+    the journal carries every account's daily debit position, available balance and per-account
+    rejection reason, which are internal figures a merchant must never receive. Keeping them off
+    ``_t()`` means they cannot leak into a merchant response by accident. What the merchant DOES
+    get — which account pays them, and how much — travels on the payload as ``payoutLegs``.
+    """
+    tx = await _get_tx(tx_id, db)
+    row = (await db.execute(
+        select(WithdrawalAllocation)
+        .where(WithdrawalAllocation.transaction_ref == tx.ref)
+        .order_by(WithdrawalAllocation.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    legs = await walloc.live_legs(db, tx.ref)
+    return {
+        "decision": walloc.serialize(row) if row is not None else None,
+        "legs": [walloc.serialize_leg(l, mask=False) for l in legs],
+        "allocatedTotal": round(sum(l.amount for l in legs), 2) if legs else None,
+        "requestedAmount": round(tx.amount or 0.0, 2),
+        "transactionMode": _withdrawal_mode(tx),
+    }
+
+
+@router.post("/{tx_id}/retry-payout-allocation")
+async def retry_payout_allocation(
+    tx_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Re-run the allocation engine for a withdrawal that could not be placed.
+
+    This is how the ONE remaining Admin task on a withdrawal is meant to be done. A request lands
+    in NO_ELIGIBLE_ACCOUNT because of configuration or capacity — every account at its daily debit
+    limit, all of them inactive, none supporting the mode, or not enough money across them — so the
+    Admin fixes that (raise a limit, activate an account, enable a mode, fund an account) and
+    presses retry. The engine then picks the account(s), by the same rules as every other
+    withdrawal. The Admin still never chooses WHICH account.
+
+    Re-running is safe to repeat: the engine re-reads today's usage and every balance under row
+    locks each time, so a retry cannot allocate capacity that has since been taken, and a retry
+    that still finds nothing leaves the request where it is with a fresh journal row explaining why.
+    """
+    tx = await _get_tx(tx_id, db)
+    if not tx.type.value.startswith("WITHDRAWAL"):
+        raise HTTPException(status_code=400, detail="Only a withdrawal is allocated a payout account.")
+    if not _needs_payout_account(tx):
+        raise HTTPException(
+            status_code=400,
+            detail=f"A {(tx.payout_mode or '').title()} payout does not come from a managed account.")
+    # A withdrawal that has already been PAID is never re-allocated: the money has left, the ledger
+    # records where from, and re-running would double-count the accounts that paid it.
+    if tx.status in (TxStatus.COMPLETED, TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED):
+        raise HTTPException(status_code=400, detail="This withdrawal is already closed.")
+
+    placed = await _auto_allocate_withdrawal(db, tx, actor=actor)
+    # A withdrawal sitting in the exception state moves on the moment it CAN be paid; one still
+    # awaiting its Manager keeps its place in that queue, because allocation decides who pays, not
+    # whether the request is approved.
+    if tx.status == TxStatus.NO_ELIGIBLE_ACCOUNT and placed:
+        tx.status = TxStatus.ACCOUNT_SUBMITTED
+    elif tx.status == TxStatus.ACCOUNT_SUBMITTED and not placed:
+        tx.status = TxStatus.NO_ELIGIBLE_ACCOUNT
+    await db.flush()
+    await record_audit(db, "WITHDRAWAL_ALLOCATION_RETRIED", actor=actor, entity_type=tx.type.value,
+                       entity_id=tx.ref, new=tx.status.value, ip=_client_ip(request))
+    await _refresh_with_images(db, tx)
+    return await _with_payout_legs(db, tx, unmask=True)
+
+
 @router.post("/{tx_id}/slip")
 async def submit_slip(
     tx_id: str,
@@ -3207,6 +3518,83 @@ async def _payout_already_posted(db: AsyncSession, tx: Transaction):
     return await ledger.find_payout_entry(db, tx.ref)
 
 
+async def _resolve_payout_legs(
+    db: AsyncSession, tx: Transaction, data: CompleteRequest, actor: User, request: Request | None,
+):
+    """The payout legs this completion will settle.
+
+    Normally these are exactly the legs the engine allocated when the withdrawal was raised, and
+    this returns them untouched. Two other cases are handled:
+
+    **A withdrawal with no legs** — one raised before automatic allocation existed, or one whose
+    allocation found nothing at the time. The engine is run now rather than asking an Admin to
+    pick an account by hand.
+
+    **An account reference supplied by the caller that is not what was allocated** — an Admin
+    directing the payout somewhere specific. It is never trusted: the reference goes back through
+    the engine restricted to that one account, so it faces the identical hard rules (active,
+    supports the mode, holds the money, has the daily headroom). If it passes, the allocation is
+    replaced and the override is audited; if it does not, the completion is refused with the
+    engine's own reason. This is what stops a payout account id from the browser bypassing the
+    allocation rules.
+    """
+    legs = await walloc.live_legs(db, tx.ref)
+    requested = (data.payoutAccountRef or "").strip()
+
+    if legs and (not requested or (len(legs) == 1 and legs[0].account_ref == requested)):
+        return legs
+
+    if not requested:
+        await _ensure_withdrawal_allocation(db, tx, actor=actor)
+        return await walloc.live_legs(db, tx.ref)
+
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == requested)
+    )).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="Payout account not found.")
+
+    # The named account goes through the ENGINE, restricted to itself, so it faces the identical
+    # hard rules — active, supports the mode, holds the money, has the daily headroom. The
+    # BENEFICIARY check is deliberately not applied here: it is a creation-time rule about the
+    # REQUEST, and re-running it at completion would strand a payment that has already been made
+    # on a row whose beneficiary columns are incomplete (every withdrawal raised before this
+    # feature). The account-side rules are the ones this override could otherwise be used to skip,
+    # and they are all enforced.
+    result = await walloc.allocate_withdrawal_accounts(
+        db, amount=tx.amount, mode=_withdrawal_mode(tx), member_id=tx.member_id,
+        merchant_id=tx.merchant_id, note=tx.notes, beneficiary=None,
+        exclude_tx_id=tx.id, force_account_ref=requested,
+    )
+    if not result.allocated:
+        # Reported through the messages this endpoint has always used, so an operator sees the
+        # same sentence for the same problem as before.
+        blocked = next((c for c in result.candidates if c.ref == requested), None)
+        why = blocked.reject_reason if blocked else None
+        if why == walloc.REJECT_INACTIVE:
+            raise HTTPException(status_code=400,
+                                detail="That payout account is not active and cannot be used.")
+        if why == walloc.REJECT_NO_BALANCE:
+            available = await ledger.account_balance(db, requested)
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Insufficient balance in {acc.account_name}: available "
+                        f"₹{available:,.2f}, required ₹{round(tx.amount or 0.0, 2):,.2f}."))
+        raise HTTPException(
+            status_code=400,
+            detail=(f"That payout account cannot pay this withdrawal — {result.reason} "
+                    f"Leave the account blank to use the automatic allocation."))
+    previous = [l.account_ref for l in legs]
+    await walloc.record_allocation(db, result, transaction=tx, triggered_by=actor.name)
+    new_legs = await walloc.write_legs(db, result, transaction=tx, allocated_by=actor.name)
+    await record_audit(
+        db, "WITHDRAWAL_PAYOUT_OVERRIDDEN", actor=actor, entity_type=tx.type.value,
+        entity_id=tx.ref, old=", ".join(previous) or "unallocated", new=requested,
+        reason=f"Admin directed the payout to {requested}; it passed every eligibility rule.",
+        ip=_client_ip(request))
+    return new_legs
+
+
 async def _record_withdrawal_payout(
     db: AsyncSession, tx: Transaction, data: CompleteRequest, actor: User, request: Request | None
 ) -> None:
@@ -3220,7 +3608,10 @@ async def _record_withdrawal_payout(
 
     Applies to WITHDRAWALS only. Deposits and settlements take exactly the path they always have.
     """
-    method = (data.paymentMethod or "").strip().upper()
+    # BANK is the default because it is what an allocated withdrawal is: the engine has already
+    # named the account(s) that pay it. MANUAL stays an explicit choice the operator makes, which
+    # is what preserves the existing Manual / Offline payment capability.
+    method = (data.paymentMethod or "").strip().upper() or "BANK"
     if method not in ledger.PAYMENT_METHODS:
         raise HTTPException(status_code=400, detail="Payment Method must be Bank Account or Manual / Offline Payment.")
 
@@ -3239,6 +3630,10 @@ async def _record_withdrawal_payout(
         manual_ref = (data.manualReference or "").strip()
         if not manual_ref:
             raise HTTPException(status_code=400, detail="Manual Payment Reference is required for an offline payment.")
+        # Preserved exactly as it was, and now with one addition: whatever the engine had
+        # allocated is released, because an offline payment does not come out of a managed
+        # account and that capacity must go back to the accounts that were holding it.
+        await _release_payout_capacity(db, tx, reason=walloc.RELEASE_MANUAL)
         tx.payout_payment_method = "MANUAL"
         tx.payout_account_ref = None
         tx.payout_manual_reference = manual_ref[:64]
@@ -3260,45 +3655,107 @@ async def _record_withdrawal_payout(
         return
 
     # ── Bank payout ───────────────────────────────────────────────────────────────
-    ref = (data.payoutAccountRef or "").strip()
-    if not ref:
-        raise HTTPException(status_code=400, detail="Select the payout account this withdrawal was paid from.")
-    # Lock FIRST: two operators completing payouts from the same account serialise here, so the
-    # second reads the first's committed balance instead of the same stale figure.
-    acc = await ledger.lock_account(db, ref)
-    if acc is None:
-        raise HTTPException(status_code=404, detail="Payout account not found.")
-    if str(acc.status or "").upper() != "ACTIVE":
-        raise HTTPException(status_code=400, detail="That payout account is not active and cannot be used.")
-
-    before = await ledger.account_balance(db, ref)
-    if before < amount:
+    # WHICH account pays is the engine's decision, made when the withdrawal was raised and held
+    # ever since as ALLOCATED payout legs. This step pays them: it re-validates each one and posts
+    # its debit. It does not choose, and it does not trust the browser to choose either.
+    legs = await _resolve_payout_legs(db, tx, data, actor, request)
+    if not legs:
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient balance in {acc.account_name}: available ₹{before:,.2f}, required ₹{amount:,.2f}.",
-        )
+            detail=("This withdrawal has no eligible payout account. Retry the automatic "
+                    "allocation, or record it as a Manual / Offline payment."))
+
+    total = round(sum(l.amount for l in legs), 2)
+    if total != amount:
+        # The invariant the whole feature rests on. Unreachable by construction — the engine trims
+        # the final leg to the exact remainder and refuses to allocate at all when it cannot cover
+        # the amount — and checked here anyway, because paying out a total that is not the
+        # withdrawal is the one failure worse than not paying at all.
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Payout allocation ₹{total:,.2f} does not match the withdrawal ₹{amount:,.2f}. "
+                    f"Re-run the automatic allocation."))
 
     tx.payout_payment_method = "BANK"
-    tx.payout_account_ref = acc.reference_number
+    # One account pays → the existing column carries it, exactly as before, so every screen and
+    # report that reads it is unchanged. A split cannot be expressed by one column, so it is NULL
+    # there and the legs are the record.
+    tx.payout_account_ref = legs[0].account_ref if len(legs) == 1 else None
     tx.payout_manual_reference = None
     tx.payout_remarks = (data.payoutRemarks or "").strip() or None
-    await ledger.post_entry(
-        db,
-        entry_type=ledger.WITHDRAWAL_PAYOUT, direction=ledger.DEBIT, amount=amount,
-        account=acc, balance_before=before,
-        transaction_ref=tx.ref, transaction_id=tx.id, payment_method="BANK",
-        remarks=tx.payout_remarks,
-        description=f"Withdrawal {tx.ref} paid from {acc.account_name} (A/C {acc.account_number})",
-        performed_by=actor.name, performed_by_id=actor.id, performed_by_role=_actor_role_label(actor),
-        merchant_business=tx.merchant_name, merchant_id=tx.merchant_id, member_id=tx.member_id,
-        client_request_id=(data.clientRequestId or None),
-    )
-    await record_audit(db, "WITHDRAWAL_PAYOUT_BANK", actor=actor, entity_type=tx.type.value,
-                       entity_id=tx.ref, old=f"{before:.2f}", new=f"{round(before - amount, 2):.2f}",
-                       reason=f"Paid from {acc.reference_number} — {acc.account_name}",
-                       ip=_client_ip(request))
-    # Account Management's balances listing is cached for ~5s; drop it so the debited account
-    # reads correctly straight after the payout.
+
+    # Legs are settled in ascending account order — the SAME order the allocation engine locks in,
+    # so a payout and a concurrent allocation contend in one consistent direction and cannot
+    # deadlock. Every debit, the status change and the audit rows share this request's single
+    # transaction: either all of it lands or none of it does, so a withdrawal can never end up
+    # completed with a debit missing, or debited with no completion.
+    for leg in sorted(legs, key=lambda l: l.account_ref):
+        acc = await ledger.lock_account(db, leg.account_ref)
+        if acc is None:
+            raise HTTPException(status_code=404, detail=f"Payout account {leg.account_ref} not found.")
+        if str(acc.status or "").upper() != "ACTIVE":
+            raise HTTPException(
+                status_code=400,
+                detail=f"{acc.account_name} is no longer active and cannot be used for this payout.")
+        if not walloc.supports_mode(acc, _withdrawal_mode(tx)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{acc.account_name} can no longer pay by {_withdrawal_mode(tx)}.")
+
+        leg_amount = round(float(leg.amount or 0.0), 2)
+        before = await ledger.account_balance(db, leg.account_ref)
+        if before < leg_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Insufficient balance in {acc.account_name}: available ₹{before:,.2f}, "
+                        f"required ₹{leg_amount:,.2f}."))
+        # The daily ceiling, re-checked at the moment of payment. This leg is ALREADY counted in
+        # today's usage (it has held its capacity since allocation), so the test is that the day's
+        # total INCLUDING it stays within the limit — adding the amount again here would
+        # double-count the withdrawal against its own reservation and refuse a valid payout.
+        # An account with NO configured limit has no ceiling to breach, so there is nothing to
+        # check — the same allowance the engine makes for an operator-directed payout. The engine
+        # will still never CHOOSE such an account on its own.
+        used = (await walloc.debit_used_today(db, [leg.account_ref], on=leg.leg_date)).get(
+            leg.account_ref, 0.0)
+        if round(acc.highest_debit or 0.0, 2) > 0 and round(used, 2) > round(acc.highest_debit, 2):
+            raise HTTPException(
+                status_code=400,
+                detail=(f"{acc.account_name} is over its Highest Debit for "
+                        f"{leg.leg_date:%d %b %Y}: {_inr(used)} against a limit of "
+                        f"{_inr(acc.highest_debit)}."))
+
+        entry = await ledger.post_entry(
+            db,
+            entry_type=ledger.WITHDRAWAL_PAYOUT, direction=ledger.DEBIT, amount=leg_amount,
+            account=acc, balance_before=before,
+            transaction_ref=tx.ref, transaction_id=tx.id, leg_no=leg.leg_no, payment_method="BANK",
+            remarks=tx.payout_remarks,
+            description=(f"Withdrawal {tx.ref} leg {leg.leg_no} paid from {acc.account_name} "
+                         f"(A/C {acc.account_number}) by {_withdrawal_mode(tx)}"),
+            performed_by=actor.name, performed_by_id=actor.id,
+            performed_by_role=_actor_role_label(actor),
+            merchant_business=tx.merchant_name, merchant_id=tx.merchant_id, member_id=tx.member_id,
+            # The idempotency key identifies the SUBMISSION, so on a split it is suffixed per leg —
+            # one submission legitimately posts several entries, and they must not collide on the
+            # ledger's UNIQUE client_request_id. The (entry_type, transaction_ref, leg_no) key is
+            # what actually blocks a duplicate debit, and it does so per leg.
+            client_request_id=(f"{data.clientRequestId}:{leg.leg_no}"
+                               if data.clientRequestId and len(legs) > 1
+                               else (data.clientRequestId or None)),
+        )
+        leg.status = ledger.LEG_PAID
+        leg.ledger_entry_ref = entry.entry_ref
+        leg.paid_at = datetime.utcnow()
+        await record_audit(
+            db, "WITHDRAWAL_PAYOUT_BANK", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
+            old=f"{before:.2f}", new=f"{round(before - leg_amount, 2):.2f}",
+            reason=(f"Leg {leg.leg_no}/{len(legs)} — {_inr(leg_amount)} paid from "
+                    f"{acc.reference_number} ({acc.account_name}) by {_withdrawal_mode(tx)}"),
+            ip=_client_ip(request))
+    await db.flush()
+    # Account Management's balances listing is cached for ~5s; drop it so the debited accounts
+    # read correctly straight after the payout.
     await cache_delete("c:accounts:balances")
 
 
@@ -3330,7 +3787,7 @@ async def mark_done(
     # withdrawal simply returns its existing completed state.
     if is_withdrawal and tx.status == TxStatus.COMPLETED:
         await _refresh_with_images(db, tx)
-        return _t(tx)
+        return await _with_payout_legs(db, tx, unmask=True)
     # Settlement final approval requires a settlement proof (image or PDF) and — for every method
     # except cash, which has no bank reference — a UTR number. The admin cannot complete a
     # settlement without them. Deposits/withdrawals keep prior behaviour.
@@ -3352,8 +3809,14 @@ async def mark_done(
     # balance-before snapshot is the true pre-payout figure, and inside the same transaction as the
     # completion — so the two can never diverge. Only reached when the caller supplies a payment
     # method, which keeps every existing completion call behaving exactly as it did.
-    if is_withdrawal and data and (data.paymentMethod or "").strip():
-        await _record_withdrawal_payout(db, tx, data, actor, request)
+    # A withdrawal the engine has allocated MUST be debited when it completes, whether or not the
+    # caller sends a payment method — otherwise its legs would stay allocated for ever and the
+    # ledger would carry no debit for money that has left. An explicit method still wins (it is
+    # how Manual / Offline is chosen), and a withdrawal with no allocation and no method keeps the
+    # exact behaviour it had before this feature.
+    if is_withdrawal and (data and (data.paymentMethod or "").strip()
+                          or await walloc.live_legs(db, tx.ref)):
+        await _record_withdrawal_payout(db, tx, data or CompleteRequest(), actor, request)
 
     tx.status = TxStatus.DEPOSITED if is_deposit else TxStatus.COMPLETED
     tx.processed_by = actor.name
@@ -3382,7 +3845,7 @@ async def mark_done(
     await record_audit(db, "ADMIN_APPROVED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
                        new=tx.status.value, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
-    return _t(tx)
+    return await _with_payout_legs(db, tx, unmask=True)
 
 
 @router.post("/{tx_id}/recheck")
@@ -3452,6 +3915,8 @@ async def cancel_transaction(
     tx.cancel_reason = reason
     tx.cancelled_by = current_user.name
     tx.cancelled_at = datetime.utcnow()
+    # A cancelled withdrawal releases whatever payout capacity was allocated to it.
+    await _release_payout_capacity(db, tx, reason=walloc.RELEASE_CANCELLED)
     await db.flush()
     await notify_tx(db, tx, f"{tx.ref}: cancelled by {tx.merchant_name} — {reason}", "⊘")
     await log_event(db, "CANCELLED", f"{tx.ref} cancelled by {tx.merchant_name} — reason: {reason}", actor=current_user)
@@ -3564,6 +4029,14 @@ async def _reviewer_action(
             # tracking, user "successful" notification, remark + audit), attributed to the reviewer.
             # Deposit → DEPOSITED, Withdrawal → COMPLETED. Only reachable on demo (agent-gated).
             is_dep = tx.type.value.startswith("DEPOSIT")
+            # A withdrawal completing HERE skips the Admin's Pay & Complete step, so this is the
+            # only place its payout debit can be posted. Without it the money would leave the
+            # business while its legs sat ALLOCATED for ever and the ledger recorded nothing —
+            # exactly the "completed withdrawal with no debit" the atomicity rule forbids. It runs
+            # before the status flips, so the balance snapshot it records is the true "before"
+            # figure, and inside this same transaction, so the two cannot diverge.
+            if not is_dep and await walloc.live_legs(db, tx.ref):
+                await _record_withdrawal_payout(db, tx, CompleteRequest(), reviewer, request)
             tx.status = TxStatus.DEPOSITED if is_dep else TxStatus.COMPLETED
             tx.processed_by = reviewer.name
             tx.approved_by = tx.approved_by or reviewer.name
@@ -3581,13 +4054,24 @@ async def _reviewer_action(
             await tgn.notify(db, tx, "USER", "deposit_done" if is_dep else "withdrawal_done")
         else:
             # Forwarded to Admin for final approval. A deposit carries a real slip, so it lands as
-            # SLIP_SUBMITTED (the Admin's "Mark Deposited" step keys off exactly that). A withdrawal
-            # has no slip — the Manager's approval just hands it to the Admin to pay out — so it
-            # lands as ACCOUNT_REQUESTED, which is what the pre-review-gate withdrawal flow used and
-            # what the Admin's "Pay & Complete" step still accepts. Settlements never reach here
-            # (they skip the review gate), so this only ever splits deposit vs withdrawal.
-            tx.status = (TxStatus.ACCOUNT_REQUESTED if tx.type.value.startswith("WITHDRAWAL")
-                         else TxStatus.SLIP_SUBMITTED)
+            # SLIP_SUBMITTED (the Admin's "Mark Deposited" step keys off exactly that).
+            #
+            # A WITHDRAWAL used to land in ACCOUNT_REQUESTED here, and for a withdrawal that state
+            # meant one thing: "an Admin must now choose which account pays this". That is the
+            # manual step this feature removes, so it is removed at its source rather than hidden
+            # in the UI. The paying account is confirmed (allocated at creation, or allocated now
+            # if that attempt found nothing), and the withdrawal lands in ACCOUNT_SUBMITTED — the
+            # platform's existing "the account is assigned" state — ready for the Admin to PAY, not
+            # to choose. Where nothing is eligible it lands in NO_ELIGIBLE_ACCOUNT, the existing
+            # EXCEPTION state, which is the only case that still needs an Admin's judgement.
+            #
+            # Settlements never reach here (they skip the review gate), so this only ever splits
+            # deposit vs withdrawal.
+            if tx.type.value.startswith("WITHDRAWAL"):
+                placed = await _ensure_withdrawal_allocation(db, tx, actor=reviewer)
+                tx.status = TxStatus.ACCOUNT_SUBMITTED if placed else TxStatus.NO_ELIGIBLE_ACCOUNT
+            else:
+                tx.status = TxStatus.SLIP_SUBMITTED
             _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
             await db.flush()
             await _notify_admin(db, tx, f"{tx.ref}: approved by {actor_label} {reviewer.name} — awaiting your final approval", "✅")
@@ -3601,6 +4085,9 @@ async def _reviewer_action(
         action = "REJECTED"
         tx.status = TxStatus.REJECTED
         tx.reject_reason = remark
+        # A rejected withdrawal is never paid, so the payout capacity it was holding goes straight
+        # back — automatically, with no separate reservation record to remember to clear.
+        await _release_payout_capacity(db, tx, reason=walloc.RELEASE_REJECTED)
         _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
         await _notify_merchant(db, tx, f"{tx.ref}: rejected by the {actor_label}. Reason: {remark}", "✕")
@@ -3609,6 +4096,10 @@ async def _reviewer_action(
     elif decision == "resubmit":
         action = "RESUBMITTED"
         tx.status = TxStatus.RESUBMITTED            # returned to the Data Operator
+        # Returned for correction: the amount or the beneficiary may change, so the allocation is
+        # no longer necessarily the right one. Its capacity is released and a fresh decision is
+        # made when the corrected request comes back through the Manager.
+        await _release_payout_capacity(db, tx, reason=walloc.RELEASE_REALLOCATED)
         _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
         await db.flush()
         await _notify_merchant(db, tx, f"{tx.ref}: returned by the {actor_label} — please correct and resubmit. Reason: {remark}", "↻")
@@ -3628,7 +4119,7 @@ async def _reviewer_action(
     await record_audit(db, f"{actor_role}_{action}", actor=reviewer, entity_type=tx.type.value,
                        entity_id=tx.ref, new=tx.status.value, reason=remark, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
-    return _t(tx)
+    return await _with_payout_legs(db, tx)
 
 
 @router.post("/{tx_id}/supervisor/approve")

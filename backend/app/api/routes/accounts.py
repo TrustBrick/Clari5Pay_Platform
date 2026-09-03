@@ -6,13 +6,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import case, func, select
 from app.db.session import get_db
-from app.models.models import AccountLedgerEntry, AccountMaster, AccountTransaction, AdminUpi, Transaction, TxStatus, User, UserRole
+from app.models.models import (
+    AccountLedgerEntry, AccountMaster, AccountTransaction, AdminUpi, Transaction, TxStatus,
+    User, UserRole, WithdrawalPayoutLeg,
+)
 from app.core.deps import get_current_admin
 from app.services import account_ledger as ledger
 from app.services import deposit_allocation as alloc
+from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cache_get, cache_set
 from app.schemas.schemas import (
-    AccountCreate, AccountLimitsUpdate, AccountOwnFlagUpdate, AdjustmentCreate, ReasonRequest,
+    AccountCreate, AccountLimitsUpdate, AccountOwnFlagUpdate, AccountPayoutModesUpdate,
+    AdjustmentCreate, ReasonRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
 from app.api.routes.transactions import (
@@ -47,6 +52,47 @@ def _norm_member(m: str | None) -> str:
     """Member ids are compared trimmed + upper-cased, so a casing/spacing mismatch between a
     deposit and a later withdrawal can never break account attribution."""
     return (m or "").strip().upper()
+
+
+async def _payout_leg_map(db: AsyncSession) -> dict[str, list[tuple[str, float]]]:
+    """{withdrawal reference -> [(paying account, that account's share)]} for every PAID payout leg.
+
+    A withdrawal SPLIT across several accounts cannot be expressed by the single
+    `payout_account_ref` column — each account paid only part of it — so the legs are the record.
+    Loaded once and passed to `_debit_shares`, which is the one rule /balances, /statement and
+    /users all attribute through, so the three can never disagree about who paid what.
+    """
+    rows = (await db.execute(
+        select(WithdrawalPayoutLeg.transaction_ref, WithdrawalPayoutLeg.account_ref,
+               WithdrawalPayoutLeg.amount)
+        .where(WithdrawalPayoutLeg.status == "PAID")
+        .order_by(WithdrawalPayoutLeg.leg_no)
+    )).all()
+    out: dict[str, list[tuple[str, float]]] = {}
+    for txn_ref, acct, amount in rows:
+        if txn_ref and acct:
+            out.setdefault(txn_ref, []).append((acct, round(float(amount or 0.0), 2)))
+    return out
+
+
+def _debit_shares(
+    t: Transaction,
+    funding: dict[str, tuple[list[datetime], list[str]]],
+    legs: dict[str, list[tuple[str, float]]] | None = None,
+) -> list[tuple[str, float]]:
+    """Which account(s) a completed withdrawal/settlement came out of, and for how much.
+
+    The payout LEGS win when there are any: they say exactly what each account paid, which is the
+    only correct answer for a split. Everything else falls back to `_debit_account` for a single
+    account carrying the whole amount — the historical rule, unchanged, so no existing row's
+    attribution moves.
+    """
+    if legs:
+        shares = legs.get(t.ref)
+        if shares:
+            return shares
+    acct = _debit_account(t, funding)
+    return [(acct, round(t.amount or 0.0, 2))] if acct else []
 
 
 def _debit_account(t: Transaction, funding: dict[str, tuple[list[datetime], list[str]]]) -> str | None:
@@ -169,6 +215,19 @@ async def account_balances(
     acct_refs = [a.reference_number for a in accounts]
     used_today = await alloc.credit_used_today(db, acct_refs)
     count_today = await alloc.deposit_counts_today(db, acct_refs)
+    # Today's DEBIT position per account, from the withdrawal allocation engine — the SAME
+    # functions that decide whether a withdrawal may be paid from here, so what Account Management
+    # shows and what the engine enforces cannot disagree. Display only.
+    debit_today = await walloc.debit_used_today(db, acct_refs)
+    payouts_today = await walloc.withdrawal_counts_today(db, acct_refs)
+    reserved_now = await ledger.reserved_by_legs(db, acct_refs)
+
+    # A withdrawal SPLIT across several accounts cannot be attributed by the single
+    # `payout_account_ref` column — each account paid only its own share — so legged payouts are
+    # summed per leg and their parent transactions are excluded from the column-based attribution
+    # below. A single-account payout writes both, so excluding every legged row and adding the legs
+    # back keeps exactly one of the two in the total.
+    payout_legs = await _payout_leg_map(db)
 
     # Linked UPIs grouped by their parent account.
     upis = (await db.execute(select(AdminUpi))).scalars().all()
@@ -224,11 +283,15 @@ async def account_balances(
             # recorded one; otherwise it falls back to the member's most-recent receiving account
             # (the historical rule, so figures for older rows are unchanged). A withdrawal paid
             # MANUAL/offline touched no managed account, so it is attributed to none.
-            acct = _debit_account(t, funding)
-            if t.status == TxStatus.COMPLETED and acct:
-                is_wd = ty.startswith("WITHDRAWAL")
-                (acct_wd if is_wd else acct_st)[acct] += t.amount
-                comm_out[acct] += t.amount * _fee(t.merchant_name, "out" if is_wd else "settle")
+            if t.status != TxStatus.COMPLETED:
+                continue
+            # Each paying account is charged ITS OWN share — the whole amount for an ordinary
+            # single-account payout, its leg for one that was split.
+            is_wd = ty.startswith("WITHDRAWAL")
+            rate = _fee(t.merchant_name, "out" if is_wd else "settle")
+            for acct, share in _debit_shares(t, funding, payout_legs):
+                (acct_wd if is_wd else acct_st)[acct] += share
+                comm_out[acct] += share * rate
 
     out = []
     for a in accounts:
@@ -278,6 +341,19 @@ async def account_balances(
             "creditUsedToday": round(used_today.get(ref, 0.0), 2),
             "remainingCredit": alloc.remaining_credit(a, used_today.get(ref, 0.0)),
             "depositsToday": count_today.get(ref, 0),
+            # Where this account stands against its daily DEBIT limit right now. "Used" counts
+            # every payout leg placed on it today that has not been released — an allocated
+            # withdrawal holds its capacity from the moment it is allocated, not from the moment
+            # the payment is made, which is what stops the limit being oversubscribed.
+            "debitUsedToday": round(debit_today.get(ref, 0.0), 2),
+            "remainingDebit": walloc.remaining_debit(a, debit_today.get(ref, 0.0)),
+            "payoutsToday": payouts_today.get(ref, 0),
+            # Money promised to allocated-but-unpaid withdrawals. Reported ALONGSIDE `available`
+            # and never deducted from it: no money has moved, so the account's real balance is
+            # unchanged. It is what the allocation engine subtracts before promising more.
+            "reservedForPayouts": round(reserved_now.get(ref, 0.0), 2),
+            "payoutModes": sorted(walloc.account_modes(a) or walloc.TRANSACTION_MODES),
+            "payoutModesConfigured": walloc.account_modes(a) is not None,
             "withdrawals": round(wd, 2),
             "settlements": round(st, 2),
             "adjustments": round(adj_by_acct.get(ref, 0.0), 2),   # net of manual credits/debits
@@ -319,18 +395,32 @@ async def account_statement(
     # Same source as account_balances, so a member's withdrawals/settlements attribute back to
     # the account they were funding at the time and the statement reconciles to the account list.
     funding = await _member_account_timeline(db, txns)
+    payout_legs = await _payout_leg_map(db)
+
+    def _share(t: Transaction) -> float | None:
+        """What THIS account paid towards this debit, or None if it paid nothing towards it."""
+        for acct, amount in _debit_shares(t, funding, payout_legs):
+            if acct == ref:
+                return amount
+        return None
 
     def _belongs(t: Transaction) -> bool:
         if _kind(t) == "deposit":
             return t.admin_ref == ref
-        # withdrawals / settlements: the recorded payout account, else the member's receiving
-        # account — the one shared rule (_debit_account), so the statement reconciles to /balances.
-        return _debit_account(t, funding) == ref
+        # withdrawals / settlements: the recorded payout leg(s), else the recorded payout account,
+        # else the member's receiving account — the one shared rule (_debit_shares), so the
+        # statement reconciles to /balances line for line.
+        return _share(t) is not None
 
     rows = [{
         "ref": t.ref, "memberId": t.member_id, "member": _member_label(t),
         "business": t.merchant_name,
-        "type": _kind(t), "depositType": t.deposit_type, "amount": round(t.amount, 2),
+        # A split withdrawal appears on each paying account's statement at THAT account's share,
+        # never at the full withdrawal amount — otherwise three statements would each claim the
+        # whole payment and none of them would reconcile.
+        "type": _kind(t), "depositType": t.deposit_type,
+        "amount": round(t.amount, 2) if _kind(t) == "deposit" else (_share(t) or round(t.amount, 2)),
+        "requestedAmount": round(t.amount, 2),
         "status": t.status.value, "date": str(t.tx_date), "time": t.tx_time,
         "createdAt": (t.created_at.isoformat() + "Z") if t.created_at else None,
         "completed": _completed(t),
@@ -374,8 +464,9 @@ async def account_users(
     txns = (await db.execute(select(Transaction))).scalars().all()
 
     # Same source as /balances, so a member's withdrawals attribute back to the account they
-    # were funding at the time.
+    # were funding at the time — and a split payout to the accounts that actually paid it.
     funding = await _member_account_timeline(db, txns)
+    payout_legs = await _payout_leg_map(db)
 
     def _pid(t: Transaction) -> str:
         return (t.member_id or "").strip().upper()
@@ -393,7 +484,7 @@ async def account_users(
     for t in txns:
         ty = t.type.value
         if ty.startswith("WITHDRAWAL") and t.status == TxStatus.COMPLETED and t.member_id:
-            if _debit_account(t, funding) == ref:
+            if any(acct == ref for acct, _share in _debit_shares(t, funding, payout_legs)):
                 wd_by_member[_pid(t)] += t.amount
                 _mark_active(_pid(t), t.created_at)
 
@@ -502,8 +593,16 @@ def _a(a: AccountMaster, merchant_name: str | None = None) -> dict:
         # Highest Credit is the account's HARD DAILY CREDIT LIMIT — the ceiling the deposit
         # allocation engine enforces on every request (services/deposit_allocation).
         "highestCredit": round(a.highest_credit or 0.0, 2),
+        # Highest Debit is the account's HARD DAILY DEBIT LIMIT — the ceiling the withdrawal
+        # allocation engine enforces on every payout (services/withdrawal_allocation). It is no
+        # longer a high-water mark that a larger completed debit raises.
         "highestDebit": round(a.highest_debit or 0.0, 2),
         "isOwnAccount": bool(a.is_own_account),
+        # Which transaction modes this account can pay out by. An account with none configured
+        # supports every mode, and is reported as all four rather than as an empty list, so the
+        # screen shows what the engine will actually do.
+        "payoutModes": sorted(walloc.account_modes(a) or walloc.TRANSACTION_MODES),
+        "payoutModesConfigured": walloc.account_modes(a) is not None,
         "merchantName": merchant_name or a.account_name,
     }
 
@@ -630,12 +729,20 @@ async def create_account(
         last_maintenance_date=date.today(),
         last_maintenance_time=now.strftime("%H:%M:%S"),
         highest_credit=max(0.0, data.highest_credit or 0.0),
-        # The entered Highest Debit seeds both the auto-raising high-water mark and the FIXED
-        # low-debit alert threshold. Thereafter highest_debit rises on larger debits; the
-        # threshold stays put so "debit below the set amount" alerts remain stable.
+        # The entered Highest Debit is the account's HARD DAILY DEBIT LIMIT, and it seeds the
+        # FIXED low-debit alert threshold as well. Neither drifts: the limit is changed only by an
+        # Admin editing it, and the threshold stays put so "debit below the set amount" alerts
+        # remain stable.
         highest_debit=max(0.0, data.highest_debit or 0.0),
         debit_alert_threshold=max(0.0, data.highest_debit or 0.0),
         is_own_account=bool(data.is_own_account),
+        # Which transaction modes this account can pay out by. NULL — the default when the form
+        # sends nothing — means every mode, so an account created without the field is fully
+        # capable rather than unusable.
+        payout_modes=(",".join(sorted({
+            str(m).strip().upper() for m in (data.payout_modes or [])
+            if str(m).strip().upper() in walloc.TRANSACTION_MODES
+        })) or None),
     )
     db.add(acc)
     await db.flush()
@@ -790,6 +897,81 @@ async def update_account_limits(
     )
     # The account list and balances are served from a short-lived cache; drop both so the updated
     # limits show in the Account Management table on the very next load rather than up to 5s later.
+    await cache_delete("c:accounts:balances")
+    await cache_delete("c:accounts:list")
+    await db.refresh(acc)
+    return _a(acc, name_map.get(acc.reference_number))
+
+
+@router.patch("/{reference_number}/payout-modes")
+async def update_account_payout_modes(
+    reference_number: str,
+    data: AccountPayoutModesUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Admin edit of ONE account's payout capability — the transaction modes it can send money by.
+
+    The withdrawal allocation engine excludes an account that cannot process a request's mode, so
+    this is a financial control and is audited like one: an append-only SystemLog line and an
+    AuditLog row carrying the before/after lists.
+
+    An EMPTY list stores NULL, which the engine reads as "every mode". That is the unconfigured
+    default and it is deliberate — an empty capability read as "supports nothing" would disqualify
+    every account on a platform where no Admin has configured one, and send every withdrawal to
+    the exception queue.
+
+    Nothing from the browser is trusted: each mode is validated against the platform's own four
+    (services/withdrawal_allocation.TRANSACTION_MODES), and the account is resolved from the URL
+    alone, so a request can only ever touch the account it addresses.
+    """
+    modes = []
+    for raw in (data.payoutModes or []):
+        value = str(raw or "").strip().upper()
+        if not value:
+            continue
+        if value not in walloc.TRANSACTION_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{value} is not a supported transaction mode "
+                       f"({', '.join(walloc.TRANSACTION_MODES)}).")
+        if value not in modes:
+            modes.append(value)
+
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == reference_number)
+    )).scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    name_map = await _merchant_name_map(db)
+    previous = acc.payout_modes or ""
+    stored = ",".join(sorted(modes)) or None
+    if (previous or None) == stored:
+        return _a(acc, name_map.get(acc.reference_number))    # nothing changed — nothing to audit
+
+    acc.payout_modes = stored
+    await db.flush()
+
+    def _label(value):
+        return value.replace(",", ", ") if value else "All modes"
+
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    ip = request.client.host if request and request.client else None
+    note = (data.reason or "").strip() or "Payout modes updated by Admin"
+    await log_event(
+        db, "ACCOUNT_PAYOUT_MODES_UPDATED",
+        f"{acc.reference_number} ({acc.account_name}) payout modes updated by {actor.name} — "
+        f"{_label(previous)} → {_label(stored)}",
+        actor=actor,
+    )
+    await record_audit(
+        db, "ACCOUNT_PAYOUT_MODES_UPDATED", actor=actor,
+        entity_type="account", entity_id=acc.reference_number,
+        old=_label(previous), new=_label(stored),
+        reason=f"{acc.account_name} · {note} · {ts}", ip=ip,
+    )
     await cache_delete("c:accounts:balances")
     await cache_delete("c:accounts:list")
     await db.refresh(acc)
