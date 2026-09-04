@@ -133,6 +133,14 @@ export interface PayoutLeg {
   allocatedAt: string | null;
   allocatedAtIst: string | null;
   paidAt: string | null;
+  // ADMIN-ONLY, and present ONLY on the admin allocation endpoint (capacity=true server-side).
+  // These are the account's daily debit position at the moment it was chosen; they never travel
+  // on a merchant payload, so treat them as optional everywhere.
+  highestDebit?: number;
+  debitUsedToday?: number;
+  remainingCapacity?: number;   // what the account has left AFTER this leg
+  remainingBefore?: number;     // what it had before this leg was allocated
+  availableBalance?: number;
 }
 
 // One automatic PAYOUT allocation decision (GET /api/transactions/{id}/payout-allocation —
@@ -167,6 +175,14 @@ export interface PayoutAllocation {
   allocatedTotal: number | null;
   requestedAmount: number;
   transactionMode: string | null;
+  accountCount?: number;
+  // Distinct banks in allocation order. More than one means the engine could not cover the
+  // amount inside a single bank and combined across them.
+  banks?: string[];
+  crossBank?: boolean;
+  // Failure only: what every eligible account could cover between them, and the gap.
+  totalUsableCapacity?: number | null;
+  shortfall?: number | null;
 }
 
 // One automatic-allocation decision (GET /api/transactions/{id}/allocation — ADMIN ONLY).

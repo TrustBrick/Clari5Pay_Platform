@@ -704,7 +704,28 @@ def rank(candidates: Iterable[Candidate]) -> list[Candidate]:
     return sorted(candidates, key=lambda c: (c.remaining, c.payouts_today, c.ref))
 
 
-def _failure(candidates: list[Candidate], amount: float, mode: str) -> tuple[str, str]:
+def _shortfall_text(amount: float, combined: Optional[float], contributors: int) -> str:
+    """Why a withdrawal could not be covered even by combining accounts.
+
+    Stated as a shortfall against the COMBINED usable capacity, because that is the number that
+    has to change. A message naming the largest single account is actively misleading in an engine
+    that splits across banks: it invites an Admin to raise one limit when the amount exceeds the
+    total of all of them.
+    """
+    money = f"₹{amount:,.2f}"
+    if combined is None:
+        return (f"No sufficient payout capacity available for {money}, even combining accounts "
+                f"across banks.")
+    short = _money(_money(amount) - _money(combined))
+    where = (f"across {contributors} eligible account{'s' if contributors != 1 else ''}"
+             if contributors else "across the eligible accounts")
+    return (f"{money} cannot be paid: automatic allocation combined every eligible account, "
+            f"across all banks, and they can cover ₹{combined:,.2f} in total {where} — short by "
+            f"₹{short:,.2f}. Fund an account, raise a daily Highest Debit, or add an account.")
+
+
+def _failure(candidates: list[Candidate], amount: float, mode: str,
+             combined: Optional[float] = None, contributors: int = 0) -> tuple[str, str]:
     """(code, human sentence) for why nothing could be allocated.
 
     Distinguishes the cases an Admin resolves differently: an account that is switched off is
@@ -737,9 +758,13 @@ def _failure(candidates: list[Candidate], amount: float, mode: str) -> tuple[str
     if capacity_blocked and not balance_blocked:
         biggest_ceiling = max(_money(c.account.highest_debit) for c in capacity_blocked)
         if _money(amount) > biggest_ceiling:
-            return FAIL_CAPACITY, (
-                f"{money} is larger than every account's Highest Debit (the largest is "
-                f"₹{biggest_ceiling:,.2f}). Raise a limit or add an account.")
+            # Being larger than every SINGLE ceiling is not by itself a reason to fail — the
+            # engine splits across accounts, and across banks, precisely for this case. By the
+            # time this runs the split has already been tried and could not cover the amount, so
+            # the honest explanation is the COMBINED capacity, not the biggest single limit.
+            # Reporting the ceiling here read as "no account is big enough", which sent Admins to
+            # raise one limit when the shortfall was across all of them.
+            return FAIL_CAPACITY, _shortfall_text(amount, combined, contributors)
         left = max(c.remaining for c in capacity_blocked)
         return FAIL_LIMIT_REACHED, (
             f"Every eligible account has reached its daily debit limit for {money} — the most any "
@@ -752,10 +777,7 @@ def _failure(candidates: list[Candidate], amount: float, mode: str) -> tuple[str
             f"₹{richest:,.2f}. Fund an account or split the withdrawal.")
 
     if capacity_blocked or balance_blocked:
-        total = _money(sum(c.usable for c in candidates if c.eligible))
-        return FAIL_CAPACITY, (
-            f"No sufficient payout capacity available for {money} — the eligible accounts can "
-            f"cover ₹{total:,.2f} in total, limited by their balances and daily debit limits.")
+        return FAIL_CAPACITY, _shortfall_text(amount, combined, contributors)
 
     return FAIL_MIXED, (
         f"No account can pay {money} — all {n} are unavailable, out of daily debit capacity or "
@@ -1179,9 +1201,12 @@ async def _plan(
         return legs, RULES.SPLIT
 
     # ── Rule 18 — nothing, and nothing combined either. An exception, never a part-payment. ──
-    result.failure_code, result.reason = _failure(full, amount, mode)
+    combined = _money(sum(c.usable for c in contributors))
+    result.failure_code, result.reason = _failure(
+        full, amount, mode, combined=combined, contributors=len(contributors))
     result.detail["failure"] = result.failure_code
-    result.detail["totalUsableCapacity"] = _money(sum(c.usable for c in contributors))
+    result.detail["totalUsableCapacity"] = combined
+    result.detail["shortfall"] = _money(_money(amount) - combined)
     wanted = note.bank_name or note.account_ref
     if wanted:
         result.reason = f"{result.reason} (requested: {wanted} — unavailable)"
@@ -1382,15 +1407,34 @@ async def record_allocation(
 
 # ═══ 11. Serialisation ══════════════════════════════════════════════════════════════════════════
 
-def serialize_leg(leg: WithdrawalPayoutLeg, *, mask: bool = True) -> dict:
+def serialize_leg(leg: WithdrawalPayoutLeg, *, mask: bool = True,
+                  capacity: bool = False) -> dict:
     """API shape for one payout leg (camelCase, matching the rest of the API).
 
     The account number is masked by default. The merchant is entitled to know WHICH account is
     paying them — that is the point of showing the allocation — but not to its full number, which
     the platform has never exposed on a payout. An Admin view passes ``mask=False``.
+
+    ``capacity`` adds the account's daily debit position AS IT WAS at allocation — the limit, what
+    had been used, what remained, the balance. It is OFF by default and must stay that way: those
+    are internal operating figures, and a merchant learning how much headroom the platform's
+    accounts have is a disclosure, not a feature. Only the admin-only allocation endpoint turns it
+    on, which is the same boundary ``_t()`` already keeps.
     """
     number = leg.account_number or ""
-    return {
+    extra = {}
+    if capacity:
+        extra = {
+            "highestDebit": _money(leg.highest_debit or 0.0),
+            "debitUsedToday": _money(leg.debit_used_today or 0.0),
+            # What the account had left AFTER this leg was allocated — the figure an Admin needs
+            # to see how much room the payout consumed.
+            "remainingCapacity": _money(_money(leg.remaining_capacity or 0.0)
+                                        - _money(leg.amount or 0.0)),
+            "remainingBefore": _money(leg.remaining_capacity or 0.0),
+            "availableBalance": _money(leg.available_balance or 0.0),
+        }
+    return {**extra,
         "legNo": leg.leg_no,
         "accountRef": leg.account_ref,
         "accountName": leg.account_name,

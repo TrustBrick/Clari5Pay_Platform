@@ -3374,12 +3374,35 @@ async def get_payout_allocation(
         .order_by(WithdrawalAllocation.id.desc()).limit(1)
     )).scalar_one_or_none()
     legs = await walloc.live_legs(db, tx.ref)
+    # Banks in allocation order, de-duplicated. More than one means the engine could not cover the
+    # amount inside a single bank and combined across them — the Admin should see that stated,
+    # not have to infer it by reading the rows.
+    banks: list[str] = []
+    for leg in legs:
+        name = (leg.bank_name or "").strip()
+        if name and name not in banks:
+            banks.append(name)
+    detail = {}
+    if row is not None and row.detail:
+        try:
+            detail = json.loads(row.detail) or {}
+        except (ValueError, TypeError):
+            detail = {}
     return {
         "decision": walloc.serialize(row) if row is not None else None,
-        "legs": [walloc.serialize_leg(l, mask=False) for l in legs],
+        # capacity=True is admin-only. This endpoint is already gated by get_current_admin, and
+        # the figures never travel on the merchant payload.
+        "legs": [walloc.serialize_leg(l, mask=False, capacity=True) for l in legs],
         "allocatedTotal": round(sum(l.amount for l in legs), 2) if legs else None,
         "requestedAmount": round(tx.amount or 0.0, 2),
         "transactionMode": _withdrawal_mode(tx),
+        "accountCount": len(legs),
+        "banks": banks,
+        "crossBank": len(banks) > 1,
+        # Present only on a failure: what every eligible account could cover between them, and by
+        # how much that fell short. This is the pair that explains a refusal honestly.
+        "totalUsableCapacity": detail.get("totalUsableCapacity"),
+        "shortfall": detail.get("shortfall"),
     }
 
 

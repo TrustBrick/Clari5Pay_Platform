@@ -568,9 +568,19 @@ const RequestModal: React.FC<{
               {payoutInfo?.decision?.reason
                 || `The automatic allocation could not find an account to pay ${fmt(tx.amount)}.`}
             </p>
-            {payoutInfo?.decision?.detail ? (
+            {/* The engine SPLITS across accounts and across banks, so "N of M accounts were
+                eligible" — a count of accounts that could each carry the whole amount ALONE — read
+                as the reason for the refusal when it never was one. What matters is the combined
+                capacity and the gap. */}
+            {payoutInfo?.totalUsableCapacity != null ? (
               <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>
-                {payoutInfo.decision.candidatesEligible ?? 0} of {payoutInfo.decision.candidatesConsidered ?? 0} accounts were eligible
+                Combined capacity across every eligible account and bank: <b>{fmt(payoutInfo.totalUsableCapacity)}</b>
+                {payoutInfo.shortfall != null && payoutInfo.shortfall > 0
+                  ? <> \u2014 short by <b>{fmt(payoutInfo.shortfall)}</b>.</> : '.'}
+              </p>
+            ) : payoutInfo?.decision?.detail ? (
+              <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>
+                {payoutInfo.decision.candidatesConsidered ?? 0} account(s) were evaluated
                 {payoutInfo.decision.transactionMode ? ` for ${payoutInfo.decision.transactionMode}` : ''}.
               </p>
             ) : null}
@@ -716,6 +726,75 @@ const RequestModal: React.FC<{
 
           {payMethod === 'BANK' ? (
             <>
+              {/* AUTO PAYOUT ALLOCATION — the Admin's read-only view of what the ENGINE decided.
+                  Every figure comes from the backend allocation record; nothing here computes or
+                  re-ranks anything. It carries the daily-capacity columns the merchant panel
+                  deliberately withholds, which is why it is rendered only on this screen. */}
+              {allocatedLegs.length > 0 && (
+                <div style={{ border:`1px solid ${T.border}`,borderRadius:10,marginBottom:14,overflow:'hidden' }}>
+                  <div style={{ padding:'10px 14px',background:T.canvas,borderBottom:`1px solid ${T.border}`,
+                                display:'flex',flexWrap:'wrap',gap:8,alignItems:'center' }}>
+                    <span style={{ fontSize:11,fontWeight:800,letterSpacing:'0.08em',textTransform:'uppercase',color:T.textMuted }}>
+                      Auto Payout Allocation
+                    </span>
+                    <span style={{ fontSize:11,fontWeight:700,color:T.blue,background:T.infoBg,padding:'2px 7px',borderRadius:6 }}>
+                      {payoutInfo?.accountCount ?? allocatedLegs.length} account{(payoutInfo?.accountCount ?? allocatedLegs.length) === 1 ? '' : 's'}
+                    </span>
+                    {payoutInfo?.crossBank && (
+                      <span style={{ fontSize:11,fontWeight:700,color:T.warning,background:T.warningBg,padding:'2px 7px',borderRadius:6 }}>
+                        Cross-bank split · {(payoutInfo.banks || []).length} banks
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ overflowX:'auto' }}>
+                    <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12.5 }}>
+                      <thead>
+                        <tr>
+                          {['Bank','Account','Allocated Amount','Remaining Debit Capacity','Status'].map((h,i)=>(
+                            <th key={h} style={{ textAlign:(i===2||i===3)?'right':'left',padding:'8px 14px',fontSize:10.5,
+                                  fontWeight:800,letterSpacing:'0.06em',textTransform:'uppercase',color:T.textMuted,
+                                  borderBottom:`1px solid ${T.border}`,whiteSpace:'nowrap' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {allocatedLegs.map(leg=>(
+                          <tr key={leg.legNo}>
+                            <td style={{ padding:'9px 14px',borderBottom:`1px solid ${T.border}`,fontWeight:700,color:T.textMain }}>
+                              {leg.bankName || '\u2014'}
+                            </td>
+                            <td style={{ padding:'9px 14px',borderBottom:`1px solid ${T.border}`,color:T.textMuted }}>
+                              {leg.accountRef}{leg.accountNumber ? ` \u00b7 ${leg.accountNumber}` : ''}
+                            </td>
+                            <td style={{ padding:'9px 14px',borderBottom:`1px solid ${T.border}`,textAlign:'right',
+                                         fontWeight:800,color:T.textMain,whiteSpace:'nowrap' }}>{fmt(leg.amount)}</td>
+                            <td style={{ padding:'9px 14px',borderBottom:`1px solid ${T.border}`,textAlign:'right',
+                                         color:T.textMuted,whiteSpace:'nowrap' }}>
+                              {leg.remainingCapacity == null ? '\u2014' : fmt(leg.remainingCapacity)}
+                            </td>
+                            <td style={{ padding:'9px 14px',borderBottom:`1px solid ${T.border}`,color:T.textMuted }}>
+                              {leg.status}
+                            </td>
+                          </tr>
+                        ))}
+                        <tr>
+                          <td colSpan={2} style={{ padding:'9px 14px',fontWeight:800,color:T.textMain }}>TOTAL</td>
+                          <td style={{ padding:'9px 14px',textAlign:'right',fontWeight:800,color:T.textMain,whiteSpace:'nowrap' }}>
+                            {fmt(payoutInfo?.allocatedTotal ?? allocatedLegs.reduce((n,l)=>n+l.amount,0))}
+                          </td>
+                          <td colSpan={2} />
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  {payoutInfo?.decision?.reason && (
+                    <p style={{ margin:0,padding:'9px 14px',borderTop:`1px solid ${T.border}`,fontSize:11,color:T.textMuted }}>
+                      {payoutInfo.decision.reason}
+                    </p>
+                  )}
+                </div>
+              )}
+
               <PayoutAllocationPanel
                 legs={allocatedLegs} amount={tx.amount}
                 mode={payoutInfo?.transactionMode || tx.payoutMode}
