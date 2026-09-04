@@ -3529,6 +3529,55 @@ async def _payout_already_posted(db: AsyncSession, tx: Transaction):
     return await ledger.find_payout_entry(db, tx.ref)
 
 
+async def _settle_withdrawal_payout(
+    db: AsyncSession, tx: Transaction, data: "CompleteRequest | None", actor: User,
+    request: Request | None,
+) -> None:
+    """Account for a withdrawal that is about to be COMPLETED. One rule, every completion path.
+
+    Completing a withdrawal records that money left the platform, so doing it with no debit and no
+    ledger entry loses the record of a real payment. There are two ways a withdrawal reaches
+    COMPLETED — the Admin's Mark as Done, and a Manager's approval of an agent-assigned request
+    that skips the Admin — and both must apply the same rule, which is why it lives here rather
+    than being written out twice and drifting apart.
+
+      • Cash and crypto never touch a managed account, so there is nothing to account for and
+        nothing to refuse. They are not "legacy" and must not be recorded as such.
+      • Allocated legs are debited, whether or not a payment method was supplied — otherwise the
+        legs hold their capacity for ever and no debit exists for money that has gone.
+      • An explicit payment method wins: BANK re-runs the engine (a supplied account is validated,
+        never trusted), MANUAL takes the offline path and still requires its payment reference.
+      • A withdrawal the ENGINE HAS SEEN but that has no legs is refused. This is the one that
+        matters: a request which failed allocation has no legs, and completing it silently
+        produced a COMPLETED withdrawal with no payout accounting at all.
+      • Only a withdrawal the engine never saw — one raised before automatic allocation existed —
+        may complete unaccounted, because nothing was ever captured for it and refusing now would
+        strand rows nobody can fix. That is the ONLY such route, so it is audited explicitly.
+    """
+    if not _needs_payout_account(tx):
+        return                          # cash / crypto: no managed account is involved at all
+    method = (data.paymentMethod or "").strip() if data else ""
+    if method or await walloc.live_legs(db, tx.ref):
+        await _record_withdrawal_payout(db, tx, data or CompleteRequest(), actor, request)
+        return
+    if await walloc.engine_has_seen(db, tx.ref):
+        raise HTTPException(
+            status_code=400,
+            detail=("This withdrawal has no payout account allocated, so it cannot be completed "
+                    "as paid. Retry the automatic allocation, choose a payout account, or record "
+                    "it as a Manual / Offline payment with its payment reference."))
+    await record_audit(
+        db, "WITHDRAWAL_COMPLETED_WITHOUT_PAYOUT", actor=actor,
+        entity_type=tx.type.value, entity_id=tx.ref, new="NO_PAYOUT_ACCOUNTING",
+        reason=("Legacy withdrawal: raised before automatic payout allocation, so no payout "
+                "account or ledger entry was ever recorded for it."),
+        ip=_client_ip(request))
+    await log_event(
+        db, "WITHDRAWAL_COMPLETED_WITHOUT_PAYOUT",
+        f"{tx.ref} completed with no payout accounting (legacy withdrawal, predates automatic "
+        f"allocation)", actor=actor)
+
+
 async def _resolve_payout_legs(
     db: AsyncSession, tx: Transaction, data: CompleteRequest, actor: User, request: Request | None,
 ):
@@ -3840,32 +3889,7 @@ async def mark_done(
     #     withdrawal with no payout accounting at all. The Admin must now either place it or
     #     record how it was actually paid.
     if is_withdrawal:
-        _method = (data.paymentMethod or "").strip() if data else ""
-        _live_legs = await walloc.live_legs(db, tx.ref)
-        if _method or _live_legs:
-            await _record_withdrawal_payout(db, tx, data or CompleteRequest(), actor, request)
-        elif await walloc.engine_has_seen(db, tx.ref):
-            raise HTTPException(
-                status_code=400,
-                detail=("This withdrawal has no payout account allocated, so it cannot be "
-                        "completed as paid. Retry the automatic allocation, choose a payout "
-                        "account, or record it as a Manual / Offline payment with its payment "
-                        "reference."))
-        else:
-            # The legacy allowance, and the ONLY way a withdrawal reaches COMPLETED with no payout
-            # accounting. Audited explicitly so it is identifiable rather than indistinguishable
-            # from a properly accounted payout — a completion with no ledger entry should always
-            # be traceable to this decision.
-            await record_audit(
-                db, "WITHDRAWAL_COMPLETED_WITHOUT_PAYOUT", actor=actor,
-                entity_type=tx.type.value, entity_id=tx.ref, new="NO_PAYOUT_ACCOUNTING",
-                reason=("Legacy withdrawal: raised before automatic payout allocation, so no "
-                        "payout account or ledger entry was ever recorded for it."),
-                ip=_client_ip(request))
-            await log_event(
-                db, "WITHDRAWAL_COMPLETED_WITHOUT_PAYOUT",
-                f"{tx.ref} completed with no payout accounting (legacy withdrawal, predates "
-                f"automatic allocation)", actor=actor)
+        await _settle_withdrawal_payout(db, tx, data, actor, request)
 
     tx.status = TxStatus.DEPOSITED if is_deposit else TxStatus.COMPLETED
     tx.processed_by = actor.name
@@ -4084,8 +4108,13 @@ async def _reviewer_action(
             # exactly the "completed withdrawal with no debit" the atomicity rule forbids. It runs
             # before the status flips, so the balance snapshot it records is the true "before"
             # figure, and inside this same transaction, so the two cannot diverge.
-            if not is_dep and await walloc.live_legs(db, tx.ref):
-                await _record_withdrawal_payout(db, tx, CompleteRequest(), reviewer, request)
+            #
+            # It applies the SAME rule as the Admin's Mark as Done, through the same helper.
+            # Posting only when legs happened to exist left the gap open on this path: an
+            # agent-assigned withdrawal whose allocation had FAILED has no legs, and completed
+            # here with no ledger entry at all.
+            if not is_dep:
+                await _settle_withdrawal_payout(db, tx, None, reviewer, request)
             tx.status = TxStatus.DEPOSITED if is_dep else TxStatus.COMPLETED
             tx.processed_by = reviewer.name
             tx.approved_by = tx.approved_by or reviewer.name

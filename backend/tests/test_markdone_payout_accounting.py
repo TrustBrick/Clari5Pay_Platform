@@ -25,12 +25,13 @@ from app.api.routes import transactions as txr
 from app.models.models import (
     AccountLedgerEntry, AuditLog, Transaction, TxStatus, WithdrawalPayoutLeg,
 )
-from app.schemas.schemas import CompleteRequest
+from app.schemas.schemas import CompleteRequest, RemarkRequest
 from app.services import account_ledger as ledger
 from app.services import withdrawal_allocation as wa
 
 from tests.test_withdrawal_allocation import (  # noqa: F401  (fixtures)
-    db, safe_refs_and_no_cache, _account, _admin, _allocate, _ben, _fund, _withdrawal,
+    db, safe_refs_and_no_cache, _account, _admin, _allocate, _ben, _fund, _manager,
+    _merchant, _withdrawal,
 )
 
 
@@ -325,3 +326,72 @@ async def test_a_withdrawal_whose_legs_were_released_still_counts_as_seen(db):
 
     assert await wa.live_legs(db, "1") == []
     assert await wa.engine_has_seen(db, "1") is True
+
+
+# ── The other completion path, and the modes that legitimately have no payout account ──────────
+
+@pytest.mark.asyncio
+async def test_a_cash_withdrawal_is_not_recorded_as_a_legacy_no_payout_completion(db):
+    """Cash leaves no managed account, so there is nothing to account for — and nothing to excuse.
+
+    Labelling it as a legacy unaccounted completion would be false, and would pollute the one
+    audit signal that is supposed to identify withdrawals which really did complete with no
+    payout accounting.
+    """
+    admin = await _admin(db)
+    tx = await _withdrawal(db, "1", 45000, status=TxStatus.ACCOUNT_SUBMITTED, mode="CASH")
+
+    await txr.mark_done(_tid(tx), request=None, data=CompleteRequest(), db=db, actor=admin)
+
+    refreshed = await db.get(Transaction, tx.id)
+    assert refreshed.status == TxStatus.COMPLETED
+    assert await _payout_entries(db, "1") == []
+    audits = (await db.execute(
+        select(AuditLog).where(AuditLog.action_type == "WITHDRAWAL_COMPLETED_WITHOUT_PAYOUT")
+    )).scalars().all()
+    assert audits == [], "a cash withdrawal is not a legacy unaccounted completion"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_finalised_withdrawal_debits_its_allocated_legs(db):
+    """A Manager's approval of an agent-assigned withdrawal completes it without the Admin, so it
+    is the only place that payout debit can be posted."""
+    await _account(db, "A", debit=100000)
+    await _fund(db, "F", "A", 500000)
+    await _merchant(db)
+    manager = await _manager(db)
+    tx = await _withdrawal(db, "1", 45000, status=TxStatus.MANAGER_REVIEW)
+    tx.assigned_agent_id = 5
+    result = await _allocate(db, 45000, mode="IMPS")
+    await wa.record_allocation(db, result, transaction=tx, triggered_by="test")
+    await wa.write_legs(db, result, transaction=tx, allocated_by="test")
+
+    await txr.manager_approve(_tid(tx), RemarkRequest(remark="ok"), None, db, manager)
+
+    refreshed = await db.get(Transaction, tx.id)
+    assert refreshed.status == TxStatus.COMPLETED
+    entries = await _payout_entries(db, "1")
+    assert len(entries) == 1 and entries[0].account_ref == "A"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_finalised_withdrawal_with_no_allocation_cannot_complete(db):
+    """The gap on the OTHER completion path: this used to post a debit only when legs happened to
+    exist, so an agent-assigned withdrawal whose allocation FAILED completed with no ledger entry.
+    """
+    await _account(db, "A", debit=10000)          # far too small to carry it
+    await _merchant(db)
+    manager = await _manager(db)
+    tx = await _unplaced_withdrawal(db, "1", 500000)
+    tx.status = TxStatus.MANAGER_REVIEW
+    tx.assigned_agent_id = 5
+    await db.flush()
+
+    with pytest.raises(HTTPException) as err:
+        await txr.manager_approve(_tid(tx), RemarkRequest(remark="ok"), None, db, manager)
+    assert err.value.status_code == 400
+    assert "no payout account allocated" in err.value.detail
+
+    refreshed = await db.get(Transaction, tx.id)
+    assert refreshed.status != TxStatus.COMPLETED, "it must not have completed unaccounted"
+    assert await _payout_entries(db, "1") == []
