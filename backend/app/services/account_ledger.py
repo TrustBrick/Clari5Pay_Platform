@@ -342,19 +342,27 @@ async def account_balances(db: AsyncSession, refs: Sequence[str]) -> dict[str, f
     legacy: dict[str, float] = {}
     if members_by_ref:
         all_members = [m for members in members_by_ref.values() for m in members]
+        # ONE expression object, reused in the select list, the filter and the GROUP BY.
+        #
+        # Writing `func.upper(func.trim(func.coalesce(...)))` out three times builds three
+        # separate expressions, and the empty-string default in each becomes its OWN bind
+        # parameter ($5, $6, ...). Postgres compares GROUP BY against the select list
+        # syntactically, sees `coalesce(member_id, $5)` and `coalesce(member_id, $6)`, and rejects
+        # the query with "column transactions.member_id must appear in the GROUP BY clause".
+        # SQLite accepts it, so the whole test suite passes and the failure only appears on a real
+        # database — which is exactly what happened. Binding it once keeps the three renderings
+        # identical.
+        member_key = func.upper(func.trim(func.coalesce(Transaction.member_id, "")))
         rows = (await db.execute(
-            select(
-                func.upper(func.trim(func.coalesce(Transaction.member_id, ""))),
-                func.coalesce(func.sum(Transaction.amount), 0.0),
-            )
+            select(member_key, func.coalesce(func.sum(Transaction.amount), 0.0))
             .where(
                 Transaction.type.in_(_WITHDRAWAL_TYPES + _SETTLEMENT_TYPES),
                 Transaction.status == TxStatus.COMPLETED,
                 Transaction.payout_account_ref.is_(None),
                 Transaction.payout_payment_method.is_distinct_from("MANUAL"),
-                func.upper(func.trim(func.coalesce(Transaction.member_id, ""))).in_(all_members),
+                member_key.in_(all_members),
             )
-            .group_by(func.upper(func.trim(func.coalesce(Transaction.member_id, ""))))
+            .group_by(member_key)
         )).all()
         by_member = {m: float(total or 0.0) for m, total in rows}
         for ref, members in members_by_ref.items():

@@ -28,6 +28,7 @@ from fastapi import HTTPException
 from app.api.routes import accounts as acct_routes
 from app.models.models import AccountMaster, AccountType, TxStatus
 from app.schemas.schemas import AccountCreate, AccountLimitsUpdate
+from app.services import account_ledger as ledger
 from app.services import withdrawal_allocation as wa
 
 from tests.test_withdrawal_allocation import (  # noqa: F401  (fixtures)
@@ -320,3 +321,61 @@ async def test_readiness_orders_the_worst_problems_first(db):
     assert ready["counts"][wa.READY_MISSING] == 1
     assert ready["counts"][wa.READY_SUSPICIOUS] == 1
     assert ready["counts"][wa.READY_OK] == 1
+
+
+# ── The balance query must be valid on PostgreSQL, not just on SQLite ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_account_balances_groups_by_the_same_expression_it_selects(db):
+    """`account_balances` must produce SQL PostgreSQL accepts.
+
+    Its legacy-debit term groups by a COMPUTED expression. Spelling that expression out separately
+    in the select list, the filter and the GROUP BY builds three different expressions whose
+    empty-string default becomes three different bind parameters; Postgres compares GROUP BY
+    against the select list syntactically, sees `coalesce(member_id, $5)` next to
+    `coalesce(member_id, $6)`, and refuses the query. SQLite does not care, so every test here
+    passes while the function fails on the only database that matters.
+
+    This asserts the rendered PostgreSQL, which is where the difference is visible.
+    """
+    import re
+    from sqlalchemy import func, select
+    from sqlalchemy.dialects import postgresql
+    from app.models.models import Transaction
+
+    member_key = func.upper(func.trim(func.coalesce(Transaction.member_id, "")))
+    stmt = (select(member_key, func.coalesce(func.sum(Transaction.amount), 0.0))
+            .where(member_key.in_(["MM01"]))
+            .group_by(member_key))
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+
+    selected = re.search(r"SELECT (.*?) \nFROM", sql, re.S).group(1)
+    selected_expr = selected.split(", coalesce(sum")[0].split(" AS ")[0].strip()
+    grouped_expr = sql.split("GROUP BY ")[1].strip()
+    assert selected_expr == grouped_expr, (
+        f"GROUP BY must render identically to the selected expression.\n"
+        f"  select:   {selected_expr}\n  group by: {grouped_expr}")
+
+    # And the real function runs end to end against a populated database.
+    await _account(db, "A", debit=100000)
+    await _fund(db, "F", "A", 500000)
+    balances = await ledger.account_balances(db, ["A"])
+    assert balances["A"] == 500000
+
+
+@pytest.mark.asyncio
+async def test_account_balances_survives_a_legacy_debit_with_no_payout_account(db):
+    """The legacy-debit branch only runs when a member maps to an account — the path that failed
+    on demo. It must return the balance with that debit subtracted."""
+    from app.models.models import AccountTransaction
+
+    await _account(db, "A", debit=100000)
+    await _fund(db, "F", "A", 500000, member="MM01")
+    db.add(AccountTransaction(reference_number="A", member_id="MM01",
+                              transaction_date=wa.ist_today(), transaction_time="10:00:00"))
+    tx = await _withdrawal(db, "W1", 20000, member="MM01", status=TxStatus.COMPLETED)
+    tx.payout_account_ref = None          # legacy: names no paying account
+    await db.flush()
+
+    balances = await ledger.account_balances(db, ["A"])
+    assert balances["A"] == 480000, "the legacy debit must be attributed to the member's account"
