@@ -338,9 +338,10 @@ class AccountCreate(BaseModel):
     status: str = "ACTIVE"
     merchant_id: Optional[int] = None
     upiId: Optional[str] = None   # optional UPI to link to this account on creation
-    # Configurable initial Highest Credit / Highest Debit (₹, default 0). The Highest Debit value
-    # seeds both the auto-raising highest_debit and the fixed low-debit alert threshold, then each
-    # is auto-tracked thereafter.
+    # The account's daily Highest Credit / Highest Debit limits (₹). Neither is auto-raised: both
+    # are HARD daily ceilings the allocation engines pay within, changed only by an Admin. The
+    # Highest Debit value also seeds the FIXED low-debit alert threshold. It is REQUIRED for an
+    # ACTIVE account — 0 means "unconfigured", and an unconfigured account is never chosen to pay.
     highest_credit: Optional[float] = 0.0
     highest_debit: Optional[float] = 0.0
     # Which transaction modes this account can pay out by (UPI / IMPS / NEFT / RTGS). Empty or

@@ -597,6 +597,16 @@ def _a(a: AccountMaster, merchant_name: str | None = None) -> dict:
         # allocation engine enforces on every payout (services/withdrawal_allocation). It is no
         # longer a high-water mark that a larger completed debit raises.
         "highestDebit": round(a.highest_debit or 0.0, 2),
+        # The largest single debit ever seen leaving this account — what Highest Debit USED to
+        # mean. Shown so an Admin choosing a daily limit can see what the account has handled;
+        # nothing reads it to authorise a payout.
+        "observedMaxDebit": round(getattr(a, "observed_max_debit", 0.0) or 0.0, 2),
+        # Whether a person ever chose this daily limit, and the audit of that choice. A limit with
+        # no stamp was inherited from the era when Highest Debit auto-raised itself.
+        "highestDebitState": walloc.classify_debit_limit(a),
+        "highestDebitConfiguredAt": (a.highest_debit_configured_at.isoformat() + "Z")
+                                    if a.highest_debit_configured_at else None,
+        "highestDebitConfiguredBy": a.highest_debit_configured_by,
         "isOwnAccount": bool(a.is_own_account),
         # Which transaction modes this account can pay out by. An account with none configured
         # supports every mode, and is reported as all four rather than as an empty list, so the
@@ -680,6 +690,30 @@ async def adjustment_reasons(_: User = Depends(get_current_admin)):
     return {"reasons": list(ledger.ADJUSTMENT_REASONS)}
 
 
+@router.get("/debit-limit-readiness")
+async def debit_limit_readiness(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """Which payout accounts still need a daily Highest Debit decision — and whether the platform
+    can currently pay a withdrawal at all.
+
+    Highest Debit is a HARD DAILY LIMIT and the withdrawal allocation engine will not choose an
+    account that has none. That makes an unconfigured account invisible to the engine, and an
+    environment of unconfigured accounts one where every withdrawal quietly falls back to the
+    Admin exception queue — the manual step the automation exists to remove.
+
+    Nothing here guesses a limit. A daily ceiling is a business policy, and inferring one from
+    past transactions produces a figure nobody chose; the migration deliberately stopped doing
+    exactly that. What this does instead is make the gap visible before it costs anyone a
+    withdrawal: it names every account that needs a decision, says why, and answers the go-live
+    question directly with ``canAllocate``.
+
+    Read-only and admin-only. Safe to call at any time; it writes nothing.
+    """
+    return await walloc.debit_limit_readiness(db)
+
+
 @router.get("/{reference_number}")
 async def get_account(
     reference_number: str,
@@ -695,11 +729,31 @@ async def get_account(
     return _a(a, name_map.get(a.reference_number))
 
 
+def _created_debit_limit(data: AccountCreate) -> float:
+    """The daily Highest Debit an account is being created with.
+
+    An ACTIVE payout account MUST be given one. Zero is not "unlimited" — it is "unconfigured",
+    and the allocation engine never chooses an unconfigured account, so an ACTIVE account created
+    without a limit is one the platform silently cannot pay from. Requiring the number at the
+    point of creation is what stops that from being discovered later, one stuck withdrawal at a
+    time. An INACTIVE account may be created without one: it cannot pay anything yet, and the
+    readiness report will ask for the limit before it is switched on.
+    """
+    limit = max(0.0, round(float(data.highest_debit or 0.0), 2))
+    if limit <= 0 and str(data.status or "").upper() == "ACTIVE":
+        raise HTTPException(
+            status_code=400,
+            detail=("Highest Debit is required for an active payout account: it is the daily "
+                    "limit the withdrawal allocation engine pays within, and an account without "
+                    "one is never selected automatically."))
+    return limit
+
+
 @router.post("")
 async def create_account(
     data: AccountCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_admin),
+    actor: User = Depends(get_current_admin),
 ):
     ref = data.reference_number
     if not ref:
@@ -715,6 +769,9 @@ async def create_account(
         raise HTTPException(status_code=400, detail="Reference number already exists")
 
     now = datetime.now()
+    # Validated once, up front: it raises for an ACTIVE account with no daily limit, so the row is
+    # never built at all in that case.
+    debit_limit = _created_debit_limit(data)
     acc = AccountMaster(
         reference_number=ref,
         account_name=data.account_name,
@@ -733,8 +790,14 @@ async def create_account(
         # FIXED low-debit alert threshold as well. Neither drifts: the limit is changed only by an
         # Admin editing it, and the threshold stays put so "debit below the set amount" alerts
         # remain stable.
-        highest_debit=max(0.0, data.highest_debit or 0.0),
-        debit_alert_threshold=max(0.0, data.highest_debit or 0.0),
+        highest_debit=debit_limit,
+        debit_alert_threshold=debit_limit,
+        observed_max_debit=0.0,
+        # A limit entered at creation IS an explicit decision, so it is stamped as one. An account
+        # created without one (only possible while INACTIVE) is left unstamped and shows up in the
+        # readiness report until an Admin sets it.
+        highest_debit_configured_at=(datetime.utcnow() if debit_limit > 0 else None),
+        highest_debit_configured_by=(actor.name if debit_limit > 0 else None),
         is_own_account=bool(data.is_own_account),
         # Which transaction modes this account can pay out by. NULL — the default when the form
         # sends nothing — means every mode, so an account created without the field is fully
@@ -874,6 +937,11 @@ async def update_account_limits(
 
     acc.highest_credit = credit
     acc.highest_debit = debit
+    # This is the ONE place a daily debit limit is chosen, so it is the one place the choice is
+    # stamped. The stamp is what separates a limit a person decided from one inherited by an
+    # account that predates the daily-limit rule; the readiness report reads exactly this.
+    acc.highest_debit_configured_at = datetime.utcnow()
+    acc.highest_debit_configured_by = actor.name
     await db.flush()
 
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"

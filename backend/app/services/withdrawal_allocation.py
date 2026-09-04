@@ -917,10 +917,14 @@ def _split(candidates: list[Candidate], amount: float,
 async def _lock_accounts(db: AsyncSession, refs: Sequence[str]) -> dict[str, AccountMaster]:
     """Row-lock these accounts, ALWAYS in ascending reference order.
 
-    The consistent order is the whole safety argument: two allocations wanting overlapping sets
-    always contend on the lowest shared reference first, so neither can end up holding what the
-    other needs next. Locks are held until the caller's transaction commits, so the legs written
-    under them are visible to the next request's usage query before it can act.
+    The consistent order is the whole safety argument, and it only holds if every caller acquires
+    the WHOLE set it may need in one pass: two allocations then contend on the lowest shared
+    reference first and one waits, rather than each holding a row the other is reaching for.
+    :func:`allocate_withdrawal_accounts` calls this exactly once, before planning, for that
+    reason — do not add a second, narrower acquisition alongside it.
+
+    Locks are held until the caller's transaction commits, so the legs written under them are
+    visible to the next request's usage query before it can act.
     """
     out: dict[str, AccountMaster] = {}
     for ref in sorted(set(refs)):
@@ -1040,14 +1044,28 @@ async def allocate_withdrawal_accounts(
         result.detail["failure"] = result.failure_code
         return result
 
-    for attempt in range(_MAX_CLAIM_ATTEMPTS):
-        # On the retry, lock EVERY configured account first, in reference order. Locking the whole
-        # set in a fixed order cannot deadlock, and once held the figures cannot move again inside
-        # this transaction — so the plan built from them is final.
-        if attempt:
-            locked_all = await _lock_accounts(db, [a.reference_number for a in accounts])
-            accounts = [locked_all.get(a.reference_number, a) for a in accounts]
+    # ── Locking: ONE acquisition, in ONE deterministic order, before anything is planned ──
+    #
+    # Every candidate account is locked up front, ascending by reference. Two concurrent
+    # allocations therefore request the same rows in the same sequence and one simply waits for
+    # the other — a lock-order inversion is not possible, so this cannot deadlock.
+    #
+    # It is deliberately a single phase. Locking the chosen accounts first and widening to the
+    # rest only on a retry looks cheaper, but it acquires locks in an order that depends on which
+    # accounts the plan happened to pick: one request holding C and reaching for A while another
+    # holds A and reaches for C is a deadlock, which Postgres resolves by killing one of them.
+    # Paying the full cost once, in a fixed order, removes that class of failure outright.
+    #
+    # The cost is that an allocation holds the account rows for the rest of its transaction, so
+    # concurrent withdrawals serialise through this section. That is the correct trade here: the
+    # section is a few indexed reads, the account count is small, and withdrawal creation is not a
+    # hot path — whereas the failure it prevents is a 500 on a request that was about to move
+    # money. `force_account_ref` narrows the set to one account, so an operator-directed payout
+    # locks exactly that row.
+    locked_all = await _lock_accounts(db, [a.reference_number for a in accounts])
+    accounts = [locked_all.get(a.reference_number, a) for a in accounts]
 
+    for attempt in range(_MAX_CLAIM_ATTEMPTS):
         plan = await _plan(
             db, accounts, amount, mode=mode, beneficiary=beneficiary, note=parsed,
             same_account_ref=same_ref, on=on, result=result,
@@ -1056,11 +1074,9 @@ async def allocate_withdrawal_accounts(
             return result           # _plan filled in the failure code and reason
 
         legs, rule = plan
-        if attempt == 0:
-            locked = await _lock_accounts(db, [l.ref for l in legs])
-            for leg in legs:
-                if leg.ref in locked:
-                    leg.candidate.account = locked[leg.ref]
+        # Re-verified under the locks already held. With every row locked the figures cannot move
+        # underneath the plan, so this now confirms rather than races — and it is kept because it
+        # is the check that decides, and a plan that fails it must never be paid.
         if await _verify_under_lock(db, legs, mode=mode, on=on):
             return _finish(result, legs, rule, amount)
         result.detail.setdefault("reclaimed", []).append(
@@ -1398,4 +1414,112 @@ def serialize(row: WithdrawalAllocation) -> dict:
         "triggeredBy": row.triggered_by,
         "createdAt": (row.created_at.isoformat() + "Z") if row.created_at else None,
         "createdAtIst": row.created_at_ist,
+    }
+
+
+# ═══ 11. Daily debit limit readiness ════════════════════════════════════════════════════════════
+#
+# `highest_debit` is the one value that decides whether the engine can place a withdrawal at all.
+# An account at 0 is skipped (:func:`_evaluate`), so an environment whose accounts are all at 0
+# allocates nothing and EVERY withdrawal falls to the Admin exception queue — the manual step this
+# feature exists to remove, reappearing silently.
+#
+# Silently is the part this section addresses. It cannot be fixed by guessing a limit: the daily
+# ceiling is a business policy and inferring one from past transactions produces a number nobody
+# chose (see the migration note). What it can do is make the gap impossible to miss — name every
+# account that needs a decision, say why, and let the platform report before a single withdrawal
+# is raised whether it is able to pay one.
+
+# Why an account cannot be relied on to pay.
+READY_OK = "CONFIGURED"            # an Admin explicitly set this account's daily limit
+READY_MISSING = "NOT_CONFIGURED"   # no limit at all — the engine will never choose this account
+READY_UNCONFIRMED = "UNCONFIRMED"  # a limit is present but no Admin ever confirmed it
+READY_SUSPICIOUS = "SUSPICIOUS"    # the limit looks inherited from the old high-water mark
+
+# Ordered worst-first, so a report reads top-down in the order an Admin should act.
+_READY_ORDER = (READY_MISSING, READY_SUSPICIOUS, READY_UNCONFIRMED, READY_OK)
+
+_READY_TEXT = {
+    READY_MISSING: ("No daily Highest Debit is configured, so this account is never chosen "
+                    "automatically and can only be paid from when an Admin names it explicitly."),
+    READY_SUSPICIOUS: ("The daily limit equals the largest single debit this account has ever "
+                       "made, which is what the value meant before it became a daily limit. It is "
+                       "almost certainly an inherited figure rather than a chosen daily policy."),
+    READY_UNCONFIRMED: ("A daily limit is set but no Admin has confirmed it since Highest Debit "
+                        "became a hard daily ceiling."),
+    READY_OK: "An Admin has explicitly set this account's daily Highest Debit.",
+}
+
+
+def classify_debit_limit(account: AccountMaster) -> str:
+    """How much trust this account's daily Highest Debit deserves.
+
+    The distinction that matters is not "is there a number" but "did a person choose it". A value
+    inherited from the auto-raising era is a record of one past payout, not a policy, and it is
+    reported as such rather than being quietly relied upon.
+    """
+    limit = _money(account.highest_debit)
+    if limit <= 0:
+        return READY_MISSING
+    if account.highest_debit_configured_at is not None:
+        return READY_OK
+    observed = _money(getattr(account, "observed_max_debit", 0.0) or 0.0)
+    # Equal to the largest debit ever seen — the signature of the old high-water mark. Or BELOW it,
+    # which is worse: a daily ceiling under a single payout the account has already made means it
+    # would now refuse a withdrawal it has demonstrably handled.
+    if observed > 0 and limit <= observed:
+        return READY_SUSPICIOUS
+    return READY_UNCONFIRMED
+
+
+async def debit_limit_readiness(db: AsyncSession) -> dict:
+    """Audit every payout account's daily Highest Debit and report what still needs a decision.
+
+    Read-only: it changes nothing, guesses nothing and is safe to call at any time. ``canAllocate``
+    is the question an operator actually needs answered before deploying — is there at least one
+    ACTIVE account this engine is able to choose?
+    """
+    accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id))).scalars().all()
+    rows = []
+    for a in accounts:
+        state = classify_debit_limit(a)
+        active = (a.status or "").upper() == "ACTIVE"
+        rows.append({
+            "accountRef": a.reference_number,
+            "accountName": a.account_name,
+            "bankName": a.bank_name,
+            "status": a.status,
+            "active": active,
+            "highestDebit": _money(a.highest_debit),
+            "observedMaxDebit": _money(getattr(a, "observed_max_debit", 0.0) or 0.0),
+            "configuredAt": (a.highest_debit_configured_at.isoformat() + "Z")
+                            if a.highest_debit_configured_at else None,
+            "configuredBy": a.highest_debit_configured_by,
+            "state": state,
+            "message": _READY_TEXT[state],
+            # Only an ACTIVE account can pay, so only an ACTIVE one needs a limit before go-live.
+            "needsConfiguration": active and state != READY_OK,
+        })
+
+    rows.sort(key=lambda r: (not r["needsConfiguration"], _READY_ORDER.index(r["state"]),
+                             r["accountRef"]))
+    active_rows = [r for r in rows if r["active"]]
+    allocatable = [r for r in active_rows if r["highestDebit"] > 0]
+    needing = [r for r in rows if r["needsConfiguration"]]
+    counts = {state: sum(1 for r in rows if r["state"] == state) for state in _READY_ORDER}
+
+    return {
+        "accounts": rows,
+        "total": len(rows),
+        "activeTotal": len(active_rows),
+        # The go-live question: can the engine place a withdrawal on ANY account right now?
+        "canAllocate": bool(allocatable),
+        "allocatableAccounts": len(allocatable),
+        "needsConfiguration": len(needing),
+        "needsConfigurationRefs": [r["accountRef"] for r in needing],
+        "counts": counts,
+        "summary": (
+            f"{len(allocatable)} of {len(active_rows)} active accounts can be allocated a "
+            f"withdrawal; {len(needing)} still need a daily Highest Debit decision."
+            if active_rows else "No active payout accounts are configured."),
     }

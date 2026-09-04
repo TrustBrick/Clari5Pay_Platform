@@ -298,18 +298,30 @@ class AccountMaster(Base):
     created_time: Mapped[str] = mapped_column(String(16), nullable=False)
     last_maintenance_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     last_maintenance_time: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
-    # Account high-water marks / thresholds (auto-updated by completed transactions):
-    #  • highest_credit — largest single Deposit credited to this account (configurable at
-    #    creation, default 0; auto-updated when a deposit is approved).
-    #  • highest_debit  — largest single Debit (withdrawal/settlement) processed from this account.
-    #    Configurable starting value at creation (default 0); auto-raised whenever a larger debit
-    #    completes (never decreased). Replaces the former "lowest_credit".
-    #  • debit_alert_threshold — the "Highest Debit" value the admin sets at creation, kept FIXED
-    #    (unlike highest_debit, which drifts upward). When >0, a completed debit BELOW it raises a
-    #    low-debit alert. Seeded from the same field as highest_debit's starting value.
+    # Account daily limits / thresholds:
+    #  • highest_credit — the account's HARD DAILY CREDIT limit, enforced by the deposit
+    #    allocation engine. Admin-configured; never auto-raised.
+    #  • highest_debit  — the account's HARD DAILY DEBIT limit, enforced by the withdrawal
+    #    allocation engine. Admin-configured; never auto-raised. An account at 0 has no configured
+    #    capacity and is never chosen automatically, so 0 is "unconfigured", NOT "unlimited".
+    #  • debit_alert_threshold — the "Highest Debit" value the admin sets at creation, kept FIXED.
+    #    When >0, a completed debit BELOW it raises a low-debit alert.
     highest_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     highest_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     debit_alert_threshold: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # The largest single debit ever observed leaving this account. This is what `highest_debit`
+    # used to mean before it became a daily ceiling, and it is preserved here so that history is
+    # not lost by the change of meaning. INFORMATIONAL ONLY: nothing reads it to decide whether a
+    # payout may happen. It exists so an Admin choosing a daily limit can see what this account
+    # has actually handled, and so the old high-water figure is never mistaken for a policy.
+    observed_max_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # When (and by whom) an Admin last EXPLICITLY set the daily Highest Debit. NULL means the
+    # current value was never confirmed by a person — it is either the 0 default or a figure
+    # inherited from the era when highest_debit auto-raised itself from transactions. Those
+    # accounts are reported by GET /api/accounts/debit-limit-readiness so a daily limit is a
+    # deliberate decision rather than an accident of history.
+    highest_debit_configured_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    highest_debit_configured_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     # "Own Account" — the Admin's classification of this account, configured in Account
     # Management alongside the rest of the account's details. It is carried through the deposit
     # allocation engine and recorded on every allocation decision, but it is deliberately NOT a

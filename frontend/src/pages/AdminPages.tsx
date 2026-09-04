@@ -2470,6 +2470,23 @@ export const AdminAccountsPage: React.FC = () => {
                   value={limitForm.debit} error={limitErr.debit}
                   onChange={e=>{ setLimitForm(f=>({...f,debit:formatIndianAmountInput(e.target.value)})); setLimitErr(x=>({...x,debit:undefined})); }}
                   onEnter={saveLimits}/>
+                {/* The old high-water figure, preserved when Highest Debit became a daily limit.
+                    Shown here because it is the one piece of evidence an Admin has for what this
+                    account actually handles — but it is NOT a suggested daily limit, and saying so
+                    matters: a day's total is normally several times the largest single payout. */}
+                {(detail.observedMaxDebit ?? 0) > 0 && (
+                  <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>
+                    Largest single debit seen from this account: <b>{fmt(detail.observedMaxDebit ?? 0)}</b>.
+                    A daily limit is usually higher — this is one payout, not a day.
+                  </p>
+                )}
+                {detail.highestDebitState && detail.highestDebitState !== 'CONFIGURED'
+                  && (detail.highestDebit ?? 0) > 0 && (
+                  <p style={{ margin:'0 0 8px',fontSize:11,color:T.warning }}>
+                    This daily limit has never been confirmed by an Admin — it was inherited from
+                    before Highest Debit became a daily ceiling. Please set the intended figure.
+                  </p>
+                )}
                 <p style={{ margin:'0 0 12px',fontSize:11,color:T.textMuted }}>
                   Limits only — the account balance is not affected by this change.
                 </p>
@@ -2601,7 +2618,10 @@ export const AdminAccountsPage: React.FC = () => {
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
             <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>
             <Input label="Highest Credit (₹)" type="text" inputMode="decimal" value={form.highest_credit} onChange={e=>set('highest_credit',formatIndianAmountInput(e.target.value))} hint="Hard DAILY credit limit — leave at 0 and no deposit is ever routed here"/>
-            <Input label="Highest Debit (₹)" type="text" inputMode="decimal" value={form.highest_debit} onChange={e=>set('highest_debit',formatIndianAmountInput(e.target.value))} hint="Hard daily limit on what this account may pay out; also the level below which a debit raises an alert"/>
+            {/* Required for an ACTIVE account, and enforced server-side: 0 means UNCONFIGURED,
+                and the withdrawal engine never allocates an unconfigured account — so an active
+                account created without a limit is one the platform silently cannot pay from. */}
+            <Input label="Highest Debit (₹)" required={form.status === 'ACTIVE'} type="text" inputMode="decimal" value={form.highest_debit} onChange={e=>set('highest_debit',formatIndianAmountInput(e.target.value))} hint="Hard DAILY limit on what this account may pay out. Required while the account is Active — at 0 no withdrawal is ever routed here."/>
           </div>
           {/* Own Account is recorded on the account and carried into every allocation decision.
               It is not a ranking input, so setting it here changes no account's eligibility. */}

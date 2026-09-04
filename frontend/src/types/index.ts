@@ -316,6 +316,18 @@ export interface Account {
   // engine enforces server-side on every payout. It is no longer a high-water mark that a larger
   // completed debit raises.
   highestDebit?: number;
+  // The largest single debit ever seen leaving this account — what highestDebit used to mean
+  // before it became a daily ceiling. Preserved so the change of meaning loses no history, and
+  // shown so an Admin choosing a daily limit can see what the account has handled. It never
+  // authorises a payout and is not a suggested limit: a day's total is normally several times a
+  // single payout.
+  observedMaxDebit?: number;
+  // Whether a person ever chose the current daily limit. CONFIGURED = yes; NOT_CONFIGURED = none
+  // set, so the engine will never choose this account; SUSPICIOUS / UNCONFIRMED = a value
+  // inherited from before Highest Debit became a daily limit and still awaiting a decision.
+  highestDebitState?: 'CONFIGURED' | 'NOT_CONFIGURED' | 'UNCONFIRMED' | 'SUSPICIOUS';
+  highestDebitConfiguredAt?: string | null;
+  highestDebitConfiguredBy?: string | null;
   // The Admin's "Own Account" classification. Recorded and carried into every allocation
   // decision; it is deliberately not a ranking input, so changing it moves no money.
   isOwnAccount?: boolean;

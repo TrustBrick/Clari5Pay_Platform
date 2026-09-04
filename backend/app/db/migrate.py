@@ -69,6 +69,15 @@ _NEW_COLUMNS = [
     # leg_no is backfilled to 1 for existing payout entries below.
     ("account_master", "payout_modes", "VARCHAR(64)"),
     ("account_ledger", "leg_no", "INTEGER"),
+    # Highest Debit became a HARD DAILY LIMIT. These three preserve what the column used to mean
+    # and record whether its current value was ever an Admin's deliberate choice.
+    #  • observed_max_debit — the largest single debit ever seen leaving the account (the old
+    #    high-water mark). Informational; nothing reads it to authorise a payout.
+    #  • highest_debit_configured_at / _by — stamped when an Admin explicitly sets the limit.
+    #    NULL means "never confirmed by a person", which is what the readiness report flags.
+    ("account_master", "observed_max_debit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    ("account_master", "highest_debit_configured_at", "TIMESTAMP"),
+    ("account_master", "highest_debit_configured_by", "VARCHAR(128)"),
     # Reporting: approver / processor / creating-agent tracking.
     ("transactions", "approved_by", "VARCHAR(128)"),
     ("transactions", "processed_by", "VARCHAR(128)"),
@@ -640,12 +649,23 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             ") s "
             "WHERE a.reference_number = s.admin_ref AND a.highest_credit = 0"
         ))
-        # Seed Highest Debit from existing completed withdrawals/settlements, attributed to each
-        # account via the member's most-recent receiving account — the exact attribution used at
-        # runtime by /accounts/balances (debits carry no admin_ref). Only touches accounts still at
-        # the 0 default, so it's idempotent and never overwrites a value tracked since deploy.
+        # Highest Debit is a HARD DAILY LIMIT and it is NEVER inferred from history.
+        #
+        # This block used to seed it with MAX(single debit) for any account still at 0. Under the
+        # old high-water semantics that was the right value; as a DAILY ceiling it is systematically
+        # WRONG — an account that legitimately makes ten ₹50,000 payouts a day would be given a
+        # ₹50,000 daily limit and stop after the first one. A limit nobody chose is not a policy,
+        # and guessing one silently is worse than having none, so nothing is written to
+        # `highest_debit` here any more.
+        #
+        # The figure itself is not lost: it is preserved in `observed_max_debit`, where an Admin
+        # can see what the account has actually handled while choosing a real daily limit. Existing
+        # `highest_debit` values are also left untouched — this migration never edits a limit — and
+        # those never confirmed by an Admin are reported by
+        # GET /api/accounts/debit-limit-readiness. Idempotent: it only ever raises the observed
+        # maximum, so re-running cannot lower it.
         await conn.execute(text(
-            "UPDATE account_master a SET highest_debit = s.hi "
+            "UPDATE account_master a SET observed_max_debit = s.hi "
             "FROM ("
             "  SELECT ma.reference_number AS ref, MAX(t.amount) AS hi "
             "  FROM transactions t "
@@ -658,7 +678,14 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "    AND t.status::text = 'COMPLETED' "
             "  GROUP BY ma.reference_number"
             ") s "
-            "WHERE a.reference_number = s.ref AND a.highest_debit = 0"
+            "WHERE a.reference_number = s.ref AND COALESCE(a.observed_max_debit, 0) < s.hi"
+        ))
+        # Carry the pre-existing high-water value across too. Before this change `highest_debit`
+        # WAS the largest single debit, so on an already-deployed database it is the better record
+        # of what the account has handled. Only ever raises the observed maximum.
+        await conn.execute(text(
+            "UPDATE account_master SET observed_max_debit = highest_debit "
+            "WHERE COALESCE(observed_max_debit, 0) < COALESCE(highest_debit, 0)"
         ))
         # The former Lowest Credit column is superseded by Highest Debit — drop it once (idempotent).
         await conn.execute(text("ALTER TABLE account_master DROP COLUMN IF EXISTS lowest_credit"))

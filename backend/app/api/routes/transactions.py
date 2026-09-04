@@ -659,6 +659,14 @@ async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, r
     )).scalars().all()
     changed = False
 
+    # The largest single debit this account has ever made. This is the figure the old high-water
+    # behaviour kept in `highest_debit`, recorded now in a column of its own: the history stays,
+    # and the LIMIT stays untouched. It is informational — an Admin setting a daily limit can see
+    # what the account has actually handled — and nothing reads it to authorise a payout.
+    if amt > round(acc.observed_max_debit or 0.0, 2):
+        acc.observed_max_debit = amt
+        changed = True
+
     # (A) Daily debit limit exceeded. Measured the way the limit is defined — the day's TOTAL
     # against the ceiling, never this one debit against it — so it agrees exactly with what the
     # allocation engine enforces. Nothing is written to the limit itself.
@@ -3511,9 +3519,12 @@ def _settlement_needs_utr(tx: Transaction) -> bool:
 async def _payout_already_posted(db: AsyncSession, tx: Transaction):
     """The ledger entry a previous completion of this withdrawal already wrote, if any.
 
-    This is the idempotency guard that makes "Mark as Done" safe to click twice: the ledger's
-    UNIQUE (entry_type, transaction_ref) means at most one payout entry can ever exist for a
-    reference, and a repeat call short-circuits on the one already there instead of debiting again.
+    This is the idempotency guard that makes "Mark as Done" safe to click twice. The ledger's
+    UNIQUE (entry_type, transaction_ref, leg_no) allows one entry per PAYOUT LEG — a split
+    withdrawal posts one per paying account — and never two for the same leg. A repeat call
+    short-circuits on any entry already recorded for this withdrawal instead of debiting again;
+    because every leg of a payout is posted inside one transaction, finding one entry means the
+    whole payout already landed.
     """
     return await ledger.find_payout_entry(db, tx.ref)
 
