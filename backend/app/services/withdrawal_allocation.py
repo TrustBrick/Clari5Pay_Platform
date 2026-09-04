@@ -1214,6 +1214,35 @@ def _finish(result: AllocationResult, legs: list[Leg], rule: str, amount: float)
 
 # ═══ 10. Persisting the decision ════════════════════════════════════════════════════════════════
 
+async def engine_has_seen(db: AsyncSession, transaction_ref: str) -> bool:
+    """Whether the allocation engine has ever run for this withdrawal.
+
+    This is the line between a withdrawal RAISED UNDER automatic allocation and one that genuinely
+    predates it, and it has to be exact: it decides whether completing without any payout
+    accounting is a legacy allowance or a bug about to lose the record of real money.
+
+    :func:`record_allocation` writes its journal row on BOTH branches — a placement and a failure
+    to place — before either is acted on. So any withdrawal the engine touched has a row here even
+    when it ended in NO_ELIGIBLE_ACCOUNT with no legs to show for it, which is precisely the case
+    that must not be quietly completed. A withdrawal with no journal row and no leg was never seen
+    by the engine and can only be one raised before the feature existed.
+
+    Legs are checked too, so a row whose journal was written by an older code path is still
+    recognised. Either is proof; neither is required to be present alone.
+    """
+    seen = (await db.execute(
+        select(WithdrawalAllocation.id).where(
+            WithdrawalAllocation.transaction_ref == transaction_ref).limit(1)
+    )).scalar_one_or_none()
+    if seen is not None:
+        return True
+    leg = (await db.execute(
+        select(WithdrawalPayoutLeg.id).where(
+            WithdrawalPayoutLeg.transaction_ref == transaction_ref).limit(1)
+    )).scalar_one_or_none()
+    return leg is not None
+
+
 async def release_legs(
     db: AsyncSession, transaction_ref: str, *, reason: str,
 ) -> int:

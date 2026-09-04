@@ -3820,14 +3820,52 @@ async def mark_done(
     # balance-before snapshot is the true pre-payout figure, and inside the same transaction as the
     # completion — so the two can never diverge. Only reached when the caller supplies a payment
     # method, which keeps every existing completion call behaving exactly as it did.
-    # A withdrawal the engine has allocated MUST be debited when it completes, whether or not the
-    # caller sends a payment method — otherwise its legs would stay allocated for ever and the
-    # ledger would carry no debit for money that has left. An explicit method still wins (it is
-    # how Manual / Offline is chosen), and a withdrawal with no allocation and no method keeps the
-    # exact behaviour it had before this feature.
-    if is_withdrawal and (data and (data.paymentMethod or "").strip()
-                          or await walloc.live_legs(db, tx.ref)):
-        await _record_withdrawal_payout(db, tx, data or CompleteRequest(), actor, request)
+    # ── A withdrawal cannot complete without payout accounting ────────────────────────────────
+    #
+    # Completing one records that money left the platform. Doing that with no debit and no ledger
+    # entry loses the record of a real payment, so it is allowed in exactly one case: a withdrawal
+    # that genuinely predates automatic allocation, where no accounting was ever captured and
+    # refusing now would strand rows nobody can fix.
+    #
+    # The three live paths:
+    #   • Allocated legs → they are debited, whether or not a payment method was sent. Without
+    #     this the legs would hold their capacity for ever and no debit would exist for money
+    #     that has gone.
+    #   • An explicit payment method → the operator's choice wins. BANK re-runs the engine (so a
+    #     supplied account is validated, never trusted) and MANUAL takes the offline path, which
+    #     still requires its payment reference.
+    #   • Neither, on a withdrawal the ENGINE HAS SEEN → refused. This is the one the guard
+    #     exists for: a request that failed allocation (NO_ELIGIBLE_ACCOUNT, no capacity, an
+    #     invalid beneficiary) has no legs, and completing it silently produced a COMPLETED
+    #     withdrawal with no payout accounting at all. The Admin must now either place it or
+    #     record how it was actually paid.
+    if is_withdrawal:
+        _method = (data.paymentMethod or "").strip() if data else ""
+        _live_legs = await walloc.live_legs(db, tx.ref)
+        if _method or _live_legs:
+            await _record_withdrawal_payout(db, tx, data or CompleteRequest(), actor, request)
+        elif await walloc.engine_has_seen(db, tx.ref):
+            raise HTTPException(
+                status_code=400,
+                detail=("This withdrawal has no payout account allocated, so it cannot be "
+                        "completed as paid. Retry the automatic allocation, choose a payout "
+                        "account, or record it as a Manual / Offline payment with its payment "
+                        "reference."))
+        else:
+            # The legacy allowance, and the ONLY way a withdrawal reaches COMPLETED with no payout
+            # accounting. Audited explicitly so it is identifiable rather than indistinguishable
+            # from a properly accounted payout — a completion with no ledger entry should always
+            # be traceable to this decision.
+            await record_audit(
+                db, "WITHDRAWAL_COMPLETED_WITHOUT_PAYOUT", actor=actor,
+                entity_type=tx.type.value, entity_id=tx.ref, new="NO_PAYOUT_ACCOUNTING",
+                reason=("Legacy withdrawal: raised before automatic payout allocation, so no "
+                        "payout account or ledger entry was ever recorded for it."),
+                ip=_client_ip(request))
+            await log_event(
+                db, "WITHDRAWAL_COMPLETED_WITHOUT_PAYOUT",
+                f"{tx.ref} completed with no payout accounting (legacy withdrawal, predates "
+                f"automatic allocation)", actor=actor)
 
     tx.status = TxStatus.DEPOSITED if is_deposit else TxStatus.COMPLETED
     tx.processed_by = actor.name
