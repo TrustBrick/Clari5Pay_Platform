@@ -466,9 +466,15 @@ async def test_a_requested_bank_evaluates_every_account_at_that_bank(db):
 
 
 @pytest.mark.asyncio
-async def test_a_requested_bank_that_cannot_pay_is_reported_not_forced(db):
-    """Negative scenarios B and C — the note is a preference, so an unusable requested bank falls
-    back to normal allocation AND says so, rather than being forced."""
+async def test_a_requested_bank_that_cannot_pay_it_all_still_pays_what_it_can(db):
+    """Negative scenarios B and C — a requested bank that cannot cover the amount is neither
+    forced nor discarded: it pays every rupee it has and another bank completes the rest.
+
+    Bank of Baroda has one unusable account and one holding ₹1,000 of capacity. ₹1,000 is not
+    ₹50,000, so HDFC must be brought in — but bringing HDFC in for the WHOLE amount, as this used
+    to, ignores capacity the merchant explicitly asked to use. The preference is honoured as far
+    as it goes, and the shortfall is recorded with the figure that explains it.
+    """
     await _account(db, "BOB1", bank="Bank of Baroda", status="INACTIVE")
     await _account(db, "BOB2", bank="Bank of Baroda", debit=1000.0)
     await _account(db, "HDFC1", bank="HDFC Bank", debit=1000000.0)
@@ -477,9 +483,13 @@ async def test_a_requested_bank_that_cannot_pay_is_reported_not_forced(db):
 
     result = await _allocate(db, 50000, note="Use Bank of Baroda")
     assert result.allocated is True
-    assert result.legs[0].ref == "HDFC1"
+    assert {l.ref: l.amount for l in result.legs} == {"BOB2": 1000.0, "HDFC1": 49000.0}
+    assert result.legs[0].ref == "BOB2", "the requested bank is drawn on FIRST"
+    assert result.total == 50000.0
     assert result.requested_unavailable is True
     assert result.detail["requestedBankUnavailable"] == "Bank of Baroda"
+    assert result.detail["requestedBankPartial"]["usableCapacity"] == 1000.0
+    assert result.detail["requestedBankPartial"]["shortfall"] == 49000.0
 
 
 @pytest.mark.asyncio
@@ -691,13 +701,16 @@ async def test_a_split_prefers_the_requested_bank_when_it_can_cover_the_amount(d
 
 
 @pytest.mark.asyncio
-async def test_one_eligible_account_beats_splitting_to_honour_a_note(db):
-    """Where Rule 12 and Rule 2 pull against each other, ONE account wins.
+async def test_the_requested_bank_beats_one_account_somewhere_else(db):
+    """Where Rule 12 and Rule 2 pull against each other, the REQUESTED BANK wins.
 
-    "Prefer one account rather than splitting unnecessarily" is unconditional, and a split exists
-    to pay a withdrawal that otherwise could not be paid — not to keep a preference. So a single
-    account that can carry the whole amount is used even when the requested bank could have
-    covered it across two, and the unfulfilled preference is recorded rather than acted on.
+    "Prefer one account rather than splitting unnecessarily" decides between accounts the merchant
+    is indifferent about. It is not a reason to move a payout to a bank they did not ask for: two
+    Bank of Baroda accounts covering ₹1,00,000 between them is an allocation the requested bank
+    CAN make, so HDFC — which could have carried it alone — must not replace it.
+
+    This is the precedence reversed deliberately. The single-account rule is untouched wherever no
+    bank was named; see ``test_a_single_account_is_preferred_when_no_bank_is_requested``.
     """
     await _account(db, "BOB1", bank="Bank of Baroda", debit=60000.0)
     await _account(db, "BOB2", bank="Bank of Baroda", debit=60000.0)
@@ -706,8 +719,28 @@ async def test_one_eligible_account_beats_splitting_to_honour_a_note(db):
         await _fund(db, f"D{ref}", ref, 1000000.0)
 
     result = await _allocate(db, 100000, note="Use Bank of Baroda")
+    assert {l.ref for l in result.legs} == {"BOB1", "BOB2"}
+    assert result.total == 100000.0
+    assert "HDFC1" not in {l.ref for l in result.legs}, "the requested bank was sufficient"
+    assert result.requested_unavailable is False, "the preference was met, not missed"
+
+
+@pytest.mark.asyncio
+async def test_a_single_account_is_preferred_when_no_bank_is_requested(db):
+    """The control for the test above: with no note, ONE account still beats a split.
+
+    Same three accounts, same amount, no preference — and the answer is the single HDFC account.
+    The bank-preference rule reorders nothing that a merchant did not ask it to reorder.
+    """
+    await _account(db, "BOB1", bank="Bank of Baroda", debit=60000.0)
+    await _account(db, "BOB2", bank="Bank of Baroda", debit=60000.0)
+    await _account(db, "HDFC1", bank="HDFC Bank", debit=500000.0)
+    for ref in ("BOB1", "BOB2", "HDFC1"):
+        await _fund(db, f"D{ref}", ref, 1000000.0)
+
+    result = await _allocate(db, 100000)
     assert [l.ref for l in result.legs] == ["HDFC1"]
-    assert result.requested_unavailable is True
+    assert result.requested_unavailable is False
 
 
 @pytest.mark.asyncio

@@ -120,10 +120,10 @@ async def test_a_requested_bank_that_cannot_cover_it_expands_to_other_banks(db):
 async def test_a_split_stays_inside_the_requested_bank_when_that_bank_can_cover_it(db):
     """Two HDFC accounts that together cover the amount beat pulling in another bank.
 
-    Note the precedence this depends on: the bank preference shapes the SPLIT, but a single
-    account that can carry the whole amount still wins first, even at another bank — see
-    ``test_a_single_account_elsewhere_beats_splitting_inside_the_requested_bank``. So ICICI here
-    is deliberately too small to carry it alone.
+    This holds whatever ICICI looks like — whether it is too small to carry the amount alone or
+    large enough to carry it twice over — because a bank the merchant did not name may not replace
+    an allocation the bank they did name can make. See
+    ``test_the_requested_bank_beats_a_single_account_elsewhere`` for the large-ICICI case.
     """
     await _bank(db, "HDFC-01", "HDFC Bank", 150000)
     await _bank(db, "HDFC-02", "HDFC Bank", 150000)
@@ -292,13 +292,14 @@ async def test_same_account_preference_survives_but_never_bypasses_eligibility(d
 
 
 @pytest.mark.asyncio
-async def test_a_single_account_elsewhere_beats_splitting_inside_the_requested_bank(db):
+async def test_the_requested_bank_beats_a_single_account_elsewhere(db):
     """The precedence between two rules that can disagree, pinned deliberately.
 
-    "Use HDFC" with two 150,000 HDFC accounts could cover 250,000 as a split. One ICICI account
-    could cover it alone. The engine takes the single account: preferring ONE account is the
-    stronger rule, and a note is a preference rather than an instruction. Splitting a payout three
-    ways to honour a hint would put money through more accounts than the platform needs.
+    "Use HDFC" with two 150,000 HDFC accounts covers 250,000 as a split. One ICICI account could
+    cover it alone. The engine takes the HDFC pair: the requested bank has priority whenever it
+    can satisfy the withdrawal, and preferring ONE account is the rule that decides between banks
+    the merchant is indifferent about — not a reason to move the money to a bank they did not ask
+    for. The preference is met, so nothing is recorded as unavailable.
     """
     await _bank(db, "HDFC-01", "HDFC Bank", 150000)
     await _bank(db, "HDFC-02", "HDFC Bank", 150000)
@@ -306,6 +307,7 @@ async def test_a_single_account_elsewhere_beats_splitting_inside_the_requested_b
 
     r = await _allocate(db, 250000, mode="IMPS", note="Use HDFC")
 
-    assert r.outcome == wa.OUTCOME_ALLOCATED
-    assert [l.ref for l in r.legs] == ["ICICI-01"]
-    assert r.requested_unavailable is True, "the unmet HDFC preference is still recorded"
+    assert r.outcome == wa.OUTCOME_SPLIT
+    assert {l.ref: l.amount for l in r.legs} == {"HDFC-01": 150000, "HDFC-02": 100000}
+    assert {l.candidate.account.bank_name for l in r.legs} == {"HDFC Bank"}
+    assert r.requested_unavailable is False, "the HDFC preference was met in full"

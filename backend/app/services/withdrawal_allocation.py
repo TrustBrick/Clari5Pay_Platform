@@ -892,14 +892,26 @@ def _preference_pools(
 
 
 def _split(candidates: list[Candidate], amount: float,
-           preferred: Optional[set[str]] = None) -> list[Leg]:
+           preferred: Optional[set[str]] = None, *,
+           required: Optional[set[str]] = None) -> list[Leg]:
     """Rule 17 — cover ``amount`` with the FEWEST eligible accounts, and cover it exactly.
 
     Largest usable capacity first is what minimises the number of accounts: no other choice of the
-    same size can cover more, so if k accounts suffice at all, the k largest suffice. A preference
-    (the merchant's requested bank, or accounts that already know the beneficiary) is honoured by
-    trying a preference-first ordering FIRST and keeping it only when it needs no more accounts
-    than the pure-capacity answer — so a preference can shape the split but never make it wider.
+    same size can cover more, so if k accounts suffice at all, the k largest suffice.
+
+    Two kinds of preference reach this function, and they are NOT the same strength:
+
+    ``preferred`` is a HINT — accounts that already know the beneficiary, or the account the
+    member was last paid from. It is honoured by trying a hint-first ordering and keeping it only
+    when it needs no more accounts than the pure-capacity answer, so a hint can shape the split
+    but never make it wider.
+
+    ``required`` is the merchant's OWN INSTRUCTION — the bank (or account) their note named,
+    in the case where that bank cannot cover the whole amount by itself. Rule 4 of the
+    bank-preference rule says its capacity is spent FIRST and other banks supply only the
+    remainder, so this ordering is the answer rather than a tie-break: it stands even when
+    draining the named bank costs an extra leg. Ignoring it is how "Use HDFC" ended up paid
+    entirely by ICICI and BOB while an eligible HDFC account sat untouched.
 
     The final leg is trimmed to the exact remainder, so the legs sum to the requested amount to
     the paisa. No leg ever exceeds its own account's usable capacity.
@@ -920,6 +932,14 @@ def _split(candidates: list[Candidate], amount: float,
             legs.append(Leg(candidate=cand, amount=take))
             left = _money(left - take)
         return legs if left <= 0 else []
+
+    if required:
+        # The named bank's capacity first, then the rest largest-first so the REMAINDER is still
+        # carried by the fewest other accounts. Ordering cannot change whether the amount is
+        # coverable at all, so an empty result here still means Rule 18 and never a part-payment.
+        return _cover(sorted(
+            candidates,
+            key=lambda c: (0 if c.ref in required else 1, -c.usable, c.payouts_today, c.ref)))
 
     by_capacity = sorted(candidates, key=lambda c: (-c.usable, c.payouts_today, c.ref))
     baseline = _cover(by_capacity)
@@ -1112,6 +1132,26 @@ async def allocate_withdrawal_accounts(
     return result
 
 
+async def _contributors(
+    db: AsyncSession, accounts: Sequence[AccountMaster], amount: float, *, mode: str,
+    beneficiary: Optional[Beneficiary], on: Optional[date], result: AllocationResult,
+    operator_directed: bool,
+) -> list[Candidate]:
+    """Every account that can pay SOME of ``amount`` — the pool a split is built from.
+
+    Split out of :func:`_plan` because it is now needed at two points that must agree exactly: a
+    bank preference is decided against this pool before the single-account rule runs, and the
+    split itself is built from it afterwards. Evaluating twice, or evaluating the second time from
+    a differently-filtered set, would let the two disagree about what the requested bank can pay.
+    """
+    partial = await evaluate_accounts(
+        db, amount, mode=mode, beneficiary=beneficiary, on=on, require_full=False,
+        accounts=accounts, operator_directed=operator_directed)
+    eligible = [c for c in partial if c.eligible]
+    result.detail["splitCandidates"] = [c.snapshot() for c in eligible]
+    return eligible
+
+
 async def _plan(
     db: AsyncSession, accounts: Sequence[AccountMaster], amount: float, *, mode: str,
     beneficiary: Optional[Beneficiary], note: NoteRequest, same_account_ref: Optional[str],
@@ -1122,8 +1162,24 @@ async def _plan(
 
     Order of the rules is the specified one: filter, then prefer ONE account, then — only if no
     single account can carry the whole amount — assemble the smallest legal split.
+
+    A merchant note naming a bank REORDERS that. The requested bank has priority whenever it can
+    satisfy the withdrawal, and the ways it can satisfy it are themselves ranked:
+
+      1. one of its accounts covers the whole amount   -> that account alone
+      2. several of them together cover it             -> that bank alone, fewest accounts
+      3. it cannot cover it even collectively          -> all of its capacity FIRST, then other
+                                                          banks for the remainder only
+      4. it has no eligible capacity at all            -> preference void, ordinary rules run
+
+    So "prefer ONE account" decides between equals, and a named bank is not an equal: another
+    bank's single account must never replace an allocation the requested bank could have made
+    (cases 1-2), and must never crowd out capacity the requested bank does have (case 3). Only
+    case 4 is an unmet preference in the older, all-or-nothing sense. With no note preference in
+    play nothing below changes — the single-account rule is untouched.
     """
-    # ── Rule 12 — can ONE account carry the whole withdrawal? ──
+    # Which accounts could carry the whole withdrawal on their own? Rule 12 decides among these,
+    # further down — this only measures them.
     full = await evaluate_accounts(
         db, amount, mode=mode, beneficiary=beneficiary, on=on, require_full=True, accounts=accounts,
         operator_directed=operator_directed)
@@ -1142,12 +1198,27 @@ async def _plan(
             return [c for c in pool if c.account.bank_name == note.bank_name]
         return []
 
-    pool_full = eligible_full
-    if note.account_ref or note.bank_name:
-        preferred = _requested(eligible_full)
-        if preferred:
-            pool_full = preferred
-        else:
+    has_preference = bool(note.account_ref or note.bank_name)
+    preferred_full = _requested(eligible_full) if has_preference else []
+    pool_full = preferred_full or eligible_full
+
+    # Whether the requested bank can satisfy this withdrawal AT ALL decides everything below, and
+    # answering it needs the split evaluation. So when a preference is in play that no single
+    # preferred account can meet, that evaluation happens HERE rather than only after the
+    # single-account attempt has already handed the whole amount to another bank.
+    contributors: Optional[list[Candidate]] = None
+    preferred_partial: list[Candidate] = []
+    preferred_covers = False
+    if has_preference and not preferred_full:
+        contributors = await _contributors(
+            db, accounts, amount, mode=mode, beneficiary=beneficiary, on=on, result=result,
+            operator_directed=operator_directed)
+        preferred_partial = _requested(contributors)
+        preferred_covers = bool(preferred_partial) and (
+            _money(sum(c.usable for c in preferred_partial)) >= _money(amount))
+        if not preferred_partial:
+            # Case 4 — nothing at the requested bank can pay any part of this. The preference is
+            # void, the miss is recorded, and the ordinary rules run from here unchanged.
             result.requested_unavailable = True
             result.detail["requestedBankUnavailable"] = note.bank_name or note.account_ref
 
@@ -1168,35 +1239,56 @@ async def _plan(
                            or REJECT_LOCKED),
             }
 
-    if pool_full:
+    # ── Rule 12 — can ONE account carry the whole withdrawal? ──
+    # Skipped only in cases 2 and 3: the requested bank has capacity to contribute, so the decision
+    # belongs to the split below, where that capacity is placed ahead of every other bank's. Taking
+    # a single non-preferred account here is exactly what "other banks must not replace a
+    # sufficient preferred-bank allocation" forbids.
+    if pool_full and not (has_preference and preferred_partial):
         for rule, tier in _preference_pools(pool_full, note, same_account_ref=same_account_ref):
             ordered = rank(tier)
             if ordered:
                 return [Leg(candidate=ordered[0], amount=amount)], rule
 
     # ── Rule 16 — no single account can carry it. Can a combination? ──
-    partial = await evaluate_accounts(
-        db, amount, mode=mode, beneficiary=beneficiary, on=on, require_full=False, accounts=accounts,
-        operator_directed=operator_directed)
-    contributors = [c for c in partial if c.eligible]
-    result.detail["splitCandidates"] = [c.snapshot() for c in partial if c.eligible]
+    if contributors is None:
+        contributors = await _contributors(
+            db, accounts, amount, mode=mode, beneficiary=beneficiary, on=on, result=result,
+            operator_directed=operator_directed)
+        if has_preference:
+            preferred_partial = _requested(contributors)
+            preferred_covers = bool(preferred_partial) and (
+                _money(sum(c.usable for c in preferred_partial)) >= _money(amount))
 
     pool_partial = contributors
-    if note.account_ref or note.bank_name:
-        # The note still narrows the split, but only when the requested bank can cover the whole
-        # amount by itself. Forcing a split to stay inside one bank that cannot cover it would
-        # fail a withdrawal the platform CAN pay, so the preference degrades to a hint below.
-        requested = _requested(contributors)
-        if requested and _money(sum(c.usable for c in requested)) >= amount:
-            pool_partial = requested
+    required_refs: Optional[set[str]] = None
+    if preferred_covers:
+        # Case 2 — the requested bank covers the whole amount across its own accounts, so no other
+        # bank is admitted at all. Fewest accounts still applies, but only within that bank.
+        pool_partial = preferred_partial
+    elif preferred_partial:
+        # Case 3 — it cannot cover the amount. Every rupee it CAN pay is placed first and other
+        # banks supply only what is left, so a preference the platform can partly honour is partly
+        # honoured rather than discarded. The merchant asked for a bank and did not get all of it,
+        # which is what ``requested_unavailable`` has always meant on this path.
+        usable_pref = _money(sum(c.usable for c in preferred_partial))
+        required_refs = {c.ref for c in preferred_partial}
+        result.requested_unavailable = True
+        result.detail["requestedBankUnavailable"] = note.bank_name or note.account_ref
+        result.detail["requestedBankPartial"] = {
+            "bank": note.bank_name or note.account_ref,
+            "usableCapacity": usable_pref,
+            "shortfall": _money(_money(amount) - usable_pref),
+        }
 
+    # The soft hints — accounts that already know the beneficiary, and the member's last paying
+    # account. These shape the split only where they cost no extra account (see :func:`_split`).
+    # The requested bank travels separately, as ``required_refs``, because it is not a hint.
     preferred_refs = {c.ref for c in contributors if c.beneficiary_known}
-    if note.account_ref or note.bank_name:
-        preferred_refs |= {c.ref for c in _requested(contributors)}
     if same_account_ref:
         preferred_refs.add(same_account_ref)
 
-    legs = _split(pool_partial, amount, preferred_refs)
+    legs = _split(pool_partial, amount, preferred_refs, required=required_refs)
     if legs:
         return legs, RULES.SPLIT
 
@@ -1225,8 +1317,17 @@ def _finish(result: AllocationResult, legs: list[Leg], rule: str, amount: float)
             f"payout allocation {total} does not equal the requested amount {amount}")
     result.legs = legs
     result.rule = rule
+    # The sentence the Admin's payout screen prints under the allocation table, so it has to
+    # describe what actually happened to the merchant's request. A bank that paid what it could
+    # and was topped up by others is NOT the same event as a bank that could not be used at all,
+    # and reporting both as "unavailable — fallback applied" told an Admin the named bank was
+    # skipped while its reference sat in the first row of the table.
+    partial = result.detail.get("requestedBankPartial")
     extra = ""
-    if result.requested_unavailable and result.note.has_preference:
+    if partial:
+        extra = (f"requested bank {partial['bank']} covered ₹{partial['usableCapacity']:,.2f} of "
+                 f"₹{_money(amount):,.2f} — other banks completed the rest")
+    elif result.requested_unavailable and result.note.has_preference:
         extra = "requested account unavailable — fallback applied"
     elif result.note.bank_name:
         extra = f"requested bank {result.note.bank_name}"
