@@ -199,6 +199,11 @@ async def _remember_member_account_type(
     """
     if not account_type or not ident.is_resolvable:
         return
+    # The save helpers above end with ``db.add`` and no flush, and this session runs with
+    # autoflush=False (db/session.py). Without this flush the row they just created is still
+    # pending, the lookup below cannot see it, and the chosen type is silently dropped — the
+    # merchant answers the question and is asked again on the very next request.
+    await db.flush()
     ids = await macct.business_ids(db, merchant)
     row = await macct.find_account(db, ids, ident)
     if row is not None:

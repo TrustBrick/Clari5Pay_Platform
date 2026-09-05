@@ -67,7 +67,12 @@ async def db():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    # autoflush=False MIRRORS PRODUCTION (db/session.py). Without it the tests run with
+    # autoflush on, pending rows are visible to the next query, and a missing flush in the code
+    # under test passes here while failing for real — which is exactly how a dropped account type
+    # reached Demo.
+    Session = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False, autoflush=False)
 
     counter = {"n": 0}
 
