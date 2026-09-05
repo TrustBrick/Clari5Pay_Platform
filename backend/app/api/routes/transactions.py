@@ -20,6 +20,7 @@ from app.services.membership import lookup_member_name, resolve_member_name, nor
 from app.services import tg_notify as tgn
 from app.services import account_ledger as ledger
 from app.services import deposit_allocation as alloc
+from app.services import member_account as macct
 from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
@@ -137,19 +138,84 @@ async def _save_bank_account(db: AsyncSession, merchant: User, holder, number, i
     ))
 
 
+async def _member_account_view(
+    db: AsyncSession, merchant: User, *, member_id, upi_id=None, account_number=None,
+):
+    """The authoritative Savings/Current + NEW/OLD standing for the account a request names."""
+    ident = macct.identity_from(
+        member_id=member_id, upi_id=upi_id, account_number=account_number)
+    return ident, await macct.describe(db, merchant, ident)
+
+
+def _require_account_type(view, supplied):
+    """The Savings/Current to record, or a 400 when the merchant still owes us the answer.
+
+    Asked exactly once per account. When the account already carries a type that value WINS and
+    whatever the browser sent is discarded — re-using an account can never silently reclassify it,
+    and a stale form cannot undo a correction. Only a genuinely unknown type is demanded, which is
+    the new-account case and the one legacy row that predates the field.
+    """
+    if not view.needs_account_type:
+        return view.account_type            # already known — the saved value is the answer
+    chosen = macct.normalize_account_type(supplied)
+    if chosen is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Select the Account Type (Savings Account or Current Account) for this account.")
+    return chosen
+
+
+async def _stamp_member_account(
+    db: AsyncSession, merchant: User, tx: Transaction, *,
+    member_id, upi_id=None, account_number=None, supplied_type=None, require: bool = True,
+):
+    """Record on the transaction what this member account is, and where it stands.
+
+    Both figures are the SERVER's: the type comes from the saved account when one is known, and
+    NEW/OLD is counted from that account's own received deposits. Nothing the browser sent about
+    the profile is consulted, so a merchant cannot present a funded account as new.
+
+    Returns the view so the caller can persist the type onto the saved row afterwards — which has
+    to happen after the account itself is saved, since a brand-new account has no row yet.
+    """
+    ident, view = await _member_account_view(
+        db, merchant, member_id=member_id, upi_id=upi_id, account_number=account_number)
+    if not ident.is_resolvable:
+        # No account named at all (cash/crypto and other account-less flows). Nothing to classify;
+        # these paths keep exactly the behaviour they have today.
+        return ident, view
+    tx.sender_account_type = _require_account_type(view, supplied_type) if require else view.account_type
+    tx.account_profile = view.profile
+    return ident, view
+
+
+async def _remember_member_account_type(
+    db: AsyncSession, merchant: User, ident, account_type,
+) -> None:
+    """Write the chosen Savings/Current onto the saved account, once it exists.
+
+    Called after the save helpers have run, so a first-time account has a row to carry it. Silent
+    when the type is already recorded — see :func:`member_account.remember_account_type`.
+    """
+    if not account_type or not ident.is_resolvable:
+        return
+    ids = await macct.business_ids(db, merchant)
+    row = await macct.find_account(db, ids, ident)
+    if row is not None:
+        await macct.remember_account_type(db, row, account_type)
+
+
 async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> None:
     """Persist a member's UPI so it auto-fills on their next deposit/withdrawal (deduped).
     The first UPI saved for a member becomes that member's default."""
     if not upi:
         return
-    existing = (await db.execute(
-        select(MerchantBankAccount).where(
-            MerchantBankAccount.merchant_id == merchant.id,
-            MerchantBankAccount.member_id == member_id,
-            MerchantBankAccount.upi_id == upi,
-        )
-    )).scalar_one_or_none()
-    if existing:
+    # Deduped on the CANONICAL identity, not the exact string: "Satish@YBL" and "satish@ybl" are
+    # one account, and saving a second row for the spelling would ask the merchant for the account
+    # type again and split that account's deposit history in two.
+    ids = await macct.business_ids(db, merchant)
+    ident = macct.identity_from(member_id=member_id, upi_id=upi)
+    if await macct.find_account(db, ids, ident) is not None:
         return
     has_upi = (await db.execute(
         select(MerchantBankAccount.id).where(
@@ -824,6 +890,12 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "accountHolder": t.account_holder,
         "accountNumber": t.account_number,
         "ifsc": t.ifsc,
+        # Savings/Current and NEW/OLD for the member account this request used, as they stood when
+        # it was raised. Read from the row, not recomputed: an Admin looking at a six-month-old
+        # deposit must see what was true then, even if the account has since been used again.
+        "accountType": t.sender_account_type,
+        "accountTypeLabel": macct.ACCOUNT_TYPE_LABELS.get(t.sender_account_type or ""),
+        "accountProfile": t.account_profile,
         # Each of these may hold a legacy base64 data URL or a storage:// reference; resolve_value
         # returns the former untouched and exchanges the latter for a short-lived presigned URL.
         # Both are consumed identically by an <img src>, so no frontend change is required.
@@ -1645,20 +1717,28 @@ async def get_transaction_detail(
             if u:
                 e["username"] = u
     payload["remarksHistory"] = remarks
-    # Member profile + segment — derived from existing records (display-only for the details view).
+    # Member segment + the account's NEW/OLD standing (display-only for the details view).
+    #
+    # The profile shown here is the one STORED on the request. It used to be re-derived as "does
+    # this member have any earlier transaction", which answered a different question entirely:
+    # it went OLD on the member's second request of any kind, including a rejected one, and it
+    # could not tell two accounts of the same member apart. NEW/OLD is a fact about ONE ACCOUNT
+    # and its received deposits, decided when the request was raised and kept.
+    #
+    # Rows created before this feature carry no stored value; for those the account is described
+    # from history now, excluding the request itself so a deposit does not report itself as its
+    # own precedent.
     if tx.member_id and creator:
         ids = (await db.execute(
             select(User.id).where(User.role == UserRole.MERCHANT, User.name == creator.name)
         )).scalars().all()
         if ids:
-            prior = (await db.execute(
-                select(Transaction.id).where(
-                    Transaction.merchant_id.in_(ids),
-                    Transaction.member_id == tx.member_id,
-                    Transaction.id < tx.id,
-                ).limit(1)
-            )).first()
-            payload["memberProfileType"] = "OLD" if prior else "NEW"
+            # ONLY the value stored when the request was raised. A row that predates the field
+            # reports None, and the screen says so, because there is no honest way to recover what
+            # its standing WAS: today's history includes deposits received after the fact, so
+            # re-deriving it would confidently show "OLD" for a request that was demonstrably the
+            # account's first. A blank an Admin can see is worth more than a plausible wrong answer.
+            payload["memberProfileType"] = tx.account_profile
             payload["memberSegment"] = tx.segment or (await db.execute(
                 select(Transaction.segment).where(
                     Transaction.merchant_id.in_(ids),
@@ -2923,6 +3003,14 @@ async def create_deposit(
     # deposit still enters the same review queue; this captures who it was addressed to (and routes to them).
     if settings.SEND_TO_APPROVAL_ENABLED:
         tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(db, current_user, data.approverUserId)
+    # The member's SENDING account: Savings/Current (asked once, then remembered) and NEW/OLD
+    # (counted from this account's own received deposits, never taken from the browser). Only the
+    # account-backed deposit types name an account at all; cash and crypto resolve to nothing and
+    # pass straight through unchanged.
+    _ident, _view = await _stamp_member_account(
+        db, current_user, tx,
+        member_id=data.memberId, upi_id=data.senderUpiId, account_number=data.accountNumber,
+        supplied_type=data.accountType, require=needs_account)
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "DEP", current_user.pay_in)
@@ -2931,6 +3019,8 @@ async def create_deposit(
     # Remember the merchant's sender UPI for this member (first one becomes the default).
     if data.senderUpiId:
         await _save_member_upi(db, current_user, data.memberId, data.senderUpiId.strip())
+    # The account row exists by now (new or pre-existing), so the chosen type has somewhere to go.
+    await _remember_member_account_type(db, current_user, _ident, tx.sender_account_type)
     await db.flush()
     # Automatic account allocation. The engine evaluates every managed account against this
     # request — availability, payment-method capability and, above all, the account's REMAINING
@@ -3027,15 +3117,27 @@ async def create_withdrawal(
     if settings.SEND_TO_APPROVAL_ENABLED:
         tx.approver_user_id, tx.approver_name, tx.approver_role = await _resolve_merchant_approver(
             db, current_user, data.approverUserId, kind="WITHDRAWAL")
+    # The SAME member account facts a deposit records, on the same rules: the saved Savings/Current
+    # is reused without asking again, and NEW/OLD is still counted from that account's received
+    # DEPOSITS — a withdrawal never makes an account old, because money leaving says nothing about
+    # the account having funded us. Cash and crypto payouts name no account and are untouched.
+    _wd_mode = (data.payoutMode or "BANK").upper()
+    _wd_upi = (data.payoutDetails or {}).get("upiId") if _wd_mode == "UPI" else None
+    _ident, _view = await _stamp_member_account(
+        db, current_user, tx,
+        member_id=data.memberId, upi_id=_wd_upi, account_number=data.accountNumber,
+        supplied_type=data.accountType,
+        # Only demanded for a bank/UPI payout that actually names an account.
+        require=_wd_mode in ("BANK", "UPI", "IMPS", "NEFT", "RTGS"))
     db.add(tx)
     await db.flush()
     tx.ref = await _next_ref(db, "WIT", current_user.pay_out)
     # Remember this member's payout details so they auto-fill on the next withdrawal.
-    _wd_mode = (data.payoutMode or "BANK").upper()
     if _wd_mode == "BANK" and data.accountNumber:
         await _save_bank_account(db, current_user, data.accountHolder, data.accountNumber, data.ifsc, data.branch, data.bankName, member_id=data.memberId)
     elif _wd_mode == "UPI":
-        await _save_member_upi(db, current_user, data.memberId, (data.payoutDetails or {}).get("upiId"))
+        await _save_member_upi(db, current_user, data.memberId, _wd_upi)
+    await _remember_member_account_type(db, current_user, _ident, tx.sender_account_type)
     await db.flush()
     # ── Automatic payout account allocation ───────────────────────────────────
     # Runs the moment the request exists, so the merchant sees WHICH account will pay them on the

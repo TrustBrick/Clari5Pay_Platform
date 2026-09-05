@@ -20,7 +20,7 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { BANK_NAMES } from '../utils/ifsc';
 import { BankLogo, bankLogoIcon } from '../components/BankLogo';
-import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry, Notification, AllocatedAccount } from '../types';
+import type { Transaction, User, SupportMessage, BalanceSummary, MemberAccountView, MerchantBankAccount, NewsPost, AuditLogEntry, Notification, AllocatedAccount } from '../types';
 
 // The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
 export { ReportsPage } from './ReportsPage';
@@ -675,6 +675,66 @@ const SendToApprovalCard: React.FC<{
   </div>
 );
 
+/** ACCOUNT TYPE — Savings/Current for the member's sending account.
+ *
+ *  Lives with the account details, because that is what it describes. `view` is the server's
+ *  answer from `/merchant-bank-accounts/resolve`; this only renders it:
+ *
+ *    * the server says the type was never recorded (a new account, or a legacy row) → a required
+ *      selector, asked ONCE;
+ *    * the server already knows it → plain read-only text. Never asked again, and a normal
+ *      re-use cannot overwrite it (the backend discards the payload when a type is stored).
+ */
+const AccountTypeField: React.FC<{
+  view: MemberAccountView | null;
+  value: string;
+  onChange: (v: string) => void;
+}> = ({ view, value, onChange }) => {
+  if (!view) return null;
+  if (!view.needsAccountType && view.accountTypeLabel) {
+    return (
+      <div style={{ marginBottom:14 }}>
+        <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Account Type</label>
+        <div style={{ padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,fontWeight:700,color:T.textMain,background:T.canvas }}>
+          {view.accountTypeLabel}
+        </div>
+        <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>Saved for this account</p>
+      </div>
+    );
+  }
+  return (
+    <Sel label="Account Type" value={value} onChange={e=>onChange(e.target.value)} required
+      options={[{value:'',label:'Select account type'},{value:'SAVINGS',label:'Savings Account'},{value:'CURRENT',label:'Current Account'}]}/>
+  );
+};
+
+/** PROFILE — NEW/OLD for the selected account, in the position it has always occupied.
+ *
+ *  Read-only by design. It is not an attribute the merchant sets but a fact about the account:
+ *  NEW until that exact account has funded a received deposit, OLD from the first one onwards.
+ *  Rendered as a disabled-looking field so the grid still reads the way it always has, and it
+ *  stays visible (showing NEW) before an account is entered, rather than appearing and
+ *  disappearing as the form is filled in.
+ */
+const ProfileField: React.FC<{ view: MemberAccountView | null }> = ({ view }) => {
+  const profile = view?.profile || 'NEW';
+  const old = profile === 'OLD';
+  return (
+    <div style={{ marginBottom:14 }}>
+      <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Profile</label>
+      <div style={{ padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,fontWeight:800,
+                    color: old ? T.blue : T.green, background: old ? T.infoBg : T.successBg }}>
+        {profile}
+      </div>
+      <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>
+        {!view ? 'Set automatically from this account’s deposit history'
+          : old ? `Funded ${view.successfulDeposits} received deposit${view.successfulDeposits === 1 ? '' : 's'}`
+                : 'No received deposit from this account yet'}
+      </p>
+    </div>
+  );
+};
+
 // ─── Deposit form (used inside the Request modal) ──────────────────────────────
 export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ user, onSubmitted }) => {
   const { showToast } = useToast();
@@ -684,6 +744,11 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const [riskAnalysis, setRiskAnalysis] = useState(false);
   const [loading, setLoading] = useState(false);
   const [senderUpi, setSenderUpi] = useState('');
+  // What the SERVER says about the sending account currently typed in: is it saved, do we still
+  // owe it an Account Type, and is it NEW or OLD. Asked rather than inferred, so the form shows
+  // exactly what submitting will store.
+  const [acctView, setAcctView] = useState<MemberAccountView | null>(null);
+  const [acctType, setAcctType] = useState('');
   const [memberLocked, setMemberLocked] = useState(false);  // Member Name auto-filled from an existing membership → read-only
   // Cash / Crypto member-supplied details + proof (no bank account on these types).
   const [details, setDetails] = useState<Record<string,string>>({ network:'TRC20' });
@@ -727,8 +792,27 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     return () => { alive = false; clearTimeout(t); };
   }, [form.memberId]);
 
+  // Re-resolve whenever the member or the account being used changes. Debounced, because it fires
+  // while the merchant is still typing a UPI id.
+  useEffect(() => {
+    const mid = form.memberId.trim();
+    const upi = senderUpi.trim();
+    const acctNo = bank.accountNumber?.trim();
+    if (!mid || (!upi && !acctNo)) { setAcctView(null); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      bankAccountAPI.resolve(mid, { upiId: isUpi ? upi : undefined, accountNumber: acctNo })
+        .then(v => { if (alive) { setAcctView(v); if (!v.needsAccountType) setAcctType(''); } })
+        .catch(() => { if (alive) setAcctView(null); });
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.memberId, senderUpi, bank.accountNumber, isUpi]);
+
   const submit = async () => {
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
+    // Asked once per account: only when the server says the type has never been recorded.
+    if(isBankLike && acctView?.needsAccountType && !acctType){ showToast('Select the Account Type for this account','error'); return; }
     if(parseFloat(parseIndianAmount(form.amount)) < 1){ showToast('Amount must be greater than 0.','error'); return; }
     if(isUpi && !senderUpi.includes('@')){ showToast('Enter a valid Sender UPI ID (name@bank)','error'); return; }
     if(isBankLike && (!bank.accountHolder||!bank.accountNumber)){ showToast('Select or add a bank account','error'); return; }
@@ -751,6 +835,8 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
           saveBankAccount: saveNew,
         } : {}),
         ...(isUpi ? { senderUpiId: senderUpi.trim() } : {}),
+        // Only meaningful for a first-time account; the server ignores it once a type is stored.
+        ...(isBankLike && acctType ? { accountType: acctType } : {}),
         ...(isCash ? { depositDetails: { village: details.village, city: details.city, mobile: details.mobile }, proofs } : {}),
         ...(isCrypto ? { depositDetails: { walletAddress: details.walletAddress, network: details.network, txHash: details.txHash }, proofs } : {}),
       });
@@ -776,7 +862,9 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         <Input label="Membership ID" value={form.memberId} onChange={e=>setMemberId(e.target.value)} placeholder="e.g. MBR20240001" required/>
         {isBankLike && <>
           <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
-          <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
+          {/* Unchanged position — still beside Segment, as it has always been. What changed is
+              that it is now the SERVER's answer rather than a dropdown the merchant sets. */}
+          <ProfileField view={acctView}/>
         </>}
       </div>
       {isCash && (
@@ -806,9 +894,13 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
             <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Sending Account Details</p>
             <Input label="UPI ID" value={senderUpi} onChange={e=>setSenderUpi(e.target.value)} placeholder="e.g. satish@ybl" required
               hint="The UPI the payment is sent from — saved to this Membership ID for future withdrawals" />
+            <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
             <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
           </div>
-        : <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>)}
+        : <>
+            <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+            <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
+          </>)}
       <div style={{ marginBottom:14 }}>
         <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Agent (optional)</label>
         <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder='Any message for the agent — e.g. "Use HDFC" or "Same account"'
@@ -889,6 +981,11 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [savedBanks, setSavedBanks] = useState<MerchantBankAccount[]>([]);
   const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
   const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
+  // The same server-resolved view the deposit form uses. A withdrawal reads the member account's
+  // saved type instead of asking again, and shows the SAME NEW/OLD standing — which is still
+  // counted from that account's received DEPOSITS, never from withdrawal history.
+  const [acctView, setAcctView] = useState<MemberAccountView | null>(null);
+  const [acctType, setAcctType] = useState('');
   // "Send To Approval": the chosen Authorized Approver. A Withdrawal is authorised by a Manager
   // only, so this list is the business's Managers — Supervisors are never offered (the backend
   // rejects one too).
@@ -898,6 +995,23 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   // The Payout Modes this operator may currently pick. MODE_FIELDS keeps every mode, so a saved
   // destination or an existing Cash/Crypto withdrawal still resolves its fields normally.
   const payoutModes = txnTypeOptionsFor(PAYOUT_MODES, user.merchantRole);
+
+  // Resolve the destination account: its saved Account Type (asked once, never again) and its
+  // NEW/OLD standing. Debounced like the deposit form's.
+  useEffect(() => {
+    const mid = memberId.trim();
+    const upi = (details.upiId || '').trim();
+    const acctNo = (details.accountNumber || '').trim();
+    if (!mid || (!upi && !acctNo)) { setAcctView(null); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      bankAccountAPI.resolve(mid, { upiId: upi || undefined, accountNumber: acctNo || undefined })
+        .then(v => { if (alive) { setAcctView(v); if (!v.needsAccountType) setAcctType(''); } })
+        .catch(() => { if (alive) setAcctView(null); });
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memberId, details.upiId, details.accountNumber]);
 
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
@@ -972,6 +1086,8 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(hasSaved && !destId){ showToast('Select a withdrawal destination','error'); return; }
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
+    // Asked once per account, exactly as on the deposit form.
+    if(acctView?.needsAccountType && !acctType){ showToast('Select the Account Type for this account','error'); return; }
     // "Send To Approval" (demo only): an Authorized Approver is mandatory, mirroring the Agent module.
     if(SEND_TO_APPROVAL_ENABLED && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
     // Agent assignment is optional on a normal merchant withdrawal — see the deposit path.
@@ -990,6 +1106,7 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         payload.branch = details.branch;
       }
       if (SEND_TO_APPROVAL_ENABLED && approverId) { payload.sentForApproval = true; payload.approverUserId = Number(approverId); }
+      if (acctType) payload.accountType = acctType;
       const created = await transactionAPI.createWithdrawal(payload);
       fireConfetti();
       showToast('Withdrawal request submitted');
@@ -1049,6 +1166,14 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
               </>}
         </div>
       )}
+
+      {/* The member account's Savings/Current and its NEW/OLD standing. A saved account shows the
+          type it already carries and is not asked again; only an account the server has never
+          recorded a type for offers the selector. */}
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+        <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
+        <ProfileField view={acctView}/>
+      </div>
 
       {usingOther && (
         <>

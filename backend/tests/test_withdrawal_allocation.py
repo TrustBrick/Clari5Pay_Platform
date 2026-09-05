@@ -932,6 +932,8 @@ def _payload(amount: float, **kw) -> WithdrawalCreate:
         amount=amount, memberId="MBR1", memberName="Rita", payoutMode="IMPS",
         accountHolder="Rita", accountNumber="1234567890", ifsc="HDFC0009999",
         bankName="HDFC Bank", branch="Mumbai",
+        # As above: these tests are about the PAYING account, not the member's account metadata.
+        accountType="SAVINGS",
     )
     base.update(kw)
     return WithdrawalCreate(**base)

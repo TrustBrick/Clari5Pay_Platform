@@ -69,6 +69,29 @@ export interface MerchantBankAccount {
   bankName?: string | null;
   upiId?: string | null;
   isDefault?: boolean;
+  /** SAVINGS / CURRENT — null when this account predates the field and must be asked for once. */
+  accountType?: 'SAVINGS' | 'CURRENT' | null;
+  accountTypeLabel?: string | null;
+}
+
+/** What the server knows about one member sending account, asked before the form renders.
+ *  Both `profile` and `accountType` are the SERVER's answer — the form displays them, it never
+ *  decides them. */
+export interface MemberAccountView {
+  accountId: number | null;
+  exists: boolean;
+  accountType: 'SAVINGS' | 'CURRENT' | null;
+  accountTypeLabel: string | null;
+  /** True only when the type has never been recorded — a new account, or a legacy row. */
+  needsAccountType: boolean;
+  /** NEW until this exact account has funded at least one received deposit. */
+  profile: 'NEW' | 'OLD';
+  successfulDeposits: number;
+  bankName: string | null;
+  branch: string | null;
+  accountHolder: string | null;
+  accountNumber: string | null;
+  upiId: string | null;
 }
 
 export type TxStatus =
@@ -220,6 +243,11 @@ export interface Transaction {
   member?: string;
   memberId?: string;
   senderUpiId?: string | null;
+  /** Savings/Current for the member account this request used, as it stood when raised. */
+  accountType?: 'SAVINGS' | 'CURRENT' | null;
+  accountTypeLabel?: string | null;
+  /** NEW/OLD for that same account — server-decided from its received-deposit history. */
+  accountProfile?: 'NEW' | 'OLD' | null;
   bank?: string;
   accountHolder?: string | null;
   accountNumber?: string | null;

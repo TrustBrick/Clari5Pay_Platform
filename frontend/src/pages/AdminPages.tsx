@@ -400,7 +400,11 @@ const RequestModal: React.FC<{
           <Row k={isDeposit ? 'Deposit Ref' : 'Withdrawal Ref'} v={tx.ref} />
           {(tx.creatorUsername || record.merchantUsername) && <Row k="Merchant Username" v={(tx.creatorUsername || record.merchantUsername) as string} />}
           {(record.merchantCode || tx.merchantCode || tx.merchantId != null) && <Row k="Merchant ID" v={String(record.merchantCode || tx.merchantCode || tx.merchantId)} />}
-          {record.memberProfileType && <Row k="Profile Type" v={record.memberProfileType} />}
+          {/* NEW/OLD for the ACCOUNT this request used — not the member — read from the snapshot
+              stored when it was raised. A request from before the field existed shows "Not
+              recorded" rather than a value re-derived from today's history, which would report
+              OLD for a request that was in fact the account's first. */}
+          <Row k="Profile Type" v={(tx.accountProfile || record.memberProfileType || 'Not recorded') as string} />
           {(record.memberSegment || tx.segment) && <Row k="Segment" v={(record.memberSegment || tx.segment) as string} />}
           {tx.depositType && <Row k="Deposit Type" v={depositTypeLabel(tx.depositType)} />}
           {isDeposit && tx.depositDetails && Object.entries(tx.depositDetails).map(([k, v]) =>
@@ -440,6 +444,11 @@ const RequestModal: React.FC<{
                   {tx.accountNumber && <Row k="Account Number" v={tx.accountNumber} />}
                   {tx.ifsc && <Row k="IFSC Code" v={tx.ifsc} />}
                   {tx.senderUpiId && <Row k="UPI ID" v={tx.senderUpiId} />}
+                  {/* Savings/Current as recorded against this member account. The Admin should
+                      never have to infer it, and it is stored on the request so it still reads
+                      correctly months later. */}
+                  <Row k="Account Type" v={(tx.accountTypeLabel || tx.accountType || 'Not recorded') as string} />
+                  <Row k="Profile" v={(tx.accountProfile || 'Not recorded') as string} />
                   {tx.depositType && <Row k="Payment Method" v={depositTypeLabel(tx.depositType)} />}
                 </div>
               ) : <div style={{ padding:24,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>No sender account selected yet.</div>}
@@ -475,6 +484,10 @@ const RequestModal: React.FC<{
                       {tx.bank && <Row k="Bank" v={tx.bank} />}
                       {!tx.accountHolder && !tx.accountNumber && !tx.bank && <p style={{ margin:0,color:T.textMuted }}>No payout details provided.</p>}
                     </>}
+                {/* Same two facts a deposit carries, on the same member account — a withdrawal
+                    reuses the saved type and the account's deposit-derived standing. */}
+                <Row k="Account Type" v={(tx.accountTypeLabel || tx.accountType || 'Not recorded') as string} />
+                <Row k="Profile" v={(tx.accountProfile || 'Not recorded') as string} />
               </div>
               {imgs.adminProof && <><p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'12px 0 8px' }}>Payment Receipt</p>
                 <ReceiptImage src={imgs.adminProof} alt="Receipt" /></>}

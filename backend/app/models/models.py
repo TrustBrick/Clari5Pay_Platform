@@ -174,6 +174,14 @@ class Transaction(Base):
     account_holder: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # SAVINGS / CURRENT for the member account this request uses, copied from the saved account at
+    # creation. Stored on the transaction rather than only on the account because the Admin must
+    # see what was true WHEN the request was raised — an account edited later must not silently
+    # rewrite the history of a payment already made against it.
+    sender_account_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # NEW / OLD for that same account, decided by the server at creation from the account's own
+    # successful-deposit history. Never taken from the browser; see services/member_account.
+    account_profile: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
 
     # UTR / notes / risk
     utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)            # bank UTR number
@@ -453,6 +461,11 @@ class MerchantBankAccount(Base):
     branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # saved UPI for this member
+    # SAVINGS / CURRENT — the kind of account this is, asked ONCE when the account is first seen
+    # and remembered from then on. NULL means "not recorded yet": either a row created before this
+    # field existed, or one saved by a path that never collected it. A NULL is never guessed at —
+    # the merchant is asked once more and the answer is written here (see services/member_account).
+    account_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     # The default saved UPI for a member (the first one saved; merchant can change it).
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

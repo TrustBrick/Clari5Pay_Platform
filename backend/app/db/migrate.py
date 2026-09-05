@@ -36,6 +36,9 @@ _NEW_COLUMNS = [
     ("users", "token_version", "INTEGER DEFAULT 0 NOT NULL"),
     # Set on every successful login; shown as "Last Login" in the profile popup.
     ("users", "last_login_at", "TIMESTAMP"),
+    # The member account's type and NEW/OLD standing as at THIS request — see Transaction.
+    ("transactions", "sender_account_type", "VARCHAR(16)"),
+    ("transactions", "account_profile", "VARCHAR(8)"),
     ("transactions", "merchant_ref", "VARCHAR(64)"),
     ("transactions", "admin_bank_details", "TEXT"),
     ("transactions", "admin_bank_image", "TEXT"),
@@ -111,6 +114,10 @@ _NEW_COLUMNS = [
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "upi_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "is_default", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    # Savings/Current for a member's saved sending account. Deliberately NULLABLE with no default
+    # and no backfill: an existing row's real type is unknown, and inventing one would tell an
+    # Admin something nobody ever said. NULL means "ask once", which is what the merchant form does.
+    ("merchant_bank_accounts", "account_type", "VARCHAR(16)"),
     ("transactions", "sender_upi_id", "VARCHAR(64)"),
     ("transactions", "merchant_proofs", "TEXT"),
     # Cancellation reason capture (merchant cancels a pending request).

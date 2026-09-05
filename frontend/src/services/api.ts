@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MemberAccountView, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -615,12 +615,21 @@ export const bankAccountAPI = {
     const res = await api.get<MerchantBankAccount[]>('/api/merchant-bank-accounts', { params: memberId ? { memberId } : undefined });
     return res.data;
   },
-  add: async (data: { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName?: string; memberId?: string }) => {
+  add: async (data: { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName?: string; memberId?: string; accountType?: string }) => {
     const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts', data);
     return res.data;
   },
-  addUpi: async (memberId: string, upiId: string) => {
-    const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts/upi', { memberId, upiId });
+  addUpi: async (memberId: string, upiId: string, accountType?: string) => {
+    const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts/upi', { memberId, upiId, accountType });
+    return res.data;
+  },
+  /** What the server knows about one sending account: saved details, whether the Account Type
+   *  still has to be asked for, and the account's own NEW/OLD standing. The form asks this rather
+   *  than working any of it out, so what is displayed is exactly what will be stored. */
+  resolve: async (memberId: string, opts: { upiId?: string; accountNumber?: string }) => {
+    const res = await api.get<MemberAccountView>('/api/merchant-bank-accounts/resolve', {
+      params: { memberId, ...(opts.upiId ? { upiId: opts.upiId } : {}), ...(opts.accountNumber ? { accountNumber: opts.accountNumber } : {}) },
+    });
     return res.data;
   },
   setDefaultUpi: async (id: number) => {

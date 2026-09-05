@@ -138,6 +138,9 @@ def _payload(amount: float, **kw) -> DepositCreate:
     base = dict(
         amount=amount, depositType="BANK", memberName="Test Member", memberId="MBR1",
         accountHolder="Test Member", accountNumber="999", ifsc="HDFC0001234", bankName="HDFC Bank",
+        # Savings/Current is mandatory the first time an account is seen. These tests are about
+        # RECEIVING-account allocation, so they answer it once here and never think about it again.
+        accountType="SAVINGS",
     )
     base.update(kw)
     return DepositCreate(**base)
