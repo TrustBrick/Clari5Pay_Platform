@@ -39,13 +39,20 @@ const AccountDetailRow: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v })
 
 const BankAccountFields: React.FC<{
   memberId: string;
-  /** SAVINGS/CURRENT already recorded for this account, shown as the last detail row. Null while
-   *  the type is still unknown — the selector handles that case, not this list. */
+  /** SAVINGS/CURRENT already recorded for this account, shown as the last detail row of the saved
+   *  summary. Null while the type is still unknown — the field below handles that case. */
   accountTypeLabel?: string | null;
+  /** Whether the merchant still owes us the answer, plus the pending selection. When the type is
+   *  unknown the Account Type cell is a required dropdown; when it is known the same cell is a
+   *  read-only field showing the saved value. Either way it sits beside Branch Name. */
+  needsAccountType?: boolean;
+  accountType?: string;
+  onAccountType?: (v: string) => void;
   // A SetStateAction dispatch, not a plain setter: the IFSC auto-fill writes the code and the
   // bank/branch in separate updates, which would clobber each other via a captured object.
   bank: BankForm; onBank: React.Dispatch<React.SetStateAction<BankForm>>; saveNew: boolean; onSaveNew: (v: boolean) => void;
-}> = ({ memberId, accountTypeLabel, bank, onBank, saveNew, onSaveNew }) => {
+}> = ({ memberId, accountTypeLabel, needsAccountType, accountType, onAccountType,
+        bank, onBank, saveNew, onSaveNew }) => {
   const [saved, setSaved] = useState<MerchantBankAccount[]>([]);
   const [sel, setSel] = useState<string>('NEW');
 
@@ -106,7 +113,9 @@ const BankAccountFields: React.FC<{
       {sel === 'NEW' && (
         <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
           {/* Platform-standard bank-details order: Account Holder → Account Number → IFSC →
-              auto-fetched Bank Name → Branch Name. */}
+              auto-fetched Bank Name → Branch Name → Account Type. Two columns, so Account Type
+              pairs with Branch Name on the last row. (BankNamesDatalist is display:none and takes
+              no cell.) */}
           <BankNamesDatalist names={BANK_NAMES}/>
           <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
           <Input label="Account Number" value={bank.accountNumber} onChange={e=>set('accountNumber',e.target.value)} required/>
@@ -114,6 +123,15 @@ const BankAccountFields: React.FC<{
           <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked}
             icon={bankLogoIcon(bank.bankName, bank.ifsc, ifscFill.locked)}/>
           <Input label="Branch Name" value={bank.branch} onChange={e=>set('branch',e.target.value)} readOnly={ifscFill.locked} required/>
+          {/* Sixth cell, so it lands beside Branch Name. A dropdown only while the type is
+              unknown; once saved it is a read-only field with the same styling as Bank Name when
+              the IFSC lookup owns that — no badge, colour or block of its own. */}
+          {needsAccountType
+            ? <Sel label="Account Type" value={accountType || ''} onChange={e=>onAccountType?.(e.target.value)} required
+                options={[{value:'',label:'Select account type'},{value:'SAVINGS',label:'Savings Account'},{value:'CURRENT',label:'Current Account'}]}/>
+            : accountTypeLabel
+              ? <Input label="Account Type" value={accountTypeLabel} onChange={()=>{}} readOnly/>
+              : null}
         </div>
       )}
       {sel !== 'NEW' && (
@@ -124,14 +142,6 @@ const BankAccountFields: React.FC<{
           <AccountDetailRow k="Branch" v={bank.branch} />
           {/* Last row, styled exactly like the four above — no label, badge or border. */}
           {accountTypeLabel && <AccountDetailRow k="Account Type" v={accountTypeLabel} />}
-        </div>
-      )}
-      {/* A saved type still has to be visible when no details list is on screen (a UPI-only
-          member, or one whose bank account is being entered fresh). Same row, same container,
-          so it reads as a detail line rather than a component of its own. */}
-      {sel === 'NEW' && accountTypeLabel && (
-        <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:14 }}>
-          <AccountDetailRow k="Account Type" v={accountTypeLabel} />
         </div>
       )}
       {saveNew && <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>This account will be saved for future requests.</p>}
@@ -729,20 +739,15 @@ const AccountTypeField: React.FC<{
  */
 const ProfileField: React.FC<{ view: MemberAccountView | null }> = ({ view }) => {
   const profile = view?.profile || 'NEW';
-  const old = profile === 'OLD';
+  // A read-only field, identical to every other read-only field on the form. It was coloured —
+  // green for NEW, blue for OLD — which read as a status badge and gave a plain fact more weight
+  // than the Member Name beside it. The reason still travels underneath as the standard hint.
   return (
-    <div style={{ marginBottom:14 }}>
-      <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Profile</label>
-      <div style={{ padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,fontWeight:800,
-                    color: old ? T.blue : T.green, background: old ? T.infoBg : T.successBg }}>
-        {profile}
-      </div>
-      <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>
-        {!view ? 'Set automatically from this account’s deposit history'
-          : old ? `Funded ${view.successfulDeposits} received deposit${view.successfulDeposits === 1 ? '' : 's'}`
-                : 'No received deposit from this account yet'}
-      </p>
-    </div>
+    <Input label="Profile" value={profile} onChange={()=>{}} readOnly
+      hint={!view ? 'Set automatically from this account’s deposit history'
+        : profile === 'OLD'
+          ? `Funded ${view.successfulDeposits} received deposit${view.successfulDeposits === 1 ? '' : 's'}`
+          : 'No received deposit from this account yet'}/>
   );
 };
 
@@ -905,15 +910,17 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
             <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Sending Account Details</p>
             <Input label="UPI ID" value={senderUpi} onChange={e=>setSenderUpi(e.target.value)} placeholder="e.g. satish@ybl" required
               hint="The UPI the payment is sent from — saved to this Membership ID for future withdrawals" />
-            <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
-            <BankAccountFields memberId={form.memberId} accountTypeLabel={acctView?.needsAccountType ? null : acctView?.accountTypeLabel}
+            {/* Account Type lives inside the bank-details grid below, beside Branch Name — it is
+                an account detail, not a section of its own. */}
+            <BankAccountFields memberId={form.memberId}
+              accountTypeLabel={acctView?.needsAccountType ? null : acctView?.accountTypeLabel}
+              needsAccountType={!!acctView?.needsAccountType} accountType={acctType} onAccountType={setAcctType}
               bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
           </div>
-        : <>
-            <BankAccountFields memberId={form.memberId} accountTypeLabel={acctView?.needsAccountType ? null : acctView?.accountTypeLabel}
-              bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
-            <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
-          </>)}
+        : <BankAccountFields memberId={form.memberId}
+            accountTypeLabel={acctView?.needsAccountType ? null : acctView?.accountTypeLabel}
+            needsAccountType={!!acctView?.needsAccountType} accountType={acctType} onAccountType={setAcctType}
+            bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>)}
       <div style={{ marginBottom:14 }}>
         <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Agent (optional)</label>
         <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder='Any message for the agent — e.g. "Use HDFC" or "Same account"'
