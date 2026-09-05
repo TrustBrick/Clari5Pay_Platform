@@ -29,12 +29,23 @@ export { ReportsPage } from './ReportsPage';
 type BankForm = { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName: string };
 const emptyBank: BankForm = { accountHolder: '', accountNumber: '', ifsc: '', branch: '', bankName: '' };
 
+/** One row of an account-details list — the exact markup the list already uses for Account
+ *  Holder / Account Number / IFSC / Branch. Shared so Account Type cannot drift from them. */
+const AccountDetailRow: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
+  <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}>
+    <span style={{ color:T.textMuted }}>{k}</span><b>{v}</b>
+  </div>
+);
+
 const BankAccountFields: React.FC<{
   memberId: string;
+  /** SAVINGS/CURRENT already recorded for this account, shown as the last detail row. Null while
+   *  the type is still unknown — the selector handles that case, not this list. */
+  accountTypeLabel?: string | null;
   // A SetStateAction dispatch, not a plain setter: the IFSC auto-fill writes the code and the
   // bank/branch in separate updates, which would clobber each other via a captured object.
   bank: BankForm; onBank: React.Dispatch<React.SetStateAction<BankForm>>; saveNew: boolean; onSaveNew: (v: boolean) => void;
-}> = ({ memberId, bank, onBank, saveNew, onSaveNew }) => {
+}> = ({ memberId, accountTypeLabel, bank, onBank, saveNew, onSaveNew }) => {
   const [saved, setSaved] = useState<MerchantBankAccount[]>([]);
   const [sel, setSel] = useState<string>('NEW');
 
@@ -107,10 +118,20 @@ const BankAccountFields: React.FC<{
       )}
       {sel !== 'NEW' && (
         <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:14 }}>
-          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Holder</span><b>{bank.accountHolder}</b></div>
-          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Number</span><b>{bank.accountNumber}</b></div>
-          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>IFSC</span><b>{bank.ifsc}</b></div>
-          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Branch</span><b>{bank.branch}</b></div>
+          <AccountDetailRow k="Account Holder" v={bank.accountHolder} />
+          <AccountDetailRow k="Account Number" v={bank.accountNumber} />
+          <AccountDetailRow k="IFSC" v={bank.ifsc} />
+          <AccountDetailRow k="Branch" v={bank.branch} />
+          {/* Last row, styled exactly like the four above — no label, badge or border. */}
+          {accountTypeLabel && <AccountDetailRow k="Account Type" v={accountTypeLabel} />}
+        </div>
+      )}
+      {/* A saved type still has to be visible when no details list is on screen (a UPI-only
+          member, or one whose bank account is being entered fresh). Same row, same container,
+          so it reads as a detail line rather than a component of its own. */}
+      {sel === 'NEW' && accountTypeLabel && (
+        <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:14 }}>
+          <AccountDetailRow k="Account Type" v={accountTypeLabel} />
         </div>
       )}
       {saveNew && <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>This account will be saved for future requests.</p>}
@@ -675,33 +696,23 @@ const SendToApprovalCard: React.FC<{
   </div>
 );
 
-/** ACCOUNT TYPE — Savings/Current for the member's sending account.
+/** ACCOUNT TYPE — the one-time question, and nothing else.
  *
- *  Lives with the account details, because that is what it describes. `view` is the server's
- *  answer from `/merchant-bank-accounts/resolve`; this only renders it:
- *
- *    * the server says the type was never recorded (a new account, or a legacy row) → a required
- *      selector, asked ONCE;
- *    * the server already knows it → plain read-only text. Never asked again, and a normal
- *      re-use cannot overwrite it (the backend discards the payload when a type is stored).
+ *  Renders a required selector ONLY while the server says the type has never been recorded (a new
+ *  account, or a legacy row). The moment it is known this renders nothing: the saved value belongs
+ *  in the account-details list beside Account Holder / Number / IFSC / Branch, which is where
+ *  :component:`AccountDetailRow` puts it. A known type is information, not a control, and giving
+ *  it its own labelled, bordered block made it look far more important than the details it
+ *  describes.
  */
 const AccountTypeField: React.FC<{
   view: MemberAccountView | null;
   value: string;
   onChange: (v: string) => void;
 }> = ({ view, value, onChange }) => {
-  if (!view) return null;
-  if (!view.needsAccountType && view.accountTypeLabel) {
-    return (
-      <div style={{ marginBottom:14 }}>
-        <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Account Type</label>
-        <div style={{ padding:'10px 14px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:14,fontWeight:700,color:T.textMain,background:T.canvas }}>
-          {view.accountTypeLabel}
-        </div>
-        <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted }}>Saved for this account</p>
-      </div>
-    );
-  }
+  // ONLY the question. Once the answer is known this renders nothing and the value appears as an
+  // ordinary row in the account-details list — a saved account is a detail to read, not a control.
+  if (!view || !view.needsAccountType) return null;
   return (
     <Sel label="Account Type" value={value} onChange={e=>onChange(e.target.value)} required
       options={[{value:'',label:'Select account type'},{value:'SAVINGS',label:'Savings Account'},{value:'CURRENT',label:'Current Account'}]}/>
@@ -895,10 +906,12 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
             <Input label="UPI ID" value={senderUpi} onChange={e=>setSenderUpi(e.target.value)} placeholder="e.g. satish@ybl" required
               hint="The UPI the payment is sent from — saved to this Membership ID for future withdrawals" />
             <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
-            <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+            <BankAccountFields memberId={form.memberId} accountTypeLabel={acctView?.needsAccountType ? null : acctView?.accountTypeLabel}
+              bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
           </div>
         : <>
-            <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+            <BankAccountFields memberId={form.memberId} accountTypeLabel={acctView?.needsAccountType ? null : acctView?.accountTypeLabel}
+              bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
             <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
           </>)}
       <div style={{ marginBottom:14 }}>
@@ -1156,14 +1169,17 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       {chosenSaved && (
         <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:12 }}>
           {chosenSaved.kind === 'UPI'
-            ? <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>UPI ID</span><b>{details.upiId}</b></div>
+            ? <AccountDetailRow k="UPI ID" v={details.upiId} />
             : <>
-                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Holder</span><b>{details.accountHolder}</b></div>
-                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Number</span><b>{details.accountNumber}</b></div>
-                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>IFSC</span><b>{details.ifsc}</b></div>
-                {details.bank && <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Bank</span><b>{details.bank}</b></div>}
-                {details.branch && <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Branch</span><b>{details.branch}</b></div>}
+                <AccountDetailRow k="Account Holder" v={details.accountHolder} />
+                <AccountDetailRow k="Account Number" v={details.accountNumber} />
+                <AccountDetailRow k="IFSC" v={details.ifsc} />
+                {details.bank && <AccountDetailRow k="Bank" v={details.bank} />}
+                {details.branch && <AccountDetailRow k="Branch" v={details.branch} />}
               </>}
+          {/* Final row of the same list, identical styling — never a badge or its own block. */}
+          {acctView && !acctView.needsAccountType && acctView.accountTypeLabel &&
+            <AccountDetailRow k="Account Type" v={acctView.accountTypeLabel} />}
         </div>
       )}
 
@@ -1174,6 +1190,13 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
         <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
         <ProfileField view={acctView}/>
       </div>
+      {/* A saved type on a destination entered by hand — the summary block above only renders for
+          a SAVED destination, so without this the value would have nowhere to appear. */}
+      {!chosenSaved && acctView && !acctView.needsAccountType && acctView.accountTypeLabel && (
+        <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:14 }}>
+          <AccountDetailRow k="Account Type" v={acctView.accountTypeLabel} />
+        </div>
+      )}
 
       {usingOther && (
         <>
