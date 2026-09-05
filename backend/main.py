@@ -31,22 +31,34 @@ async def lifespan(app: FastAPI):
     # an ordinary "no eligible account" — so it is stated once here, plainly, at startup. Advisory
     # only: it never blocks boot, and a failure to compute it is not worth refusing to serve over.
     try:
-        from app.services.withdrawal_allocation import debit_limit_readiness
+        from app.services.withdrawal_allocation import payout_readiness
         async with AsyncSessionLocal() as db:
-            ready = await debit_limit_readiness(db)
+            ready = await payout_readiness(db)
         import logging
         log = logging.getLogger("clari5pay.startup")
         if ready["activeTotal"] and not ready["canAllocate"]:
+            # Deliberately reports the ENGINE's count and the reason each account was refused. The
+            # old message blamed missing limits alone, which was wrong whenever the real problem
+            # was an empty account — and sent operators to configure a limit that already existed.
             log.error(
-                "WITHDRAWAL ALLOCATION DISABLED: none of the %d active payout accounts has a "
-                "daily Highest Debit configured, so every withdrawal will become an exception. "
-                "Set one per account (Account Management → Highest Debit); "
-                "GET /api/accounts/debit-limit-readiness lists them.", ready["activeTotal"])
-        elif ready["needsConfiguration"]:
-            log.warning(
-                "Withdrawal allocation: %d payout account(s) still need a daily Highest Debit "
-                "decision (%s). GET /api/accounts/debit-limit-readiness explains each one.",
-                ready["needsConfiguration"], ", ".join(ready["needsConfigurationRefs"][:10]))
+                "WITHDRAWAL ALLOCATION DISABLED: none of the %d active payout accounts can pay a "
+                "withdrawal, so every request will become an exception. Reasons: %s. "
+                "GET /api/accounts/payout-readiness explains each one.",
+                ready["activeTotal"],
+                ", ".join(f"{ref}={why}"
+                          for ref, why in list(ready["ineligibleActiveReasons"].items())[:10])
+                or "none reported")
+        elif ready["activeTotal"]:
+            log.info(
+                "Withdrawal allocation ready: %d of %d active payout account(s) usable across "
+                "%d bank(s), ₹%.2f combined usable capacity.",
+                ready["eligibleAccounts"], ready["activeTotal"], ready["eligibleBanks"],
+                ready["totalUsableCapacity"])
+            if ready["needsConfiguration"]:
+                log.warning(
+                    "Withdrawal allocation: %d payout account(s) still need a daily Highest Debit "
+                    "decision (%s). GET /api/accounts/payout-readiness explains each one.",
+                    ready["needsConfiguration"], ", ".join(ready["needsConfigurationRefs"][:10]))
     except Exception:  # noqa: BLE001 — a readiness report must never stop the app booting
         import logging
         logging.getLogger("clari5pay.startup").exception("debit limit readiness check failed")

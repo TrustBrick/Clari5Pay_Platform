@@ -323,6 +323,248 @@ async def test_readiness_orders_the_worst_problems_first(db):
     assert ready["counts"][wa.READY_OK] == 1
 
 
+# ── Readiness reports what the ENGINE can do, not what configuration suggests ──────────────────
+#
+# The report used to decide eligibility itself, with `status == ACTIVE and highest_debit > 0`.
+# That is two of the five gates `_evaluate` applies, and the three it omitted — mode, today's
+# consumed capacity, and available balance — are the ones that actually fail. On a real
+# environment it claimed 7 allocatable accounts where the engine could use exactly one. Each test
+# below is one of the ways those two answers could drift apart again.
+
+
+@pytest.mark.asyncio
+async def test_a_funded_account_with_no_daily_limit_is_not_counted_eligible(db):
+    """Money without a limit. The engine will not choose it, so readiness must not count it."""
+    await _account(db, "A", debit=0.0)
+    await _fund(db, "F", "A", 500000)
+
+    ready = await wa.payout_readiness(db)
+
+    assert ready["fundedAccounts"] == 1, "it does hold money — reported separately, on purpose"
+    assert ready["eligibleAccounts"] == 0
+    assert ready["canAllocate"] is False
+    assert ready["totalUsableCapacity"] == 0.0
+    assert ready["ineligibleActiveReasons"]["A"] == wa.REJECT_NO_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_a_configured_limit_with_no_money_is_not_counted_eligible(db):
+    """A limit without money. This is the shape that produced the 7x overcount."""
+    acc = await _account(db, "A", debit=100000)
+    acc.highest_debit_configured_at = datetime.utcnow()
+    await db.flush()
+
+    ready = await wa.payout_readiness(db)
+
+    assert ready["accounts"][0]["state"] == wa.READY_OK, "configuration IS complete"
+    assert ready["configurationComplete"] is True
+    assert ready["fundedAccounts"] == 0
+    assert ready["eligibleAccounts"] == 0, "configured is not the same as able to pay"
+    assert ready["canAllocate"] is False
+    assert ready["readyForTesting"] is False
+    assert ready["ineligibleActiveReasons"]["A"] == wa.REJECT_NO_BALANCE
+
+
+@pytest.mark.asyncio
+async def test_a_negative_balance_is_not_counted_eligible(db):
+    """The production case: an account whose completed debits exceed its deposits.
+
+    Built the way the real one arose — a completed withdrawal attributed to the account with no
+    deposit behind it — rather than by writing a negative number somewhere.
+    """
+    await _account(db, "A", debit=100000)
+    await _fund(db, "F", "A", 10000)
+    spent = await _withdrawal(db, "W1", 50000, status=TxStatus.COMPLETED)
+    spent.payout_account_ref = "A"
+    await db.flush()
+
+    ready = await wa.payout_readiness(db)
+
+    assert ready["fundedAccounts"] == 0, "a negative balance is not funded"
+    assert ready["eligibleAccounts"] == 0
+    assert ready["canAllocate"] is False
+    assert ready["totalUsableCapacity"] == 0.0, "never negative — capacity floors at nothing"
+    assert ready["ineligibleActiveReasons"]["A"] == wa.REJECT_NO_BALANCE
+
+
+@pytest.mark.asyncio
+async def test_an_account_that_cannot_do_the_mode_is_not_counted_eligible(db):
+    """Configured, funded, and unable to pay by the rail asked about."""
+    await _account(db, "UPIONLY", debit=100000, modes="UPI")
+    await _fund(db, "F", "UPIONLY", 500000)
+
+    bank = await wa.payout_readiness(db, mode=wa.BANK_MODE)
+    assert bank["eligibleAccounts"] == 0
+    assert bank["ineligibleActiveReasons"]["UPIONLY"] == wa.REJECT_MODE
+    assert bank["mode"] == wa.BANK_MODE, "the payload always says what it measured"
+
+    # Same account, same data, asked about the rail it actually supports.
+    upi = await wa.payout_readiness(db, mode="UPI")
+    assert upi["eligibleAccounts"] == 1
+    assert upi["canAllocate"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_account_whose_daily_limit_is_used_up_is_not_counted_eligible(db):
+    """Configured and funded, but the day's headroom is gone. Readiness must follow the clock."""
+    await _account(db, "A", debit=50000)
+    await _fund(db, "F", "A", 500000)
+
+    before = await wa.payout_readiness(db)
+    assert before["eligibleAccounts"] == 1
+    assert before["totalUsableCapacity"] == 50000.0
+
+    tx = await _withdrawal(db, "W1", 50000)
+    await wa.write_legs(db, await _allocate(db, 50000, mode="IMPS"), transaction=tx)
+
+    after = await wa.payout_readiness(db)
+    assert after["eligibleAccounts"] == 0, "the whole daily limit is committed"
+    assert after["canAllocate"] is False
+    assert after["totalUsableCapacity"] == 0.0
+    assert after["ineligibleActiveReasons"]["A"] == wa.REJECT_NO_CAPACITY
+
+
+@pytest.mark.asyncio
+async def test_eligible_counts_banks_and_capacity_come_from_the_engine(db):
+    """Six accounts, one usable per failure mode plus two that work, at two different banks.
+
+    This is the whole regression in one table: the old rule counted FIVE allocatable accounts
+    here (every ACTIVE one with a limit above zero); the engine can use two.
+    """
+    await _account(db, "GOOD-HDFC", bank="HDFC Bank", debit=60000)
+    await _fund(db, "F1", "GOOD-HDFC", 500000)
+    await _account(db, "GOOD-ICICI", bank="ICICI Bank", debit=40000)
+    await _fund(db, "F2", "GOOD-ICICI", 500000)
+    await _account(db, "NOLIMIT", bank="Axis Bank", debit=0.0)          # funded, no limit
+    await _fund(db, "F3", "NOLIMIT", 500000)
+    await _account(db, "NOMONEY", bank="Axis Bank", debit=90000)        # limit, no money
+    await _account(db, "WRONGMODE", bank="Axis Bank", debit=90000, modes="UPI")
+    await _fund(db, "F5", "WRONGMODE", 500000)
+    await _account(db, "OFF", bank="Axis Bank", debit=90000, status="INACTIVE")
+    await _fund(db, "F6", "OFF", 500000)
+
+    ready = await wa.payout_readiness(db)
+
+    assert ready["eligibleAccounts"] == 2
+    assert sorted(ready["eligibleAccountRefs"]) == ["GOOD-HDFC", "GOOD-ICICI"]
+    assert ready["eligibleBanks"] == 2
+    assert sorted(ready["eligibleBankNames"]) == ["HDFC Bank", "ICICI Bank"]
+    assert ready["totalUsableCapacity"] == 100000.0, "60,000 + 40,000, the engine's own figure"
+    assert ready["largestSingleAccountCapacity"] == 60000.0
+    assert ready["canAllocate"] is True
+    assert ready["allocatableAccounts"] == 2
+
+    # The old predicate — ACTIVE and a limit above zero — would have said five.
+    old_rule = [r for r in ready["accounts"] if r["active"] and r["highestDebit"] > 0]
+    assert len(old_rule) == 4, "and every one of the extra two cannot pay a rupee"
+    assert set(ready["ineligibleActiveReasons"]) == {"NOLIMIT", "NOMONEY", "WRONGMODE"}
+
+    # The capacity figure must be the one a real refusal would quote.
+    result = await _allocate(db, 100001, mode="IMPS")
+    assert result.outcome == wa.OUTCOME_NO_ACCOUNT
+    assert result.detail["totalUsableCapacity"] == ready["totalUsableCapacity"]
+
+
+@pytest.mark.asyncio
+async def test_ready_for_testing_requires_configuration_as_well_as_eligibility(db):
+    """``readyForTesting`` is the composite that did not exist: chosen limits AND real capacity."""
+    acc = await _account(db, "A", debit=100000)
+    acc.highest_debit_configured_at = datetime.utcnow()
+    acc.highest_debit_configured_by = "Admin One"
+    await _fund(db, "F", "A", 500000)
+    await db.flush()
+
+    ready = await wa.payout_readiness(db)
+    assert ready["configurationComplete"] is True
+    assert ready["eligibleAccounts"] == 1
+    assert ready["readyForTesting"] is True
+
+    # One unconfigured ACTIVE account is enough to make the environment unready — while leaving
+    # canAllocate true, because the engine can still pay from the account that IS configured.
+    await _account(db, "B", debit=0.0)
+    later = await wa.payout_readiness(db)
+    assert later["configurationComplete"] is False
+    assert later["canAllocate"] is True
+    assert later["readyForTesting"] is False
+
+
+@pytest.mark.asyncio
+async def test_scenario_support_says_which_allocation_shapes_are_testable(db):
+    """One bank with capacity cannot exercise a cross-bank or bank-preference scenario.
+
+    Reported rather than left to be worked out, because this is exactly the question that had to
+    be answered by hand about a real environment.
+    """
+    await _account(db, "IDBI-1", bank="IDBI", debit=99000)
+    await _fund(db, "F1", "IDBI-1", 500000)
+
+    one = await wa.payout_readiness(db, probe_amount=50000)
+    assert one["scenarioSupport"]["anyAllocation"] is True
+    assert one["scenarioSupport"]["canCoverProbeAmount"] is True
+    assert one["scenarioSupport"]["singleAccountCoversProbeAmount"] is True
+    assert one["scenarioSupport"]["sameBankSplit"] is False
+    assert one["scenarioSupport"]["crossBankSplit"] is False
+    assert one["probeAmount"] == 50000.0
+
+    # An amount beyond the only account: coverable by nobody, single or combined.
+    big = await wa.payout_readiness(db, probe_amount=200000)
+    assert big["scenarioSupport"]["canCoverProbeAmount"] is False
+    assert big["scenarioSupport"]["singleAccountCoversProbeAmount"] is False
+    assert big["canAllocate"] is True, "it can still pay SOMETHING — just not that"
+
+    # A second account at the same bank, then a third at another, open the split shapes.
+    await _account(db, "IDBI-2", bank="IDBI", debit=99000)
+    await _fund(db, "F2", "IDBI-2", 500000)
+    await _account(db, "HDFC-1", bank="HDFC Bank", debit=99000)
+    await _fund(db, "F3", "HDFC-1", 500000)
+
+    many = await wa.payout_readiness(db, probe_amount=200000)
+    assert many["scenarioSupport"]["sameBankSplit"] is True
+    assert many["scenarioSupport"]["crossBankSplit"] is True
+    assert many["scenarioSupport"]["canCoverProbeAmount"] is True
+    assert many["scenarioSupport"]["singleAccountCoversProbeAmount"] is False
+    assert many["eligibleBanks"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_report_never_disagrees_with_a_real_allocation(db):
+    """The property the whole rewrite exists to guarantee, asserted directly.
+
+    Whatever readiness calls eligible, the engine must be able to allocate from — and whatever it
+    calls ineligible, the engine must refuse for the same stated reason.
+    """
+    await _account(db, "OK", bank="HDFC Bank", debit=70000)
+    await _fund(db, "F1", "OK", 500000)
+    await _account(db, "NOMONEY", bank="ICICI Bank", debit=70000)
+    await _account(db, "NOLIMIT", bank="Axis Bank", debit=0.0)
+    await _fund(db, "F3", "NOLIMIT", 500000)
+
+    ready = await wa.payout_readiness(db)
+    engine = {c.ref: c for c in await wa.evaluate_accounts(
+        db, 0.01, mode=wa.BANK_MODE, require_full=False)}
+
+    assert set(ready["eligibleAccountRefs"]) == {r for r, c in engine.items() if c.eligible}
+    for ref, why in ready["ineligibleActiveReasons"].items():
+        assert engine[ref].eligible is False
+        assert engine[ref].reject_reason == why
+
+
+@pytest.mark.asyncio
+async def test_the_original_readiness_path_and_helper_still_work(db):
+    """The endpoint URL and the old function name are kept, so nothing that called them breaks."""
+    await _account(db, "A", debit=60000)
+    await _fund(db, "F", "A", 500000)
+    admin = await _admin(db)
+
+    alias = await wa.debit_limit_readiness(db)
+    assert alias["canAllocate"] is True
+    assert alias["eligibleAccounts"] == 1
+
+    out = await acct_routes.payout_readiness(0.01, wa.BANK_MODE, db, admin)
+    assert out["eligibleAccounts"] == 1
+    assert out["totalUsableCapacity"] == 60000.0
+
+
 # ── The balance query must be valid on PostgreSQL, not just on SQLite ──────────────────────────
 
 @pytest.mark.asyncio

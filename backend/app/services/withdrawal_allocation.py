@@ -1646,14 +1646,44 @@ def classify_debit_limit(account: AccountMaster) -> str:
     return READY_UNCONFIRMED
 
 
-async def debit_limit_readiness(db: AsyncSession) -> dict:
-    """Audit every payout account's daily Highest Debit and report what still needs a decision.
+async def payout_readiness(
+    db: AsyncSession, *, probe_amount: float = 0.01, mode: str = BANK_MODE,
+    on: Optional[date] = None,
+) -> dict:
+    """Can this environment actually pay a withdrawal? Read-only; changes and guesses nothing.
 
-    Read-only: it changes nothing, guesses nothing and is safe to call at any time. ``canAllocate``
-    is the question an operator actually needs answered before deploying — is there at least one
-    ACTIVE account this engine is able to choose?
+    THE ELIGIBILITY ANSWER COMES FROM THE ENGINE, NOT FROM A SECOND OPINION
+    ──────────────────────────────────────────────────────────────────────
+    This used to decide eligibility itself, with ``status == ACTIVE and highest_debit > 0``. That
+    is two of the five gates :func:`_evaluate` applies, and the three it left out — transaction
+    mode, today's consumed capacity, and available balance — are the ones that fail in practice.
+    On a real environment it reported 7 allocatable accounts where the engine could use exactly
+    one: six held a configured limit against a zero or NEGATIVE balance. The error ran in the
+    optimistic direction, which is the dangerous one for a go-live check.
+
+    So eligibility is no longer re-derived here. :func:`evaluate_accounts` is called and its
+    answer is reported. A readiness report that can disagree with the engine is worse than none,
+    because it is trusted precisely when nobody is watching the engine.
+
+    ``require_full=False`` asks "who could contribute ANYTHING", which is the readiness question;
+    ``probe_amount`` therefore only has to be positive for the count. Pass a real withdrawal
+    amount to also learn whether that amount is coverable — see ``scenarioSupport``.
+
+    WHAT IS DELIBERATELY NOT MERGED
+    ───────────────────────────────
+    Configuration state (:func:`classify_debit_limit`) answers "did a person CHOOSE this number".
+    Eligibility answers "can this account pay right now". They are different questions with
+    different remedies — an unfunded account with a chosen limit needs money, a funded account
+    with an inherited limit needs a decision — and collapsing them into one boolean is what hid
+    the problem above. Both are reported, separately.
+
+    ``mode`` scopes the answer, because an account may be restricted to particular rails. It
+    defaults to the generic bank-transfer mode (any account doing IMPS/NEFT/RTGS satisfies it) and
+    is echoed in the payload, so the reader always knows what was measured.
     """
     accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id))).scalars().all()
+
+    # ── Configuration: unchanged, and still its own question. ──
     rows = []
     for a in accounts:
         state = classify_debit_limit(a)
@@ -1678,22 +1708,98 @@ async def debit_limit_readiness(db: AsyncSession) -> dict:
     rows.sort(key=lambda r: (not r["needsConfiguration"], _READY_ORDER.index(r["state"]),
                              r["accountRef"]))
     active_rows = [r for r in rows if r["active"]]
-    allocatable = [r for r in active_rows if r["highestDebit"] > 0]
     needing = [r for r in rows if r["needsConfiguration"]]
     counts = {state: sum(1 for r in rows if r["state"] == state) for state in _READY_ORDER}
+
+    # ── Eligibility: the engine's own verdict, every gate applied. ──
+    probe = max(_money(probe_amount), 0.01)
+    candidates = await evaluate_accounts(
+        db, probe, mode=mode, on=on, require_full=False, accounts=accounts)
+    eligible = [c for c in candidates if c.eligible]
+    by_ref = {c.ref: c for c in candidates}
+    capacity = _money(sum(c.usable for c in eligible))
+    largest = _money(max((c.usable for c in eligible), default=0.0))
+
+    banks: list[str] = []
+    for c in eligible:
+        name = (c.account.bank_name or "").strip()
+        if name and name not in banks:
+            banks.append(name)
+
+    # Funded is reported apart from eligible on purpose: "holds money" and "can pay" diverge, and
+    # an account that is one but not the other is the commonest thing an operator has to fix.
+    # ``balance`` is set on every candidate before any gate rejects it, so this covers all of them.
+    funded = [c for c in candidates
+              if (c.account.status or "").upper() == "ACTIVE" and _money(c.balance) > 0]
+
+    configuration_complete = bool(active_rows) and not needing
+
+    # Which shapes of withdrawal this dataset can actually exercise. ``crossBankSplit`` is the one
+    # that would have said, without anybody having to work it out, that a bank-preference scenario
+    # was untestable because only one bank had capacity.
+    same_bank_split = any(
+        sum(1 for c in eligible if (c.account.bank_name or "").strip() == b) >= 2 for b in banks)
+    scenario_support = {
+        "anyAllocation": bool(eligible),
+        "canCoverProbeAmount": capacity >= probe,
+        "singleAccountCoversProbeAmount": largest >= probe,
+        "sameBankSplit": same_bank_split,
+        "crossBankSplit": len(banks) >= 2,
+    }
 
     return {
         "accounts": rows,
         "total": len(rows),
         "activeTotal": len(active_rows),
-        # The go-live question: can the engine place a withdrawal on ANY account right now?
-        "canAllocate": bool(allocatable),
-        "allocatableAccounts": len(allocatable),
+
+        # ── Configuration ──
+        "configurationComplete": configuration_complete,
         "needsConfiguration": len(needing),
         "needsConfigurationRefs": [r["accountRef"] for r in needing],
         "counts": counts,
+
+        # ── Funding and eligibility, measured by the engine ──
+        "fundedAccounts": len(funded),
+        "fundedAccountRefs": [c.ref for c in funded],
+        "eligibleAccounts": len(eligible),
+        "eligibleAccountRefs": [c.ref for c in eligible],
+        "eligibleBanks": len(banks),
+        "eligibleBankNames": banks,
+        "totalUsableCapacity": capacity,
+        "largestSingleAccountCapacity": largest,
+
+        # Why each ACTIVE account the engine will not use was refused — the figure an operator
+        # acts on, straight from the engine rather than inferred from the configuration state.
+        "ineligibleActiveReasons": {
+            r["accountRef"]: by_ref[r["accountRef"]].reject_reason
+            for r in active_rows
+            if r["accountRef"] in by_ref and not by_ref[r["accountRef"]].eligible
+        },
+
+        # ── The go-live answers ──
+        # Same key as before; it now means what its name always claimed — at least one account the
+        # ENGINE would choose, not merely one holding a configured limit.
+        "canAllocate": bool(eligible),
+        "allocatableAccounts": len(eligible),
+        "readyForTesting": bool(eligible) and configuration_complete and capacity > 0,
+        "scenarioSupport": scenario_support,
+
+        "probeAmount": probe,
+        "mode": mode,
         "summary": (
-            f"{len(allocatable)} of {len(active_rows)} active accounts can be allocated a "
-            f"withdrawal; {len(needing)} still need a daily Highest Debit decision."
+            f"{len(eligible)} of {len(active_rows)} active accounts can be allocated a withdrawal "
+            f"right now, across {len(banks)} bank(s), with ₹{capacity:,.2f} of combined usable "
+            f"capacity; {len(needing)} still need a daily Highest Debit decision."
             if active_rows else "No active payout accounts are configured."),
     }
+
+
+async def debit_limit_readiness(db: AsyncSession) -> dict:
+    """Backwards-compatible alias for :func:`payout_readiness`.
+
+    Kept because the name is referenced by the existing admin endpoint, the boot-time check and
+    the account model's own documentation. It returns the same payload, so a caller reading only
+    the original keys sees no change beyond ``canAllocate`` and ``allocatableAccounts`` becoming
+    accurate.
+    """
+    return await payout_readiness(db)

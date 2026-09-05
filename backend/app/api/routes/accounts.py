@@ -690,28 +690,37 @@ async def adjustment_reasons(_: User = Depends(get_current_admin)):
     return {"reasons": list(ledger.ADJUSTMENT_REASONS)}
 
 
-@router.get("/debit-limit-readiness")
-async def debit_limit_readiness(
+@router.get("/payout-readiness")
+@router.get("/debit-limit-readiness")   # the original path, kept so existing callers still work
+async def payout_readiness(
+    probe_amount: float = 0.01,
+    mode: str = walloc.BANK_MODE,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_admin),
 ):
-    """Which payout accounts still need a daily Highest Debit decision — and whether the platform
-    can currently pay a withdrawal at all.
+    """Whether the platform can actually pay a withdrawal — and what still stands in the way.
 
-    Highest Debit is a HARD DAILY LIMIT and the withdrawal allocation engine will not choose an
-    account that has none. That makes an unconfigured account invisible to the engine, and an
-    environment of unconfigured accounts one where every withdrawal quietly falls back to the
-    Admin exception queue — the manual step the automation exists to remove.
+    Two separate questions, answered separately because they have different remedies:
 
-    Nothing here guesses a limit. A daily ceiling is a business policy, and inferring one from
-    past transactions produces a figure nobody chose; the migration deliberately stopped doing
-    exactly that. What this does instead is make the gap visible before it costs anyone a
-    withdrawal: it names every account that needs a decision, says why, and answers the go-live
-    question directly with ``canAllocate``.
+    **Configuration.** Highest Debit is a HARD DAILY LIMIT and the allocation engine will not
+    choose an account that has none, so an unconfigured account is invisible to it and an
+    environment of unconfigured accounts sends every withdrawal to the Admin exception queue — the
+    manual step the automation exists to remove. Nothing here guesses a limit: a daily ceiling is
+    a business policy, and inferring one from past transactions produces a figure nobody chose.
+    Every account needing a decision is named, with why.
+
+    **Eligibility.** ``canAllocate``, ``eligibleAccounts``, ``eligibleBanks`` and
+    ``totalUsableCapacity`` come from the allocation engine itself rather than from a second
+    opinion, so this report cannot disagree with what a real withdrawal would find. A configured
+    limit is only one of five gates; an account can hold one and still be unable to pay a rupee.
+
+    ``probe_amount`` is the withdrawal size to answer for — pass a real figure and
+    ``scenarioSupport`` says whether it is coverable, and by one account or several. ``mode``
+    scopes the answer to a payout rail and defaults to the generic bank transfer.
 
     Read-only and admin-only. Safe to call at any time; it writes nothing.
     """
-    return await walloc.debit_limit_readiness(db)
+    return await walloc.payout_readiness(db, probe_amount=probe_amount, mode=mode)
 
 
 @router.get("/{reference_number}")
