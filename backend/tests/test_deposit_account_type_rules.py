@@ -458,3 +458,37 @@ async def test_history_and_saving_share_one_canonical_identity(db, typed):
     row = (await db.execute(select(DepositAllocation).where(
         DepositAllocation.transaction_ref == out["ref"]))).scalar_one()
     assert row.customer_type == "OLD", f"{typed!r} is the same account"
+
+
+@pytest.mark.asyncio
+async def test_a_capacity_refusal_says_which_type_it_measured(db):
+    """The trap this closes: a Savings sender, a big CURRENT account, and a refusal that reads
+    "larger than every account's Highest Credit".
+
+    That sentence is false — a larger account exists — and it sends an Admin to raise a limit on
+    an account this deposit can never use. Once a type constraint is in play every capacity
+    message has to name the pool it measured.
+    """
+    merchant = await _merchant(db)
+    await _account(db, "SAV", name="s", credit=100000.0, atype=AccountType.SAVINGS)
+    await _account(db, "BIGCUR", name="c", credit=500000.0, atype=AccountType.CURRENT)
+
+    r = await alloc.allocate_deposit_account(
+        db, amount=150000, member_id=MEMBER, sender_account_type=SAVINGS)
+
+    assert r.allocated is False, "must not cross over to the larger CURRENT account"
+    assert "Savings Account" in r.reason, r.reason
+    assert "every account's Highest Credit" not in r.reason, (
+        "a bigger account DOES exist — it is just the wrong type")
+    assert "100,000" in r.reason, "the ceiling quoted is the Savings pool's, not the platform's"
+
+
+@pytest.mark.asyncio
+async def test_a_capacity_refusal_without_a_type_constraint_is_unchanged(db):
+    """Cash/crypto name no account, so the message keeps its original wording."""
+    merchant = await _merchant(db)
+    await _account(db, "A", name="a", credit=100000.0, atype=AccountType.CURRENT)
+
+    r = await alloc.allocate_deposit_account(db, amount=150000, member_id=MEMBER)
+    assert r.allocated is False
+    assert "of the required type" not in r.reason, r.reason

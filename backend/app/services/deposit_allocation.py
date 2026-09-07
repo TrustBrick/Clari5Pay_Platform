@@ -166,14 +166,23 @@ def _failure(candidates: list["Candidate"], amount: float) -> tuple[str, str]:
     # of that kind with room. Reporting this as "at the daily limit" would send an Admin to raise
     # a limit that was never the obstacle.
     type_blocked = [c for c in candidates if c.reject_reason == REJECT_ACCOUNT_TYPE]
+    # The type the money is coming FROM, deduced from the accounts refused for being the other
+    # kind. Once a type constraint is in play EVERY message below has to say so, or it describes
+    # a pool the Admin cannot see and quietly misstates the platform's real capacity.
+    required = None
+    if type_blocked:
+        wrong = _type_value(type_blocked[0].account.account_type)
+        required = (AccountType.CURRENT.value if wrong == AccountType.SAVINGS.value
+                    else AccountType.SAVINGS.value)
+        of_type = f" of the required type ({required})"
+    else:
+        of_type = ""
+
     if type_blocked and all(
             r in (REJECT_ACCOUNT_TYPE, REJECT_INACTIVE, REJECT_NO_LIMIT) for r in reasons):
-        wanted = _type_value(type_blocked[0].account.account_type)
-        other = (AccountType.CURRENT.value if wanted == AccountType.SAVINGS.value
-                 else AccountType.SAVINGS.value)
         return FAIL_NO_MATCHING_TYPE, (
-            f"The member is sending from a {other}, and no eligible account of that type is "
-            f"available. Add or activate a {other} in Account Management, or assign an account "
+            f"The member is sending from a {required}, and no eligible account of that type is "
+            f"available. Add or activate a {required} in Account Management, or assign an account "
             f"manually.")
 
     # Only accounts that were otherwise usable say anything about capacity.
@@ -183,13 +192,18 @@ def _failure(candidates: list["Candidate"], amount: float) -> tuple[str, str]:
         # the first clears at midnight IST, the second needs a larger limit.
         biggest_ceiling = max(_money(c.account.highest_credit) for c in capacity_blocked)
         if _money(amount) > biggest_ceiling:
+            # ``of_type`` matters here: with a Savings sender, an account of ₹2,00,000 may well
+            # exist and be useless. Saying "every account" would send an Admin to raise a limit on
+            # an account this deposit can never use.
             return FAIL_AMOUNT_TOO_LARGE, (
-                f"{money} is larger than every account's Highest Credit "
-                f"(the largest is ₹{biggest_ceiling:,.2f}). Raise a limit or add an account.")
+                f"{money} is larger than the Highest Credit of every account{of_type} "
+                f"(the largest is ₹{biggest_ceiling:,.2f}). Raise a limit or add an account"
+                f"{' of that type' if required else ''}.")
         left = max(c.remaining for c in capacity_blocked)
         return FAIL_LIMIT_REACHED, (
-            f"Every eligible account has reached its daily credit limit for {money} — the most any "
-            f"has left today is ₹{left:,.2f}. Capacity resets at midnight IST, or raise a limit.")
+            f"Every eligible account{of_type} has reached its daily credit limit for {money} — "
+            f"the most any has left today is ₹{left:,.2f}. Capacity resets at midnight IST, or "
+            f"raise a limit.")
 
     return FAIL_MIXED, (
         f"No account can accept {money} — all {n} are unavailable or out of daily credit capacity.")

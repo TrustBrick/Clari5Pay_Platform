@@ -309,7 +309,7 @@ async def test_the_failure_reason_names_the_problem_the_admin_has_to_fix(db):
     # (e) the deposit is bigger than any ceiling → no amount of waiting helps
     r = await _allocate(db, 500000)
     assert r.detail["failure"] == alloc.FAIL_AMOUNT_TOO_LARGE
-    assert "larger than every account" in r.reason
+    assert "larger than the Highest Credit of every account" in r.reason
 
 
 @pytest.mark.asyncio
@@ -1008,7 +1008,8 @@ async def test_a_failed_allocation_is_recorded_too(db):
     assert row.outcome == alloc.OUTCOME_NO_ACCOUNT
     assert row.candidates_considered == 1 and row.candidates_eligible == 0
     # The stored reason names the fix, not just the symptom.
-    assert "larger than every account" in row.reason and "Raise a limit" in row.reason
+    assert "larger than the Highest Credit of every account" in row.reason
+    assert "Raise a limit" in row.reason
     assert alloc.REJECT_NO_CAPACITY in row.detail
 
 
