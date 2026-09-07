@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountUsers, ActiveUsersData, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MerchantBankAccount, Notification, NewsPost, OtpChallenge, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MemberAccountView, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -319,6 +319,35 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/reject`, { reason });
     return res.data;
   },
+  // The latest allocation decision for a deposit — what was chosen, or why nothing was.
+  // Admin-only server-side: it carries the account's daily credit position and the per-account
+  // rejection reasons, which never belong in a merchant payload.
+  allocationDecision: async (id: string) => {
+    const res = await api.get<{ decision: AllocationDecision | null }>(`/api/transactions/${id}/allocation`);
+    return res.data.decision;
+  },
+  // Re-run the automatic allocation engine for a deposit it could not place. The Admin fixes the
+  // configuration (raises a limit, activates an account) and retries; the engine still chooses
+  // WHICH account, so this is not a manual assignment. Admin-gated server-side.
+  retryAllocation: async (id: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/retry-allocation`, {});
+    return res.data;
+  },
+  // The latest PAYOUT allocation for a withdrawal — which accounts pay it, or why none can.
+  // Admin-only server-side: it carries every account's daily debit position, available balance
+  // and rejection reason, which never belong in a merchant payload. What the merchant does get —
+  // which account pays them, and how much — travels on the transaction as `payoutLegs`.
+  payoutAllocation: async (id: string) => {
+    const res = await api.get<PayoutAllocation>(`/api/transactions/${id}/payout-allocation`);
+    return res.data;
+  },
+  // Re-run the automatic payout allocation for a withdrawal it could not place. The Admin fixes
+  // the cause (raises a limit, activates an account, enables a mode, funds an account) and
+  // retries; the ENGINE still chooses which account, so this is not a manual assignment.
+  retryPayoutAllocation: async (id: string) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/retry-payout-allocation`, {});
+    return res.data;
+  },
   submitAccount: async (
     id: string,
     // `paymentLink` is the Card variant of this same step: the Admin submits the payment gateway
@@ -332,7 +361,14 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/slip`, data);
     return res.data;
   },
-  markDone: async (id: string, data?: { adminProof?: string; adminUtr?: string }) => {
+  // Final completion. For a withdrawal the payout details (how it was paid, and from which
+  // managed account) are recorded here — the backend validates the account, debits it and posts
+  // the ledger entry in the same transaction. `clientRequestId` makes a replayed submit a no-op.
+  markDone: async (id: string, data?: {
+    adminProof?: string; adminUtr?: string;
+    paymentMethod?: 'BANK' | 'MANUAL'; payoutAccountRef?: string;
+    manualReference?: string; payoutRemarks?: string; clientRequestId?: string;
+  }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/done`, data ?? {});
     return res.data;
   },
@@ -505,6 +541,49 @@ export const accountAPI = {
     const res = await api.patch<Account>(`/api/accounts/${ref}/toggle`, { reason });
     return res.data;
   },
+  // Admin edit of an account's configured Highest Credit / Highest Debit. Limits only — the
+  // balance is derived server-side and is untouched by this call. The backend re-validates both
+  // values and rejects any caller that is not an Admin, so hiding the button is not the control.
+  updateLimits: async (ref: string, data: { highest_credit: number; highest_debit: number; reason?: string }) => {
+    const res = await api.patch<Account>(`/api/accounts/${ref}/limits`, data);
+    return res.data;
+  },
+  // Admin edit of which transaction modes an account can PAY OUT by. The withdrawal allocation
+  // engine excludes an account that cannot process a request's mode, so this is a financial
+  // control and is audited as one. An EMPTY list means every mode — the unconfigured default.
+  updatePayoutModes: async (ref: string, payoutModes: string[], reason?: string) => {
+    const res = await api.patch<Account>(`/api/accounts/${ref}/payout-modes`, { payoutModes, reason });
+    return res.data;
+  },
+  // Admin edit of an account's "Own Account" classification. Configuration only: it is recorded
+  // on every allocation decision but is not a ranking input, so this moves no money. Admin-gated
+  // server-side like every other Account Management route.
+  updateOwnAccount: async (ref: string, isOwnAccount: boolean, reason?: string) => {
+    const res = await api.patch<Account>(`/api/accounts/${ref}/own-account`, { is_own_account: isOwnAccount, reason });
+    return res.data;
+  },
+  // ── Accounting ledger + manual adjustment (Account Management) ──
+  // The immutable entries for one account (payout debits + manual adjustments), newest first,
+  // alongside the server's authoritative balance.
+  ledger: async (ref: string, limit = 50) => {
+    const res = await api.get<AccountLedger>(`/api/accounts/${ref}/ledger`, { params: { limit } });
+    return res.data;
+  },
+  adjustmentReasons: async () => {
+    const res = await api.get<{ reasons: string[] }>('/api/accounts/adjustment-reasons');
+    return res.data.reasons;
+  },
+  // Post a manual Credit/Debit. The backend recomputes the balance from its own authoritative
+  // figure under a row lock — the amount/type/reason are the only things it takes from here.
+  // `clientRequestId` is minted once per form so a double-click resolves to the same entry.
+  adjust: async (ref: string, data: {
+    adjustmentType: 'CREDIT' | 'DEBIT'; amount: number; reason: string;
+    reference?: string; remarks?: string; clientRequestId?: string;
+  }) => {
+    const res = await api.post<{ duplicate: boolean; entry: AccountLedgerEntry }>(
+      `/api/accounts/${ref}/adjustments`, data);
+    return res.data;
+  },
 };
 
 export const adminUpiAPI = {
@@ -536,12 +615,21 @@ export const bankAccountAPI = {
     const res = await api.get<MerchantBankAccount[]>('/api/merchant-bank-accounts', { params: memberId ? { memberId } : undefined });
     return res.data;
   },
-  add: async (data: { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName?: string; memberId?: string }) => {
+  add: async (data: { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName?: string; memberId?: string; accountType?: string }) => {
     const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts', data);
     return res.data;
   },
-  addUpi: async (memberId: string, upiId: string) => {
-    const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts/upi', { memberId, upiId });
+  addUpi: async (memberId: string, upiId: string, accountType?: string) => {
+    const res = await api.post<MerchantBankAccount>('/api/merchant-bank-accounts/upi', { memberId, upiId, accountType });
+    return res.data;
+  },
+  /** What the server knows about one sending account: saved details, whether the Account Type
+   *  still has to be asked for, and the account's own NEW/OLD standing. The form asks this rather
+   *  than working any of it out, so what is displayed is exactly what will be stored. */
+  resolve: async (memberId: string, opts: { upiId?: string; accountNumber?: string }) => {
+    const res = await api.get<MemberAccountView>('/api/merchant-bank-accounts/resolve', {
+      params: { memberId, ...(opts.upiId ? { upiId: opts.upiId } : {}), ...(opts.accountNumber ? { accountNumber: opts.accountNumber } : {}) },
+    });
     return res.data;
   },
   setDefaultUpi: async (id: number) => {
@@ -966,12 +1054,21 @@ export const activeUsersAPI = {
 };
 
 export const supportManagementAPI = {
-  // Admin puts themselves on/off support duty. "OFF" clears it — an admin is not counted as
-  // available support until they explicitly go on duty, since having the portal open is not the
-  // same as being available to a merchant.
+  // Admin support duty. A signed-in Admin counts as reachable support BY DEFAULT; this control
+  // is how they step out of that — "OFF" declines duty entirely, BUSY / ON_BREAK behave as they
+  // do for a support member.
   setMySupportDuty: async (availability: 'AVAILABLE' | 'BUSY' | 'ON_BREAK' | 'OFF') => {
     const res = await api.patch<{ supportDuty: string | null }>(
       '/api/support-management/me/support-duty', { availability });
+    return res.data;
+  },
+  // The stored value, read from the server. NOT taken from the signed-in `user`: that object is
+  // a login-time snapshot in localStorage and an Admin session never expires on its own, so a
+  // session older than the supportDuty field carries no value for it — and refreshing the page
+  // re-reads the same stale snapshot. null = never set (counts as on duty).
+  getMySupportDuty: async () => {
+    const res = await api.get<{ supportDuty: string | null }>(
+      '/api/support-management/me/support-duty');
     return res.data;
   },
   list: async () => {

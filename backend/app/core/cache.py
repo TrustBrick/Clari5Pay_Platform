@@ -61,6 +61,23 @@ async def cache_get(key: str):
     return None
 
 
+async def cache_delete(*keys: str) -> None:
+    """Drop cached entries so the next read recomputes.
+
+    Used by the few writes that change a figure a cached aggregate reports — a manual adjustment
+    or a recorded withdrawal payout both move an account's balance, and without this the Account
+    Management screen would keep showing the pre-change figure for the rest of the TTL. Fail-open
+    like the rest of this module: if Redis is unreachable the entry simply expires on its own.
+    """
+    if not keys:
+        return
+    try:
+        c = await _client()
+        await c.delete(*keys)
+    except Exception as e:
+        log.warning("[cache] delete failed for %s: %s", keys, e)
+
+
 async def cache_set(key: str, value, ttl: int) -> None:
     """Cache ``value`` (JSON-encoded) under ``key`` for ``ttl`` seconds. Fail-open on any error."""
     try:

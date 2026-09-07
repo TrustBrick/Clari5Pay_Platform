@@ -88,6 +88,8 @@ export const statusStyle = (s: TxStatus) => {
     MANAGER_REVIEW: { color: T.blue, bg: T.infoBg },
     RESUBMITTED: { color: T.warning, bg: T.warningBg },
     DEPOSITED: { color: T.success, bg: T.successBg },
+    // Nobody can pay until an Admin frees capacity — it reads as the blocker it is.
+    NO_ELIGIBLE_ACCOUNT: { color: T.danger, bg: T.dangerBg },
   };
   return map[s] || { color: T.textMuted, bg: T.borderLight };
 };
@@ -706,6 +708,33 @@ export const formatDateTimeIST = (d?: string | null) => {
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit', hour12: true,
   }) + ' IST';
+};
+
+/**
+ * A one-shot idempotency key for a financial submit (withdrawal completion, manual adjustment).
+ *
+ * Minted ONCE when a form opens and sent with the request, so a double-click, an impatient retry
+ * or a dropped-response replay all carry the SAME key: the backend recognises it and returns the
+ * entry it already wrote instead of debiting or adjusting a second time. `crypto.randomUUID` is
+ * used where available, with a plain random fallback for older browsers.
+ */
+/**
+ * A bank account number shown the way a statement shows it: the last four digits behind bullets
+ * (`••••8890`). Used wherever an account is being *identified* rather than
+ * entered — the payout picker, the adjustment dialog, the ledger. Short or empty values are
+ * returned untouched, since there is nothing to hide.
+ */
+export const maskAccount = (acc?: string | null): string => {
+  const s = (acc || '').trim();
+  if (s.length <= 4) return s;
+  return '••••' + s.slice(-4);
+};
+
+export const newRequestId = (): string => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  } catch { /* fall through */ }
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 };
 
 export const CHART_DATA = [

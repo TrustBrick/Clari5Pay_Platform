@@ -2,7 +2,7 @@ from datetime import datetime, date
 from typing import Optional
 from sqlalchemy import (
     String, Integer, Boolean, Float, DateTime, Date,
-    ForeignKey, Enum as SAEnum, Text, UniqueConstraint
+    ForeignKey, Enum as SAEnum, Index, Text, UniqueConstraint, text
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, column_property
 import enum
@@ -50,6 +50,11 @@ class TxStatus(str, enum.Enum):
     MANAGER_REVIEW = "MANAGER_REVIEW"          # withdrawal assigned to a Manager
     RESUBMITTED = "RESUBMITTED"                # reviewer sent it back to the Data Operator
     DEPOSITED = "DEPOSITED"                     # admin final-approved a deposit
+    # Automatic deposit allocation could not place this request: no account was eligible for the
+    # amount. An EXCEPTION, not a queue — ACCOUNT_REQUESTED is no longer a normal waiting state
+    # for a deposit, because the engine assigns an account the moment the request is created. This
+    # is the only deposit case that still needs an Admin, and the allocation journal records why.
+    NO_ELIGIBLE_ACCOUNT = "NO_ELIGIBLE_ACCOUNT"
 
 
 class AccountType(str, enum.Enum):
@@ -169,6 +174,14 @@ class Transaction(Base):
     account_holder: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # SAVINGS / CURRENT for the member account this request uses, copied from the saved account at
+    # creation. Stored on the transaction rather than only on the account because the Admin must
+    # see what was true WHEN the request was raised — an account edited later must not silently
+    # rewrite the history of a payment already made against it.
+    sender_account_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # NEW / OLD for that same account, decided by the server at creation from the account's own
+    # successful-deposit history. Never taken from the browser; see services/member_account.
+    account_profile: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
 
     # UTR / notes / risk
     utr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)            # bank UTR number
@@ -232,6 +245,19 @@ class Transaction(Base):
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # ── Withdrawal payout (Admin "Pay & Complete") ────────────────────────────────
+    # WHICH managed account the payout was actually made from, and HOW it was paid. Before these
+    # columns a completed withdrawal carried no account at all and had to be *guessed* back to
+    # the member's most-recent receiving account; when set, this is the explicit, recorded answer
+    # and every balance/statement view attributes the debit here instead of guessing.
+    # payout_payment_method: BANK (an account_master account was debited) | MANUAL (offline —
+    # deliberately no account). NULL on every row completed before this step existed, which keeps
+    # the historical member-map attribution working untouched.
+    payout_account_ref: Mapped[Optional[str]] = mapped_column(String(40), index=True, nullable=True)
+    payout_payment_method: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    payout_manual_reference: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    payout_remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # ── Agent Management (Phase 4): which Non-EPS agent + agent account handles this transaction.
     # All nullable; only ever written by the demo-gated agent-assignment endpoint. Untouched (NULL)
     # on Production and by the existing deposit/withdrawal/settlement create/approval logic.
@@ -240,6 +266,15 @@ class Transaction(Base):
     assigned_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)   # actor name
     assigned_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # ── Automatic deposit account allocation ──────────────────────────────────────
+    # An immutable JSON snapshot of the receiving account the allocation engine selected and sent
+    # to the merchant: bank name, account name/number, IFSC, branch and account type. The account
+    # itself is the live record and an Admin may edit it later; this is what was ACTUALLY sent for
+    # this deposit, so the merchant's payment card and the audit trail stay true to the moment of
+    # allocation. Written once, at allocation; NULL on every manually-sent and historical row,
+    # which keeps their existing `admin_bank_details` rendering exactly as it is.
+    allocation_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -271,18 +306,47 @@ class AccountMaster(Base):
     created_time: Mapped[str] = mapped_column(String(16), nullable=False)
     last_maintenance_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     last_maintenance_time: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
-    # Account high-water marks / thresholds (auto-updated by completed transactions):
-    #  • highest_credit — largest single Deposit credited to this account (configurable at
-    #    creation, default 0; auto-updated when a deposit is approved).
-    #  • highest_debit  — largest single Debit (withdrawal/settlement) processed from this account.
-    #    Configurable starting value at creation (default 0); auto-raised whenever a larger debit
-    #    completes (never decreased). Replaces the former "lowest_credit".
-    #  • debit_alert_threshold — the "Highest Debit" value the admin sets at creation, kept FIXED
-    #    (unlike highest_debit, which drifts upward). When >0, a completed debit BELOW it raises a
-    #    low-debit alert. Seeded from the same field as highest_debit's starting value.
+    # Account daily limits / thresholds:
+    #  • highest_credit — the account's HARD DAILY CREDIT limit, enforced by the deposit
+    #    allocation engine. Admin-configured; never auto-raised.
+    #  • highest_debit  — the account's HARD DAILY DEBIT limit, enforced by the withdrawal
+    #    allocation engine. Admin-configured; never auto-raised. An account at 0 has no configured
+    #    capacity and is never chosen automatically, so 0 is "unconfigured", NOT "unlimited".
+    #  • debit_alert_threshold — the "Highest Debit" value the admin sets at creation, kept FIXED.
+    #    When >0, a completed debit BELOW it raises a low-debit alert.
     highest_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     highest_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     debit_alert_threshold: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # The largest single debit ever observed leaving this account. This is what `highest_debit`
+    # used to mean before it became a daily ceiling, and it is preserved here so that history is
+    # not lost by the change of meaning. INFORMATIONAL ONLY: nothing reads it to decide whether a
+    # payout may happen. It exists so an Admin choosing a daily limit can see what this account
+    # has actually handled, and so the old high-water figure is never mistaken for a policy.
+    observed_max_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # When (and by whom) an Admin last EXPLICITLY set the daily Highest Debit. NULL means the
+    # current value was never confirmed by a person — it is either the 0 default or a figure
+    # inherited from the era when highest_debit auto-raised itself from transactions. Those
+    # accounts are reported by GET /api/accounts/debit-limit-readiness so a daily limit is a
+    # deliberate decision rather than an accident of history.
+    highest_debit_configured_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    highest_debit_configured_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # "Own Account" — the Admin's classification of this account, configured in Account
+    # Management alongside the rest of the account's details. It is carried through the deposit
+    # allocation engine and recorded on every allocation decision, but it is deliberately NOT a
+    # ranking input: the platform defines no Own Account priority, and inventing one would change
+    # which account real money is sent to. Preserved and surfaced; never silently acted upon.
+    is_own_account: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Which payout/transaction modes this account can actually send money by — the account's
+    # capability, stored as a comma-separated list of the platform's existing modes
+    # ("UPI,IMPS,NEFT,RTGS"). The withdrawal allocation engine excludes an account that cannot
+    # process the requested mode (services/withdrawal_allocation).
+    #
+    # NULL / empty means EVERY mode, and that default is deliberate. A capability column that
+    # started out empty and was read as "supports nothing" would disqualify every account on a
+    # platform where no Admin has configured one yet, and send every withdrawal to the exception
+    # queue — the same failure a hard UPI-link filter caused on the deposit side. An unconfigured
+    # account is therefore fully capable until an Admin narrows it.
+    payout_modes: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
 class AccountTransaction(Base):
@@ -397,6 +461,11 @@ class MerchantBankAccount(Base):
     branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     upi_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # saved UPI for this member
+    # SAVINGS / CURRENT — the kind of account this is, asked ONCE when the account is first seen
+    # and remembered from then on. NULL means "not recorded yet": either a row created before this
+    # field existed, or one saved by a path that never collected it. A NULL is never guessed at —
+    # the merchant is asked once more and the answer is written here (see services/member_account).
+    account_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     # The default saved UPI for a member (the first one saved; merchant can change it).
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -523,6 +592,46 @@ class SupportConfig(Base):
     max_active_conversations: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     strategy: Mapped[str] = mapped_column(String(24), default="LEAST_ACTIVE", nullable=False)  # LEAST_ACTIVE | ROUND_ROBIN
     last_assigned_support_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # round-robin pointer
+
+
+class SupportAvailabilityState(Base):
+    """Singleton (id=1) latch holding the LAST OBSERVED support-availability state.
+
+    Purely a de-duplication device for the outage alert (see services/support_alerts): the
+    availability answer itself is always derived live from presence, never read from here. The row
+    exists so that "support just went offline" is a state TRANSITION the backend detects once —
+    across every worker, merchant poll and page refresh — instead of something each caller decides
+    for itself. It moves by compare-and-set, so exactly one caller can ever claim a given change.
+    """
+    __tablename__ = "support_availability_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)          # AVAILABLE | UNAVAILABLE
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SupportAvailabilityEvent(Base):
+    """One row per support-availability TRANSITION — the outage/recovery audit trail.
+
+    Written in the same transaction that moves ``SupportAvailabilityState``, so an outage is always
+    recorded even if the Telegram send later fails; the notification columns are patched in once the
+    send finishes (or fails). Written for both directions: an outage carries a notification, a
+    recovery is logged only.
+    """
+    __tablename__ = "support_availability_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    previous_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    new_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Trigger time, stored naive-UTC like every other timestamp, plus the IST rendering that went
+    # into the alert (kept verbatim so the record and the message can never disagree).
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    occurred_at_ist: Mapped[Optional[str]] = mapped_column(String(48), nullable=True)
+    available_admins: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    available_support: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # SENT | FAILED | PENDING | SKIPPED | NOT_CONFIGURED | NO_RECIPIENT (NULL on a recovery).
+    telegram_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    telegram_failure_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class BlogPost(Base):
@@ -1052,3 +1161,338 @@ class TransactionAttachment(Base):
     # return for that file. NULL means the column still holds the inline copy and rollback is
     # still possible.
     source_cleared_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AccountLedgerEntry(Base):
+    """Immutable accounting ledger for the Admin-managed bank accounts (``account_master``).
+
+    ONE ledger for every non-transaction money movement against a managed account. Today it
+    records two entry types:
+
+      • ``WITHDRAWAL_PAYOUT``  — the account actually debited when a withdrawal is paid out
+        (Admin "Pay & Complete"). ``payment_method`` distinguishes a BANK payout from a
+        MANUAL/OFFLINE one; a manual payout is deliberately NOT tied to a bank account, so
+        ``account_ref`` and the balance snapshot are NULL on those rows.
+      • ``MANUAL_ADJUSTMENT``  — an authorised Credit/Debit correction made from Account
+        Management, with a mandatory reason.
+
+    This is an AUDIT ledger, not a second balance store. The platform's account balance stays
+    derived from the transaction history (``/api/accounts/balances``); this table adds the two
+    things a derived figure cannot express — the balance snapshot at the instant of a movement,
+    and manual adjustments, which have no transaction to be derived from. ``services/
+    account_ledger.account_balance`` is the single function that combines both.
+
+    Rows are WRITE-ONCE. History is never edited or deleted to correct a mistake: post a
+    compensating entry instead.
+
+    Two uniqueness guarantees, both enforced by the database rather than by application logic:
+      • ``uq_account_ledger_txn`` — at most one payout entry per (entry_type, transaction_ref),
+        so a withdrawal can never be debited twice however many times "Mark as Done" is clicked.
+        NULLs compare as distinct in Postgres, so manual adjustments (no transaction_ref) are
+        unaffected.
+      • ``client_request_id`` UNIQUE — a caller-supplied idempotency key; a replayed submit
+        (double click, retried request) resolves to the entry that already exists.
+    """
+    __tablename__ = "account_ledger"
+    __table_args__ = (
+        UniqueConstraint("entry_type", "transaction_ref", "leg_no", name="uq_account_ledger_txn_leg"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    # System-generated, immutable serial ref — ADJ000001 (adjustment) / LED000001 (payout).
+    entry_ref: Mapped[str] = mapped_column(String(24), unique=True, index=True, nullable=False)
+
+    # WITHDRAWAL_PAYOUT | MANUAL_ADJUSTMENT
+    entry_type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    # CREDIT | DEBIT — the direction applied to the account's balance.
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # The debited/credited managed account. NULL only for a MANUAL/OFFLINE withdrawal payout,
+    # which by definition has no payout bank account.
+    account_ref: Mapped[Optional[str]] = mapped_column(
+        String(40), ForeignKey("account_master.reference_number"), index=True, nullable=True
+    )
+    account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Authoritative balance snapshot, computed server-side under a row lock. NULL when the entry
+    # has no account (manual/offline payout).
+    balance_before: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    balance_after: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Source transaction (withdrawal reference, e.g. WIT000123) for a payout entry.
+    transaction_ref: Mapped[Optional[str]] = mapped_column(String(32), index=True, nullable=True)
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Which payout LEG of that withdrawal this entry settles. A withdrawal paid from one account
+    # has a single leg 1; one split across three accounts has legs 1, 2 and 3, each its own debit
+    # against its own account, all carrying the same `transaction_ref`. Part of the uniqueness
+    # key, so the database still refuses a second entry for a leg however many times completion is
+    # submitted — the multi-account form of the same idempotency guarantee.
+    #
+    # NULL on manual adjustments (no transaction) and on every payout entry written before
+    # splitting existed. Postgres treats NULLs as distinct in a UNIQUE index, so those historical
+    # single-entry rows keep their own guarantee through `_payout_already_posted`, which looks a
+    # withdrawal up by reference rather than by leg.
+    leg_no: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # BANK | MANUAL — how the withdrawal was actually paid (payout entries only).
+    payment_method: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # Free-text/selected supporting fields: the operator's manual payment reference or the
+    # adjustment's Reference, the adjustment reason code, and remarks. All display-only.
+    reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    reference: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Who / when. `created_at_ist` is the human-facing IST display string, matching the
+    # convention every other operator-visible timestamp in the platform uses.
+    performed_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    performed_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    performed_by_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+
+    # Business scope of the movement (the withdrawal's merchant business for a payout). Recorded
+    # so the ledger answers "whose money moved through this account" without a join.
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    merchant_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    member_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Caller-supplied idempotency key (a UUID minted per form submission). UNIQUE, so a replay
+    # of the same submit returns the existing entry instead of posting a second one.
+    client_request_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
+
+
+class DepositAllocation(Base):
+    """Append-only journal of every AUTOMATIC deposit account allocation decision.
+
+    One row per allocation ATTEMPT — successful or not. A failed attempt is the more valuable of
+    the two: "no eligible account for ₹45,000" is exactly the question support gets asked, and
+    without a record the only answer is a re-run against data that has since moved on.
+
+    This is NOT a second accounting system. It stores no balance and no money movement: the
+    account's balance stays derived (``services/account_ledger``) and the deposit stays the single
+    record of the money. What is captured here is the DECISION — which account was chosen, out of
+    how many, under which rule, and what the account's daily credit position was at that instant.
+    Those figures are point-in-time and unreproducible later (today's usage changes with every
+    deposit, and an Admin may re-configure the limit tomorrow), which is precisely why they are
+    snapshotted rather than recomputed.
+
+    Rows are write-once. A superseded decision is never edited: the next attempt writes its own
+    row, so the sequence of rows IS the history.
+    """
+    __tablename__ = "deposit_allocation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # ── What was being allocated ──
+    transaction_ref: Mapped[str] = mapped_column(String(32), index=True, nullable=False)   # DEP000123
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    member_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    requested_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    deposit_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    merchant_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # ── The decision ──
+    # ALLOCATED — an account was selected. NO_ACCOUNT — nothing was eligible; the deposit stays in
+    # ACCOUNT_REQUESTED for the Admin to handle manually. No account is ever assigned on a
+    # NO_ACCOUNT row, so a failed allocation consumes no capacity.
+    outcome: Mapped[str] = mapped_column(String(24), index=True, nullable=False)
+    account_ref: Mapped[Optional[str]] = mapped_column(String(40), index=True, nullable=True)
+    account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    account_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    is_own_account: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # ── The account's daily credit position AT SELECTION TIME (point-in-time, unreproducible) ──
+    highest_credit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    credit_used_today: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    remaining_capacity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ── Why ──
+    # `rule` is the machine-readable rule that fired (see services/deposit_allocation.RULES);
+    # `reason` is its human sentence, e.g. "Bank requested by merchant note + eligible + nearest
+    # remaining credit capacity". `detail` is the JSON evaluation trace: the customer
+    # classification, the parsed note, the deposit counts, and why each rejected account failed.
+    rule: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    customer_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)       # NEW | OLD
+    candidates_considered: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    candidates_eligible: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    member_deposit_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # ── When ──
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+
+
+class WithdrawalPayoutLeg(Base):
+    """ONE account's share of ONE withdrawal's payout.
+
+    A withdrawal is normally paid from a single account and has a single leg. When no single
+    eligible account can carry the whole amount, the allocation engine splits it and writes one
+    leg per contributing account — Account A 70,000, Account B 50,000, Account C 30,000 — every
+    leg pointing back at the same ``transaction_ref``. The legs of a withdrawal always sum to
+    EXACTLY its amount: a partial allocation is never stored, because a partially-payable
+    withdrawal is an exception, not a smaller withdrawal.
+
+    This is not a second accounting system and it holds no balance. It is the ALLOCATION: which
+    account owes which part, decided up front so the Admin does not choose one per request. The
+    money itself is still recorded where it always was — an immutable ``AccountLedgerEntry`` per
+    leg, written at completion, carrying that leg's balance before/after.
+
+    ``status`` tracks the leg through the withdrawal's own life:
+
+      * ``ALLOCATED``  — assigned and HOLDING capacity. From this moment the leg counts against
+        its account's daily debit limit and its available balance, which is what stops two
+        concurrent withdrawals from being allocated the same headroom.
+      * ``PAID``       — the withdrawal completed and this leg's ledger debit was posted.
+      * ``RELEASED``   — the withdrawal was rejected, cancelled or re-allocated. The leg is kept
+        (history is never deleted) but no longer holds capacity.
+
+    Rows are superseded, never rewritten: a re-allocation releases the old legs and writes new
+    ones, so the sequence of legs IS the history of where this withdrawal was going to be paid
+    from.
+    """
+    __tablename__ = "withdrawal_payout_leg"
+    __table_args__ = (
+        # At most ONE LIVE leg per (withdrawal, account). A retried allocation must release the
+        # existing legs before it writes new ones, so a double-submit cannot double-book an
+        # account against the same withdrawal — enforced by the database, not by a code path.
+        #
+        # PARTIAL, covering only ALLOCATED rows, and that is the whole point. RELEASED legs are
+        # history and a withdrawal can legitimately accumulate several against one account: it is
+        # allocated to Bank of Baroda, released when the Manager returns it, re-allocated to the
+        # same account, released again. A constraint spanning every status would refuse that
+        # second release and break re-allocation. PAID is excluded for the same reason it needs no
+        # guard here: the ledger's own UNIQUE (entry_type, transaction_ref, leg_no) is what makes
+        # a double debit impossible.
+        Index("uq_wd_leg_live", "transaction_ref", "account_ref", unique=True,
+              postgresql_where=text("status = 'ALLOCATED'"),
+              sqlite_where=text("status = 'ALLOCATED'")),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # -- The withdrawal --
+    transaction_ref: Mapped[str] = mapped_column(String(32), index=True, nullable=False)   # WIT000123
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_business: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
+    member_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+
+    # -- The paying account, and this leg's share --
+    # 1 for a single-account payout; 1..n across a split, in allocation order.
+    leg_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    account_ref: Mapped[str] = mapped_column(
+        String(40), ForeignKey("account_master.reference_number"), index=True, nullable=False
+    )
+    account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    account_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Snapshotted so the merchant's payout card stays true to the moment of allocation even if an
+    # Admin later edits the account — the same reason a deposit carries `allocation_snapshot`.
+    account_number: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # The transaction mode this leg is to be paid by (UPI / IMPS / NEFT / RTGS). Recorded per leg
+    # because it is what the account had to be capable of to be chosen.
+    transaction_mode: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # -- The account's daily debit position AT ALLOCATION TIME (point-in-time, unreproducible) --
+    highest_debit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    debit_used_today: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    remaining_capacity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    available_balance: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ALLOCATED | PAID | RELEASED
+    status: Mapped[str] = mapped_column(String(16), default="ALLOCATED", index=True, nullable=False)
+    # The ledger entry this leg's debit was posted as (set when it is PAID).
+    ledger_entry_ref: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    released_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # The IST business date this leg consumed its account's daily debit capacity on — the day
+    # boundary the Highest Debit limit resets against. Its own column rather than a cast over
+    # `created_at`, for the same reason deposits carry `tx_date`: the limit is a per-IST-day rule
+    # and it must be a plain indexed equality test, not a timezone conversion inside every query.
+    leg_date: Mapped[date] = mapped_column(Date, default=date.today, index=True, nullable=False)
+
+    allocated_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class WithdrawalAllocation(Base):
+    """Append-only journal of every AUTOMATIC withdrawal payout allocation decision.
+
+    The debit-side twin of :class:`DepositAllocation`, and it exists for the same reason: "why was
+    this withdrawal not placed?" and "why THAT account?" are the questions operations actually
+    ask, and the figures that answer them — today's debit usage, the remaining capacity, the
+    available balance — have all moved on by the time anybody asks. One row per allocation
+    ATTEMPT, successful or not, with those figures frozen.
+
+    It stores no balance and no money movement. The accounting stays where it is: the account's
+    balance derived through ``services/account_ledger``, and the payout debit an immutable ledger
+    entry per leg. What is captured here is the DECISION.
+    """
+    __tablename__ = "withdrawal_allocation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # -- What was being allocated --
+    transaction_ref: Mapped[str] = mapped_column(String(32), index=True, nullable=False)   # WIT000123
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    merchant_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    member_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    requested_amount: Mapped[float] = mapped_column(Float, nullable=False)
+    transaction_mode: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    merchant_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The receiving/beneficiary account this withdrawal pays OUT to, as requested. Recorded so a
+    # beneficiary-driven preference can be explained after the fact.
+    beneficiary_account: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    beneficiary_ifsc: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    beneficiary_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # -- The decision --
+    # ALLOCATED (a single account) | SPLIT (several) | NO_ACCOUNT (nothing eligible).
+    outcome: Mapped[str] = mapped_column(String(24), index=True, nullable=False)
+    leg_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    allocated_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # The chosen account on a single-account allocation; NULL on a split (read the legs) and on a
+    # failure. Kept so the common case is answerable without a join.
+    account_ref: Mapped[Optional[str]] = mapped_column(String(40), index=True, nullable=True)
+    account_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
+    # -- The chosen account's daily debit position AT SELECTION TIME --
+    highest_debit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    debit_used_today: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    remaining_capacity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    available_balance: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # -- Why --
+    # `rule` is the machine-readable rule that fired (services/withdrawal_allocation.RULES);
+    # `reason` its human sentence; `detail` the JSON evaluation trace — the parsed note, the
+    # beneficiary match, the per-leg split and why each rejected account failed.
+    rule: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    failure_code: Mapped[Optional[str]] = mapped_column(String(48), index=True, nullable=True)
+    candidates_considered: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    candidates_eligible: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # -- When / who --
+    triggered_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)

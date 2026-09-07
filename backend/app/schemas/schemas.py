@@ -156,8 +156,15 @@ class DepositCreate(BaseModel):
     memberName: str
     memberId: str
     segment: str = "A"
+    # Sent by the form for backwards compatibility and DELIBERATELY IGNORED: NEW/OLD is derived
+    # from the account's own deposit history server-side (services/member_account), so a browser
+    # cannot declare a funded account new. The computed value is returned on the response.
     profile: str = "NEW"
     senderUpiId: Optional[str] = None   # merchant's own UPI the payment is sent from (UPI deposits)
+    # SAVINGS / CURRENT for the member's sending account. Required only the first time an account
+    # is seen (and once for a legacy row that predates the field); afterwards the saved value wins
+    # and anything sent here is ignored.
+    accountType: Optional[str] = None
     # Type-specific fields for CASH (village/city/mobile) and CRYPTO (walletAddress/network/txHash).
     depositDetails: Optional[dict] = None
     proof: Optional[str] = None
@@ -195,6 +202,8 @@ class WithdrawalCreate(BaseModel):
     utr: Optional[str] = None
     notes: Optional[str] = None
     saveBankAccount: bool = False
+    # Same rule as the deposit form: only consulted when the account has no recorded type.
+    accountType: Optional[str] = None
     # "Send To Approval" (demo only): the chosen Authorized Approver (a Supervisor/Manager of the
     # merchant's own business). Ignored on Production, where the section is not shown.
     sentForApproval: bool = False
@@ -245,6 +254,43 @@ class SlipRequest(BaseModel):
 class CompleteRequest(BaseModel):
     adminProof: Optional[str] = None  # payment receipt image for withdrawals/settlements
     adminUtr: Optional[str] = None    # agent's payment UTR number
+    # ── Withdrawal payout details (Feature 2) ─────────────────────────────────────
+    # How the withdrawal was actually paid, and from which managed account. All optional so the
+    # existing completion call (proof + UTR only) keeps working exactly as before; supplying
+    # paymentMethod is what opts a completion into the payout-accounting path.
+    paymentMethod: Optional[str] = None       # BANK | MANUAL
+    payoutAccountRef: Optional[str] = None    # account_master reference (BANK only)
+    manualReference: Optional[str] = None     # operator's offline payment reference (MANUAL only)
+    payoutRemarks: Optional[str] = None
+    # Idempotency key minted per submission — a replayed "Mark as Done" resolves to the entry
+    # already posted instead of debiting a second time.
+    clientRequestId: Optional[str] = None
+
+
+class AccountPayoutModesUpdate(BaseModel):
+    """Admin edit of ONE account's payout capability — which transaction modes it can send by.
+
+    An EMPTY list means "every mode", which is the unconfigured default. That is deliberate: a
+    capability read as "supports nothing" would disqualify every account on a platform where no
+    Admin has configured one and send every withdrawal to the exception queue.
+    """
+    payoutModes: list[str] = []
+    reason: Optional[str] = None
+
+
+class AdjustmentCreate(BaseModel):
+    """A manual Credit/Debit adjustment on a managed account (Account Management).
+
+    The frontend's own "Balance After" preview is never trusted: the backend recomputes it from
+    the authoritative balance under a row lock. `clientRequestId` is a UUID the form mints once,
+    so a double-click or retried request resolves to the adjustment that already exists.
+    """
+    adjustmentType: str                       # CREDIT | DEBIT
+    amount: float
+    reason: str
+    reference: Optional[str] = None
+    remarks: Optional[str] = None
+    clientRequestId: Optional[str] = None
 
 
 class ReasonRequest(BaseModel):
@@ -276,6 +322,7 @@ class BankAccountCreate(BaseModel):
     branch: str
     bankName: Optional[str] = None
     memberId: Optional[str] = None
+    accountType: Optional[str] = None   # SAVINGS / CURRENT, recorded once per account
 
 
 # ─── Admin UPI Schemas ────────────────────────────────────────────────────────
@@ -301,11 +348,42 @@ class AccountCreate(BaseModel):
     status: str = "ACTIVE"
     merchant_id: Optional[int] = None
     upiId: Optional[str] = None   # optional UPI to link to this account on creation
-    # Configurable initial Highest Credit / Highest Debit (₹, default 0). The Highest Debit value
-    # seeds both the auto-raising highest_debit and the fixed low-debit alert threshold, then each
-    # is auto-tracked thereafter.
+    # The account's daily Highest Credit / Highest Debit limits (₹). Neither is auto-raised: both
+    # are HARD daily ceilings the allocation engines pay within, changed only by an Admin. The
+    # Highest Debit value also seeds the FIXED low-debit alert threshold. It is REQUIRED for an
+    # ACTIVE account — 0 means "unconfigured", and an unconfigured account is never chosen to pay.
     highest_credit: Optional[float] = 0.0
     highest_debit: Optional[float] = 0.0
+    # Which transaction modes this account can pay out by (UPI / IMPS / NEFT / RTGS). Empty or
+    # omitted means every mode — see AccountPayoutModesUpdate.
+    payout_modes: Optional[list[str]] = None
+    # The Admin's "Own Account" classification. Recorded on the account and carried into every
+    # deposit allocation decision; it is deliberately not a ranking input (see
+    # services/deposit_allocation), so setting it cannot change which account receives money.
+    is_own_account: bool = False
+
+
+class AccountLimitsUpdate(BaseModel):
+    """Admin edit of one account's configured Highest Credit / Highest Debit.
+
+    Both are required and re-validated server-side (see accounts.update_account_limits) — the
+    browser's copy of them is never trusted. Declaring them as ``float`` is the first gate:
+    anything non-numeric is rejected before the route runs.
+    """
+    highest_credit: float
+    highest_debit: float
+    reason: Optional[str] = None       # optional note carried into the audit trail
+
+
+class AccountOwnFlagUpdate(BaseModel):
+    """Admin edit of one account's "Own Account" classification.
+
+    Its own route rather than a field on AccountLimitsUpdate: the limits edit documents exactly
+    what it touches (two money ceilings) and folding an unrelated flag into it would make that
+    promise false. Both remain Admin-only and both are audited.
+    """
+    is_own_account: bool
+    reason: Optional[str] = None
 
 
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────

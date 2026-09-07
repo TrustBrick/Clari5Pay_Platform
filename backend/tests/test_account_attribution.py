@@ -1,11 +1,9 @@
 """Tests for which managed account a completed withdrawal/settlement is charged to.
 
 Deposits carry the receiving account on the row itself (``Transaction.admin_ref``). Debits do
-not, so they are inferred from the member's funding history. Two ways of getting that inference
-wrong both showed up on production as wrong money on screen.
-
-(This is the production back-port. The payout step that records the account explicitly, and the
-tests for it, live on main — production has neither the column nor the step.)
+not: where the payout step recorded the account explicitly that wins, but every row completed
+before that step existed has to be inferred from the member's funding history. Two ways of
+getting that inference wrong both showed up on production as wrong money on screen.
 
 **Charging an account for money it never received.** An ``AccountTransaction`` link row is
 written the moment an admin SENDS account details (on ``ACCOUNT_SUBMITTED``) — it records where
@@ -110,11 +108,13 @@ async def _deposit(db: AsyncSession, ref: str, amount: float, account_ref: str |
 
 
 async def _withdrawal(db: AsyncSession, ref: str, amount: float, *, member: str = "WININ100",
-                      status=TxStatus.COMPLETED, day: int = 99) -> Transaction:
+                      status=TxStatus.COMPLETED, day: int = 99, payout_ref=None,
+                      payout_method=None) -> Transaction:
     t = Transaction(
         ref=ref, type=TxType.WITHDRAWAL_REQUEST, amount=amount, status=status,
         merchant_id=7, merchant_name="BELLAGIO", tx_date=date.today(), tx_time="11:00:00",
         member_id=member, created_at=_at(day),
+        payout_account_ref=payout_ref, payout_payment_method=payout_method,
     )
     db.add(t)
     await db.flush()
@@ -317,6 +317,32 @@ async def test_member_ids_still_match_across_casing_and_spacing(db):
     await _withdrawal(db, "WIT000001", 50000, member="WININ100", day=2)
 
     assert await _available(db, "ACC0000001") == 150000.0
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_payout_account_still_wins(db):
+    """Where completion recorded the account the money actually left, nothing is inferred."""
+    await _merchant(db)
+    await _account(db, "ACC0000001", "Funded")
+    await _account(db, "ACC0000002", "Paid From")
+    await _deposit(db, "DEP000001", 200000, "ACC0000001", day=1)
+    wd = await _withdrawal(db, "WIT000001", 50000, day=2, payout_ref="ACC0000002")
+
+    assert await _charged_to(db, wd) == "ACC0000002"
+    assert await _available(db, "ACC0000001") == 200000.0
+    assert await _available(db, "ACC0000002") == -50000.0
+
+
+@pytest.mark.asyncio
+async def test_a_manual_payout_belongs_to_no_account(db):
+    """An offline payout leaves no account; that rule outranks the funding history."""
+    await _merchant(db)
+    await _account(db, "ACC0000001", "Funded")
+    await _deposit(db, "DEP000001", 200000, "ACC0000001", day=1)
+    wd = await _withdrawal(db, "WIT000001", 50000, day=2, payout_method="MANUAL")
+
+    assert await _charged_to(db, wd) is None
+    assert await _available(db, "ACC0000001") == 200000.0
 
 
 @pytest.mark.asyncio

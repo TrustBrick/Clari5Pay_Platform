@@ -5,6 +5,7 @@ from app.db.session import get_db
 from app.models.models import MerchantBankAccount, User, UserRole
 from app.core.deps import get_current_user
 from app.schemas.schemas import BankAccountCreate
+from app.services import member_account as macct
 
 router = APIRouter(prefix="/api/merchant-bank-accounts", tags=["merchant-bank-accounts"])
 
@@ -20,6 +21,11 @@ def _b(a: MerchantBankAccount) -> dict:
         "bankName": a.bank_name,
         "upiId": a.upi_id,
         "isDefault": a.is_default,
+        # SAVINGS / CURRENT, or null when this account predates the field. A null is what tells
+        # the merchant form to ask once; it is never rendered as a guess.
+        "accountType": macct.normalize_account_type(a.account_type),
+        "accountTypeLabel": macct.ACCOUNT_TYPE_LABELS.get(
+            macct.normalize_account_type(a.account_type) or ""),
     }
 
 
@@ -64,6 +70,10 @@ async def add_bank_account(
         )
     )).scalar_one_or_none()
     if existing:
+        # Re-adding a known account must not duplicate it. If it never carried a type and one is
+        # supplied now, this is the "ask once" answer — record it and keep the same row.
+        if data.accountType:
+            await macct.remember_account_type(db, existing, data.accountType)
         return _b(existing)
     acc = MerchantBankAccount(
         merchant_id=current_user.id,
@@ -73,6 +83,7 @@ async def add_bank_account(
         ifsc=data.ifsc,
         branch=data.branch,
         bank_name=data.bankName,
+        account_type=macct.normalize_account_type(data.accountType),
     )
     db.add(acc)
     await db.flush()
@@ -108,6 +119,8 @@ async def add_member_upi(
         )
     )).scalar_one_or_none() if ids else None
     if existing:
+        if data.get("accountType"):
+            await macct.remember_account_type(db, existing, data.get("accountType"))
         return _b(existing)
     has_upi = (await db.execute(
         select(MerchantBankAccount.id).where(
@@ -116,7 +129,11 @@ async def add_member_upi(
             MerchantBankAccount.upi_id.is_not(None),
         ).limit(1)
     )).scalar_one_or_none() if ids else None
-    row = MerchantBankAccount(merchant_id=current_user.id, member_id=member_id, upi_id=upi, is_default=(has_upi is None))
+    row = MerchantBankAccount(
+        merchant_id=current_user.id, member_id=member_id, upi_id=upi,
+        is_default=(has_upi is None),
+        account_type=macct.normalize_account_type(data.get("accountType")),
+    )
     db.add(row)
     await db.flush()
     await db.refresh(row)
@@ -151,3 +168,30 @@ async def set_default_upi(
     await db.flush()
     await db.refresh(row)
     return _b(row)
+
+
+@router.get("/resolve")
+async def resolve_member_account(
+    memberId: str,
+    upiId: str | None = None,
+    accountNumber: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Everything the deposit/withdrawal form needs to know about one sending account.
+
+    Answers three questions in one round trip, so the form never has to infer any of them:
+
+      * is this account already saved, and what are its bank details?
+      * do we already know whether it is Savings or Current — i.e. must the merchant be asked?
+      * is it NEW or OLD, counted from ITS OWN received deposits?
+
+    Read-only, and the same call the create handlers make when the request is actually submitted.
+    One calculation, one answer: what the merchant is shown while typing is what gets stored.
+    """
+    if current_user.role != UserRole.MERCHANT:
+        raise HTTPException(status_code=403, detail="Merchant only")
+    ident = macct.identity_from(
+        member_id=memberId, upi_id=upiId, account_number=accountNumber)
+    view = await macct.describe(db, current_user, ident)
+    return view.as_dict()

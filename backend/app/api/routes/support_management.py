@@ -28,7 +28,7 @@ import re
 import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,7 +42,7 @@ from app.schemas.schemas import (
     SupportMemberCreate, SupportMemberUpdate, AvailabilityRequest, ReasonRequest,
     SupportConfigUpdate, ReassignConversationRequest,
 )
-from app.services import presence, support_routing
+from app.services import presence, support_routing, support_alerts
 from app.api.routes.system_logs import log_event, record_audit
 
 router = APIRouter(prefix="/api/support-management", tags=["support-management"])
@@ -390,6 +390,7 @@ async def force_availability(
     member_id: int,
     data: AvailabilityRequest,
     request: Request,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     caller: User = Depends(get_current_admin),
 ):
@@ -405,6 +406,7 @@ async def force_availability(
     db.add(Notification(user_id=m.id, message=f"An administrator set your status to {value.title().replace('_', ' ')}", icon="🎧"))
     await log_event(db, "SUPPORT_AVAILABILITY_FORCED", f"{caller.name} set {m.name} to {value}", actor=caller)
     await record_audit(db, "SUPPORT_AVAILABILITY_FORCED", actor=caller, entity_type="support", entity_id=m.id, new=value, ip=_ip(request))
+    _flag_availability_change(background)
     return await _one(db, m)
 
 
@@ -566,20 +568,52 @@ async def close_conversation(
     return {"ok": True}
 
 
+def _flag_availability_change(background: BackgroundTasks) -> None:
+    """Re-run the support-outage state machine after this response is sent.
+
+    The merchant availability pill is polled, so a change would be picked up within a beat anyway;
+    calling it here means the LAST member stepping off duty is noticed the instant they do it,
+    rather than on somebody else's next poll. It runs as a background task on committed state, so
+    it neither joins this request's transaction nor delays its response, and it decides nothing —
+    de-duplication and the alert itself live in services/support_alerts.
+    """
+    support_alerts.schedule(background)
+
+
 # ─── Member self: availability toggle ─────────────────────────────────────────
+@router.get("/me/support-duty")
+async def get_admin_support_duty(actor: User = Depends(get_current_admin)):
+    """The Admin's own stored support-duty value — what the control must show.
+
+    The portal cannot take this from the signed-in user object: that is a snapshot written at
+    login and kept in localStorage, and an Admin session never expires on its own, so a session
+    older than this field carries no value for it and a page refresh does not correct that.
+    Reading it here means the control always reflects what the server actually holds.
+
+    ``null`` = the Admin has never opened the control, which counts as on duty (see the PATCH).
+    """
+    return {"supportDuty": actor.support_availability}
+
+
 @router.patch("/me/support-duty")
 async def set_admin_support_duty(
     data: AvailabilityRequest,
     request: Request,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """An Admin puts themselves ON or OFF support duty (drives the merchant availability pill).
+    """An Admin sets how they appear to the merchant availability pill.
 
-    Having the Admin Portal open is not the same as being available to a merchant — admins keep it
-    open all day for their own work — so an admin counts towards support availability only after
-    explicitly going on duty here. "OFF" clears the state (the default) and takes them out of the
-    count entirely; AVAILABLE / BUSY / ON_BREAK behave exactly as they do for a support member.
+    A signed-in Admin counts as reachable support by DEFAULT — that is the whole rule the pill
+    reports (an eligible Admin OR an eligible Customer Support member). This control exists to
+    step OUT of that: "OFF" declines support duty, and AVAILABLE / BUSY / ON_BREAK behave exactly
+    as they do for a support member.
+
+    OFF is stored as the literal value rather than NULL. NULL is also what every Admin who has
+    never opened this control holds, and those two must not mean the same thing: the untouched
+    default counts while signed in, an explicit OFF never does. ``derive_status`` reads OFF as
+    offline.
 
     Deliberately NOT the support member's /me/availability: that route drains the conversation
     QUEUE and notifies the member's creator, neither of which applies to an admin — admins are
@@ -589,7 +623,7 @@ async def set_admin_support_duty(
     if value not in AVAILABILITY_VALUES + ("OFF",):
         raise HTTPException(status_code=400, detail="availability must be AVAILABLE, BUSY, ON_BREAK or OFF")
     was = actor.support_availability
-    actor.support_availability = None if value == "OFF" else value
+    actor.support_availability = value          # OFF included — see the docstring
     actor.support_availability_at = datetime.utcnow()
     # Going on duty stamps presence so the pill reflects it immediately rather than on the next beat.
     if value != "OFF":
@@ -599,6 +633,7 @@ async def set_admin_support_duty(
                     f"{actor.name} set support duty to {value}", actor=actor)
     await record_audit(db, "ADMIN_SUPPORT_DUTY_CHANGED", actor=actor, entity_type="support",
                        entity_id=actor.id, old=(was or "OFF"), new=value, ip=_ip(request))
+    _flag_availability_change(background)
     return {"supportDuty": actor.support_availability}
 
 
@@ -606,6 +641,7 @@ async def set_admin_support_duty(
 async def set_availability(
     data: AvailabilityRequest,
     request: Request,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     member: User = Depends(get_current_support),
 ):
@@ -624,6 +660,7 @@ async def set_availability(
     await log_event(db, "SUPPORT_AVAILABILITY_CHANGED", f"{member.name} set availability to {value}", actor=member)
     await record_audit(db, "SUPPORT_AVAILABILITY_CHANGED", actor=member, entity_type="support", entity_id=member.id,
                        new=value, ip=_ip(request))
+    _flag_availability_change(background)
     return {"availability": value}
 
 
