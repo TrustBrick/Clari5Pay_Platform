@@ -43,6 +43,11 @@ from tests.test_deposit_allocation import (  # noqa: F401  (fixtures + builders)
 )
 from tests.test_withdrawal_allocation import _admin  # noqa: F401
 
+
+# The allocation engine defaults to OFF (see tests/conftest.py). Everything below tests what the
+# engine DOES, so the whole module runs with it switched on.
+pytestmark = pytest.mark.usefixtures("allocation_engine_on")
+
 UPI_A = "member.a@ybl"
 UPI_B = "member.b@okaxis"
 MEMBER = "MBR20240001"

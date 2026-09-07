@@ -53,6 +53,11 @@ from app.services import account_ledger as ledger
 from app.services import withdrawal_allocation as wa
 
 
+# The allocation engine defaults to OFF (see tests/conftest.py). Everything below tests what the
+# engine DOES, so the whole module runs with it switched on.
+pytestmark = pytest.mark.usefixtures("allocation_engine_on")
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────────────────────
 
 @pytest_asyncio.fixture

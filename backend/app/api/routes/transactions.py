@@ -2756,6 +2756,13 @@ async def _auto_allocate_deposit_account(
     account assignment, the usage the assignment consumes and the audit trail all commit together,
     which is what stops two simultaneous requests from spending the same remaining capacity.
     """
+    # Kill switch. Checked BEFORE the engine runs, not after: letting it run and then ignoring
+    # the answer would still push an unplaceable deposit to NO_ELIGIBLE_ACCOUNT, and that is a
+    # status this platform has never shown a merchant. Returning here leaves the request in
+    # ACCOUNT_REQUESTED and the caller notifies the Admin — the pre-allocation behaviour, exactly.
+    if not (settings.allocation_active or settings.allocation_shadow):
+        return False
+
     sender_type, sender_deposits = await _sender_account_facts(db, tx, merchant)
     result = await alloc.allocate_deposit_account(
         db,
@@ -2770,6 +2777,17 @@ async def _auto_allocate_deposit_account(
         sender_account_deposits=sender_deposits,
     )
     await alloc.record_allocation(db, result, transaction=tx)
+
+    if settings.allocation_shadow:
+        # Journalled and discarded. Nothing below this line runs: no account is assigned, no status
+        # moves, nobody is notified. Capacity is measured from `Transaction.admin_ref` — which is
+        # only ever set by the real path below — so a shadow decision reserves nothing and the
+        # manual workflow keeps the full day's headroom.
+        await log_event(db, "DEPOSIT_ALLOCATION_SHADOW",
+                        f"{tx.ref}: shadow allocation would have chosen "
+                        f"{(result.account.reference_number if result.allocated and result.account else 'NO ACCOUNT')} "
+                        f"for {_inr(tx.amount)} — {result.reason}")
+        return False
 
     if not result.allocated:
         # Nothing eligible. No account is assigned — a limit is never crossed to satisfy a request,
@@ -2915,6 +2933,19 @@ def _payout_summary(legs) -> str:
     return " + ".join(f"{l.account_name} {_inr(l.amount)}" for l in legs)
 
 
+def _shadow_legs(result) -> str:
+    """Where a SHADOW withdrawal decision would have paid from.
+
+    Deliberately not `_payout_summary`: that reads the DB leg rows `write_legs` returns
+    (`account_name`, `bank_name`, `amount`), and shadow mode never writes them. The engine's own
+    Leg carries a Candidate and an amount, so the account is reached through the candidate.
+    """
+    if not getattr(result, "allocated", False) or not result.legs:
+        return "NO ACCOUNT"
+    parts = [f"{l.candidate.account.account_name} {_inr(l.amount)}" for l in result.legs]
+    return parts[0] if len(parts) == 1 else " + ".join(parts)
+
+
 async def _auto_allocate_withdrawal(
     db: AsyncSession, tx: Transaction, *, actor: User | None = None, announce: bool = True,
 ) -> bool:
@@ -2929,6 +2960,13 @@ async def _auto_allocate_withdrawal(
     it writes, the capacity those legs consume and the audit trail all commit together, which is
     what stops two simultaneous withdrawals from spending the same remaining capacity.
     """
+    # Kill switch — see the deposit path. Returning False here means "no payout account was
+    # assigned automatically", which is precisely the pre-allocation state: the withdrawal still
+    # goes to the Manager, and an Admin records the paying account by hand as before. No leg is
+    # written, so no capacity is held.
+    if not (settings.allocation_active or settings.allocation_shadow):
+        return False
+
     result = await walloc.allocate_withdrawal_accounts(
         db,
         amount=tx.amount,
@@ -2941,6 +2979,14 @@ async def _auto_allocate_withdrawal(
     )
     await walloc.record_allocation(
         db, result, transaction=tx, triggered_by=(actor.name if actor else AUTO_PAYOUT_ACTOR))
+
+    if settings.allocation_shadow:
+        # Journalled and discarded — see the deposit path. `write_legs` is what holds withdrawal
+        # capacity, and it is below this line, so a shadow decision reserves nothing.
+        await log_event(db, "WITHDRAWAL_ALLOCATION_SHADOW",
+                        f"{tx.ref}: shadow allocation would have paid {_inr(tx.amount)} from "
+                        f"{_shadow_legs(result)} — {result.reason}", actor=actor)
+        return False
 
     if not result.allocated:
         # Nothing eligible. No account is assigned and no leg is written — a limit is never crossed
@@ -3550,6 +3596,14 @@ async def retry_allocation(
             status_code=400,
             detail="This deposit type is not paid into a managed bank account.")
 
+    # Allocation is switched off (or only shadowing), so the engine cannot place this request and
+    # the 409 below would blame the accounts for a decision that was never taken. Say what is
+    # actually true: on such a box the Admin assigns the account by hand, exactly as before.
+    if not settings.allocation_active:
+        raise HTTPException(
+            status_code=409,
+            detail="Automatic allocation is switched off. Assign the account manually.")
+
     allocated = await _auto_allocate_deposit_account(db, tx)
     await _refresh_with_images(db, tx)
     if not allocated:
@@ -3649,6 +3703,16 @@ async def retry_payout_allocation(
     # records where from, and re-running would double-count the accounts that paid it.
     if tx.status in (TxStatus.COMPLETED, TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED):
         raise HTTPException(status_code=400, detail="This withdrawal is already closed.")
+
+    # Allocation is switched off (or only shadowing). This matters more here than on the deposit
+    # side: just below, a withdrawal that ALREADY has its account is demoted to NO_ELIGIBLE_ACCOUNT
+    # whenever the engine declines to place one. Running a disabled engine here would therefore
+    # push a perfectly healthy withdrawal into an exception state it could only leave by being
+    # allocated — on a box where allocation is precisely what is turned off.
+    if not settings.allocation_active:
+        raise HTTPException(
+            status_code=409,
+            detail="Automatic allocation is switched off. Record the paying account manually.")
 
     placed = await _auto_allocate_withdrawal(db, tx, actor=actor)
     # A withdrawal sitting in the exception state moves on the moment it CAN be paid; one still

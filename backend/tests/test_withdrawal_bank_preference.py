@@ -41,6 +41,11 @@ from tests.test_withdrawal_allocation import (  # noqa: F401  (fixtures)
     _withdrawal,
 )
 
+
+# The allocation engine defaults to OFF (see tests/conftest.py). Everything below tests what the
+# engine DOES, so the whole module runs with it switched on.
+pytestmark = pytest.mark.usefixtures("allocation_engine_on")
+
 L = 100000.0          # one lakh, so the worked examples read as the merchant states them
 
 

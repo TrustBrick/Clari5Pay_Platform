@@ -24,6 +24,23 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await seed_blog(db)
         await db.commit()
+    # State the kill switch, once, at boot. An operator reading logs must never have to guess
+    # whether this box is deciding allocations or leaving them to the Admin — and "off" is the
+    # state a production box is expected to sit in for the whole first phase of the rollout, so it
+    # is logged at WARNING rather than buried at INFO.
+    import logging as _logging
+    _sw = _logging.getLogger("clari5pay.startup")
+    _mode = settings.allocation_mode
+    if _mode == "on":
+        _sw.warning("ALLOCATION ENGINE: ON — deposits and withdrawals are placed automatically.")
+    elif _mode == "shadow":
+        _sw.warning("ALLOCATION ENGINE: SHADOW — decisions are journalled and DISCARDED; "
+                    "no account is assigned and no payout leg is written.")
+    else:
+        _sw.warning("ALLOCATION ENGINE: OFF — no automatic allocation. Deposits wait in "
+                    "ACCOUNT_REQUESTED and withdrawals carry no payout account, as before. "
+                    "Set ALLOCATION_ENGINE_MODE=on to enable.")
+
     # Report, at boot, whether the withdrawal allocation engine can actually place a payout.
     # Highest Debit is a hard daily limit and an account without one is never chosen, so a
     # database whose accounts are all unconfigured allocates nothing and sends every withdrawal to

@@ -50,6 +50,11 @@ from app.schemas.schemas import DepositCreate
 from app.services import deposit_allocation as alloc
 
 
+# The allocation engine defaults to OFF (see tests/conftest.py). Everything below tests what the
+# engine DOES, so the whole module runs with it switched on.
+pytestmark = pytest.mark.usefixtures("allocation_engine_on")
+
+
 # ── Fixtures ───────────────────────────────────────────────────────────────────────────────────
 
 @pytest_asyncio.fixture

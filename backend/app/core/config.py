@@ -179,9 +179,51 @@ class Settings(BaseSettings):
     def telegram_configured(self) -> bool:
         return bool(self.TELEGRAM_BOT_TOKEN)
 
+    # ── Allocation engine kill switch ──
+    # Three states, because deploying the code and trusting it are separate decisions:
+    #
+    #   "off"    — the engine is never called. Deposits wait in ACCOUNT_REQUESTED for an Admin and
+    #              withdrawals carry no payout account, exactly as they did before allocation
+    #              existed. This is what makes it safe to ship the code to an environment whose
+    #              account limits and opening balances are not ready yet.
+    #   "shadow" — the engine runs and journals what it WOULD have done, then discards it. No
+    #              account is assigned, no leg is written, no status moves, nobody is notified.
+    #              Because capacity is measured from real assignments and legs (never from the
+    #              journal), a shadow decision consumes nothing and cannot starve the live manual
+    #              workflow. This is how a decision is checked against an Admin's own before
+    #              anyone relies on it.
+    #   "on"     — the engine decides.
+    #
+    # The default is "off" and it is hardcoded. A missing variable, a truncated .env, a fresh
+    # container or a rollback all land here rather than silently switching a live platform onto an
+    # automatic engine.
+    ALLOCATION_ENGINE_MODE: str = "off"
+
     @property
     def is_demo(self) -> bool:
         return self.ENVIRONMENT == "demo"
+
+    @property
+    def allocation_mode(self) -> str:
+        """The kill switch, normalised. Anything unrecognised reads as "off"."""
+        mode = (self.ALLOCATION_ENGINE_MODE or "").strip().lower()
+        return mode if mode in ("off", "shadow", "on") else "off"
+
+    @property
+    def allocation_active(self) -> bool:
+        """True only for an exact "on". Deliberately NOT a truthiness test: "true", "1", "yes" and
+        a typo are all *not* "on", so every way of getting this wrong fails closed.
+
+        Note what this does not consult: ENVIRONMENT. Tying the engine to demo-ness would mean a
+        single mis-set environment variable could switch production's real money onto an automatic
+        engine. The switch is its own explicit decision, in every environment.
+        """
+        return self.allocation_mode == "on"
+
+    @property
+    def allocation_shadow(self) -> bool:
+        """True only for an exact "shadow" — the engine runs but its decision is discarded."""
+        return self.allocation_mode == "shadow"
 
     @property
     def kyc_configured(self) -> bool:
