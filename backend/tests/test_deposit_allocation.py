@@ -138,9 +138,11 @@ def _payload(amount: float, **kw) -> DepositCreate:
     base = dict(
         amount=amount, depositType="BANK", memberName="Test Member", memberId="MBR1",
         accountHolder="Test Member", accountNumber="999", ifsc="HDFC0001234", bankName="HDFC Bank",
-        # Savings/Current is mandatory the first time an account is seen. These tests are about
-        # RECEIVING-account allocation, so they answer it once here and never think about it again.
-        accountType="SAVINGS",
+        # Savings/Current is mandatory the first time an account is seen, and the sending account's
+        # type must match the managed account's (Rule 2). `_account` creates CURRENT accounts by
+        # default, so these tests send from a Current account — they are about which RECEIVING
+        # account is chosen, not about type compatibility, which has its own tests.
+        accountType="CURRENT",
     )
     base.update(kw)
     return DepositCreate(**base)
@@ -757,7 +759,8 @@ async def test_a_upi_deposit_through_the_endpoint_is_allocated_with_no_upi_confi
     merchant = await _merchant(db)
     await _account(db, "ACC1", name="sindu", credit=800000.0, atype=AccountType.SAVINGS)
 
-    out = await txr.create_deposit(_payload(10000, depositType="UPI"), db, merchant)
+    out = await txr.create_deposit(
+        _payload(10000, depositType="UPI", accountType="SAVINGS"), db, merchant)
 
     assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
     assert out["adminRef"] == "ACC1"
@@ -827,7 +830,8 @@ async def test_a_deposit_request_is_allocated_and_lands_in_account_submitted(db)
     merchant = await _merchant(db)
     await _account(db, "ACC1", name="sindu", credit=100000.0, atype=AccountType.SAVINGS)
 
-    out = await txr.create_deposit(_payload(45000), db, merchant)
+    # The managed account above is SAVINGS, so the member sends from a Savings account.
+    out = await txr.create_deposit(_payload(45000, accountType="SAVINGS"), db, merchant)
 
     assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
     assert out["adminRef"] == "ACC1"

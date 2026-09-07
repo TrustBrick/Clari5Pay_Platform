@@ -2658,7 +2658,95 @@ def _account_summary(snapshot: dict) -> str:
     ])
 
 
-async def _auto_allocate_deposit_account(db: AsyncSession, tx: Transaction) -> bool:
+async def _sender_account_facts(
+    db: AsyncSession, tx: Transaction, merchant: Optional[User] = None,
+) -> tuple[Optional[str], Optional[int]]:
+    """(Savings/Current, received-deposit count) for the account this deposit is sent FROM.
+
+    Read from services/member_account, the platform's single answer to both questions, so the
+    engine filters on exactly the type the merchant was shown and classifies NEW/OLD on exactly
+    the history the Profile field reports. Two figures derived twice are two figures that can
+    disagree.
+
+    The type is preferred from the transaction's own snapshot: it is what was true when the
+    request was raised, and an account edited since must not change how this deposit is placed.
+    Returns (None, None) for a request that names no sending account — cash and crypto — where
+    neither rule applies.
+    """
+    if merchant is None:
+        merchant = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
+    if merchant is None:
+        return None, None
+    ident = macct.identity_from(
+        member_id=tx.member_id, upi_id=tx.sender_upi_id, account_number=tx.account_number)
+    if not ident.is_resolvable:
+        return None, None
+    view = await macct.describe(db, merchant, ident, exclude_tx_id=tx.id)
+    stored = macct.normalize_account_type(tx.sender_account_type) or view.account_type
+    # The engine compares against AccountMaster.account_type, whose values are the display forms
+    # ("Savings Account" / "Current Account"), so hand it the same vocabulary.
+    label = macct.ACCOUNT_TYPE_LABELS.get(stored or "") or None
+    return label, view.successful_deposits
+
+
+async def _validate_manual_deposit_account(
+    db: AsyncSession, tx: Transaction, ref: str,
+) -> None:
+    """Refuse an Admin-chosen deposit account that the engine itself would not choose.
+
+    The four hard rules, in the engine's own order and using its own figures — nothing is
+    re-implemented here beyond reading them:
+
+      * the account exists and is ACTIVE;
+      * it has a configured Highest Credit;
+      * Savings pays into Savings, Current into Current;
+      * today's credit usage plus this deposit stays within Highest Credit.
+
+    Each refusal says which rule stopped it and what the numbers were, because "invalid account"
+    tells an Admin nothing about which of four different fixes to reach for.
+
+    Silent on anything the engine is silent on: a deposit that names no sending account carries no
+    type constraint, exactly as in :func:`deposit_allocation._evaluate`.
+    """
+    acc = (await db.execute(
+        select(AccountMaster).where(AccountMaster.reference_number == ref))).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=400, detail=f"Account {ref} does not exist.")
+    if (acc.status or "").upper() != "ACTIVE":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{ref} is {acc.status or 'unavailable'} and cannot receive a deposit.")
+    limit = round(float(acc.highest_credit or 0.0), 2)
+    if limit <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{ref} has no Highest Credit configured, so it cannot accept a deposit.")
+
+    sender_type, _ = await _sender_account_facts(db, tx)
+    acc_type = acc.account_type.value if hasattr(acc.account_type, "value") else str(acc.account_type or "")
+    if sender_type and acc_type != sender_type:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"The member is sending from a {sender_type} and {ref} is a "
+                    f"{acc_type or 'different type'}. Select an account of the same type."))
+
+    used = round((await alloc.credit_used_today(db, [ref])).get(ref, 0.0), 2)
+    amount = round(float(tx.amount or 0.0), 2)
+    # Today's usage already includes THIS deposit whenever it is routed to this account and still
+    # live — re-sending the same account, or confirming one the engine chose. Adding the amount
+    # again would count it twice and refuse a send that breaches nothing.
+    already_counted = (tx.admin_ref or "") == ref and tx.status not in alloc.RELEASED_STATUSES
+    projected = round(used + (0.0 if already_counted else amount), 2)
+    if projected > limit:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{ref} cannot take ₹{amount:,.2f}: it has used ₹{used:,.2f} of its "
+                    f"₹{limit:,.2f} Highest Credit today, leaving ₹{max(limit - used, 0):,.2f}."))
+
+
+async def _auto_allocate_deposit_account(
+    db: AsyncSession, tx: Transaction, merchant: Optional[User] = None,
+) -> bool:
     """Run the allocation engine for one freshly created deposit and apply its decision.
 
     Returns True when an account was allocated (the request is now ACCOUNT_SUBMITTED and the
@@ -2668,6 +2756,7 @@ async def _auto_allocate_deposit_account(db: AsyncSession, tx: Transaction) -> b
     account assignment, the usage the assignment consumes and the audit trail all commit together,
     which is what stops two simultaneous requests from spending the same remaining capacity.
     """
+    sender_type, sender_deposits = await _sender_account_facts(db, tx, merchant)
     result = await alloc.allocate_deposit_account(
         db,
         amount=tx.amount,
@@ -2675,6 +2764,10 @@ async def _auto_allocate_deposit_account(db: AsyncSession, tx: Transaction) -> b
         deposit_type=tx.deposit_type,
         note=tx.notes,
         exclude_tx_id=tx.id,          # this deposit is not part of its own member history
+        # Savings pays into Savings, Current into Current; and NEW/OLD is this ACCOUNT's own
+        # received-deposit history, not the member's.
+        sender_account_type=sender_type,
+        sender_account_deposits=sender_deposits,
     )
     await alloc.record_allocation(db, result, transaction=tx)
 
@@ -3032,7 +3125,7 @@ async def create_deposit(
     # daily credit capacity — and assigns the best eligible one, moving the request straight to
     # ACCOUNT_SUBMITTED so the merchant can pay. When nothing is eligible it assigns nothing and
     # the request waits in ACCOUNT_REQUESTED for the Admin, exactly as it did before.
-    allocated = await _auto_allocate_deposit_account(db, tx) if needs_account else False
+    allocated = await _auto_allocate_deposit_account(db, tx, current_user) if needs_account else False
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
     # Telegram (demo, next-step only): route to whoever owns the NEXT step. A Cash/Crypto deposit
     # skips the account hop and lands straight in the Supervisor's review queue (SLIP_SUBMITTED).
@@ -3367,6 +3460,18 @@ async def account_submit(
             ref = upi_row.account_ref
         tx.admin_bank_details = None  # a UPI send doesn't also expose bank details
         tx.admin_bank_image = None    # nor a bank-details image
+    # ── The Admin's choice is checked by the same rules the engine obeys ──
+    # A manual assignment exists because automatic allocation found nothing, not because the rules
+    # stop applying. Every gate below is the engine's own, so an account the engine would refuse
+    # cannot be let in by hand: the merchant would be sent details for an account that must not
+    # take the money, and the breach would be discovered only when it landed.
+    # Any ref the Admin sends names a managed account — either typed directly or resolved from the
+    # chosen UPI above — so all of them are checked. Deliberately NOT gated on an "ACC" prefix:
+    # the reference format is data, and a rule that depends on how a reference happens to be
+    # spelled is a rule that stops applying the day the format changes.
+    if ref:
+        await _validate_manual_deposit_account(db, tx, ref)
+
     tx.admin_ref = ref
     # Remember which managed account served this Member ID (drives reuse + per-account reporting).
     if ref and tx.member_id and ref.startswith("ACC"):

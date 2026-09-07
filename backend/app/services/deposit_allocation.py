@@ -122,6 +122,9 @@ REJECT_INACTIVE = "ACCOUNT_NOT_AVAILABLE"
 REJECT_NO_LIMIT = "NO_CREDIT_LIMIT_CONFIGURED"
 REJECT_NO_CAPACITY = "DAILY_CREDIT_LIMIT_REACHED"
 REJECT_LOCKED = "CONCURRENTLY_ALLOCATED"
+# The member is sending from a Savings account and this one is Current, or the reverse. A hard
+# rule, not a preference: money must land in an account of the same kind it was sent from.
+REJECT_ACCOUNT_TYPE = "ACCOUNT_TYPE_MISMATCH"
 
 # The distinct ways an allocation can find nothing. Recorded on the journal and shown to the Admin,
 # because each one has a different fix: activate an account, raise a limit, add an account, or wait
@@ -131,6 +134,7 @@ FAIL_ALL_UNAVAILABLE = "ALL_ACCOUNTS_UNAVAILABLE"
 FAIL_NO_LIMITS = "NO_CREDIT_LIMITS_CONFIGURED"
 FAIL_LIMIT_REACHED = "ALL_ACCOUNTS_AT_DAILY_LIMIT"
 FAIL_AMOUNT_TOO_LARGE = "AMOUNT_EXCEEDS_EVERY_REMAINING_CAPACITY"
+FAIL_NO_MATCHING_TYPE = "NO_ACCOUNT_OF_THE_REQUIRED_TYPE"
 FAIL_MIXED = "NO_ELIGIBLE_ACCOUNT"
 FAIL_RACE = "CAPACITY_TAKEN_CONCURRENTLY"
 
@@ -157,6 +161,20 @@ def _failure(candidates: list["Candidate"], amount: float) -> tuple[str, str]:
         return FAIL_NO_LIMITS, (
             f"No account has a Highest Credit configured, so none can accept a deposit. "
             f"Set a daily credit limit in Account Management.")
+    # Named explicitly, because the fix is completely different from every other refusal: the
+    # money is coming from a Savings (or Current) account and the platform has no ACTIVE account
+    # of that kind with room. Reporting this as "at the daily limit" would send an Admin to raise
+    # a limit that was never the obstacle.
+    type_blocked = [c for c in candidates if c.reject_reason == REJECT_ACCOUNT_TYPE]
+    if type_blocked and all(
+            r in (REJECT_ACCOUNT_TYPE, REJECT_INACTIVE, REJECT_NO_LIMIT) for r in reasons):
+        wanted = _type_value(type_blocked[0].account.account_type)
+        other = (AccountType.CURRENT.value if wanted == AccountType.SAVINGS.value
+                 else AccountType.SAVINGS.value)
+        return FAIL_NO_MATCHING_TYPE, (
+            f"The member is sending from a {other}, and no eligible account of that type is "
+            f"available. Add or activate a {other} in Account Management, or assign an account "
+            f"manually.")
 
     # Only accounts that were otherwise usable say anything about capacity.
     capacity_blocked = [c for c in candidates if c.reject_reason == REJECT_NO_CAPACITY]
@@ -441,10 +459,33 @@ class MemberHistory:
     deposit_count: int = 0
     accounts_used: list[str] = field(default_factory=list)     # most recently used first
     per_account_deposits: dict[str, int] = field(default_factory=dict)
+    # How many deposits the platform has actually RECEIVED from the exact account this request is
+    # being sent from. None when the request names no sending account (cash, crypto), which is the
+    # only case where the older member-wide count is still used.
+    #
+    # Supplied by the caller from services/member_account — the platform's one definition of
+    # "received", shared with the Profile the merchant and the Admin see. Computing it a second
+    # time here is how the engine and the screen would come to disagree about the same account.
+    sender_account_deposits: Optional[int] = None
 
     @property
     def is_new(self) -> bool:
-        """A member with no deposit on record is a NEW customer."""
+        """Whether this is a NEW customer for allocation purposes.
+
+        The question is about the SENDING ACCOUNT, not the person: one member can hold an account
+        that has never funded us beside one that has, and they are not the same customer as far as
+        placing this deposit is concerned. So when the sending account is known the answer comes
+        from ITS received deposits, and only a request with no sending account at all falls back to
+        the member-wide count.
+
+        Note the two counts mean different things and both are kept. ``deposit_count`` is every
+        deposit ROW for the member in any status — it still drives the account-history preference
+        below, where "which of our accounts has served this member before" is the useful question
+        and a cancelled request is still evidence. ``sender_account_deposits`` counts only money
+        that ARRIVED, from one account, which is what NEW/OLD means.
+        """
+        if self.sender_account_deposits is not None:
+            return self.sender_account_deposits == 0
         return self.deposit_count == 0
 
     @property
@@ -600,6 +641,7 @@ class Candidate:
 def _evaluate(
     account: AccountMaster, amount: float, *, used_today: float, deposits_today: int,
     member_deposits: int, unused: bool, upi_id: Optional[str],
+    sender_account_type: Optional[str] = None,
 ) -> Candidate:
     """Apply every HARD rule to one account. Cheapest disqualification first.
 
@@ -617,6 +659,18 @@ def _evaluate(
     # Rule 3 — availability. An inactive/disabled account can never be sent to a merchant.
     if (account.status or "").upper() != "ACTIVE":
         cand.reject_reason = REJECT_INACTIVE
+        return cand
+
+    # Account type must match the account the money is coming FROM. Savings pays into Savings,
+    # Current into Current — a hard rule, so it sits with the other disqualifications rather than
+    # among the preference tiers, where a later pool could have overridden it.
+    #
+    # ``sender_account_type`` is None whenever the sending account's type is not known: a deposit
+    # type that names no account at all (cash, crypto), or a request raised before the type was
+    # recorded. Unknown is NOT treated as a mismatch — inventing a constraint from missing data
+    # would send every such request to the Admin queue.
+    if sender_account_type and _type_value(account.account_type) != sender_account_type:
+        cand.reject_reason = REJECT_ACCOUNT_TYPE
         return cand
 
     # An account with no configured ceiling has no capacity to give. Treated as not eligible
@@ -638,6 +692,7 @@ async def evaluate_accounts(
     db: AsyncSession, amount: float, *, deposit_type: Optional[str] = None,
     member_id: Optional[str] = None, history: Optional[MemberHistory] = None,
     on: Optional[date] = None, exclude_tx_id: Optional[int] = None,
+    sender_account_type: Optional[str] = None,
 ) -> list[Candidate]:
     """Measure every managed account against this deposit and return them all — eligible or not.
 
@@ -664,6 +719,7 @@ async def evaluate_accounts(
             member_deposits=history.per_account_deposits.get(a.reference_number, 0),
             unused=a.reference_number in unused,
             upi_id=upis.get(a.reference_number),
+            sender_account_type=sender_account_type,
         )
         for a in accounts
     ]
@@ -833,6 +889,13 @@ async def allocate_deposit_account(
     note: Optional[str] = None,
     on: Optional[date] = None,
     exclude_tx_id: Optional[int] = None,
+    # The member's SENDING account, as resolved by services/member_account:
+    #   * its Savings/Current type — a hard filter on which managed accounts may be used;
+    #   * how many deposits have been RECEIVED from it — which decides NEW vs OLD.
+    # Both are None when the request names no sending account, and both rules then stand down
+    # rather than guessing.
+    sender_account_type: Optional[str] = None,
+    sender_account_deposits: Optional[int] = None,
 ) -> AllocationResult:
     """Select the best eligible account for one deposit, or report that there is none.
 
@@ -847,12 +910,18 @@ async def allocate_deposit_account(
     accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id))).scalars().all()
     parsed = parse_note(note, accounts)
     history = await member_history(db, member_id, exclude_tx_id=exclude_tx_id)
+    # NEW/OLD is about the SENDING ACCOUNT when there is one. Attached before `is_new` is read.
+    history.sender_account_deposits = sender_account_deposits
     customer_type = "NEW" if history.is_new else "OLD"
 
     result = AllocationResult(customer_type=customer_type, note=parsed)
     result.detail = {
         "customerType": customer_type,
         "memberDepositCount": history.deposit_count,
+        # The figure NEW/OLD was actually decided on, and the account it belongs to, so the journal
+        # explains the classification rather than leaving it to be re-derived later.
+        "senderAccountDeposits": sender_account_deposits,
+        "senderAccountType": sender_account_type,
         "fivePlusDeposits": history.is_five_plus,           # Rule 9 — computed and carried
         "depositType": deposit_type,
         "noteSameAccount": parsed.same_account,
@@ -868,7 +937,7 @@ async def allocate_deposit_account(
 
     candidates = await evaluate_accounts(
         db, amount, deposit_type=deposit_type, member_id=member_id, history=history, on=on,
-        exclude_tx_id=exclude_tx_id)
+        exclude_tx_id=exclude_tx_id, sender_account_type=sender_account_type)
     result.candidates = candidates
     eligible = [c for c in candidates if c.eligible]
     result.detail["accounts"] = [c.snapshot() for c in candidates]
