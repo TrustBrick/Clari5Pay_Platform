@@ -2033,8 +2033,13 @@ export const AdminAccountsPage: React.FC = () => {
     setEditLimits(true);
   };
 
-  // Mirrors the server's rule (required, numeric, greater than zero) so the red state appears
-  // before a round-trip. The backend re-checks all of it — this is convenience, not the gate.
+  // Mirrors the server's rule so the red state appears before a round-trip. The backend re-checks
+  // all of it — this is convenience, not the gate.
+  //
+  // Credit and debit do NOT share a rule. Highest Credit must be greater than zero. Highest Debit
+  // may be ZERO: that is how an account is declared deposit-only, and the engine already refuses
+  // to pay from an account whose daily debit limit is zero. Rejecting it here would block the one
+  // screen that records the decision, stamping who chose it and when.
   const saveLimits = async () => {
     if (!detail) return;
     const rawC = parseIndianAmount(limitForm.credit), rawD = parseIndianAmount(limitForm.debit);
@@ -2043,7 +2048,7 @@ export const AdminAccountsPage: React.FC = () => {
     if (!rawC) errs.credit = 'Highest Credit is required';
     else if (!Number.isFinite(credit) || credit <= 0) errs.credit = 'Enter an amount greater than 0';
     if (!rawD) errs.debit = 'Highest Debit is required';
-    else if (!Number.isFinite(debit) || debit <= 0) errs.debit = 'Enter an amount greater than 0';
+    else if (!Number.isFinite(debit) || debit < 0) errs.debit = 'Enter 0 or a positive amount';
     setLimitErr(errs);
     if (errs.credit || errs.debit) return;
     setSavingLimits(true);
