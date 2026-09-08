@@ -222,9 +222,14 @@ async def test_an_unknown_account_is_a_404(db):
 # ── 3. Validation is server-side ───────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
+# NOTE: (800000, 0) — "zero debit" — was DELIBERATELY REMOVED from this list. A zero daily debit
+# limit is now a valid, meaningful configuration: it is how an account is declared deposit-only,
+# and the engine already refuses to pay from an account whose limit is zero. It is pinned as
+# ACCEPTED by test_a_deliberate_zero_is_stamped_as_a_decision in
+# tests/test_debit_limit_configuration.py. Do not add it back. Zero CREDIT and every negative
+# amount are still rejected, and are still covered below.
 @pytest.mark.parametrize("credit, debit", [
     (0, 100000),            # zero credit
-    (800000, 0),            # zero debit
     (-1, 100000),           # negative credit
     (800000, -0.01),        # negative debit
     (float("nan"), 100000), # not a number
@@ -238,7 +243,8 @@ async def test_bad_limits_are_rejected(db, credit, debit):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("credit, debit", [(0, 100000), (-5, 100000), (800000, 0)])
+# (800000, 0) removed here for the same reason — see the note above.
+@pytest.mark.parametrize("credit, debit", [(0, 100000), (-5, 100000), (800000, -1)])
 async def test_a_rejected_edit_writes_nothing(db, credit, debit):
     """Validation runs before the account is even loaded, so a bad request cannot half-apply."""
     acc = await _account(db, credit=800000, debit=100000)

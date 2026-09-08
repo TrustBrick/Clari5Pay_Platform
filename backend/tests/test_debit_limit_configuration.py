@@ -124,6 +124,64 @@ async def test_setting_the_limit_stamps_who_decided_it(db):
 
 
 @pytest.mark.asyncio
+async def test_a_deliberate_zero_is_stamped_as_a_decision(db):
+    """A daily limit an Admin deliberately sets to ZERO must be distinguishable from one that was
+    never configured at all.
+
+    This is the case where an account is approved as deposit-only: its debit limit is zero ON
+    PURPOSE. Without a stamp that choice would be indistinguishable from the machine-seeded
+    high-water values the platform is trying to get rid of, and the readiness report would keep
+    asking an Admin to decide something they already decided.
+
+    The stamp is what carries the distinction — the value alone cannot, because both cases read
+    ``highest_debit = 0``.
+    """
+    acc = await _account(db, "A", credit=26000, debit=43731)   # an inherited high-water figure
+    acc.highest_debit_configured_at = None                     # never confirmed by a person
+    acc.highest_debit_configured_by = None
+    await db.flush()
+    admin = await _admin(db)
+
+    # The Admin approves this account as deposit-only: a real credit limit, and NO payout capacity.
+    await acct_routes.update_account_limits(
+        "A", AccountLimitsUpdate(highest_credit=200000, highest_debit=0),
+        request=None, db=db, actor=admin)
+
+    refreshed = await db.get(AccountMaster, acc.id)
+    assert refreshed.highest_debit == 0                        # deposit-only, as decided
+    assert refreshed.highest_credit == 200000
+    assert refreshed.highest_debit_configured_by == admin.name   # …and it was a DECISION
+    assert refreshed.highest_debit_configured_at is not None
+    # The engine still refuses to pay from it — a stamped zero is a zero.
+    assert wa.classify_debit_limit(refreshed) != wa.READY_OK
+
+
+@pytest.mark.asyncio
+async def test_resubmitting_identical_limits_records_no_new_decision(db):
+    """A KNOWN LIMITATION, pinned so it is a choice rather than a surprise.
+
+    The edit endpoint returns early when neither limit actually changes, so an Admin who reviews
+    an account and concludes "the values already there are correct" leaves no stamp behind — the
+    account keeps showing as unconfirmed. It does not affect the go-live configuration, where
+    every account's Highest Credit changes, but it is the reason "confirm the current values"
+    is not a thing an Admin can express today.
+    """
+    acc = await _account(db, "A", credit=200000, debit=0.0)
+    acc.highest_debit_configured_at = None
+    acc.highest_debit_configured_by = None
+    await db.flush()
+    admin = await _admin(db)
+
+    await acct_routes.update_account_limits(
+        "A", AccountLimitsUpdate(highest_credit=200000, highest_debit=0),
+        request=None, db=db, actor=admin)
+
+    refreshed = await db.get(AccountMaster, acc.id)
+    assert refreshed.highest_debit_configured_at is None    # nothing changed → nothing stamped
+    assert refreshed.highest_debit_configured_by is None
+
+
+@pytest.mark.asyncio
 async def test_an_active_account_cannot_be_created_without_a_daily_limit(db):
     """An ACTIVE account with no limit is one the platform silently cannot pay from."""
     payload = AccountCreate(

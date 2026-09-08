@@ -890,15 +890,27 @@ async def toggle_account(
 # credit / _track_account_debit) — this route only lets an Admin set the value directly.
 
 
-def _limit(value: float, field: str) -> float:
-    """Validate one limit and round it to paise. Rejects anything a currency amount cannot be."""
+def _limit(value: float, field: str, *, allow_zero: bool = False) -> float:
+    """Validate one limit and round it to paise. Rejects anything a currency amount cannot be.
+
+    ``allow_zero`` exists for Highest Debit alone. Zero is a MEANINGFUL debit limit — it is how an
+    account is declared deposit-only, since the engine never pays from an account whose daily
+    debit limit is zero. Refusing it would leave an Admin unable to express that decision through
+    the one endpoint that validates, stamps and audits it, and the only ways round that are worse:
+    leave an inherited high-water figure in place, or edit the column by hand.
+
+    Highest Credit stays strictly positive. Zero there would silently stop an account receiving
+    anything, which is what deactivating the account is for.
+    """
     try:
         amount = round(float(value), 2)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail=f"{field} must be a valid amount.")
     if not math.isfinite(amount):
         raise HTTPException(status_code=400, detail=f"{field} must be a valid amount.")
-    if amount <= 0:
+    if amount < 0:
+        raise HTTPException(status_code=400, detail=f"{field} cannot be negative.")
+    if amount == 0 and not allow_zero:
         raise HTTPException(status_code=400, detail=f"{field} must be greater than zero.")
     return amount
 
@@ -930,7 +942,8 @@ async def update_account_limits(
     alert — a behaviour change nobody asked for.
     """
     credit = _limit(data.highest_credit, "Highest Credit")
-    debit = _limit(data.highest_debit, "Highest Debit")
+    # Zero is allowed here and only here: it is how "this account does not pay out" is recorded.
+    debit = _limit(data.highest_debit, "Highest Debit", allow_zero=True)
 
     acc = (await db.execute(
         select(AccountMaster).where(AccountMaster.reference_number == reference_number)
