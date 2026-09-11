@@ -911,7 +911,7 @@ export const formatIstTime = (time?: string | null): string => {
   const t = (time || '').trim();
   if (!t) return EMPTY_VALUE;
   const m = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/.exec(t);
-  if (!m) return t;
+  if (!m) return EMPTY_VALUE;
   let h = Number(m[1]);
   const mer = m[3] ? m[3].toUpperCase() : (h < 12 ? 'AM' : 'PM');
   if (!m[3]) h = h % 12 === 0 ? 12 : h % 12;
@@ -923,10 +923,15 @@ export const formatIstParts = (date?: string | null, time?: string | null): stri
   const t = (time || '').trim();
   if (!d) return EMPTY_VALUE;
   const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
-  const datePiece = dm ? `${dm[3]} ${MONTHS[Number(dm[2]) - 1]} ${dm[1]}` : d;
+  // An unrecognised value is an invalid timestamp, and an invalid timestamp takes the empty
+  // convention rather than being echoed back — a date column showing a raw string reads as a
+  // rendering bug to an operator, and "no usable date" is the honest thing to say.
+  if (!dm) return EMPTY_VALUE;
+  const datePiece = `${dm[3]} ${MONTHS[Number(dm[2]) - 1]} ${dm[1]}`;
   if (!t) return datePiece;
   const tm = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/.exec(t);
-  if (!tm) return `${datePiece}, ${t}`;
+  // A date we can read with a time we cannot: show the date, drop the unreadable half.
+  if (!tm) return datePiece;
   let h = Number(tm[1]);
   const mer = tm[3] ? tm[3].toUpperCase() : (h < 12 ? 'AM' : 'PM');
   if (!tm[3]) h = h % 12 === 0 ? 12 : h % 12;            // 24-hour input -> 12-hour
