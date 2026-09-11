@@ -69,6 +69,29 @@ export interface MerchantBankAccount {
   bankName?: string | null;
   upiId?: string | null;
   isDefault?: boolean;
+  /** SAVINGS / CURRENT — null when this account predates the field and must be asked for once. */
+  accountType?: 'SAVINGS' | 'CURRENT' | null;
+  accountTypeLabel?: string | null;
+}
+
+/** What the server knows about one member sending account, asked before the form renders.
+ *  Both `profile` and `accountType` are the SERVER's answer — the form displays them, it never
+ *  decides them. */
+export interface MemberAccountView {
+  accountId: number | null;
+  exists: boolean;
+  accountType: 'SAVINGS' | 'CURRENT' | null;
+  accountTypeLabel: string | null;
+  /** True only when the type has never been recorded — a new account, or a legacy row. */
+  needsAccountType: boolean;
+  /** NEW until this exact account has funded at least one received deposit. */
+  profile: 'NEW' | 'OLD';
+  successfulDeposits: number;
+  bankName: string | null;
+  branch: string | null;
+  accountHolder: string | null;
+  accountNumber: string | null;
+  upiId: string | null;
 }
 
 export type TxStatus =
@@ -111,6 +134,78 @@ export interface AllocatedAccount {
   ifsc?: string;            // omitted on a UPI allocation
   branch?: string;          // omitted on a UPI allocation
   upiId?: string;           // present only when the deposit is paid to a linked UPI
+}
+
+// One account's share of a withdrawal's payout, as allocated by the withdrawal engine. A
+// withdrawal normally has ONE leg; where no single eligible account could carry the amount it has
+// several, and they always sum to exactly the requested amount. The account number is masked
+// except in an Admin payload.
+export interface PayoutLeg {
+  legNo: number;
+  accountRef: string;
+  accountName: string | null;
+  bankName: string | null;
+  accountNumber: string | null;
+  ifsc: string | null;
+  branch: string | null;
+  accountType: string | null;
+  transactionMode: string | null;
+  amount: number;
+  status: 'ALLOCATED' | 'PAID' | 'RELEASED';
+  ledgerEntryRef: string | null;
+  allocatedAt: string | null;
+  allocatedAtIst: string | null;
+  paidAt: string | null;
+  // ADMIN-ONLY, and present ONLY on the admin allocation endpoint (capacity=true server-side).
+  // These are the account's daily debit position at the moment it was chosen; they never travel
+  // on a merchant payload, so treat them as optional everywhere.
+  highestDebit?: number;
+  debitUsedToday?: number;
+  remainingCapacity?: number;   // what the account has left AFTER this leg
+  remainingBefore?: number;     // what it had before this leg was allocated
+  availableBalance?: number;
+}
+
+// One automatic PAYOUT allocation decision (GET /api/transactions/{id}/payout-allocation —
+// ADMIN ONLY). Carries every account's daily debit position and available balance at the moment
+// of the decision, so it is never part of a merchant-facing payload.
+export interface PayoutAllocationDecision {
+  transactionRef: string;
+  outcome: 'ALLOCATED' | 'SPLIT' | 'NO_ACCOUNT';
+  legCount: number | null;
+  allocatedAmount: number | null;
+  accountRef: string | null;
+  accountName: string | null;
+  bankName: string | null;
+  requestedAmount: number;
+  transactionMode: string | null;
+  highestDebit: number | null;
+  debitUsedToday: number | null;
+  remainingCapacity: number | null;
+  availableBalance: number | null;
+  rule: string | null;
+  reason: string | null;
+  failureCode: string | null;
+  candidatesConsidered: number | null;
+  candidatesEligible: number | null;
+  detail?: Record<string, unknown> | null;
+  createdAtIst: string | null;
+}
+
+export interface PayoutAllocation {
+  decision: PayoutAllocationDecision | null;
+  legs: PayoutLeg[];
+  allocatedTotal: number | null;
+  requestedAmount: number;
+  transactionMode: string | null;
+  accountCount?: number;
+  // Distinct banks in allocation order. More than one means the engine could not cover the
+  // amount inside a single bank and combined across them.
+  banks?: string[];
+  crossBank?: boolean;
+  // Failure only: what every eligible account could cover between them, and the gap.
+  totalUsableCapacity?: number | null;
+  shortfall?: number | null;
 }
 
 // One automatic-allocation decision (GET /api/transactions/{id}/allocation — ADMIN ONLY).
@@ -177,6 +272,11 @@ export interface Transaction {
   member?: string;
   memberId?: string;
   senderUpiId?: string | null;
+  /** Savings/Current for the member account this request used, as it stood when raised. */
+  accountType?: 'SAVINGS' | 'CURRENT' | null;
+  accountTypeLabel?: string | null;
+  /** NEW/OLD for that same account — server-decided from its received-deposit history. */
+  accountProfile?: 'NEW' | 'OLD' | null;
   bank?: string;
   accountHolder?: string | null;
   accountNumber?: string | null;
@@ -213,6 +313,12 @@ export interface Transaction {
   payoutAccountRef?: string | null;         // the managed account actually debited
   payoutManualReference?: string | null;
   payoutRemarks?: string | null;
+  // The paying account(s) the withdrawal allocation engine selected, attached the moment the
+  // request was raised. Empty on a cash/crypto payout (neither comes out of a managed account)
+  // and on a withdrawal the engine could not place, which sits in NO_ELIGIBLE_ACCOUNT instead.
+  payoutLegs?: PayoutLeg[];
+  payoutAllocatedTotal?: number | null;
+  payoutTransactionMode?: string | null;
   depositDetails?: Record<string, string> | null;
   qrExpiresAt?: string | null;
   utr?: string | null;
@@ -286,10 +392,29 @@ export interface Account {
   // highestCredit is the account's HARD DAILY CREDIT LIMIT — the ceiling the deposit allocation
   // engine enforces server-side on every request.
   highestCredit?: number;
+  // highestDebit is the account's HARD DAILY DEBIT LIMIT — the ceiling the withdrawal allocation
+  // engine enforces server-side on every payout. It is no longer a high-water mark that a larger
+  // completed debit raises.
   highestDebit?: number;
+  // The largest single debit ever seen leaving this account — what highestDebit used to mean
+  // before it became a daily ceiling. Preserved so the change of meaning loses no history, and
+  // shown so an Admin choosing a daily limit can see what the account has handled. It never
+  // authorises a payout and is not a suggested limit: a day's total is normally several times a
+  // single payout.
+  observedMaxDebit?: number;
+  // Whether a person ever chose the current daily limit. CONFIGURED = yes; NOT_CONFIGURED = none
+  // set, so the engine will never choose this account; SUSPICIOUS / UNCONFIRMED = a value
+  // inherited from before Highest Debit became a daily limit and still awaiting a decision.
+  highestDebitState?: 'CONFIGURED' | 'NOT_CONFIGURED' | 'UNCONFIRMED' | 'SUSPICIOUS';
+  highestDebitConfiguredAt?: string | null;
+  highestDebitConfiguredBy?: string | null;
   // The Admin's "Own Account" classification. Recorded and carried into every allocation
   // decision; it is deliberately not a ranking input, so changing it moves no money.
   isOwnAccount?: boolean;
+  // Which transaction modes this account can PAY OUT by. An account with none configured is
+  // returned as all four — unconfigured means fully capable, never unusable.
+  payoutModes?: string[];
+  payoutModesConfigured?: boolean;
   merchantName: string;
 }
 
@@ -317,13 +442,25 @@ export interface AccountBalance {
   highestDeposit?: number;
   lowestDeposit?: number;
   highestCredit?: number;   // configured HARD DAILY CREDIT LIMIT (Admin-editable)
-  highestDebit?: number;    // recorded high-water mark (stored, auto-updated on a completed debit)
+  highestDebit?: number;    // configured HARD DAILY DEBIT LIMIT (Admin-editable)
   isOwnAccount?: boolean;
+  // Which transaction modes this account can PAY OUT by. An account with none configured is
+  // reported as all four — unconfigured means fully capable, so it is never disqualified.
+  payoutModes?: string[];
+  payoutModesConfigured?: boolean;
   // Where the account stands against its daily credit limit right now. Display only — the
   // backend recomputes all three from the transaction data before allocating anything.
   creditUsedToday?: number;
   remainingCredit?: number;
   depositsToday?: number;
+  // Where the account stands against its daily DEBIT limit right now. Display only — the backend
+  // recomputes all of it before allocating any payout.
+  debitUsedToday?: number;
+  remainingDebit?: number;
+  payoutsToday?: number;
+  // Money promised to allocated-but-unpaid withdrawals. Shown alongside `available`, never
+  // deducted from it: no money has moved yet.
+  reservedForPayouts?: number;
   totalFees?: number;
   withdrawals?: number;
   settlements?: number;

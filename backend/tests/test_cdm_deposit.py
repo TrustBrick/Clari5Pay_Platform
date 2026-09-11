@@ -120,6 +120,8 @@ async def _account(db: AsyncSession, ref: str = "ACC1", *, bank: str = "HDFC Ban
 
 
 def _payload(amount: float = 50000.0, **kw) -> DepositCreate:
+    # No accountType: a bank-like deposit must name the SENDING account's type, but a CDM deposit
+    # has no sending account at all — cash is pushed into a machine.
     base = dict(amount=amount, depositType="CDM", memberName="Test Member", memberId="MBR1")
     base.update(kw)
     return DepositCreate(**base)
@@ -234,7 +236,7 @@ async def test_an_ordinary_bank_deposit_is_still_allocated_automatically(db):
     out = await txr.create_deposit(
         DepositCreate(amount=45000.0, depositType="BANK", memberName="M", memberId="MBR2",
                       accountHolder="M", accountNumber="999", ifsc="HDFC0001234",
-                      bankName="HDFC Bank"), db, merchant)
+                      bankName="HDFC Bank", accountType="CURRENT"), db, merchant)
 
     assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
     assert out["adminRef"] == "ACC1"
@@ -819,7 +821,7 @@ async def test_a_non_cdm_deposit_is_not_gated_by_the_cdm_checklist(db):
     out = await txr.create_deposit(
         DepositCreate(amount=45000.0, depositType="BANK", memberName="M", memberId="MBR2",
                       accountHolder="M", accountNumber="999", ifsc="HDFC0001234",
-                      bankName="HDFC Bank"), db, merchant)
+                      bankName="HDFC Bank", accountType="CURRENT"), db, merchant)
     await txr.submit_slip(out["id"], SlipRequest(merchantProofs=[RECEIPT], merchantRef="U1"),
                           None, db, merchant)
     tx = await txr._get_tx(out["id"], db)

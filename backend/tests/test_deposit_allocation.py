@@ -138,6 +138,11 @@ def _payload(amount: float, **kw) -> DepositCreate:
     base = dict(
         amount=amount, depositType="BANK", memberName="Test Member", memberId="MBR1",
         accountHolder="Test Member", accountNumber="999", ifsc="HDFC0001234", bankName="HDFC Bank",
+        # Savings/Current is mandatory the first time an account is seen, and the sending account's
+        # type must match the managed account's (Rule 2). `_account` creates CURRENT accounts by
+        # default, so these tests send from a Current account — they are about which RECEIVING
+        # account is chosen, not about type compatibility, which has its own tests.
+        accountType="CURRENT",
     )
     base.update(kw)
     return DepositCreate(**base)
@@ -304,7 +309,7 @@ async def test_the_failure_reason_names_the_problem_the_admin_has_to_fix(db):
     # (e) the deposit is bigger than any ceiling → no amount of waiting helps
     r = await _allocate(db, 500000)
     assert r.detail["failure"] == alloc.FAIL_AMOUNT_TOO_LARGE
-    assert "larger than every account" in r.reason
+    assert "larger than the Highest Credit of every account" in r.reason
 
 
 @pytest.mark.asyncio
@@ -754,7 +759,8 @@ async def test_a_upi_deposit_through_the_endpoint_is_allocated_with_no_upi_confi
     merchant = await _merchant(db)
     await _account(db, "ACC1", name="sindu", credit=800000.0, atype=AccountType.SAVINGS)
 
-    out = await txr.create_deposit(_payload(10000, depositType="UPI"), db, merchant)
+    out = await txr.create_deposit(
+        _payload(10000, depositType="UPI", accountType="SAVINGS"), db, merchant)
 
     assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
     assert out["adminRef"] == "ACC1"
@@ -824,7 +830,8 @@ async def test_a_deposit_request_is_allocated_and_lands_in_account_submitted(db)
     merchant = await _merchant(db)
     await _account(db, "ACC1", name="sindu", credit=100000.0, atype=AccountType.SAVINGS)
 
-    out = await txr.create_deposit(_payload(45000), db, merchant)
+    # The managed account above is SAVINGS, so the member sends from a Savings account.
+    out = await txr.create_deposit(_payload(45000, accountType="SAVINGS"), db, merchant)
 
     assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
     assert out["adminRef"] == "ACC1"
@@ -1001,7 +1008,8 @@ async def test_a_failed_allocation_is_recorded_too(db):
     assert row.outcome == alloc.OUTCOME_NO_ACCOUNT
     assert row.candidates_considered == 1 and row.candidates_eligible == 0
     # The stored reason names the fix, not just the symptom.
-    assert "larger than every account" in row.reason and "Raise a limit" in row.reason
+    assert "larger than the Highest Credit of every account" in row.reason
+    assert "Raise a limit" in row.reason
     assert alloc.REJECT_NO_CAPACITY in row.detail
 
 

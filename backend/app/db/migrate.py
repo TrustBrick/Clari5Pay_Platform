@@ -36,6 +36,9 @@ _NEW_COLUMNS = [
     ("users", "token_version", "INTEGER DEFAULT 0 NOT NULL"),
     # Set on every successful login; shown as "Last Login" in the profile popup.
     ("users", "last_login_at", "TIMESTAMP"),
+    # The member account's type and NEW/OLD standing as at THIS request — see Transaction.
+    ("transactions", "sender_account_type", "VARCHAR(16)"),
+    ("transactions", "account_profile", "VARCHAR(8)"),
     ("transactions", "merchant_ref", "VARCHAR(64)"),
     ("transactions", "admin_bank_details", "TEXT"),
     ("transactions", "admin_bank_image", "TEXT"),
@@ -63,6 +66,21 @@ _NEW_COLUMNS = [
     # Automatic deposit allocation: immutable snapshot of the receiving account actually sent
     # to the merchant. NULL on every manually-sent and historical row.
     ("transactions", "allocation_snapshot", "TEXT"),
+    # Automatic withdrawal payout allocation: which transaction modes an account can PAY by, and
+    # which leg of a (possibly split) payout a ledger entry settles. Both NULL on existing rows —
+    # a NULL payout_modes means "every mode", so no account is disqualified by the migration, and
+    # leg_no is backfilled to 1 for existing payout entries below.
+    ("account_master", "payout_modes", "VARCHAR(64)"),
+    ("account_ledger", "leg_no", "INTEGER"),
+    # Highest Debit became a HARD DAILY LIMIT. These three preserve what the column used to mean
+    # and record whether its current value was ever an Admin's deliberate choice.
+    #  • observed_max_debit — the largest single debit ever seen leaving the account (the old
+    #    high-water mark). Informational; nothing reads it to authorise a payout.
+    #  • highest_debit_configured_at / _by — stamped when an Admin explicitly sets the limit.
+    #    NULL means "never confirmed by a person", which is what the readiness report flags.
+    ("account_master", "observed_max_debit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    ("account_master", "highest_debit_configured_at", "TIMESTAMP"),
+    ("account_master", "highest_debit_configured_by", "VARCHAR(128)"),
     # Reporting: approver / processor / creating-agent tracking.
     ("transactions", "approved_by", "VARCHAR(128)"),
     ("transactions", "processed_by", "VARCHAR(128)"),
@@ -96,6 +114,10 @@ _NEW_COLUMNS = [
     ("merchant_bank_accounts", "member_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "upi_id", "VARCHAR(64)"),
     ("merchant_bank_accounts", "is_default", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    # Savings/Current for a member's saved sending account. Deliberately NULLABLE with no default
+    # and no backfill: an existing row's real type is unknown, and inventing one would tell an
+    # Admin something nobody ever said. NULL means "ask once", which is what the merchant form does.
+    ("merchant_bank_accounts", "account_type", "VARCHAR(16)"),
     ("transactions", "sender_upi_id", "VARCHAR(64)"),
     ("transactions", "merchant_proofs", "TEXT"),
     # Admin payment receipts / settlement proofs as a JSON array — the multi-file counterpart of
@@ -421,6 +443,21 @@ _NEW_INDEXES = [
     # deposit_allocation — the allocation audit journal (per-deposit lookup + per-account history).
     ("ix_depalloc_txn_ref",           "deposit_allocation", "(transaction_ref)"),
     ("ix_depalloc_account_created",   "deposit_allocation", "(account_ref, created_at DESC)"),
+    # withdrawal_payout_leg — the payout allocation. The engine's hot path is "today's debit used
+    # per account", which filters live legs by (account_ref, leg_date); the per-withdrawal lookup
+    # reads them by transaction_ref.
+    ("ix_wdleg_account_date",         "withdrawal_payout_leg", "(account_ref, leg_date)"),
+    ("ix_wdleg_txn_ref",              "withdrawal_payout_leg", "(transaction_ref)"),
+    ("ix_wdleg_status",               "withdrawal_payout_leg", "(status)"),
+    # At most ONE LIVE leg per (withdrawal, account). Partial by design: RELEASED legs are history
+    # and a withdrawal can legitimately hold several against one account (allocated, returned,
+    # re-allocated, returned again), so a constraint spanning every status would break
+    # re-allocation. A double debit is blocked separately, by the ledger's own uniqueness.
+    ("uq_wd_leg_live",                "withdrawal_payout_leg",
+     "(transaction_ref, account_ref) WHERE status = 'ALLOCATED'", True),
+    # withdrawal_allocation — the payout allocation journal.
+    ("ix_wdalloc_txn_ref",            "withdrawal_allocation", "(transaction_ref)"),
+    ("ix_wdalloc_account_created",    "withdrawal_allocation", "(account_ref, created_at DESC)"),
 ]
 
 # New enum values keyed by an existing label that lives in the same enum type
@@ -476,6 +513,25 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         # Account ledger entry references (ADJ000001 / LED000001). Its OWN sequence, in its own
         # namespace: no existing DEP/WIT/SET transaction reference is read, reused or renumbered.
         await conn.execute(text("CREATE SEQUENCE IF NOT EXISTS account_ledger_ref_seq START WITH 1"))
+        # ── Withdrawal payout legs: the ledger's double-debit guard widens to cover a SPLIT ──
+        # A withdrawal paid from several accounts posts one entry per account, so uniqueness moves
+        # from (entry_type, transaction_ref) to (entry_type, transaction_ref, leg_no). Existing
+        # payout entries are backfilled to leg 1 FIRST: Postgres treats NULLs in a UNIQUE index as
+        # distinct, so leaving them NULL would silently weaken the guarantee that a withdrawal
+        # cannot be debited twice. Manual adjustments have no transaction_ref and stay NULL, which
+        # is what lets an account hold any number of them.
+        await conn.execute(text(
+            "UPDATE account_ledger SET leg_no = 1 "
+            "WHERE leg_no IS NULL AND transaction_ref IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE account_ledger DROP CONSTRAINT IF EXISTS uq_account_ledger_txn"))
+        await conn.execute(text(
+            "DO $$ BEGIN "
+            "  ALTER TABLE account_ledger ADD CONSTRAINT uq_account_ledger_txn_leg "
+            "    UNIQUE (entry_type, transaction_ref, leg_no); "
+            "EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; END $$;"
+        ))
         # Backfill created_at from the legacy created date for existing rows.
         await conn.execute(
             text("UPDATE users SET created_at = created::timestamp WHERE created_at IS NULL")
@@ -609,12 +665,23 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             ") s "
             "WHERE a.reference_number = s.admin_ref AND a.highest_credit = 0"
         ))
-        # Seed Highest Debit from existing completed withdrawals/settlements, attributed to each
-        # account via the member's most-recent receiving account — the exact attribution used at
-        # runtime by /accounts/balances (debits carry no admin_ref). Only touches accounts still at
-        # the 0 default, so it's idempotent and never overwrites a value tracked since deploy.
+        # Highest Debit is a HARD DAILY LIMIT and it is NEVER inferred from history.
+        #
+        # This block used to seed it with MAX(single debit) for any account still at 0. Under the
+        # old high-water semantics that was the right value; as a DAILY ceiling it is systematically
+        # WRONG — an account that legitimately makes ten ₹50,000 payouts a day would be given a
+        # ₹50,000 daily limit and stop after the first one. A limit nobody chose is not a policy,
+        # and guessing one silently is worse than having none, so nothing is written to
+        # `highest_debit` here any more.
+        #
+        # The figure itself is not lost: it is preserved in `observed_max_debit`, where an Admin
+        # can see what the account has actually handled while choosing a real daily limit. Existing
+        # `highest_debit` values are also left untouched — this migration never edits a limit — and
+        # those never confirmed by an Admin are reported by
+        # GET /api/accounts/debit-limit-readiness. Idempotent: it only ever raises the observed
+        # maximum, so re-running cannot lower it.
         await conn.execute(text(
-            "UPDATE account_master a SET highest_debit = s.hi "
+            "UPDATE account_master a SET observed_max_debit = s.hi "
             "FROM ("
             "  SELECT ma.reference_number AS ref, MAX(t.amount) AS hi "
             "  FROM transactions t "
@@ -627,7 +694,14 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "    AND t.status::text = 'COMPLETED' "
             "  GROUP BY ma.reference_number"
             ") s "
-            "WHERE a.reference_number = s.ref AND a.highest_debit = 0"
+            "WHERE a.reference_number = s.ref AND COALESCE(a.observed_max_debit, 0) < s.hi"
+        ))
+        # Carry the pre-existing high-water value across too. Before this change `highest_debit`
+        # WAS the largest single debit, so on an already-deployed database it is the better record
+        # of what the account has handled. Only ever raises the observed maximum.
+        await conn.execute(text(
+            "UPDATE account_master SET observed_max_debit = highest_debit "
+            "WHERE COALESCE(observed_max_debit, 0) < COALESCE(highest_debit, 0)"
         ))
         # The former Lowest Credit column is superseded by Highest Debit — drop it once (idempotent).
         await conn.execute(text("ALTER TABLE account_master DROP COLUMN IF EXISTS lowest_credit"))
@@ -646,10 +720,13 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         # CREATE INDEX CONCURRENTLY cannot run in a transaction and must not abort startup
         # if one fails (e.g. a prior interrupted build left an INVALID index): log & continue,
         # each is retried on the next startup. IF NOT EXISTS makes an already-built index a no-op.
-        for name, table, cols in _NEW_INDEXES:
+        for name, table, cols, *unique in _NEW_INDEXES:
+            # An optional 4th element marks the index UNIQUE (a partial one carries its own
+            # WHERE inside `cols`). Everything else about the build is unchanged.
+            kind = "UNIQUE INDEX" if (unique and unique[0]) else "INDEX"
             try:
                 await conn.execute(
-                    text(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {table} {cols}")
+                    text(f"CREATE {kind} CONCURRENTLY IF NOT EXISTS {name} ON {table} {cols}")
                 )
             except Exception as exc:  # noqa: BLE001 — never let index creation block boot
                 import logging

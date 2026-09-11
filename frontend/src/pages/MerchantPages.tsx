@@ -4,6 +4,7 @@ import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPO
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
+import { PayoutAllocationPanel } from '../components/PayoutAllocation';
 import { IfscField } from '../components/IfscField';
 import { useIfscAutoFill } from '../utils/useIfscAutoFill';
 import { fireConfetti } from '../utils/confetti';
@@ -19,7 +20,7 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { BANK_NAMES } from '../utils/ifsc';
 import { BankLogo, bankLogoIcon } from '../components/BankLogo';
-import type { Transaction, User, SupportMessage, BalanceSummary, MerchantBankAccount, NewsPost, AuditLogEntry, Notification, AllocatedAccount } from '../types';
+import type { Transaction, User, SupportMessage, BalanceSummary, MemberAccountView, MerchantBankAccount, NewsPost, AuditLogEntry, Notification, AllocatedAccount } from '../types';
 
 // The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
 export { ReportsPage } from './ReportsPage';
@@ -28,12 +29,30 @@ export { ReportsPage } from './ReportsPage';
 type BankForm = { accountHolder: string; accountNumber: string; ifsc: string; branch: string; bankName: string };
 const emptyBank: BankForm = { accountHolder: '', accountNumber: '', ifsc: '', branch: '', bankName: '' };
 
+/** One row of an account-details list — the exact markup the list already uses for Account
+ *  Holder / Account Number / IFSC / Branch. Shared so Account Type cannot drift from them. */
+const AccountDetailRow: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
+  <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}>
+    <span style={{ color:T.textMuted }}>{k}</span><b>{v}</b>
+  </div>
+);
+
 const BankAccountFields: React.FC<{
   memberId: string;
+  /** SAVINGS/CURRENT already recorded for this account, shown as the last detail row of the saved
+   *  summary. Null while the type is still unknown — the field below handles that case. */
+  accountTypeLabel?: string | null;
+  /** Whether the merchant still owes us the answer, plus the pending selection. When the type is
+   *  unknown the Account Type cell is a required dropdown; when it is known the same cell is a
+   *  read-only field showing the saved value. Either way it sits beside Branch Name. */
+  needsAccountType?: boolean;
+  accountType?: string;
+  onAccountType?: (v: string) => void;
   // A SetStateAction dispatch, not a plain setter: the IFSC auto-fill writes the code and the
   // bank/branch in separate updates, which would clobber each other via a captured object.
   bank: BankForm; onBank: React.Dispatch<React.SetStateAction<BankForm>>; saveNew: boolean; onSaveNew: (v: boolean) => void;
-}> = ({ memberId, bank, onBank, saveNew, onSaveNew }) => {
+}> = ({ memberId, accountTypeLabel, needsAccountType, accountType, onAccountType,
+        bank, onBank, saveNew, onSaveNew }) => {
   const [saved, setSaved] = useState<MerchantBankAccount[]>([]);
   const [sel, setSel] = useState<string>('NEW');
 
@@ -94,7 +113,9 @@ const BankAccountFields: React.FC<{
       {sel === 'NEW' && (
         <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
           {/* Platform-standard bank-details order: Account Holder → Account Number → IFSC →
-              auto-fetched Bank Name → Branch Name. */}
+              auto-fetched Bank Name → Branch Name → Account Type. Two columns, so Account Type
+              pairs with Branch Name on the last row. (BankNamesDatalist is display:none and takes
+              no cell.) */}
           <BankNamesDatalist names={BANK_NAMES}/>
           <Input label="Account Holder Name" value={bank.accountHolder} onChange={e=>set('accountHolder',e.target.value)} required/>
           <Input label="Account Number" value={bank.accountNumber} onChange={e=>set('accountNumber',e.target.value)} required/>
@@ -102,14 +123,25 @@ const BankAccountFields: React.FC<{
           <Input label="Bank Name" value={bank.bankName} onChange={e=>set('bankName',e.target.value)} list={ifscFill.locked ? undefined : 'bank-names'} readOnly={ifscFill.locked}
             icon={bankLogoIcon(bank.bankName, bank.ifsc, ifscFill.locked)}/>
           <Input label="Branch Name" value={bank.branch} onChange={e=>set('branch',e.target.value)} readOnly={ifscFill.locked} required/>
+          {/* Sixth cell, so it lands beside Branch Name. A dropdown only while the type is
+              unknown; once saved it is a read-only field with the same styling as Bank Name when
+              the IFSC lookup owns that — no badge, colour or block of its own. */}
+          {needsAccountType
+            ? <Sel label="Account Type" value={accountType || ''} onChange={e=>onAccountType?.(e.target.value)} required
+                options={[{value:'',label:'Select account type'},{value:'SAVINGS',label:'Savings Account'},{value:'CURRENT',label:'Current Account'}]}/>
+            : accountTypeLabel
+              ? <Input label="Account Type" value={accountTypeLabel} onChange={()=>{}} readOnly/>
+              : null}
         </div>
       )}
       {sel !== 'NEW' && (
         <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:14 }}>
-          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Holder</span><b>{bank.accountHolder}</b></div>
-          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Number</span><b>{bank.accountNumber}</b></div>
-          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>IFSC</span><b>{bank.ifsc}</b></div>
-          <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Branch</span><b>{bank.branch}</b></div>
+          <AccountDetailRow k="Account Holder" v={bank.accountHolder} />
+          <AccountDetailRow k="Account Number" v={bank.accountNumber} />
+          <AccountDetailRow k="IFSC" v={bank.ifsc} />
+          <AccountDetailRow k="Branch" v={bank.branch} />
+          {/* Last row, styled exactly like the four above — no label, badge or border. */}
+          {accountTypeLabel && <AccountDetailRow k="Account Type" v={accountTypeLabel} />}
         </div>
       )}
       {saveNew && <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>This account will be saved for future requests.</p>}
@@ -706,6 +738,51 @@ const SendToApprovalCard: React.FC<{
   </div>
 );
 
+/** ACCOUNT TYPE — the one-time question, and nothing else.
+ *
+ *  Renders a required selector ONLY while the server says the type has never been recorded (a new
+ *  account, or a legacy row). The moment it is known this renders nothing: the saved value belongs
+ *  in the account-details list beside Account Holder / Number / IFSC / Branch, which is where
+ *  :component:`AccountDetailRow` puts it. A known type is information, not a control, and giving
+ *  it its own labelled, bordered block made it look far more important than the details it
+ *  describes.
+ */
+const AccountTypeField: React.FC<{
+  view: MemberAccountView | null;
+  value: string;
+  onChange: (v: string) => void;
+}> = ({ view, value, onChange }) => {
+  // ONLY the question. Once the answer is known this renders nothing and the value appears as an
+  // ordinary row in the account-details list — a saved account is a detail to read, not a control.
+  if (!view || !view.needsAccountType) return null;
+  return (
+    <Sel label="Account Type" value={value} onChange={e=>onChange(e.target.value)} required
+      options={[{value:'',label:'Select account type'},{value:'SAVINGS',label:'Savings Account'},{value:'CURRENT',label:'Current Account'}]}/>
+  );
+};
+
+/** PROFILE — NEW/OLD for the selected account, in the position it has always occupied.
+ *
+ *  Read-only by design. It is not an attribute the merchant sets but a fact about the account:
+ *  NEW until that exact account has funded a received deposit, OLD from the first one onwards.
+ *  Rendered as a disabled-looking field so the grid still reads the way it always has, and it
+ *  stays visible (showing NEW) before an account is entered, rather than appearing and
+ *  disappearing as the form is filled in.
+ */
+const ProfileField: React.FC<{ view: MemberAccountView | null }> = ({ view }) => {
+  const profile = view?.profile || 'NEW';
+  // A read-only field, identical to every other read-only field on the form. It was coloured —
+  // green for NEW, blue for OLD — which read as a status badge and gave a plain fact more weight
+  // than the Member Name beside it. The reason still travels underneath as the standard hint.
+  return (
+    <Input label="Profile" value={profile} onChange={()=>{}} readOnly
+      hint={!view ? 'Set automatically from this account’s deposit history'
+        : profile === 'OLD'
+          ? `Funded ${view.successfulDeposits} received deposit${view.successfulDeposits === 1 ? '' : 's'}`
+          : 'No received deposit from this account yet'}/>
+  );
+};
+
 // ─── Deposit form (used inside the Request modal) ──────────────────────────────
 export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = ({ user, onSubmitted }) => {
   const { showToast } = useToast();
@@ -715,6 +792,11 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const [riskAnalysis, setRiskAnalysis] = useState(false);
   const [loading, setLoading] = useState(false);
   const [senderUpi, setSenderUpi] = useState('');
+  // What the SERVER says about the sending account currently typed in: is it saved, do we still
+  // owe it an Account Type, and is it NEW or OLD. Asked rather than inferred, so the form shows
+  // exactly what submitting will store.
+  const [acctView, setAcctView] = useState<MemberAccountView | null>(null);
+  const [acctType, setAcctType] = useState('');
   const [memberLocked, setMemberLocked] = useState(false);  // Member Name auto-filled from an existing membership → read-only
   // Cash / Crypto member-supplied details + proof (no bank account on these types).
   const [details, setDetails] = useState<Record<string,string>>({ network:'TRC20' });
@@ -764,8 +846,27 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     return () => { alive = false; clearTimeout(t); };
   }, [form.memberId]);
 
+  // Re-resolve whenever the member or the account being used changes. Debounced, because it fires
+  // while the merchant is still typing a UPI id.
+  useEffect(() => {
+    const mid = form.memberId.trim();
+    const upi = senderUpi.trim();
+    const acctNo = bank.accountNumber?.trim();
+    if (!mid || (!upi && !acctNo)) { setAcctView(null); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      bankAccountAPI.resolve(mid, { upiId: isUpi ? upi : undefined, accountNumber: acctNo })
+        .then(v => { if (alive) { setAcctView(v); if (!v.needsAccountType) setAcctType(''); } })
+        .catch(() => { if (alive) setAcctView(null); });
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.memberId, senderUpi, bank.accountNumber, isUpi]);
+
   const submit = async () => {
     if(!form.amount||!form.memberName||!form.memberId){ showToast('Fill all required fields','error'); return; }
+    // Asked once per account: only when the server says the type has never been recorded.
+    if(isBankLike && acctView?.needsAccountType && !acctType){ showToast('Select the Account Type for this account','error'); return; }
     if(parseFloat(parseIndianAmount(form.amount)) < 1){ showToast('Amount must be greater than 0.','error'); return; }
     if(isUpi && !senderUpi.includes('@')){ showToast('Enter a valid Sender UPI ID (name@bank)','error'); return; }
     if(isBankLike && (!bank.accountHolder||!bank.accountNumber)){ showToast('Select or add a bank account','error'); return; }
@@ -793,6 +894,8 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
           saveBankAccount: saveNew,
         } : {}),
         ...(isUpi ? { senderUpiId: senderUpi.trim() } : {}),
+        // Only meaningful for a first-time account; the server ignores it once a type is stored.
+        ...(isBankLike && acctType ? { accountType: acctType } : {}),
         ...(isCash ? { depositDetails: { village: details.village, city: details.city, mobile: details.mobile }, proofs: firstProofs } : {}),
         ...(isCrypto ? { depositDetails: { walletAddress: details.walletAddress, network: details.network, txHash: details.txHash }, proofs: firstProofs } : {}),
       });
@@ -820,7 +923,9 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         <Input label="Membership ID" value={form.memberId} onChange={e=>setMemberId(e.target.value)} placeholder="e.g. MBR20240001" required/>
         {isBankLike && <>
           <Sel label="Segment" value={form.segment} onChange={e=>set('segment',e.target.value)} options={['A','B','C','D'].map(v=>({value:v,label:`Segment ${v}`}))}/>
-          <Sel label="Profile" value={form.profile} onChange={e=>set('profile',e.target.value)} options={[{value:'OLD',label:'OLD'},{value:'NEW',label:'NEW'}]}/>
+          {/* Unchanged position — still beside Segment, as it has always been. What changed is
+              that it is now the SERVER's answer rather than a dropdown the merchant sets. */}
+          <ProfileField view={acctView}/>
         </>}
       </div>
       {isCash && (
@@ -861,9 +966,17 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
             <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Sending Account Details</p>
             <Input label="UPI ID" value={senderUpi} onChange={e=>setSenderUpi(e.target.value)} placeholder="e.g. satish@ybl" required
               hint="The UPI the payment is sent from — saved to this Membership ID for future withdrawals" />
-            <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
+            {/* Account Type lives inside the bank-details grid below, beside Branch Name — it is
+                an account detail, not a section of its own. */}
+            <BankAccountFields memberId={form.memberId}
+              accountTypeLabel={acctView?.needsAccountType ? null : acctView?.accountTypeLabel}
+              needsAccountType={!!acctView?.needsAccountType} accountType={acctType} onAccountType={setAcctType}
+              bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>
           </div>
-        : <BankAccountFields memberId={form.memberId} bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>)}
+        : <BankAccountFields memberId={form.memberId}
+            accountTypeLabel={acctView?.needsAccountType ? null : acctView?.accountTypeLabel}
+            needsAccountType={!!acctView?.needsAccountType} accountType={acctType} onAccountType={setAcctType}
+            bank={bank} onBank={setBank} saveNew={saveNew} onSaveNew={setSaveNew}/>)}
       <div style={{ marginBottom:14 }}>
         <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Note to Agent (optional)</label>
         <textarea value={form.notes} onChange={e=>set('notes',e.target.value)} placeholder='Any message for the agent — e.g. "Use HDFC" or "Same account"'
@@ -894,8 +1007,20 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
 };
 
 // ─── Withdrawal form (payout-mode driven) ──────────────────────────────────────
+// The Transaction Mode a withdrawal is paid by. IMPS / NEFT / RTGS are the platform's own
+// existing modes — the same three the Deposit Type list already offers and that
+// PAYMENT_METHOD_GROUPS already labels as "Bank Transfer" — so naming them here invents nothing.
+// What it adds is precision the payout engine can act on: an account is only allocated a
+// withdrawal it can actually send (services/withdrawal_allocation enforces this server-side).
+// "Bank Transfer" stays, and means "any bank rail", which is what every existing row carries.
+// The payout modes that move money over a bank rail, and therefore carry a bank beneficiary.
+const BANK_RAIL_MODES = ['BANK', 'IMPS', 'NEFT', 'RTGS'];
+
 const PAYOUT_MODES = [
   { value:'BANK', label:'Bank Transfer' },
+  { value:'IMPS', label:'IMPS' },
+  { value:'NEFT', label:'NEFT' },
+  { value:'RTGS', label:'RTGS' },
   { value:'UPI', label:'UPI' },
   { value:'CASH', label:'Cash' },
   { value:'CRYPTO', label:'Crypto (USDT)' },
@@ -905,6 +1030,10 @@ const MODE_FIELDS: Record<string, { key:string; label:string; digits?: boolean; 
   // Platform-standard bank-details order: Account Holder → Account Number → IFSC. The IFSC entry
   // renders the auto-fetched Bank Name + Branch Name straight after it, completing the order.
   BANK: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
+  // IMPS / NEFT / RTGS are bank rails, so they collect exactly the bank fields BANK does.
+  IMPS: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
+  NEFT: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
+  RTGS: [{key:'accountHolder',label:'Account Holder Name'},{key:'accountNumber',label:'Account Number'},{key:'ifsc',label:'IFSC Code',upper:true}],
   UPI: [{key:'upiId',label:'UPI ID'}],
   CASH: [{key:'village',label:'Village'},{key:'city',label:'City'},{key:'mobile',label:'Mobile Number',digits:true},{key:'pinCode',label:'PIN Code',digits:true,max:6}],
   CRYPTO: [{key:'walletAddress',label:'Wallet Address'},{key:'network',label:'Network (e.g. TRC20)'}],
@@ -933,6 +1062,11 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   const [savedBanks, setSavedBanks] = useState<MerchantBankAccount[]>([]);
   const [savedUpis, setSavedUpis] = useState<MerchantBankAccount[]>([]);
   const [destId, setDestId] = useState('');   // '' = none chosen, 'OTHER' = manual entry
+  // The same server-resolved view the deposit form uses. A withdrawal reads the member account's
+  // saved type instead of asking again, and shows the SAME NEW/OLD standing — which is still
+  // counted from that account's received DEPOSITS, never from withdrawal history.
+  const [acctView, setAcctView] = useState<MemberAccountView | null>(null);
+  const [acctType, setAcctType] = useState('');
   // "Send To Approval": the chosen Authorized Approver. A Withdrawal is authorised by a Manager
   // only, so this list is the business's Managers — Supervisors are never offered (the backend
   // rejects one too).
@@ -943,10 +1077,27 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
   // destination or an existing Cash/Crypto withdrawal still resolves its fields normally.
   const payoutModes = txnTypeOptionsFor(PAYOUT_MODES, user.merchantRole);
 
+  // Resolve the destination account: its saved Account Type (asked once, never again) and its
+  // NEW/OLD standing. Debounced like the deposit form's.
+  useEffect(() => {
+    const mid = memberId.trim();
+    const upi = (details.upiId || '').trim();
+    const acctNo = (details.accountNumber || '').trim();
+    if (!mid || (!upi && !acctNo)) { setAcctView(null); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      bankAccountAPI.resolve(mid, { upiId: upi || undefined, accountNumber: acctNo || undefined })
+        .then(v => { if (alive) { setAcctView(v); if (!v.needsAccountType) setAcctType(''); } })
+        .catch(() => { if (alive) setAcctView(null); });
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memberId, details.upiId, details.accountNumber]);
+
   // Pick a saved destination (UPI or bank) → drives payout mode + details.
   const applyDest = (kind: 'UPI' | 'BANK', row: MerchantBankAccount) => {
     if (kind === 'UPI') { setDestId(`upi-${row.id}`); setMode('UPI'); setDetails({ upiId: row.upiId || '' }); }
-    else { setDestId(`bank-${row.id}`); setMode('BANK'); setDetails({ accountHolder: row.accountHolder || '', accountNumber: row.accountNumber || '', ifsc: row.ifsc || '', bank: row.bankName || '', branch: row.branch || '' }); }
+    else { setDestId(`bank-${row.id}`); setMode(m => (BANK_RAIL_MODES.includes(m) ? m : 'BANK')); setDetails({ accountHolder: row.accountHolder || '', accountNumber: row.accountNumber || '', ifsc: row.ifsc || '', bank: row.bankName || '', branch: row.branch || '' }); }
   };
 
   useEffect(() => { transactionAPI.summary().then(s => { setAvailable(s.available); setRb(s.runningBalance || 0); setMaxWithdrawable(s.maxWithdrawable ?? s.available); setSummaryLoaded(true); }).catch(()=>{}); }, []);
@@ -1016,14 +1167,27 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
     if(hasSaved && !destId){ showToast('Select a withdrawal destination','error'); return; }
     const missing = fields.filter(f => !(details[f.key]||'').trim());
     if(missing.length){ showToast(`Fill: ${missing.map(m=>m.label).join(', ')}`,'error'); return; }
+    // Asked once per account, exactly as on the deposit form.
+    if(acctView?.needsAccountType && !acctType){ showToast('Select the Account Type for this account','error'); return; }
     // "Send To Approval" (demo only): an Authorized Approver is mandatory, mirroring the Agent module.
     if(SEND_TO_APPROVAL_ENABLED && !approverId){ showToast('Select an Authorized Approver.','error'); return; }
     // Agent assignment is optional on a normal merchant withdrawal — see the deposit path.
     setLoading(true);
     try {
       const payload: Record<string, unknown> = { amount: amountNum, memberId, memberName: memberName.trim(), payoutMode: mode, payoutDetails: details };
-      if (mode === 'BANK') { payload.accountHolder = details.accountHolder; payload.accountNumber = details.accountNumber; payload.ifsc = details.ifsc; }
+      // Every bank rail mirrors its beneficiary onto the top-level columns. The payout allocation
+      // engine reads the receiver off those columns to decide which account can pay, so an
+      // IMPS/NEFT/RTGS withdrawal that only carried them inside payoutDetails would arrive with
+      // no readable beneficiary and be refused as an exception.
+      if (BANK_RAIL_MODES.includes(mode)) {
+        payload.accountHolder = details.accountHolder;
+        payload.accountNumber = details.accountNumber;
+        payload.ifsc = details.ifsc;
+        payload.bankName = details.bank;
+        payload.branch = details.branch;
+      }
       if (SEND_TO_APPROVAL_ENABLED && approverId) { payload.sentForApproval = true; payload.approverUserId = Number(approverId); }
+      if (acctType) payload.accountType = acctType;
       const created = await transactionAPI.createWithdrawal(payload);
       fireConfetti();
       showToast('Withdrawal request submitted');
@@ -1073,14 +1237,32 @@ export const WithdrawalForm: React.FC<{ user: User; onSubmitted?: () => void }> 
       {chosenSaved && (
         <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:12 }}>
           {chosenSaved.kind === 'UPI'
-            ? <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>UPI ID</span><b>{details.upiId}</b></div>
+            ? <AccountDetailRow k="UPI ID" v={details.upiId} />
             : <>
-                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Holder</span><b>{details.accountHolder}</b></div>
-                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Account Number</span><b>{details.accountNumber}</b></div>
-                <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>IFSC</span><b>{details.ifsc}</b></div>
-                {details.bank && <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Bank</span><b>{details.bank}</b></div>}
-                {details.branch && <div style={{ display:'flex',justifyContent:'space-between',padding:'2px 0' }}><span style={{ color:T.textMuted }}>Branch</span><b>{details.branch}</b></div>}
+                <AccountDetailRow k="Account Holder" v={details.accountHolder} />
+                <AccountDetailRow k="Account Number" v={details.accountNumber} />
+                <AccountDetailRow k="IFSC" v={details.ifsc} />
+                {details.bank && <AccountDetailRow k="Bank" v={details.bank} />}
+                {details.branch && <AccountDetailRow k="Branch" v={details.branch} />}
               </>}
+          {/* Final row of the same list, identical styling — never a badge or its own block. */}
+          {acctView && !acctView.needsAccountType && acctView.accountTypeLabel &&
+            <AccountDetailRow k="Account Type" v={acctView.accountTypeLabel} />}
+        </div>
+      )}
+
+      {/* The member account's Savings/Current and its NEW/OLD standing. A saved account shows the
+          type it already carries and is not asked again; only an account the server has never
+          recorded a type for offers the selector. */}
+      <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+        <AccountTypeField view={acctView} value={acctType} onChange={setAcctType}/>
+        <ProfileField view={acctView}/>
+      </div>
+      {/* A saved type on a destination entered by hand — the summary block above only renders for
+          a SAVED destination, so without this the value would have nowhere to appear. */}
+      {!chosenSaved && acctView && !acctView.needsAccountType && acctView.accountTypeLabel && (
+        <div style={{ background:T.canvas,borderRadius:10,padding:12,fontSize:12,marginBottom:14 }}>
+          <AccountDetailRow k="Account Type" v={acctView.accountTypeLabel} />
         </div>
       )}
 
@@ -1875,6 +2057,19 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         {isSettlement && <SlipRow k="Settlement Amount" v={fmt(d.amount)} />}
       </DetailSection>
 
+      {/* WHERE this withdrawal is paid from — chosen automatically by the backend the moment the
+          request was raised, so the merchant sees it here without waiting for an Admin. A cash or
+          crypto payout comes out of no managed account and renders nothing at all. */}
+      {isWithdrawal && (d.payoutMode || '').toUpperCase() !== 'CASH'
+        && (d.payoutMode || '').toUpperCase() !== 'CRYPTO' && (
+        <PayoutAllocationPanel
+          legs={d.payoutLegs} amount={d.amount} mode={d.payoutTransactionMode || d.payoutMode}
+          emptyNote={d.status === 'NO_ELIGIBLE_ACCOUNT'
+            ? 'No payout account is available for this request yet. Our team has been notified and will place it shortly.'
+            : undefined}
+        />
+      )}
+
       {/* Crypto Balance module — a dedicated section grouping every crypto-specific field
           (Currency / Network / Wallet Address / Transaction Hash / Business Amount). Status,
           Created Date & Time and Approval Details already render in their own sections above/
@@ -2055,6 +2250,18 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
         {d.senderUpiId && <SlipRow k="Sender UPI" v={d.senderUpiId} />}
         {d.payoutDetails && Object.entries(d.payoutDetails).map(([k, v]) => v ? <SlipRow key={k} k={k} v={String(v)} /> : null)}
       </div>
+
+      {/* The account(s) this withdrawal will be paid FROM, allocated automatically at creation.
+          The reviewer approves the REQUEST; they never choose the paying account, and neither
+          does the Admin who pays it. */}
+      {d.type.startsWith('WITHDRAWAL') && (
+        <PayoutAllocationPanel
+          legs={d.payoutLegs} amount={d.amount} mode={d.payoutTransactionMode || d.payoutMode}
+          emptyNote={d.status === 'NO_ELIGIBLE_ACCOUNT'
+            ? 'No payout account could be allocated for this amount. An Admin is reviewing it.'
+            : undefined}
+        />
+      )}
 
       {/* Timeline (created → reviewer → admin). */}
       <div style={{ background: T.canvas, borderRadius: 10, padding: 12, marginBottom: 14 }}>

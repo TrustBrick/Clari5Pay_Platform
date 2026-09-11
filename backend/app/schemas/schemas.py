@@ -156,8 +156,15 @@ class DepositCreate(BaseModel):
     memberName: str
     memberId: str
     segment: str = "A"
+    # Sent by the form for backwards compatibility and DELIBERATELY IGNORED: NEW/OLD is derived
+    # from the account's own deposit history server-side (services/member_account), so a browser
+    # cannot declare a funded account new. The computed value is returned on the response.
     profile: str = "NEW"
     senderUpiId: Optional[str] = None   # merchant's own UPI the payment is sent from (UPI deposits)
+    # SAVINGS / CURRENT for the member's sending account. Required only the first time an account
+    # is seen (and once for a legacy row that predates the field); afterwards the saved value wins
+    # and anything sent here is ignored.
+    accountType: Optional[str] = None
     # Type-specific fields for CASH (village/city/mobile) and CRYPTO (walletAddress/network/txHash).
     depositDetails: Optional[dict] = None
     proof: Optional[str] = None
@@ -195,6 +202,8 @@ class WithdrawalCreate(BaseModel):
     utr: Optional[str] = None
     notes: Optional[str] = None
     saveBankAccount: bool = False
+    # Same rule as the deposit form: only consulted when the account has no recorded type.
+    accountType: Optional[str] = None
     # "Send To Approval" (demo only): the chosen Authorized Approver (a Supervisor/Manager of the
     # merchant's own business). Ignored on Production, where the section is not shown.
     sentForApproval: bool = False
@@ -301,6 +310,17 @@ class ProofsAppend(BaseModel):
     proofs: list[str]
 
 
+class AccountPayoutModesUpdate(BaseModel):
+    """Admin edit of ONE account's payout capability — which transaction modes it can send by.
+
+    An EMPTY list means "every mode", which is the unconfigured default. That is deliberate: a
+    capability read as "supports nothing" would disqualify every account on a platform where no
+    Admin has configured one and send every withdrawal to the exception queue.
+    """
+    payoutModes: list[str] = []
+    reason: Optional[str] = None
+
+
 class AdjustmentCreate(BaseModel):
     """A manual Credit/Debit adjustment on a managed account (Account Management).
 
@@ -348,6 +368,7 @@ class BankAccountCreate(BaseModel):
     branch: str
     bankName: Optional[str] = None
     memberId: Optional[str] = None
+    accountType: Optional[str] = None   # SAVINGS / CURRENT, recorded once per account
 
 
 # ─── Admin UPI Schemas ────────────────────────────────────────────────────────
@@ -373,11 +394,15 @@ class AccountCreate(BaseModel):
     status: str = "ACTIVE"
     merchant_id: Optional[int] = None
     upiId: Optional[str] = None   # optional UPI to link to this account on creation
-    # Configurable initial Highest Credit / Highest Debit (₹, default 0). The Highest Debit value
-    # seeds both the auto-raising highest_debit and the fixed low-debit alert threshold, then each
-    # is auto-tracked thereafter.
+    # The account's daily Highest Credit / Highest Debit limits (₹). Neither is auto-raised: both
+    # are HARD daily ceilings the allocation engines pay within, changed only by an Admin. The
+    # Highest Debit value also seeds the FIXED low-debit alert threshold. It is REQUIRED for an
+    # ACTIVE account — 0 means "unconfigured", and an unconfigured account is never chosen to pay.
     highest_credit: Optional[float] = 0.0
     highest_debit: Optional[float] = 0.0
+    # Which transaction modes this account can pay out by (UPI / IMPS / NEFT / RTGS). Empty or
+    # omitted means every mode — see AccountPayoutModesUpdate.
+    payout_modes: Optional[list[str]] = None
     # The Admin's "Own Account" classification. Recorded on the account and carried into every
     # deposit allocation decision; it is deliberately not a ranking input (see
     # services/deposit_allocation), so setting it cannot change which account receives money.
