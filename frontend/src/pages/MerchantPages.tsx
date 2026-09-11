@@ -566,7 +566,7 @@ const METHOD_BUCKETS: Array<{ label: string; color: string; match: string[] }> =
   { label: 'UPI', color: T.info, match: ['UPI', 'QR'] },
   { label: 'Cash', color: T.warning, match: ['CASH'] },
   { label: 'Crypto', color: '#f97316', match: ['CRYPTO', 'USDT'] },
-  { label: 'Card', color: '#8b5cf6', match: ['CARD'] },
+  { label: 'Credit/Debit Card', color: '#8b5cf6', match: ['CARD'] },
 ];
 
 export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: string) => void }> = ({ user, onNavigate }) => {
