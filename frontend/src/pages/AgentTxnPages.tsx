@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl, reviewerRoleCode, formatDateTimeIST,
+import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl, reviewerRoleCode, formatDateTimeIST, formatDateTime, formatDate, formatDateTimeInIST, formatIstParts,
   PROOF_ACCEPT, PROOF_MAX_BYTES, PROOF_TYPE_MSG, PROOF_SIZE_MSG, isAllowedProof, isPdfProof, openDataUrl,
-  proofBatches, proofList, proofFileName, attachRemainingProofs, PARTIAL_ATTACH_MSG } from '../utils/helpers';
+  proofBatches, proofList, proofFileName, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstTime } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect, Pager } from '../components/UI';
 import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
 import { usePoll, useDebouncedValue, useActivitySignal } from '../utils/usePoll';
@@ -301,7 +301,7 @@ export const AgentOverviewPage: React.FC<{ user: User; onNavigate?: (p: string) 
                   <td style={tdS}>{r.membershipId}{r.membershipName ? ` · ${r.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(r.amount)}</td>
                   <td style={tdS}><StatusPill status={r.status} type={r.type} method={r.txnMethod} approverRole={r.approverRole} /></td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{r.createdDate} {r.createdTime}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(r.createdDate, r.createdTime)}</td>
                 </tr>
               ))}
             </tbody>
@@ -476,7 +476,7 @@ export const AgentProfileModal: React.FC<{ agentMasterId: number; onClose: () =>
   const info: Array<[string, React.ReactNode]> = [
     ['Agent ID', a.agentId], ['Agent Name', a.agentName], ['Category', a.category],
     ['Country', a.country || '—'], ['Currency', a.currency || '—'],
-    ['Created Date', a.createdDate || '—'], ['Status', a.status === 'ACTIVE' ? 'Active' : 'Inactive'],
+    ['Created Date', formatIstParts(a.createdDate)], ['Status', a.status === 'ACTIVE' ? 'Active' : 'Inactive'],
   ];
   const cards: Array<[string, string, string]> = [
     ['Total Business', fmt(t.totalBusiness), T.blue],
@@ -528,7 +528,7 @@ export const AgentProfileModal: React.FC<{ agentMasterId: number; onClose: () =>
             {p.activity.length === 0 && <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 18 }}>No activity yet.</td></tr>}
             {p.activity.map(x => (
               <tr key={x.id} style={{ background: T.surface }}>
-                <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(x.createdDate, x.createdTime)}</td>
                 <td style={{ ...tdS, fontWeight: 700, color: T.blue }}>{x.referenceNumber}</td>
                 <td style={tdS}>{x.type.charAt(0) + x.type.slice(1).toLowerCase()}</td>
                 <td style={tdS}>{x.membershipId}</td>
@@ -706,7 +706,7 @@ export const AgentDepositRequestPage: React.FC<{ user: User; onNavigate?: (p: st
         <Card style={{ padding: 16, marginBottom: 18, borderLeft: `4px solid ${T.success}` }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent Deposit Request created</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '10px 18px' }}>
-            {[['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Note Number', result.noteNumber], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', `${result.createdDate} ${result.createdTime}`]].map(([k, v]) => (
+            {[['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Note Number', result.noteNumber], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', formatIstParts(result.createdDate, result.createdTime)]].map(([k, v]) => (
               <div key={k}><div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div><div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v}</div></div>
             ))}
           </div>
@@ -1060,7 +1060,7 @@ export const AgentWithdrawalRequestPage: React.FC<{
         <Card style={{ padding: 16, marginBottom: 18, borderLeft: `4px solid ${T.success}` }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: T.success, marginBottom: 10 }}>✓ Agent {NOUN} Request created</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: '10px 18px' }}>
-            {([['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Unique Note Number', result.noteNumber], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', `${result.createdDate} ${result.createdTime}`]] as Array<[string, string | null | undefined]>).filter(([, v]) => v != null && String(v).trim() !== '').map(([k, v]) => (
+            {([['Reference Number', result.referenceNumber], ['Transaction Code', result.transactionCode], ['Unique Note Number', result.noteNumber], ['Token Details', result.tokenDetails], ['Status', result.status], ['Created (IST)', formatIstParts(result.createdDate, result.createdTime)]] as Array<[string, string | null | undefined]>).filter(([, v]) => v != null && String(v).trim() !== '').map(([k, v]) => (
               <div key={k}><div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{k}</div><div style={{ fontSize: 13, fontWeight: 700, color: T.textMain, wordBreak: 'break-word' }}>{v}</div></div>
             ))}
           </div>
@@ -1456,7 +1456,7 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
       ['Membership', `${current.membershipId}${current.membershipName ? ` · ${current.membershipName}` : ''}`],
       ['Membership Type', current.membershipType], ['Note Number', current.noteNumber],
       ['Token Details', current.tokenDetails], ['Status', current.status],
-      ['Created (IST)', `${current.createdDate || ''} ${current.createdTime || ''}`],
+      ['Created (IST)', formatIstParts(current.createdDate, current.createdTime)],
     ];
 
     const saveAmount = async () => {
@@ -1550,7 +1550,7 @@ const ManageModal: React.FC<{ row: AgentTxnRow; fd: AgentFormData | null; canApp
               {audit.length === 0 && <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 18 }}>No history yet.</td></tr>}
               {audit.map(a => (
                 <tr key={a.id} style={{ background: T.surface }}>
-                  <td style={{ ...tdS, whiteSpace: 'nowrap', color: T.textMuted }}>{a.createdDate} {a.createdTime}</td>
+                  <td style={{ ...tdS, whiteSpace: 'nowrap', color: T.textMuted }}>{formatIstParts(a.createdDate, a.createdTime)}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{a.action.replace(/_/g, ' ')}</td>
                   <td style={tdS}>{a.oldAmount == null ? '—' : fmt(a.oldAmount)}</td>
                   <td style={tdS}>{a.newAmount == null ? '—' : fmt(a.newAmount)}</td>
@@ -1651,7 +1651,7 @@ export const AgentManageTransactionPage: React.FC<{ user: User; onNavigate?: (p:
                   <td style={tdS}>{x.agentCode || '—'}</td>
                   <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(x.createdDate, x.createdTime)}</td>
                   <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => setManageRow(x)}>Manage</Btn></td>
                 </tr>
               ))}
@@ -1733,7 +1733,7 @@ const TxnTimeline: React.FC<{ row: AgentTxnRow; audit: AgentTxnAuditRow[] }> = (
   const rejected = row.status === 'REJECTED';
   const curIdx = steps.findIndex(s => s.key === row.status);
   const reached = new Set(audit.map(a => a.action));   // statuses that actually happened
-  const when = (k: string) => { const a = audit.find(x => x.action === k); return a ? `${a.createdDate || ''} ${a.createdTime || ''}`.trim() : ''; };
+  const when = (k: string) => { const a = audit.find(x => x.action === k); return a ? formatIstParts(a.createdDate, a.createdTime) : ''; };
   // Enrich each step with its timestamp + whether it happened, then hand the fully-computed rungs
   // to the shared rail. The presentation (dots, connectors, done/current/pending, red terminal)
   // is identical to before — it just lives in components/TxnTimeline now, shared with Merchant.
@@ -1781,18 +1781,18 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
       ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'],
       ['Approver', row.approverName],
       ['Approved By', row.approvedBy],
-      ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
+      ['Approved (IST)', row.approvedDate ? formatIstParts(row.approvedDate, row.approvedTime) : null],
       ['Slip By', row.slipSubmittedBy],
-      ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
+      ['Slip At (IST)', row.slipSubmittedDate ? formatIstParts(row.slipSubmittedDate, row.slipSubmittedTime) : null],
       ['Sent To (Agent A/C)', row.agentAccountRef ? `${row.agentAccountRef} · ${row.agentAccountDetail || ''}` : null],
       ['Paid To', [row.payoutAccountHolder, row.payoutAccountNumber || row.payoutUpiId, row.payoutBankName].filter(Boolean).join(' · ') || null],
       [roleWord(reviewerRoleCode(row.type, row.approverRole, 'SUPERVISOR')) || 'Supervisor', row.supervisorName],
       [roleWord(reviewerRoleCode(row.type, row.approverRole, 'MANAGER')) || 'Manager', row.managerName],
       ['Review Remark', row.reviewRemark],
       ['Deposited By', row.depositedBy],
-      ['Deposited (IST)', row.depositedDate ? `${row.depositedDate} ${row.depositedTime || ''}` : null],
+      ['Deposited (IST)', row.depositedDate ? formatIstParts(row.depositedDate, row.depositedTime) : null],
       ['Created By', row.createdBy],
-      ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`],
+      ['Created (IST)', formatIstParts(row.createdDate, row.createdTime)],
     ] },
   ];
 
@@ -1837,7 +1837,7 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
             <DField k="Net Amount" v={fmt(comm.netAmount)} />
             <DField k="Balance Before" v={fmt(comm.balanceBefore)} />
             <DField k="Balance After" v={fmt(comm.balanceAfter)} />
-            <DField k="Date & Time (IST)" v={`${row.createdDate || ''} ${row.createdTime || ''}`.trim() || '—'} />
+            <DField k="Date & Time (IST)" v={formatIstParts(row.createdDate, row.createdTime)} />
           </div>
         </div>
       )}
@@ -1863,7 +1863,7 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
             {audit.length === 0 && <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 18 }}>No history yet.</td></tr>}
             {audit.map(a => (
               <tr key={a.id} style={{ background: T.surface }}>
-                <td style={{ ...tdS, whiteSpace: 'nowrap', color: T.textMuted }}>{a.createdDate} {a.createdTime}</td>
+                <td style={{ ...tdS, whiteSpace: 'nowrap', color: T.textMuted }}>{formatIstParts(a.createdDate, a.createdTime)}</td>
                 <td style={{ ...tdS, fontWeight: 700 }}>{a.action.replace(/_/g, ' ')}</td>
                 <td style={tdS}>{a.oldAmount == null ? '—' : fmt(a.oldAmount)}</td>
                 <td style={tdS}>{a.newAmount == null ? '—' : fmt(a.newAmount)}</td>
@@ -2153,7 +2153,7 @@ const AgentTxnManagementPage: React.FC<{
                   <td style={tdS}>{x.membershipId}{x.membershipName ? ` · ${x.membershipName}` : ''}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
                   <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} approverRole={x.approverRole} /></td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(x.createdDate, x.createdTime)}</td>
                   <td style={{ ...tdS, whiteSpace: 'nowrap', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     <Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn>
                     {/* The deposit chain's next step, offered only to the operator roles that may
@@ -2382,11 +2382,11 @@ const periodBoundsA = (preset: string, from: string, to: string): [number, numbe
  *  trail. The per-route fallback only covers a row the backfill could not resolve at all. */
 const completedAtA = (r: AgentTxnRow): string => {
   if (!isCompletedA(r)) return '—';
-  if (r.completedDate) return `${r.completedDate} ${r.completedTime || ''}`.trim();
+  if (r.completedDate) return formatIstParts(r.completedDate, r.completedTime);
   const pick: Array<[string | null | undefined, string | null | undefined]> = r.type === 'DEPOSIT'
     ? [[r.depositedDate, r.depositedTime], [r.approvedDate, r.approvedTime], [r.updatedDate, r.updatedTime]]
     : [[r.approvedDate, r.approvedTime], [r.depositedDate, r.depositedTime], [r.updatedDate, r.updatedTime]];
-  for (const [d, t] of pick) if (d) return `${d} ${t || ''}`.trim();
+  for (const [d, t] of pick) if (d) return formatIstParts(d, t);
   return '—';
 };
 /** Approver actually on the record — the explicit approver, else the gate that cleared it. */
@@ -2610,7 +2610,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   const fullLedger = scope.map(r => {
     running += signedLegA(r);
     return {
-      date: r.createdDate || '', time: r.createdTime || '',
+      date: formatIstParts(r.createdDate), time: formatIstTime(r.createdTime),
       description: `${typeLabelA(r.type)} — ${r.membershipId}${r.membershipName ? ` · ${r.membershipName}` : ''}`,
       ref: r.referenceNumber, agentId: r.agentCode || '—', agentName: r.agentName || '—',
       membershipId: r.membershipId, memberName: r.membershipName || '—', type: r.type,
@@ -2637,8 +2637,8 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
   // ── Exports — PDF/Print via the shared print-to-PDF letterhead, Excel via the shared xlsx
   // helper, CSV via the shared CSV helper. Every export honours the applied filters. ──
   const stamp = today();
-  const fullCsv = filtered.map(r => [r.createdDate || '', r.createdTime || '', r.referenceNumber, r.membershipId, r.membershipName || '', r.agentCode || '', r.agentName || '', r.agentCategory || '', typeLabelA(r.type), r.amount, r.commissionPct ?? 0, commissionA(r), r.netAmount ?? 0, statusLabelA(r.status, r.type, r.txnMethod, r.approverRole), r.createdBy || '', approverA(r) === '—' ? '' : approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r) === '—' ? '' : completedAtA(r)]);
-  const fullPdf = filtered.map(r => [r.createdDate || '—', r.createdTime || '—', r.referenceNumber, r.membershipId, r.membershipName || '—', r.agentCode || '—', r.agentName || '—', r.agentCategory || '—', typeLabelA(r.type), fmt(r.amount), `${r.commissionPct ?? 0}%`, fmt(commissionA(r)), fmt(r.netAmount ?? 0), statusLabelA(r.status, r.type, r.txnMethod, r.approverRole), r.createdBy || '—', approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r)]);
+  const fullCsv = filtered.map(r => [formatIstParts(r.createdDate), formatIstTime(r.createdTime), r.referenceNumber, r.membershipId, r.membershipName || '', r.agentCode || '', r.agentName || '', r.agentCategory || '', typeLabelA(r.type), r.amount, r.commissionPct ?? 0, commissionA(r), r.netAmount ?? 0, statusLabelA(r.status, r.type, r.txnMethod, r.approverRole), r.createdBy || '', approverA(r) === '—' ? '' : approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r) === '—' ? '' : completedAtA(r)]);
+  const fullPdf = filtered.map(r => [formatIstParts(r.createdDate), formatIstTime(r.createdTime), r.referenceNumber, r.membershipId, r.membershipName || '—', r.agentCode || '—', r.agentName || '—', r.agentCategory || '—', typeLabelA(r.type), fmt(r.amount), `${r.commissionPct ?? 0}%`, fmt(commissionA(r)), fmt(r.netAmount ?? 0), statusLabelA(r.status, r.type, r.txnMethod, r.approverRole), r.createdBy || '—', approverA(r), `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), completedAtA(r)]);
   const commCsv = commissionRows.map(a => [a.agentId, a.agentName, a.category, a.depositAmount, a.depositCommission, a.withdrawalAmount, a.withdrawalCommission, a.settlementAmount, a.settlementCommission, a.totalCommission, a.count]);
   const commPdf = commissionRows.map(a => [a.agentId, a.agentName, a.category || '—', fmt(a.depositAmount), fmt(a.depositCommission), fmt(a.withdrawalAmount), fmt(a.withdrawalCommission), fmt(a.settlementAmount), fmt(a.settlementCommission), fmt(a.totalCommission), a.count]);
   const ledgerCsv: Array<Array<string | number>> = [
@@ -2683,7 +2683,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
           { header: 'Status', get: r => statusLabelA(r.status, r.type, r.txnMethod, r.approverRole) },
           { header: 'Created By', get: r => r.createdBy || '' },
           { header: 'Approved By', get: r => (approverA(r) === '—' ? '' : approverA(r)) },
-          { header: 'Created Date & Time', get: r => `${r.createdDate || ''} ${r.createdTime || ''}`.trim(), width: 20 },
+          { header: 'Created Date & Time', get: r => formatIstParts(r.createdDate, r.createdTime), width: 20 },
           { header: 'Completed Date & Time', get: r => (completedAtA(r) === '—' ? '' : completedAtA(r)), width: 20 },
         ],
         rows: filtered,
@@ -2786,7 +2786,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 14 }}>
           <AMeta label="Module" value="Agent Transactions" />
           <AMeta label="Generated By" value={generatedBy} />
-          <AMeta label="Generated Date & Time" value={genAt.toLocaleString('en-IN')} />
+          <AMeta label="Generated Date & Time" value={formatDateTime(genAt)} />
           <AMeta label="Selected Date Range" value={rangeLabel} />
         </div>
       </Card>
@@ -2882,7 +2882,7 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
                     <td style={tdR}><StatusPill status={r.status} type={r.type} method={r.txnMethod} approverRole={r.approverRole} /></td>
                     <td style={{ ...tdR, color: T.textMuted }}>{r.createdBy || '—'}</td>
                     <td style={{ ...tdR, color: T.textMuted }}>{approverA(r)}</td>
-                    <td style={{ ...tdR, whiteSpace: 'nowrap', color: T.textMuted }}>{`${r.createdDate || ''} ${r.createdTime || ''}`.trim() || '—'}</td>
+                    <td style={{ ...tdR, whiteSpace: 'nowrap', color: T.textMuted }}>{formatIstParts(r.createdDate, r.createdTime)}</td>
                     <td style={{ ...tdR, whiteSpace: 'nowrap', color: T.textMuted }}>{completedAtA(r)}</td>
                   </tr>
                 ))}
@@ -3605,7 +3605,7 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
       ? ([
           ['Sent To', `${row.agentAccountRef || '—'} · ${row.agentAccountDetail || '—'}`],
                 ['Slip By', row.slipSubmittedBy],
-          ['Slip At (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
+          ['Slip At (IST)', row.slipSubmittedDate ? formatIstParts(row.slipSubmittedDate, row.slipSubmittedTime) : null],
         ] as Array<[string, React.ReactNode]>)
       : ([
           ['Pay To', row.payoutAccountHolder],
@@ -3718,7 +3718,7 @@ export const AgentApprovalsPage: React.FC<{ user: User; onNavigate?: (p: string)
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
                   <td style={tdS}>{methodLabel(x.txnMethod)}</td>
                   <td style={tdS}>{x.slipSubmittedBy || '—'}</td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.slipSubmittedDate} {x.slipSubmittedTime}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(x.slipSubmittedDate, x.slipSubmittedTime)}</td>
                   <td style={tdS}><Btn size="sm" onClick={() => setReviewRow(x)}>Review</Btn></td>
                 </tr>
               ))}
@@ -3814,7 +3814,7 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
         [r.senderAccountHolder, r.senderAccountNumber || r.senderUpiId, r.senderBankName].filter(Boolean).join(' · '),
         [r.payoutAccountHolder, r.payoutAccountNumber || r.payoutUpiId, r.payoutBankName].filter(Boolean).join(' · '),
         r.instructions ? instrLabel(r.instructions) : '',
-        r.createdBy || '', r.createdDate || '', r.createdTime || '',
+        r.createdBy || '', formatIstParts(r.createdDate), formatIstTime(r.createdTime),
       ]));
     showToast(`Exported ${filtered.length} agent transaction${filtered.length === 1 ? '' : 's'}.`, 'success');
   };
@@ -3865,7 +3865,7 @@ export const AgentAllTransactionsPage: React.FC<{ user: User; onNavigate?: (p: s
                   <td style={tdS}>{methodLabel(x.txnMethod)}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
                   <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} approverRole={x.approverRole} /></td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(x.createdDate, x.createdTime)}</td>
                   <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn></td>
                 </tr>
               ))}

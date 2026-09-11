@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit, formatIstParts } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton, CopyButton } from './UI';
 import { Icon, type IconName } from './Icon';
 import type { Transaction } from '../types';
@@ -109,7 +109,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
                 )}
               </td>
               <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(t.amount)}</td>
-              <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{t.date} <span style={{ fontSize:10 }}>{t.time}</span></td>
+              <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>{formatIstParts(t.date, t.time)}</td>
               <td style={{ padding:'11px 14px' }}>
                 <Badge status={t.status} type={t.type} viewerRole={viewerRole} approverRole={t.approverRole} depositType={t.depositType}/>
                 {t.highRisk && (

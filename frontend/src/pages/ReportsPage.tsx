@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel, clientApproverLabel, formatIndianAmountInput, parseIndianAmount } from '../utils/helpers';
+import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel, clientApproverLabel, formatIndianAmountInput, parseIndianAmount, formatDateTime, formatIstParts } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { Icon, type IconName } from '../components/Icon';
@@ -45,7 +45,7 @@ const exportRowsXlsx = (rows: ReportRow[], filename: string) => {
       { header: 'Transaction Type', get: r => rtypeLabel(r) },
       { header: 'Amount (INR)', get: r => Number(r.amount), width: 14, z: INR_NUMFMT },
       { header: 'Status', get: r => prettyStatusR(r.status) },
-      { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
+      { header: 'Date & Time', get: r => formatIstParts(r.date, r.time), width: 20 },
       { header: 'Cancellation Reason', get: r => r.cancelReason || '' },
     ],
     rows,
@@ -56,7 +56,7 @@ const exportRowsXlsx = (rows: ReportRow[], filename: string) => {
 function exportReportPdf(data: ReportData, businessName: string) {
   const w = window.open('', '_blank', 'width=1000,height=800');
   if (!w) { alert('Please allow pop-ups for this site to export the PDF.'); return; }
-  const now = new Date().toLocaleString('en-IN');
+  const now = formatDateTime(new Date());
   const c = data.cards;
   const card = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
   const memRows = (rows: ReportMemberRow[], key: keyof ReportMemberRow, money: boolean) => rows.map((m, i) =>
@@ -174,7 +174,7 @@ const ReportRowsTable: React.FC<{ rows: ReportRow[]; onPick?: (id: string) => vo
               <td style={tdR}>{rtypeLabel(r) || '-'}</td>
               <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
               <td style={tdR}>{prettyStatusR(r.status)}</td>
-              <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
+              <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{formatIstParts(r.date, r.time)}</td>
             </tr>
           ))}
         </tbody>
@@ -293,7 +293,7 @@ const IntelTab: React.FC<{ data: ReportData }> = ({ data }) => {
         <>
           <p style={{ margin: '0 0 4px', fontSize: 26, fontWeight: 800, color }}>{fmt(x.amount)}</p>
           <p style={{ margin: 0, fontSize: 13, color: T.textMain }}>{memberLabel(x.memberId, x.memberName)}</p>
-          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{x.date} {x.time}</p>
+          <p style={{ margin: '2px 0 0', fontSize: 12, color: T.textMuted }}>{formatIstParts(x.date, x.time)}</p>
         </>
       ) : <p style={{ margin: 0, color: T.textMuted }}>No data yet.</p>}
     </Card>
@@ -594,7 +594,7 @@ const totalsOf = (rows: ReportRow[]) => {
 function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName: string, generatedBy: string, rangeLabel: string, autoPrint = true) {
   const w = window.open('', '_blank', 'width=1180,height=820');
   if (!w) { alert('Please allow pop-ups to export the report.'); return; }
-  const c = data.cards; const now = new Date().toLocaleString('en-IN'); const tot = totalsOf(rows);
+  const c = data.cards; const now = formatDateTime(new Date()); const tot = totalsOf(rows);
   const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
   const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
   const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '—')}</td></tr>`).join('');
@@ -638,7 +638,7 @@ interface CryptoSummaryFigures {
 function exportCryptoReportPdf(rows: ReportRow[], summary: CryptoSummaryFigures | null, businessName: string, generatedBy: string) {
   const w = window.open('', '_blank', 'width=1180,height=820');
   if (!w) { alert('Please allow pop-ups to export the report.'); return; }
-  const now = new Date().toLocaleString('en-IN');
+  const now = formatDateTime(new Date());
   const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
   const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
   const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td></tr>`).join('');
@@ -734,7 +734,7 @@ export function printColumnarReport(opts: {
   const { title, businessName, generatedBy, rangeLabel, headers, rows, aligns, footerNote, autoPrint = true } = opts;
   const w = window.open('', '_blank', 'width=1180,height=820');
   if (!w) { alert('Please allow pop-ups to export the report.'); return; }
-  const now = new Date().toLocaleString('en-IN');
+  const now = formatDateTime(new Date());
   const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
   const thead = headers.map((h, i) => `<th${aligns?.[i] === 'r' ? ' style="text-align:right"' : ''}>${esc(h)}</th>`).join('');
   const body = rows.map((r, ri) => `<tr class="${ri % 2 ? 'alt' : ''}">${r.map((c, i) => `<td class="${aligns?.[i] === 'r' ? 'amt' : ''}">${esc(c)}</td>`).join('')}</tr>`).join('');
@@ -793,8 +793,8 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
     const toast = useToast();
     const data = rows;   // all transactions honouring the advanced filters (incl. Status)
     const opCsv = (r: ReportRow) => ((r.operator || '').trim() ? operatorLabel(r) : '');
-    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '', opCsv(r), r.amount, methodLabel(r)]);
-    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', `${r.date || ''} ${r.time || ''}`.trim(), prettyStatusR(r.status), approverCell(r), operatorLabel(r), fmt(r.amount), methodLabel(r)]);
+    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', formatIstParts(r.date, r.time), prettyStatusR(r.status), r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '', opCsv(r), r.amount, methodLabel(r)]);
+    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', formatIstParts(r.date, r.time), prettyStatusR(r.status), approverCell(r), operatorLabel(r), fmt(r.amount), methodLabel(r)]);
     const onExcel = () => {
       downloadXlsx(`clari5pay-treasury-${today()}.xlsx`, [{
         name: 'Treasury Report',
@@ -802,7 +802,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
           { header: 'Unique Transaction Reference', get: r => r.ref, width: 22 },
           { header: 'Member Name', get: r => r.member || '', width: 22 },
           { header: 'Membership ID', get: r => r.memberId || '' },
-          { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
+          { header: 'Date & Time', get: r => formatIstParts(r.date, r.time), width: 20 },
           { header: 'Status', get: r => prettyStatusR(r.status) },
           { header: 'Approver', get: r => (r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '') },
           { header: 'Operator', get: r => ((r.operator || '').trim() ? operatorLabel(r) : '') },
@@ -833,7 +833,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
                     <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{r.ref}</td>
                     <td style={{ ...tdR, fontWeight: 600 }}>{r.member || '—'}</td>
                     <td style={tdR}>{r.memberId || '—'}</td>
-                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
+                    <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{formatIstParts(r.date, r.time)}</td>
                     <td style={tdR}>{prettyStatusR(r.status)}</td>
                     <td style={tdR}>{approverCell(r)}</td>
                     <td style={tdR}>{operatorLabel(r)}</td>
@@ -1114,7 +1114,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 14 }}>
           {meta('Merchant Name', businessName)}
           {meta('Generated By', generatedBy)}
-          {meta('Generated Date & Time', genAt.toLocaleString('en-IN'))}
+          {meta('Generated Date & Time', formatDateTime(genAt))}
           {meta('Selected Date Range', rangeLabel)}
         </div>
       </Card>
@@ -1197,7 +1197,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
                   <td style={tdR}>{rtypeLabel(r) || '-'}</td>
                   <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
                   <td style={tdR}>{prettyStatusR(r.status)}</td>
-                  <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{r.date} {r.time}</td>
+                  <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{formatIstParts(r.date, r.time)}</td>
                   <td style={tdR}>{r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—'}</td>
                   <td style={{ ...tdR, textAlign: 'right', color: T.textMuted }}>{r.availableBalance != null ? fmt(r.availableBalance) : '—'}</td>
                   <td style={{ ...tdR, color: T.textMuted }}>{approverCell(r)}</td>

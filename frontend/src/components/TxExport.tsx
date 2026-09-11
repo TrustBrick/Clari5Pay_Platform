@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { T } from '../utils/theme';
-import { fmt, memberLabel } from '../utils/helpers';
+import { fmt, memberLabel, formatDateTime } from '../utils/helpers';
 import { exportTransactionsXlsx, txnTypeLabel } from '../utils/xlsx';
 import { Btn, Sel } from './UI';
 import { Icon } from './Icon';
@@ -13,7 +13,7 @@ const prettyStatus = (s: string) => String(s || '').replace(/_/g, ' ').replace(/
 export function exportTransactionsPdf(rows: Transaction[], title: string, subtitle: string) {
   const w = window.open('', '_blank', 'width=1000,height=800');
   if (!w) { alert('Please allow pop-ups for this site to export the PDF.'); return; }
-  const now = new Date().toLocaleString('en-IN');
+  const now = formatDateTime(new Date());
   const body = rows.map((t, i) => `<tr class="${i % 2 ? 'alt' : ''}">
     <td class="mono">${esc(t.ref)}</td>
     <td>${esc(memberLabel(t.memberId, t.member))}</td>

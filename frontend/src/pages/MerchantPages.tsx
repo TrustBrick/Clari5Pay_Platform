@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx, isCardDeposit, CDM_TXN_TYPE, isCdmDeposit, PROOF_ACCEPT, PROOF_MAX_BYTES, PROOF_TYPE_MSG, PROOF_SIZE_MSG, isAllowedProof, isPdfProof, proofBatches, proofList, proofFileName, attachRemainingProofs, PARTIAL_ATTACH_MSG } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx, isCardDeposit, CDM_TXN_TYPE, isCdmDeposit, PROOF_ACCEPT, PROOF_MAX_BYTES, PROOF_TYPE_MSG, PROOF_SIZE_MSG, isAllowedProof, isPdfProof, proofBatches, proofList, proofFileName, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
@@ -1786,7 +1786,7 @@ const AgentSettlementCompletionQueue: React.FC<{ user: User }> = ({ user }) => {
                 <td style={{ padding: '11px 14px', fontWeight: 700, color: T.textMain }}>{t.ref}</td>
                 <td style={{ padding: '11px 14px', color: T.textMuted }}>{memberLabel(t.memberId, t.member) || '—'}</td>
                 <td style={{ padding: '11px 14px', fontWeight: 800, whiteSpace: 'nowrap' }}>{fmt(t.amount)}</td>
-                <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{t.date} {t.time}</td>
+                <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(t.date, t.time)}</td>
                 <td style={{ padding: '11px 14px' }}><Btn size="sm" onClick={() => setActive(t)}>Complete</Btn></td>
               </tr>
             ))}
@@ -1936,7 +1936,7 @@ const buildMerchantTimeline = (
   const remarkHas = (...names: string[]) => (d.remarksHistory || []).some(r => names.includes(r.action));
   const fmtTs = (v?: string | null) => (v ? formatDateTime(v) : '');
 
-  const created = d.createdAt ? formatDateTime(d.createdAt) : `${d.date} ${d.time}`;
+  const created = d.createdAt ? formatDateTime(d.createdAt) : formatIstParts(d.date, d.time);
   const slips = proofList(d.merchantProofs, d.merchantProof);
   const sentForApproval = has('SENT_FOR_APPROVAL') || !!d.approverName;
   const reviewApproved = has('SUPERVISOR_APPROVED', 'MANAGER_APPROVED') || remarkHas('APPROVED');
@@ -2014,7 +2014,7 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
   // Everything the Admin attached when the payout was made. Several receipts are normal for one
   // payment — a split transfer has one per leg — so all of them are listed, not just the first.
   const receipts = proofList(d.adminProofs, d.adminProof);
-  const created = d.createdAt ? formatDateTime(d.createdAt) : `${d.date} ${d.time}`;
+  const created = d.createdAt ? formatDateTime(d.createdAt) : formatIstParts(d.date, d.time);
   const paymentMethod = d.depositType ? depositTypeLabel(d.depositType) : (d.payoutMode || '—');
 
   // The transaction Timeline — the same visual rail the Agent module uses, driven by this
@@ -2384,7 +2384,7 @@ export const ApprovalsPage: React.FC<{ user: User; kind?: 'DEPOSIT' | 'WITHDRAWA
                     <td style={{ padding: '11px 14px' }}>{typeLabel(t.type)}</td>
                     <td style={{ padding: '11px 14px', fontWeight: 800, color: T.textMain, whiteSpace: 'nowrap' }}>{fmt(t.amount)}</td>
                     <td style={{ padding: '11px 14px' }}><Badge status={t.status} type={t.type} approverRole={t.approverRole} depositType={t.depositType} /></td>
-                    <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{t.date} {t.time}</td>
+                    <td style={{ padding: '11px 14px', color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(t.date, t.time)}</td>
                     <td style={{ padding: '11px 14px' }}><Btn size="sm" onClick={() => setActive(t)}>Review</Btn></td>
                   </tr>
                 ))}

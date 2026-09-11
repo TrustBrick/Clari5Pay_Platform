@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount, proofBatches, proofList, isCdmDeposit, CDM_CHECKS, attachRemainingProofs, PARTIAL_ATTACH_MSG } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount, proofBatches, proofList, isCdmDeposit, CDM_CHECKS, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
@@ -497,7 +497,7 @@ const RequestModal: React.FC<{
             v ? <Row key={k} k={depositDetailLabel(k)} v={String(v)} /> : null)}
           {tx.utr && <Row k="UTR Number" v={tx.utr} />}
           {tx.riskAnalysis && <Row k="Risk Analysis" v="Requested" />}
-          <Row k="Date" v={`${tx.date} ${tx.time}`} />
+          <Row k="Date" v={formatIstParts(tx.date, tx.time)} />
           {tx.notes && (
             <div style={{ marginTop:10,background:T.warningBg,borderRadius:10,padding:'8px 12px' }}>
               <p style={{ fontSize:10,fontWeight:800,color:T.warning,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Merchant Note</p>
@@ -510,7 +510,7 @@ const RequestModal: React.FC<{
               <p style={{ fontSize:12,color:T.textMain,margin:0 }}>{tx.cancelReason || '—'}</p>
               {(tx.cancelledBy || tx.cancelledAt) && (
                 <p style={{ fontSize:11,color:T.textMuted,margin:'4px 0 0' }}>
-                  Cancelled by {tx.cancelledBy || 'merchant'}{tx.cancelledAt ? ` · ${new Date(tx.cancelledAt).toLocaleString('en-IN')}` : ''}
+                  Cancelled by {tx.cancelledBy || 'merchant'}{tx.cancelledAt ? ` · ${formatDateTime(tx.cancelledAt)}` : ''}
                 </p>
               )}
             </div>
@@ -1548,7 +1548,7 @@ export const MerchantAnalyticsPage: React.FC = () => {
                     <td style={{ padding: '9px 14px', textAlign: 'right', fontWeight: 700 }}>{fmt(t.amount)}</td>
                     <td style={{ padding: '9px 14px', textAlign: 'right', color: T.danger }}>{fmt(feeOf(t))}</td>
                     <td style={{ padding: '9px 14px' }}><Badge status={t.status} type={t.type} viewerRole="ADMIN" approverRole={t.approverRole} depositType={t.depositType} /></td>
-                    <td style={{ padding: '9px 14px', whiteSpace: 'nowrap', color: T.textMuted }}>{t.date} {t.time}</td>
+                    <td style={{ padding: '9px 14px', whiteSpace: 'nowrap', color: T.textMuted }}>{formatIstParts(t.date, t.time)}</td>
                   </tr>
                 ))}
                 {!drillLoading && drillRows.length === 0 && (
@@ -3420,7 +3420,7 @@ export const AuditLogsPage: React.FC = () => {
     if (!w) { alert('Please allow pop-ups to export.'); return; }
     const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
     const body = filtered.map((l, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="nw">${esc(formatDateTime(l.createdAt))}</td><td>${esc(l.username)}</td><td>${esc((l.role || '').replace('_', ' '))}</td><td class="mono">${esc(l.action)}</td><td>${esc(l.entityType)} ${esc(l.entityId || '')}</td><td>${esc(l.oldValue)} → ${esc(l.newValue)}</td><td>${esc(l.reason)}</td><td>${esc(l.ip)}</td></tr>`).join('');
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Audit Logs</title><style>@page{size:A4 landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#0a2540}h1{font-size:16px}.sub{font-size:11px;color:#555;margin:0 0 10px}table{width:100%;border-collapse:collapse;font-size:9.5px}th{background:#0a2540;color:#fff;text-align:left;padding:5px 6px;font-size:8.5px;text-transform:uppercase}td{padding:4px 6px;border-bottom:1px solid #e2e8f0}tr.alt td{background:#f5f8ff}.mono{font-family:monospace}.nw{white-space:nowrap}.runfoot{position:fixed;bottom:5mm;left:0;right:0;text-align:center;font-size:8px;color:#9ca3af}</style></head><body><div class="runfoot">Clari5Pay · Audit Logs · CONFIDENTIAL · enable "Headers and footers" in the print dialog for page numbers</div><h1><span style="color:#0052cc">clari</span><span style="color:#26d00c">5</span>pay — Audit Logs</h1><p class="sub">Generated ${new Date().toLocaleString('en-IN')} · ${filtered.length} record(s)${fromF || toF ? ` · ${fromF || 'start'} → ${toF || 'today'}` : ''}</p><table><thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Entity</th><th>Old → New</th><th>Reason</th><th>IP</th></tr></thead><tbody>${body || '<tr><td colspan=8>No records</td></tr>'}</tbody></table></body></html>`);
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Audit Logs</title><style>@page{size:A4 landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#0a2540}h1{font-size:16px}.sub{font-size:11px;color:#555;margin:0 0 10px}table{width:100%;border-collapse:collapse;font-size:9.5px}th{background:#0a2540;color:#fff;text-align:left;padding:5px 6px;font-size:8.5px;text-transform:uppercase}td{padding:4px 6px;border-bottom:1px solid #e2e8f0}tr.alt td{background:#f5f8ff}.mono{font-family:monospace}.nw{white-space:nowrap}.runfoot{position:fixed;bottom:5mm;left:0;right:0;text-align:center;font-size:8px;color:#9ca3af}</style></head><body><div class="runfoot">Clari5Pay · Audit Logs · CONFIDENTIAL · enable "Headers and footers" in the print dialog for page numbers</div><h1><span style="color:#0052cc">clari</span><span style="color:#26d00c">5</span>pay — Audit Logs</h1><p class="sub">Generated ${formatDateTime(new Date())} · ${filtered.length} record(s)${fromF || toF ? ` · ${fromF || 'start'} → ${toF || 'today'}` : ''}</p><table><thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Entity</th><th>Old → New</th><th>Reason</th><th>IP</th></tr></thead><tbody>${body || '<tr><td colspan=8>No records</td></tr>'}</tbody></table></body></html>`);
     w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
   };
 

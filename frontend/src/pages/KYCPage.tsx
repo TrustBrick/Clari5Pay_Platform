@@ -4,7 +4,7 @@ import { T } from '../utils/theme';
 import { Card, Btn, Input, Modal, Pager, enterSubmit, CopyButton } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { useToast } from '../context/ToastContext';
-import { fileToDataUrl, downloadDataUrl } from '../utils/helpers';
+import { fileToDataUrl, downloadDataUrl, formatDateTimeInIST } from '../utils/helpers';
 import {
   kycAPI, KYC_VALIDATION, OCR_MAX_BYTES, kycErrorMessage, kycErrorReferenceId,
   type KycHistoryItem, type KycHistoryDetail, type KycOcrDocument, type AadhaarDetails,
@@ -71,13 +71,9 @@ const TYPE_LABEL: Record<ViewKey, string> = {
   home: '', aadhaar: 'Aadhaar', pan: 'PAN', passport: 'Passport',
 };
 
-// Format an ISO/UTC timestamp in Indian Standard Time.
-const fmtIST = (iso?: string | null): string => {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '—';
-  return d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true });
-};
+// An ISO/UTC timestamp in Indian Standard Time — the timezone this screen states in its own
+// labels, which is why the shared IST formatter is used WITHOUT its " IST" suffix here.
+const fmtIST = (iso?: string | null): string => formatDateTimeInIST(iso);
 
 // Prettify an API snake_case key into a Title Case label.
 const prettify = (k: string): string =>

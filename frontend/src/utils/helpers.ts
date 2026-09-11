@@ -275,14 +275,19 @@ export const clientAuditActor = (role?: string | null, username?: string | null)
 // Chat timestamps are ALWAYS shown in Indian Standard Time (Asia/Kolkata), regardless of the
 // viewer's device timezone. Backend sends UTC (…Z); we render it in IST here.
 const IST_TZ = 'Asia/Kolkata';
-export const chatTime = (iso: string) =>
-  new Date(iso).toLocaleTimeString('en-US', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: true });
+// A chat bubble's time, in IST — the timezone the conversation is stamped in. Shape comes from
+// the shared formatter, so it matches every other time in the product.
+export const chatTime = (iso: string) => formatTime(iso, { ist: true });
+/** The day separator in a conversation. "Today"/"Yesterday" are kept — a relative label is more
+ *  useful than a date here — and any other day prints the standard date. */
 export const chatDateLabel = (iso: string): string => {
-  const key = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: IST_TZ });   // YYYY-MM-DD in IST
+  // en-CA gives YYYY-MM-DD, used ONLY to compare which IST day two instants fall on. This is a
+  // comparison key, never displayed, so it is deliberately not the display format.
+  const key = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: IST_TZ });
   const k = key(new Date(iso));
   if (k === key(new Date())) return 'Today';
   if (k === key(new Date(Date.now() - 86400000))) return 'Yesterday';
-  return new Date(iso).toLocaleDateString('en-GB', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric' });
+  return formatDate(iso, { ist: true });
 };
 // Open a base64 data-URL in a new tab reliably (via a blob URL — browsers block direct
 // navigation to large data: URLs). Used for chat image "enlarge" and document "view".
@@ -767,7 +772,9 @@ export const timeAgo = (iso?: string | null) => {
   if (h < 24) return `${h} hr ago`;
   const d = Math.floor(h / 24);
   if (d < 7) return `${d} day${d === 1 ? '' : 's'} ago`;
-  return parseTs(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+  // Past a week a relative label stops being useful, so this becomes an ACTUAL date — and an
+  // actual date takes the standard shape, year included.
+  return formatDate(iso);
 };
 
 // Trigger a browser download for a data URL (e.g. the admin's account-details PNG).
@@ -787,31 +794,162 @@ export const downloadText = (text: string, filename: string) =>
 export const today = () => new Date().toISOString().split('T')[0];
 export const nowTime = () => new Date().toTimeString().split(' ')[0];
 
-export const formatDate = (d: string) =>
-  new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+// ─── THE date/time formatter ────────────────────────────────────────────────────────────────────
+// ONE shape for every actual date/time the platform shows a user, in every portal:
+//
+//     04 Sep 2026, 04:06 PM
+//
+// Built from Intl PARTS rather than from a locale's own string, on purpose. `toLocaleString`
+// output is not a contract — the separator, the digit padding and the case of am/pm all vary by
+// ICU version and by browser, so the same build rendered "04 Sep 2026, 4:06 pm" on one machine
+// and "04 Sep 2026, 04:06 PM" on another. Assembling the parts ourselves makes the output the
+// same everywhere, which is the entire point of standardising it.
+//
+// TIMEZONE IS DELIBERATELY NOT CHANGED HERE. `formatDateTime` renders in the viewer's own
+// timezone exactly as it always has; `formatDateTimeIST` / `formatDateTimeInIST` render in IST
+// exactly as they always have. This function standardises the SHAPE of a timestamp, never which
+// moment it refers to.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad2 = (n: number) => String(n).padStart(2, '0');
 
-// Date + time, e.g. "01 Jun 2025, 10:15 AM". Falls back to the raw value if unparseable.
-export const formatDateTime = (d?: string | null) => {
-  if (!d) return '—';
-  const dt = parseTs(d);
-  if (isNaN(dt.getTime())) return d;
-  return dt.toLocaleString('en-IN', {
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
+/** The wall-clock fields of `dt` in `tz` (or the viewer's own zone when tz is undefined). */
+const wallClock = (dt: Date, tz?: string) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    ...(tz ? { timeZone: tz } : {}),
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', hour12: false,
+  }).formatToParts(dt);
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? 0);
+  // hourCycle h23 reports midnight as 24 in some engines; normalise it to 0.
+  return { y: get('year'), mo: get('month'), d: get('day'), h: get('hour') % 24, mi: get('minute') };
 };
 
-// Date + time ALWAYS in Indian Standard Time, e.g. "01 Jun 2025, 10:15 AM IST", regardless of
-// the viewer's device timezone. Backend sends UTC (…Z). Used where IST is a stated requirement.
-export const formatDateTimeIST = (d?: string | null) => {
-  if (!d) return '—';
-  const dt = parseTs(d);
-  if (isNaN(dt.getTime())) return d;
-  return dt.toLocaleString('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: true,
-  }) + ' IST';
+/** "04 Sep 2026" */
+const datePart = (c: ReturnType<typeof wallClock>) => `${pad2(c.d)} ${MONTHS[c.mo - 1]} ${c.y}`;
+/** "04:06 PM" — 12-hour, zero-padded hour, uppercase meridiem. */
+const timePart = (c: ReturnType<typeof wallClock>) =>
+  `${pad2(c.h % 12 === 0 ? 12 : c.h % 12)}:${pad2(c.mi)} ${c.h < 12 ? 'AM' : 'PM'}`;
+
+/** The platform's empty-value convention. A null/blank/unparseable timestamp never renders as
+ *  "Invalid Date" — it renders as nothing-to-show, the same em dash used everywhere else. */
+export const EMPTY_VALUE = '—';
+
+/** Parse anything the API or a form may hand us into a Date, or null if it is not a timestamp.
+ *  Accepts ISO with or without a zone (a zoneless date-TIME is read as UTC, which is what the
+ *  backend sends), plain dates, and epoch numbers. */
+const toDate = (v?: string | number | Date | null): Date | null => {
+  if (v === null || v === undefined || v === '') return null;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  if (typeof v === 'number') { const d = new Date(v); return isNaN(d.getTime()) ? null : d; }
+  const raw = String(v).trim();
+  if (!raw) return null;
+  const d = parseTs(raw);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+type DtOpts = {
+  /** Render in IST rather than the viewer's own timezone. */
+  ist?: boolean;
+  /** Append " IST" — for screens that state the timezone as part of the value. */
+  suffix?: boolean;
+  /** What to show when there is no usable timestamp. Defaults to the em dash. */
+  empty?: string;
+};
+
+/** "04 Sep 2026, 04:06 PM" — the standard display format for an actual date/time. */
+export const formatDateTime = (v?: string | number | Date | null, opts: DtOpts = {}) => {
+  const dt = toDate(v);
+  if (!dt) return opts.empty ?? EMPTY_VALUE;
+  const c = wallClock(dt, opts.ist ? 'Asia/Kolkata' : undefined);
+  return `${datePart(c)}, ${timePart(c)}${opts.suffix ? ' IST' : ''}`;
+};
+
+/** "04 Sep 2026" — the date half, same shape, for where a time would be noise. */
+export const formatDate = (v?: string | number | Date | null, opts: DtOpts = {}) => {
+  const dt = toDate(v);
+  if (!dt) return opts.empty ?? EMPTY_VALUE;
+  return datePart(wallClock(dt, opts.ist ? 'Asia/Kolkata' : undefined));
+};
+
+/** "04:06 PM" — the time half, for a chat bubble or anywhere the date is already stated. */
+export const formatTime = (v?: string | number | Date | null, opts: DtOpts = {}) => {
+  const dt = toDate(v);
+  if (!dt) return opts.empty ?? EMPTY_VALUE;
+  return timePart(wallClock(dt, opts.ist ? 'Asia/Kolkata' : undefined));
+};
+
+/** IST with the zone stated: "04 Sep 2026, 04:06 PM IST". Used where IST is a requirement of the
+ *  screen rather than an implementation detail. Unchanged behaviour, standardised shape. */
+export const formatDateTimeIST = (v?: string | number | Date | null) =>
+  formatDateTime(v, { ist: true, suffix: true });
+
+/** IST WITHOUT the suffix — for screens whose own label already says "(IST)", so the zone is not
+ *  printed twice. Same moment as formatDateTimeIST. */
+export const formatDateTimeInIST = (v?: string | number | Date | null) =>
+  formatDateTime(v, { ist: true });
+
+/** Reshape the Agent API's IST display PARTS into the standard format.
+ *
+ * That API returns each timestamp pre-split and pre-converted to IST — `createdDate` as
+ * "2026-09-04" and `createdTime` as "04:06:47 PM" — and for several workflow steps it returns
+ * ONLY those parts, with no ISO instant alongside. So this restates strings that are already in
+ * the right timezone; it does no parsing into a Date and no timezone conversion, which is exactly
+ * why it cannot shift the moment being displayed. Seconds are dropped, matching every other
+ * timestamp in the product.
+ *
+ * Returns the empty convention when either half is missing, so a step that has not happened yet
+ * never renders as a half-formed date.
+ */
+/** The TIME half of the Agent API's IST parts: "04:06:47 PM" or "16:06:47" -> "04:06 PM".
+ *
+ * For the few exports that keep Date and Time as SEPARATE columns — restructuring those into one
+ * column would change the shape of a file people already import elsewhere, so each half is
+ * standardised in place instead. Like `formatIstParts`, this restates an already-IST string and
+ * performs no timezone conversion.
+ */
+export const formatIstTime = (time?: string | null): string => {
+  const t = (time || '').trim();
+  if (!t) return EMPTY_VALUE;
+  const m = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/.exec(t);
+  if (!m) return t;
+  let h = Number(m[1]);
+  const mer = m[3] ? m[3].toUpperCase() : (h < 12 ? 'AM' : 'PM');
+  if (!m[3]) h = h % 12 === 0 ? 12 : h % 12;
+  return `${pad2(h)}:${m[2]} ${mer}`;
+};
+
+export const formatIstParts = (date?: string | null, time?: string | null): string => {
+  const d = (date || '').trim();
+  const t = (time || '').trim();
+  if (!d) return EMPTY_VALUE;
+  const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+  const datePiece = dm ? `${dm[3]} ${MONTHS[Number(dm[2]) - 1]} ${dm[1]}` : d;
+  if (!t) return datePiece;
+  const tm = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/.exec(t);
+  if (!tm) return `${datePiece}, ${t}`;
+  let h = Number(tm[1]);
+  const mer = tm[3] ? tm[3].toUpperCase() : (h < 12 ? 'AM' : 'PM');
+  if (!tm[3]) h = h % 12 === 0 ? 12 : h % 12;            // 24-hour input -> 12-hour
+  return `${datePiece}, ${pad2(h)}:${tm[2]} ${mer}`;
+};
+
+/** "Just now" / "12 min ago" / "3 hr ago" / "Yesterday 04:06 PM" / "04 Sep 2026, 04:06 PM".
+ *
+ * Presence-style relative time, shared by the Active Users and Support Management screens (which
+ * each carried their own byte-identical copy). Past two days a relative label stops meaning
+ * anything, so it falls through to the standard absolute format — and the "Yesterday" case keeps
+ * its label while printing the time in the standard shape.
+ */
+export const relativeTime = (iso?: string | null): string => {
+  if (!iso) return EMPTY_VALUE;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return EMPTY_VALUE;
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 45) return 'Just now';
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
+  if (s < 172800) return `Yesterday ${formatTime(iso)}`;
+  return formatDateTime(iso);
 };
 
 /**

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { formatDateTime } from './datetime';
 import { Icon } from './Icon';
 import {
   login, getUser, clearAuth, fetchConversations, fetchMessages, fetchMerchant,
@@ -31,12 +32,7 @@ function useIsMobile(breakpoint = 760): boolean {
 
 // Last-seen timestamp for the offline badge — always rendered in Indian Standard Time.
 const IST_TZ = 'Asia/Kolkata';
-const lastSeenLabel = (iso: string): string => {
-  const d = new Date(iso);
-  const date = d.toLocaleDateString('en-GB', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric' });
-  const time = d.toLocaleTimeString('en-US', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: true });
-  return `${date} ${time} IST`;
-};
+const lastSeenLabel = (iso: string): string => formatDateTime(iso, { suffix: true });
 
 // Customer online/offline badge for the support sidebar. Presence comes from the shared
 // Active Users presence service (session heartbeat) — no separate tracking here.

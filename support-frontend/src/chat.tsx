@@ -1,19 +1,23 @@
 import React from 'react';
 import { Icon } from './Icon';
+import { formatDate, formatTime } from './datetime';
 
 // Customer Support chat helpers — mirrors the merchant app's helpers. Timestamps are ALWAYS
 // rendered in Indian Standard Time (Asia/Kolkata), regardless of the viewer's device timezone.
 const IST_TZ = 'Asia/Kolkata';
 
-export const chatTime = (iso: string) =>
-  new Date(iso).toLocaleTimeString('en-US', { timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: true });
+export const chatTime = (iso: string) => formatTime(iso);
 
+/** The day separator in a conversation. "Today"/"Yesterday" stay — a relative label reads better
+ *  here — and any other day prints the standard date. */
 export const chatDateLabel = (iso: string): string => {
-  const key = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: IST_TZ });   // YYYY-MM-DD in IST
+  // en-CA gives YYYY-MM-DD, used ONLY to compare which IST day two instants fall on. A comparison
+  // key, never displayed, so it is deliberately not the display format.
+  const key = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: IST_TZ });
   const k = key(new Date(iso));
   if (k === key(new Date())) return 'Today';
   if (k === key(new Date(Date.now() - 86400000))) return 'Yesterday';
-  return new Date(iso).toLocaleDateString('en-GB', { timeZone: IST_TZ, day: '2-digit', month: 'short', year: 'numeric' });
+  return formatDate(iso);
 };
 
 export const formatBytes = (n?: number | null): string => {
