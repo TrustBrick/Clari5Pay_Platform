@@ -108,6 +108,9 @@ export interface AgentTxnRow {
   accountSubmittedTime?: string | null;
   // Slip.
   slipImage?: string | null;
+  // Every slip/proof attached to this transaction, oldest first. `slipImage` stays the first of
+  // them, so anything reading only that keeps working.
+  slipImages?: string[] | null;
   slipSubmittedBy?: string | null;
   slipSubmittedDate?: string | null;
   slipSubmittedTime?: string | null;
@@ -380,8 +383,12 @@ export const agentTxnsAPI = {
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/account-submit`, body)).data,
   /** Both are mandatory — the UTR is the only payment reference (no Reference Number).
    *  `approverUserId` is the "Send To Approval" Authorized Approver, now chosen at this step. */
-  submitSlip: async (id: number, body: { slipImage?: string; utr?: string; approverUserId?: number }) =>
+  submitSlip: async (id: number, body: { slipImage?: string; slipImages?: string[]; utr?: string; approverUserId?: number }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/slip`, body)).data,
+  /** Attach more slips/proofs to a transaction that already exists. Purely additive — the files
+   *  join the set on the record, nothing is replaced, and no status changes. */
+  addProofs: async (id: number, slipImages: string[]) =>
+    (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/proofs`, { slipImages })).data,
   supervisorApprove: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/supervisor/approve`, { remark })).data,
   supervisorReject: async (id: number, remark: string) =>
@@ -402,7 +409,7 @@ export const agentTxnsAPI = {
    *  `walletAddress` are captured on the request and are accepted here only as corrections.
    *  The status is left exactly where the approval workflow put it; `completeWithdrawal` is the
    *  explicit step that completes the transaction. */
-  payout: async (id: number, body: { noteNumber?: string; tokenDetails?: string; walletAddress?: string; txHash?: string; slipImage?: string; tokenImage?: string; utr?: string }) =>
+  payout: async (id: number, body: { noteNumber?: string; tokenDetails?: string; walletAddress?: string; txHash?: string; slipImage?: string; slipImages?: string[]; tokenImage?: string; tokenImages?: string[]; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/payout`, body)).data,
   /** Complete an approved withdrawal whose payment details are already on the record. */
   completeWithdrawal: async (id: number) =>
@@ -416,7 +423,7 @@ export const agentTxnsAPI = {
   settlementReject: async (id: number, remark: string) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/settlement/reject`, { remark })).data,
   /** Proof of the completed offline payment — mandatory before a settlement can be settled. */
-  settlementProof: async (id: number, body: { slipImage?: string; utr?: string }) =>
+  settlementProof: async (id: number, body: { slipImage?: string; slipImages?: string[]; utr?: string }) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/settlement/proof`, body)).data,
   settlementSettle: async (id: number) =>
     (await api.post<AgentTxnRow>(`/api/agent-txns/${id}/settlement/settle`)).data,

@@ -429,6 +429,7 @@ export const DEPOSIT_TYPE_LABELS: Record<string, string> = {
   CASH: 'Cash',
   CRYPTO: 'Crypto (USDT)',
   CARD: 'Card',
+  CDM: 'CDM (Cash Deposit Machine)',
 };
 export const depositTypeLabel = (code?: string | null) =>
   code ? (DEPOSIT_TYPE_LABELS[String(code).toUpperCase()] || code) : '';
@@ -452,7 +453,34 @@ export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'CASH', label: 'Cash' },
   { value: 'CRYPTO', label: 'Crypto (USDT)' },
   { value: 'CARD', label: 'Card' },
+  { value: 'CDM', label: 'CDM (Cash Deposit Machine)' },
 ];
+
+// ── CDM (Cash Deposit Machine) ─────────────────────────────────────────────────────────────────
+// Physical cash pushed into a machine. It shares the whole Deposit lifecycle with every other
+// type, and differs in exactly two places: the automatic allocation engine never picks its
+// receiving account (an Admin assigns one, because the payer walks to a machine later), and it
+// cannot be completed until an Admin has confirmed the ACTUAL bank credit. Both of those are
+// enforced on the server; this constant only drives what the forms ask for.
+export const CDM_TXN_TYPE = 'CDM';
+/** True for a deposit raised with Deposit Type = CDM. */
+export const isCdmDeposit = (tx: { type?: string | null; depositType?: string | null }): boolean =>
+  String(tx.type || '').toUpperCase().startsWith('DEPOSIT') &&
+  String(tx.depositType || '').toUpperCase() === CDM_TXN_TYPE;
+
+// The Admin's CDM verification checklist. Each entry is a distinct thing a HUMAN compared — the
+// system never ticks one on the Admin's behalf. Mirrors app.services.cdm.CHECKS, which is what
+// the server actually enforces; this list only decides what the form renders and in what order.
+// `bankCreditConfirmed` is the control that releases the money: a receipt can be edited, an
+// actual credit in the assigned account cannot.
+export const CDM_CHECKS = [
+  { key: 'receiptVerified', label: 'Receipt Verified' },
+  { key: 'amountMatches', label: 'Amount Matches' },
+  { key: 'accountMatches', label: 'Bank / Account Matches' },
+  { key: 'dateChecked', label: 'Date / Time Checked' },
+  { key: 'referenceChecked', label: 'CDM Reference Checked' },
+  { key: 'bankCreditConfirmed', label: 'Actual Bank Credit Confirmed' },
+] as const;
 
 // ── Transaction types temporarily withheld from the operator request forms ─────────────────────
 // Cash and Crypto are not currently offered to the Data / Deposit / Withdrawal Operators on the
@@ -632,6 +660,82 @@ export const COUNTRY_CODES = [
 ];
 
 // Read a File (image/doc) into a base64 data URL for upload.
+// ─── Payment proof / slip files ────────────────────────────────────────────────
+// Accepted types and the per-file size limit mirror app.core.uploads on the server — the server
+// is the authority, this only lets an obviously bad file fail fast and locally. There is
+// deliberately NO limit on HOW MANY files may be attached to a request; a payment can need one
+// slip or a dozen, and dropping the eleventh would leave the record unable to show how the money
+// actually moved.
+export const PROOF_ACCEPT = 'image/jpeg,image/jpg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf';
+export const PROOF_MAX_BYTES = 5 * 1024 * 1024;
+export const PROOF_TYPE_MSG = 'Unsupported file type. Allowed: JPG, JPEG, PNG, PDF.';
+export const PROOF_SIZE_MSG = 'Each file must be 5 MB or smaller.';
+export const isAllowedProof = (f: File): boolean => {
+  const t = (f.type || '').toLowerCase();
+  if (['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'].includes(t)) return true;
+  return /\.(jpe?g|png|pdf)$/i.test(f.name);
+};
+
+// Split a set of proofs into request-sized batches.
+//
+// The reverse proxy caps a single request body at 12 MB (see Caddyfile), and base64 inflates a
+// file by about a third. Without this, attaching a genuinely large set would fail at the proxy
+// with an opaque error and the user would have no way to attach them at all — the count limit
+// would simply have moved from the application to the network. Instead the first batch travels
+// with the submission and the rest are appended afterwards, so "as many as required" holds.
+const PROOF_BATCH_BYTES = 8 * 1024 * 1024;
+export const proofBatches = (proofs: string[]): string[][] => {
+  const batches: string[][] = [];
+  let current: string[] = [];
+  let size = 0;
+  for (const p of proofs) {
+    // A single file over the batch budget still goes on its own — the server decides whether
+    // it is too large, and it will say so clearly.
+    if (current.length && size + p.length > PROOF_BATCH_BYTES) { batches.push(current); current = []; size = 0; }
+    current.push(p);
+    size += p.length;
+  }
+  if (current.length) batches.push(current);
+  return batches.length ? batches : [[]];
+};
+
+// Attach the batches that did not fit the primary request, and report whether all of them
+// landed. By the time this runs the primary call has SUCCEEDED — the request exists, or the slip
+// is submitted, or the payout is complete — so a failure here is a partial attachment, not a
+// failed submission, and must never be reported as one. Returns false so the caller can tell the
+// user exactly which of the two happened; the files that did land are already on the record.
+export const attachRemainingProofs = async (
+  batches: string[][], send: (batch: string[]) => Promise<unknown>,
+): Promise<boolean> => {
+  for (const batch of batches) {
+    try { await send(batch); } catch { return false; }
+  }
+  return true;
+};
+
+export const PARTIAL_ATTACH_MSG =
+  'Some files could not be attached — open the request and upload them again.';
+
+// The proofs to display for a transaction, newest schema first: the array if the row has one,
+// otherwise the single legacy column (rows written before multi-file uploads existed).
+export const proofList = (many?: string[] | null, one?: string | null): string[] =>
+  (many && many.length) ? many : (one ? [one] : []);
+
+// Is this proof a PDF? A stored file reaches the browser either as a base64 data URL (legacy
+// rows) or as a presigned object-storage link, so the type has to be read from whichever form
+// arrived — a PDF shown through an <img> is just a broken image.
+export const isPdfProof = (src?: string | null): boolean =>
+  !!src && (src.startsWith('data:application/pdf') || /\.pdf(\?|$)/i.test(src.split('#')[0]));
+
+// A sensible filename for one downloaded proof: the right extension, and an index when the
+// request carries several, so a user saving all of them does not overwrite the same file.
+export const proofFileName = (src: string, ref: string, i: number, total: number, kind = 'slip'): string => {
+  const ext = isPdfProof(src) ? 'pdf'
+    : (src.match(/^data:image\/(jpeg|jpg|png|webp)/) || src.split('#')[0].split('?')[0].match(/\.(jpe?g|png|webp)$/i) || [])[1]
+        ?.toLowerCase().replace('jpeg', 'jpg') || 'png';
+  return `${kind}-${ref}${total > 1 ? `-${i + 1}` : ''}.${ext}`;
+};
+
 export const fileToDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();

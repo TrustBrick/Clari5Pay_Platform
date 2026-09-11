@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl, reviewerRoleCode, formatDateTimeIST } from '../utils/helpers';
+import { fmt, formatIndianAmountInput, parseIndianAmount, fileToDataUrl, downloadDataUrl, reviewerRoleCode, formatDateTimeIST,
+  PROOF_ACCEPT, PROOF_MAX_BYTES, PROOF_TYPE_MSG, PROOF_SIZE_MSG, isAllowedProof, isPdfProof, openDataUrl,
+  proofBatches, proofList, proofFileName, attachRemainingProofs, PARTIAL_ATTACH_MSG } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen, PhoneField, SearchSelect, Pager } from '../components/UI';
 import { COUNTRY_CODES, INDIAN_STATES, isValidWallet } from '../utils/helpers';
 import { usePoll, useDebouncedValue, useActivitySignal } from '../utils/usePoll';
@@ -1804,7 +1806,8 @@ const AgentTxnDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void }> 
   const slipLabel = isTokenMethod(row.txnMethod) ? 'Token Image' : 'Uploaded Slip';
   const images: Array<[string, string]> = [
     ...(row.accountProof ? [[proofLabel, row.accountProof] as [string, string]] : []),
-    ...(row.slipImage ? [[slipLabel, row.slipImage] as [string, string]] : []),
+    ...proofList(row.slipImages, row.slipImage).map((src, i, all) =>
+      [all.length > 1 ? `${slipLabel} ${i + 1} of ${all.length}` : slipLabel, src] as [string, string]),
     ...(row.depositProof ? [['Deposit Proof', row.depositProof] as [string, string]] : []),
   ];
 
@@ -1930,23 +1933,22 @@ const SettlementDecisionModal: React.FC<{ row: AgentTxnRow; action: 'accept' | '
 /** Upload proof of the completed offline payment. Mandatory before a settlement can be settled. */
 const SettlementProofModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: () => void }> = ({ row, onClose, onDone }) => {
   const { showToast } = useToast();
-  const [proof, setProof] = useState('');
+  const [proofs, setProofs] = useState<string[]>([]);
   const [utr, setUtr] = useState('');
   const [busy, setBusy] = useState(false);
   const PROOF_HINT: Record<string, string> = {
     CASH: 'a cash receipt or acknowledgement', BANK: 'a bank transfer receipt', CRYPTO: 'a crypto transfer proof',
   };
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    if (f.size > 3 * 1024 * 1024) { showToast('Proof must be under 3 MB.', 'error'); return; }
-    try { setProof(await fileToDataUrl(f)); } catch { showToast('Could not read that file.', 'error'); }
-  };
   const go = async () => {
-    if (!proof) { showToast('Payment proof is required.', 'error'); return; }
+    if (!proofs.length) { showToast('Payment proof is required.', 'error'); return; }
     setBusy(true);
     try {
-      await agentTxnsAPI.settlementProof(row.id, { slipImage: proof, utr: utr.trim() || undefined });
+      // The first batch travels with the step; anything that does not fit one request body is
+      // appended afterwards, onto the same transaction.
+      const [first, ...rest] = proofBatches(proofs);
+      await agentTxnsAPI.settlementProof(row.id, { slipImages: first, utr: utr.trim() || undefined });
+      const all = await attachRemainingProofs(rest, b => agentTxnsAPI.addProofs(row.id, b));
+      if (!all) showToast(PARTIAL_ATTACH_MSG, 'info');
       showToast('Proof uploaded.', 'success');
       onDone(); onClose();
     } catch (e) { showToast(agentTxnError(e, 'Could not upload the proof.'), 'error'); }
@@ -1962,17 +1964,11 @@ const SettlementProofModal: React.FC<{ row: AgentTxnRow; onClose: () => void; on
       <p style={{ margin: '0 0 12px', fontSize: 12.5, color: T.textMuted, lineHeight: 1.5 }}>
         Attach evidence of the payment already made offline — {PROOF_HINT[String(row.txnMethod || '').toUpperCase()] || 'a payment receipt'}.
       </p>
-      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        Payment Proof <span style={{ color: T.danger }}>*</span>
-      </label>
-      <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 12, fontSize: 13 }} />
-      {proof && !proof.startsWith('data:application/pdf') && (
-        <img src={proof} alt="Payment proof" style={{ maxWidth: 220, maxHeight: 200, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}`, display: 'block', marginBottom: 12 }} />)}
-      {proof.startsWith('data:application/pdf') && <p style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 12 }}>PDF attached.</p>}
+      <AgentSlipUpload values={proofs} onChange={setProofs} label="Payment Proof" required />
       <Input label="Reference / UTR (optional)" value={utr} onChange={e => setUtr(e.target.value)}
         placeholder="UTR, transaction hash or receipt number" />
       <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
-        <Btn variant="success" onClick={go} disabled={busy}>{busy ? 'Uploading…' : 'Upload Proof'}</Btn>
+        <Btn variant="success" onClick={go} disabled={busy || !proofs.length}>{busy ? 'Uploading…' : 'Upload Proof'}</Btn>
         <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
       </div>
     </Modal>
@@ -1999,7 +1995,7 @@ const SettlementSettleModal: React.FC<{ row: AgentTxnRow; onClose: () => void; o
         <ReadField label="Settlement Method" value={methodLabel(row.txnMethod)} />
         <ReadField label="Settlement Amount" value={fmt(row.amount)} />
       </div>
-      {row.slipImage && <SlipView label="Payment Proof" src={row.slipImage} filename={`proof-${row.referenceNumber}`} />}
+      {row.slipImage && <SlipGallery label="Payment Proof" srcs={proofList(row.slipImages, row.slipImage)} filename={row.referenceNumber} />}
       <p style={{ margin: '12px 0', fontSize: 12.5, color: T.textMuted, lineHeight: 1.5 }}>
         This records the settlement as complete against the uploaded proof. It does not move any
         money — the payment was made offline.
@@ -3010,14 +3006,73 @@ export const AgentTxnReportsPage: React.FC<{ user: User; onNavigate?: (p: string
 // A stored slip/proof: preview when it is an image, always downloadable. The file is read from
 // the transaction — never re-uploaded — so every viewer sees the same original.
 export const SlipView: React.FC<{ label: string; src: string; filename: string }> = ({ label, src, filename }) => {
-  const isPdf = src.startsWith('data:application/pdf');
+  const isPdf = isPdfProof(src);
   return (
     <div>
       <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{label}</div>
       {isPdf
         ? <div style={{ fontSize: 12.5, color: T.textMuted, marginBottom: 6 }}>PDF document</div>
         : <img src={src} alt={label} style={{ maxWidth: 220, maxHeight: 240, objectFit: 'contain', borderRadius: 10, border: `1px solid ${T.border}`, display: 'block', marginBottom: 6 }} />}
-      <Btn size="sm" variant="ghost" onClick={() => downloadDataUrl(src, filename)}>↓ Download</Btn>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Btn size="sm" variant="ghost" onClick={() => openDataUrl(src)}>View</Btn>
+        <Btn size="sm" variant="ghost" onClick={() => downloadDataUrl(src, filename)}>↓ Download</Btn>
+      </div>
+    </div>
+  );
+};
+
+// EVERY slip on a transaction, however many there are, each independently viewable and
+// downloadable — an operator checking a payment needs to open a particular slip, and a PDF
+// cannot be read from a thumbnail at all. Falls back to the single legacy field for rows written
+// before a transaction could hold more than one file.
+export const SlipGallery: React.FC<{ label: string; srcs: string[]; filename: string }> = ({ label, srcs, filename }) => (
+  <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+    {srcs.map((src, i) => (
+      <SlipView key={i} src={src}
+        label={srcs.length > 1 ? `${label} ${i + 1} of ${srcs.length}` : label}
+        filename={proofFileName(src, filename, i, srcs.length, 'slip')} />
+    ))}
+  </div>
+);
+
+// Collects the files to attach. Choosing more files ADDS to the selection rather than clearing
+// it, and there is no cap on how many: one payment can be settled in several transfers, each
+// with its own slip. Per-file type and size are checked here, mirroring the server's own rules.
+export const AgentSlipUpload: React.FC<{
+  values: string[]; onChange: (v: string[]) => void; label: string; required?: boolean;
+}> = ({ values, onChange, label, required }) => {
+  const { showToast } = useToast();
+  const onFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    if (files.some(f => !isAllowedProof(f))) { showToast(PROOF_TYPE_MSG, 'error'); return; }
+    if (files.some(f => f.size > PROOF_MAX_BYTES)) { showToast(PROOF_SIZE_MSG, 'error'); return; }
+    try { onChange([...values, ...await Promise.all(files.map(fileToDataUrl))]); }
+    catch { showToast('Could not read the file.', 'error'); }
+  };
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+        {label}{required && <span style={{ color: T.danger }}> *</span>}
+      </label>
+      <input type="file" multiple accept={PROOF_ACCEPT} onChange={onFiles} style={{ marginBottom: 6, fontSize: 12 }} />
+      <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 0' }}>
+        JPG, JPEG, PNG or PDF · up to 5 MB each · attach as many as you need{values.length ? ` (${values.length} selected)` : ''}
+      </p>
+      {values.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+          {values.map((v, i) => (
+            <div key={i} style={{ position: 'relative' }}>
+              {isPdfProof(v)
+                ? <div style={{ width: 56, height: 56, borderRadius: 8, border: `1px solid ${T.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color: T.danger, background: T.canvas }}>PDF</div>
+                : <img src={v} alt={`slip-${i + 1}`} style={{ width: 56, height: 56, objectFit: 'cover', borderRadius: 8, border: `1px solid ${T.border}` }} />}
+              <button onClick={() => onChange(values.filter((_, j) => j !== i))} title="Remove" aria-label="Remove file"
+                style={{ position: 'absolute', top: -7, right: -7, width: 20, height: 20, borderRadius: '50%', border: 'none', background: T.danger, color: '#fff', fontSize: 13, lineHeight: 1, cursor: 'pointer' }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
@@ -3164,29 +3219,22 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
   const needsNote = isCash && !(row.noteNumber || '').trim();
   const [note, setNote] = useState('');
   const [utr, setUtr] = useState((row.depositUtr || '').trim());
-  const [slip, setSlip] = useState('');
-  const [slipName, setSlipName] = useState('');
+  const [slips, setSlips] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (!f) return;
-    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
-    try { setSlip(await fileToDataUrl(f)); setSlipName(f.name); }
-    catch { showToast('Could not read the file.', 'error'); setSlip(''); setSlipName(''); }
-  };
 
   const fileLabel = isCash ? 'Token Image' : isBank || isCryptoM ? 'Payment Slip' : 'Payment Screenshot';
   // The upload is mandatory for every method; the UTR for every method except cash (money changes
   // hands in person, so no rail issues a reference).
-  const haveFile = !!slip || canReuseFile;
+  const haveFile = !!slips.length || canReuseFile;
   const ready = haveFile && (isCash || !!utr.trim()) && (!needsNote || !!note.trim());
 
   /** The proof + reference, in the shape this method's endpoint expects. `ready` guarantees a file
    *  is present whenever the server demands one, so omitting it here only ever means "keep the one
    *  already stored". */
+  // Only the first request-sized batch travels with the step; `submitFiles` sends the rest.
   const payload = () => (isCash
-    ? { ...(slip ? { tokenImage: slip } : {}), ...(needsNote ? { noteNumber: note.trim() } : {}) }
-    : { ...(slip ? { slipImage: slip } : {}), utr: utr.trim() });
+    ? { ...(slips.length ? { tokenImages: proofBatches(slips)[0] } : {}), ...(needsNote ? { noteNumber: note.trim() } : {}) }
+    : { ...(slips.length ? { slipImages: proofBatches(slips)[0] } : {}), utr: utr.trim() });
 
   // ONE action: save the proof, then complete. The two are still separate server steps — saving
   // the file never moves a status by itself, and completion is gated on the approval already
@@ -3201,6 +3249,11 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
     setBusy(true);
     try {
       await agentTxnsAPI.payout(row.id, payload());
+      // `payload()` carried only the first request-sized batch; attach the rest before completing,
+      // so every file the operator chose is on the record when the withdrawal closes.
+      const [, ...rest] = proofBatches(slips);
+      const all = await attachRemainingProofs(rest, b => agentTxnsAPI.addProofs(row.id, b));
+      if (!all) showToast(PARTIAL_ATTACH_MSG, 'info');
     } catch (e) {
       showToast(agentTxnError(e, 'Failed to save the payment details. The withdrawal was not completed.'), 'error');
       setBusy(false);
@@ -3241,14 +3294,10 @@ const PaymentDetailsModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onD
         <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)} required
           placeholder={isBank ? 'Bank payment reference / UTR' : isCryptoM ? 'On-chain transaction hash / UTR' : 'UPI UTR / payment reference'} />
       )}
-      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, margin: '2px 0 6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        {fileLabel} <span style={{ color: T.danger }}>*</span>
-      </label>
-      <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
-      {slipName
-        ? <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>
-        : canReuseFile ? <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>A {fileLabel.toLowerCase()} is already on the record — attach a file only to replace it.</div>
-        : row.slipImage ? <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Re-attach the {fileLabel.toLowerCase()} to save a correction.</div> : null}
+      <AgentSlipUpload values={slips} onChange={setSlips} label={fileLabel} required={!canReuseFile} />
+      {!slips.length && canReuseFile
+        ? <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>A {fileLabel.toLowerCase()} is already on the record — attach more only to add to it.</div>
+        : null}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10, flexWrap: 'wrap' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
         <Btn variant="success" onClick={completeWithdrawal} disabled={busy || !ready}>{busy ? 'Completing…' : 'Complete Withdrawal'}</Btn>
@@ -3290,7 +3339,7 @@ const CompleteWithdrawalModal: React.FC<{ row: AgentTxnRow; onClose: () => void;
       {/* The proof uploaded at Pay and Upload Slip — the token image for cash, the payment slip
           for every other method. Shown here so the operator confirms against what was saved. */}
       {row.slipImage && <div style={{ marginBottom: 14 }}>
-        <SlipView label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Payment Slip'} src={row.slipImage}
+        <SlipGallery label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Payment Slip'} srcs={proofList(row.slipImages, row.slipImage)}
           filename={`${row.referenceNumber}-${isTokenMethod(row.txnMethod) ? 'token-image' : 'payment-slip'}`} />
       </div>}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 10 }}>
@@ -3316,8 +3365,7 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   // no rail, no slip and no UTR to evidence it otherwise. Crypto confirms on the wallet alone.
   const isCashConfirm = confirmOnly && isTokenMethod(row.txnMethod);
   const [utr, setUtr] = useState('');
-  const [slip, setSlip] = useState('');
-  const [slipName, setSlipName] = useState('');
+  const [slips, setSlips] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   // "Send To Approval" now lives here for deposits: once the slip uploads, the operator chooses the
   // Authorized Approver and the deposit is routed to them (Supervisor review). Payouts are unchanged.
@@ -3326,30 +3374,29 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
   const [approvers, setApprovers] = useState<{ id: number; name: string; role: string }[]>([]);
   useEffect(() => { if (needsApproval) agentTxnsAPI.formData().then(d => setApprovers(d.approvers)).catch(() => {}); }, [needsApproval]);
 
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (!f) return;
-    if (f.size > 8 * 1024 * 1024) { showToast('File too large. Maximum 8 MB.', 'error'); return; }
-    try { setSlip(await fileToDataUrl(f)); setSlipName(f.name); }
-    catch { showToast('Could not read the file.', 'error'); }
-  };
 
   const submit = async () => {
-    if (isCashConfirm && !slip) { showToast('Upload the Cash Payment Proof.', 'error'); return; }
+    if (isCashConfirm && !slips.length) { showToast('Upload the Cash Payment Proof.', 'error'); return; }
     // A confirm-only crypto withdrawal needs neither slip nor UTR.
     if (!confirmOnly) {
-      if (!slip) { showToast('Upload the payment slip image.', 'error'); return; }
+      if (!slips.length) { showToast('Upload the payment slip image.', 'error'); return; }
       if (!isCashDeposit && !utr.trim()) { showToast('Enter the UTR Number.', 'error'); return; }
     }
     if (needsApproval && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setBusy(true);
     try {
+      // The step carries the first batch of files; the rest are appended to the same transaction
+      // afterwards, because one request body is capped by the proxy.
+      const [first, ...rest] = proofBatches(slips);
       const body = confirmOnly
-        ? (isCashConfirm ? { slipImage: slip } : {})
-        : { slipImage: slip, ...(isCashDeposit ? {} : { utr: utr.trim() }) };
+        ? (isCashConfirm ? { slipImages: first } : {})
+        : { slipImages: first, ...(isCashDeposit ? {} : { utr: utr.trim() }) };
       // Deposit: slip + chosen approver → Supervisor review. Withdrawal: payout after Manager approval.
       await (mode === 'payout'
         ? agentTxnsAPI.payout(row.id, body)
         : agentTxnsAPI.submitSlip(row.id, { ...body, approverUserId: Number(approverId) }));
+      const allAttached = await attachRemainingProofs(rest, b => agentTxnsAPI.addProofs(row.id, b));
+      if (!allAttached) showToast(PARTIAL_ATTACH_MSG, 'info');
       showToast(confirmOnly
         ? `${row.referenceNumber} confirmed and completed.`
         : mode === 'payout'
@@ -3380,17 +3427,13 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
         </div>
         {isCashConfirm && (
           <>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Cash Payment Proof <span style={{ color: T.danger }}>*</span>
-            </label>
-            <input type="file" accept="image/jpeg,image/jpg,image/png,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
-            {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
-            <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>JPG, JPEG, PNG or PDF. Required — it is stored with the transaction and shown wherever it is viewed.</p>
+            <AgentSlipUpload values={slips} onChange={setSlips} label="Cash Payment Proof" required />
+            <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>Stored with the transaction and shown wherever it is viewed.</p>
           </>
         )}
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-          <Btn variant="success" onClick={submit} disabled={busy || (isCashConfirm && !slip)}>{busy ? 'Completing…' : 'Confirm & Complete'}</Btn>
+          <Btn variant="success" onClick={submit} disabled={busy || (isCashConfirm && !slips.length)}>{busy ? 'Completing…' : 'Confirm & Complete'}</Btn>
         </div>
       </Modal>
     );
@@ -3444,15 +3487,13 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
         <Input label="UTR Number" value={utr} onChange={e => setUtr(e.target.value)}
           required placeholder="Bank UTR — the payment reference" />
       )}
-      <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{isCashDeposit ? 'Token Image' : 'Slip Image'}</label>
-      <input type="file" accept="image/*,application/pdf" onChange={onFile} style={{ marginBottom: 6, fontSize: 12 }} />
-      {slipName && <div style={{ fontSize: 11.5, color: T.textMuted, marginBottom: 6 }}>Attached: {slipName}</div>}
+      <AgentSlipUpload values={slips} onChange={setSlips} label={isCashDeposit ? 'Token Image' : 'Slip Image'} required />
       <p style={{ fontSize: 11.5, color: T.textMuted, margin: '4px 0 14px' }}>
         {isCashDeposit ? 'The token image is required.' : 'Both the UTR Number and the slip image are required.'}
       </p>
       {/* Send To Approval — revealed only once the slip/token uploads successfully. The operator
           chooses the Authorized Approver here; the deposit is then routed to them for review. */}
-      {needsApproval && slip && (
+      {needsApproval && slips.length > 0 && (
         <div className="animate-slide-up" style={{ marginTop: 4, marginBottom: 14, padding: 14, borderRadius: 10, background: T.canvas, border: `1px solid ${T.border}` }}>
           <p style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 700, color: T.textMain }}>Send To Approval</p>
           <p style={{ margin: '0 0 12px', fontSize: 11.5, color: T.textMuted }}>
@@ -3466,7 +3507,7 @@ const UploadSlipModal: React.FC<{ row: AgentTxnRow; mode?: 'deposit' | 'payout';
       )}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
-        <Btn onClick={submit} disabled={busy || !slip || (!isCashDeposit && !utr.trim()) || (needsApproval && !approverId)}>{busy ? 'Submitting…' : (isCashDeposit ? 'Upload Token' : 'Submit Slip')}</Btn>
+        <Btn onClick={submit} disabled={busy || !slips.length || (!isCashDeposit && !utr.trim()) || (needsApproval && !approverId)}>{busy ? 'Submitting…' : (isCashDeposit ? 'Upload Token' : 'Submit Slip')}</Btn>
       </div>
     </Modal>
   );
@@ -3510,7 +3551,7 @@ const MarkDepositModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone
         {facts.map(([k, v]) => <DField key={k as string} k={k as string} v={v} />)}
       </div>
       {row.slipImage
-        ? <div style={{ marginBottom: 14 }}><SlipView label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Uploaded Slip'} src={row.slipImage} filename={`${row.referenceNumber}-slip`} /></div>
+        ? <div style={{ marginBottom: 14 }}><SlipGallery label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Uploaded Slip'} srcs={proofList(row.slipImages, row.slipImage)} filename={row.referenceNumber} /></div>
         : <div style={{ marginBottom: 14, fontSize: 12.5, color: T.textMuted }}>No slip image was uploaded for this deposit.</div>}
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
@@ -3593,7 +3634,7 @@ const ApproveModal: React.FC<{ row: AgentTxnRow; onClose: () => void; onDone: ()
       {row.slipImage && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{isTokenMethod(row.txnMethod) ? 'Token Image' : 'Submitted Slip'}</div>
-          <SlipView label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Submitted Slip'} src={row.slipImage} filename={`${row.referenceNumber}-slip`} />
+          <SlipGallery label={isTokenMethod(row.txnMethod) ? 'Token Image' : 'Submitted Slip'} srcs={proofList(row.slipImages, row.slipImage)} filename={row.referenceNumber} />
         </div>
       )}
       <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: T.textMuted, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>

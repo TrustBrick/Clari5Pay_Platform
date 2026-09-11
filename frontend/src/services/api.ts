@@ -350,7 +350,7 @@ export const transactionAPI = {
   // managed account) are recorded here — the backend validates the account, debits it and posts
   // the ledger entry in the same transaction. `clientRequestId` makes a replayed submit a no-op.
   markDone: async (id: string, data?: {
-    adminProof?: string; adminUtr?: string;
+    adminProof?: string; adminProofs?: string[]; adminUtr?: string;
     paymentMethod?: 'BANK' | 'MANUAL'; payoutAccountRef?: string;
     manualReference?: string; payoutRemarks?: string; clientRequestId?: string;
   }) => {
@@ -371,8 +371,22 @@ export const transactionAPI = {
   // no Admin needed. Non-agent settlements are rejected server-side (they still go to the Admin).
   // `utr` is omitted for a CASH settlement — there is no bank reference to record, so the
   // settlement proof is the only evidence (the backend applies the same rule).
-  supervisorSettle: async (id: string, data: { remark: string; utr?: string; proof: string }) => {
+  supervisorSettle: async (id: string, data: { remark: string; utr?: string; proof?: string; proofs?: string[] }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/supervisor/settle`, data);
+    return res.data;
+  },
+  // Record what an Admin has manually verified about a CDM deposit. Saves only — it completes
+  // nothing and credits nobody; markDone reads this record as its gate.
+  saveCdmVerification: async (id: string, data: Record<string, unknown>) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/cdm-verification`, data);
+    return res.data;
+  },
+  // Attach more proof/slip files to a request that already exists, WITHOUT touching its status.
+  // The server appends them to the set already on the record; nothing is replaced and nothing is
+  // approved or completed by uploading. Which set they join follows from who is calling — the
+  // merchant's slips, or the Admin's payment receipts.
+  addProofs: async (id: string, proofs: string[]) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/proofs`, { proofs });
     return res.data;
   },
   // Record a "<role> Viewed" audit entry when a reviewer/admin opens a request's details.

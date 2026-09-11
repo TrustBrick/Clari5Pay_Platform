@@ -13,16 +13,18 @@ from app.core.deps import (
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
     AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest, RemarkRequest,
-    SettlementSupervisorComplete,
+    SettlementSupervisorComplete, ProofsAppend, CdmVerification,
 )
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
 from app.services import tg_notify as tgn
 from app.services import account_ledger as ledger
 from app.services import deposit_allocation as alloc
+from app.services import cdm
 from app.core.cache import cache_delete, cached_json
 from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
+from app.core import proofs as proofs_core
 from app.core.config import settings
 
 
@@ -162,63 +164,78 @@ async def _save_member_upi(db: AsyncSession, merchant: User, member_id, upi) -> 
     ))
 
 
-# Proof/slip upload limits (mirrored on the frontend). Per-file MIME + size validation is
-# centralised in app.core.uploads.validate_upload.
-MAX_PROOFS = 3
-PROOF_LIMIT_MSG = "You can upload a maximum of 3 proof/slip files per request."
+# Proof/slip uploads. There is deliberately NO cap on how many files a request may carry: a
+# payment can need one slip or a dozen (a split transfer, a multi-page statement), and refusing
+# the eleventh would mean the record no longer shows how the money actually moved.
+#
+# "No count limit" is NOT "no limit" — every individual file still goes through
+# app.core.uploads.validate_upload for its MIME type and 5 MB size, exactly as before. What is
+# lifted is the arbitrary cap of three, nothing else.
+#
+# Note that the reverse proxy caps a single request body (12 MB, see Caddyfile), so a large set
+# arrives over several calls — the create/submit call carries the first batch and POST
+# /{tx_id}/proofs appends the rest. That is also why every write below APPENDS.
 
 
-def _resolve_proofs(raw: str | None) -> list[str] | None:
-    """Resolve the `merchant_proofs` JSON array (up to 3 files) for output.
+# The rules themselves live in app.core.proofs, shared with the Agent module so the two cannot
+# drift apart on what an acceptable upload is. These names are kept as the module's local
+# vocabulary (every call site below reads the same as it always did).
+_parse_proofs = proofs_core.parse_proofs
+_resolve_proofs = proofs_core.resolve_proofs
+_append_proofs = proofs_core.append_proofs
+_store = proofs_core.store
+_clean_proofs = proofs_core.clean_proofs
 
-    Entries are resolved individually, so a mixed array — some files already migrated to object
-    storage, others still inline — renders correctly during the backfill. An entry that cannot be
-    signed is dropped rather than emitted as null, keeping the list usable by the frontend.
+
+async def _load_proof_columns(db: AsyncSession, tx: Transaction) -> None:
+    """Load the deferred proof columns so the existing set can be READ inside a request.
+
+    These columns are deferred on the model to keep every bulk query light, and async SQLAlchemy
+    cannot lazy-load a deferred column on attribute access — touching one raises MissingGreenlet
+    and the write 500s (the failure mode recorded in the deferred-image incident). Assigning to
+    them never needed a load; APPENDING does, because it has to read what is already there.
     """
-    if not raw:
-        return None
-    try:
-        items = json.loads(raw)
-    except (ValueError, TypeError):
-        return None
-    resolved = [storage.resolve_value(p) for p in items if p]
-    return [p for p in resolved if p] or None
+    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs",
+                                          "admin_proof", "admin_proofs"])
 
 
-def _store(value: str | None, *, field: str) -> str | None:
-    """Hand one validated upload to object storage, returning what the column should hold.
+def _admin_proof_list(tx: Transaction) -> list[str]:
+    """The admin payment proofs already on a transaction, back-filled from the legacy column.
 
-    With STORAGE_BACKEND="db" (the default) this returns the value untouched and the request
-    behaves exactly as it always has. With "s3" the bytes are uploaded and a ``storage://<key>``
-    reference comes back instead.
-
-    A storage failure becomes a 503 rather than a silent fallback to writing base64: falling
-    back would quietly reintroduce the row bloat this migration exists to remove, and the
-    operator would have no signal that it happened.
+    `admin_proof` is dual-purpose: on a DEPOSIT it holds the bank/account-details image the Admin
+    SENT to the merchant, which is not a payment proof at all. Folding that into the receipt
+    gallery would misrepresent it, so it is only adopted for withdrawals and settlements — where
+    it genuinely is the payout receipt recorded before this column existed.
     """
-    try:
-        stored, _ = storage.store_value(value, field=field)
+    stored = _parse_proofs(tx.admin_proofs)
+    if stored:
         return stored
-    except storage.StorageError as exc:
-        raise HTTPException(status_code=503,
-                            detail=f"Could not store the uploaded file: {exc}") from exc
+    if tx.admin_proof and not tx.type.value.startswith("DEPOSIT"):
+        return [tx.admin_proof]
+    return []
 
 
-def _clean_proofs(proofs: list[str] | None, single: str | None = None,
-                  field: str = "merchant_proofs") -> list[str]:
-    """Validate uploaded proofs: at most 3 files, each a JPG/JPEG/PNG/PDF within the size limit.
+async def _add_admin_proofs(db: AsyncSession, tx: Transaction, new: list[str]) -> None:
+    """Attach validated admin payment proofs, keeping everything already recorded."""
+    if not new:
+        return
+    await _load_proof_columns(db, tx)
+    tx.admin_proofs = _append_proofs(_admin_proof_list(tx), new)
+    # The single column keeps holding the FIRST proof, so older clients and any report reading
+    # `admin_proof` still see a receipt. On a deposit that column belongs to the account details
+    # that were sent — a different thing entirely — so it is left alone there.
+    if not tx.type.value.startswith("DEPOSIT"):
+        tx.admin_proof = _parse_proofs(tx.admin_proofs)[0]
 
-    Validation is unchanged; when object storage is enabled each accepted file is also uploaded
-    and the returned list holds references rather than inline base64.
-    """
-    items = [p for p in (proofs or []) if p]
-    if not items and single:
-        items = [single]
-    if len(items) > MAX_PROOFS:
-        raise HTTPException(status_code=400, detail=PROOF_LIMIT_MSG)
-    for p in items:
-        validate_upload(p, allowed=IMAGE_PDF_TYPES, label="proof/slip file")
-    return [_store(p, field=field) for p in items]
+
+async def _add_merchant_proofs(db: AsyncSession, tx: Transaction, new: list[str]) -> None:
+    """Attach validated merchant slips/proofs, keeping everything already uploaded."""
+    if not new:
+        return
+    await _load_proof_columns(db, tx)
+    existing = _parse_proofs(tx.merchant_proofs) or ([tx.merchant_proof] if tx.merchant_proof else [])
+    tx.merchant_proofs = _append_proofs(existing, new)
+    tx.merchant_proof = _parse_proofs(tx.merchant_proofs)[0]
 
 
 def _validate_bank_image(img: str | None) -> str | None:
@@ -812,6 +829,10 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "merchantProofs": _resolve_proofs(t.merchant_proofs) if full else None,
         "merchantRef": t.merchant_ref,
         "adminProof": storage.resolve_value(t.admin_proof) if full else None,
+        # Every payment receipt / settlement proof the Admin (or the Supervisor completing an
+        # agent-assigned settlement) attached, oldest first. NULL on rows completed before the
+        # column existed — those still render from `adminProof` above.
+        "adminProofs": _resolve_proofs(t.admin_proofs) if full else None,
         "adminBankImage": storage.resolve_value(t.admin_bank_image) if full else None,  # heavy — detail fetch only (deferred)
         "hasAdminBankImage": bool(t.has_admin_bank_image),        # cheap IS NOT NULL flag — never loads the blob
         "adminRef": t.admin_ref,
@@ -837,6 +858,11 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "payoutManualReference": t.payout_manual_reference,
         "payoutRemarks": t.payout_remarks,
         "depositDetails": json.loads(t.deposit_details) if t.deposit_details else None,
+        # CDM deposits only: the Admin's manual verification record — what has been confirmed, the
+        # references compared, and whether completion is currently allowed. None on every other
+        # deposit type, so nothing else renders or behaves differently.
+        "cdmVerification": (cdm.summary(t, cdm.parse(t.cdm_verification))
+                            if full and cdm.is_cdm(t.deposit_type) else None),
         "approvedBy": t.approved_by,
         "processedBy": t.processed_by,
         "agentCode": t.agent_code,
@@ -875,7 +901,7 @@ def _t(t: Transaction, full: bool = True) -> dict:
 # refreshed tx is passed to _t() with full=True.
 async def _refresh_with_images(db: AsyncSession, tx: Transaction) -> None:
     await db.refresh(tx)
-    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_bank_image"])
+    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_proofs", "admin_bank_image"])
 
 
 # ─── Server-side search & date/time filtering (shared by every list endpoint) ───
@@ -1557,7 +1583,7 @@ async def get_transaction_detail(
     # The heavy base64 proof/slip images are deferred on the model (so bulk/list/report queries
     # never drag them). This detail view is the one place they're needed — load them explicitly
     # here; async SQLAlchemy can't lazy-load them on attribute access.
-    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_bank_image"])
+    await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_proofs", "admin_bank_image"])
     payload = _t(tx, full=True)
     # Enrich with the creating merchant's risk level for the details view (not stored on the row).
     creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
@@ -2999,6 +3025,19 @@ async def account_submit(
             status_code=400,
             detail="Select an account to send",
         )
+    # A CDM deposit is physical cash walked into a machine. It must name a real managed bank
+    # account — that is the account the Admin will later check for the credit, and the whole
+    # verification hangs on it. A UPI ID cannot receive a cash deposit, and free-typed details
+    # would put the request outside Account Management's controls, so both are refused here. This
+    # is also the step that ACCEPTS the request (ACCOUNT_REQUESTED → ACCOUNT_SUBMITTED); it is
+    # Admin-only, so a merchant can never choose or change their own receiving account.
+    if cdm.is_cdm(tx.deposit_type):
+        if data.adminUpiId:
+            raise HTTPException(status_code=400,
+                                detail="A CDM deposit is paid in cash — assign a bank account, not a UPI ID.")
+        if not (data.adminRef or "").strip().upper().startswith("ACC"):
+            raise HTTPException(status_code=400,
+                                detail="Select a managed bank account for this CDM deposit.")
     if data.adminBankImage:
         # Custom image becomes the official bank details — skip the auto-generated card.
         tx.admin_bank_image = _validate_bank_image(data.adminBankImage)
@@ -3151,9 +3190,9 @@ async def submit_slip(
         # Send To Approval feature is switched off, in which case there is nobody to choose).
         if settings.SEND_TO_APPROVAL_ENABLED and data.approverUserId is None and tx.approver_user_id is None:
             raise HTTPException(status_code=400, detail="Select the Manager/Supervisor who should approve this request.")
-    if _proofs:
-        tx.merchant_proof = _proofs[0]
-        tx.merchant_proofs = json.dumps(_proofs)
+    # Added to whatever is already on the request — a merchant who returns with a second slip
+    # keeps the first. (A Recheck is the one place proofs are cleared, and it does so explicitly.)
+    await _add_merchant_proofs(db, tx, _proofs)
     tx.merchant_ref = data.merchantRef
     # "Send To Approval": the merchant chose an Authorized Approver at this slip step (GA on Demo +
     # Prod). Record who the deposit is addressed to; the request then routes to that approver.
@@ -3174,6 +3213,58 @@ async def submit_slip(
     if tx.approver_name:
         await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type=tx.type.value,
                            entity_id=tx.ref, new=tx.approver_name, ip=_client_ip(request))
+    await _refresh_with_images(db, tx)
+    return _t(tx)
+
+
+@router.post("/{tx_id}/proofs")
+async def append_proofs(
+    tx_id: str,
+    data: ProofsAppend,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Attach more payment proofs/slips to an existing request, without changing anything else.
+
+    Purely additive. The files join the set already on the transaction — nothing is replaced —
+    and the status, the review queue and the approval trail are left exactly as they were.
+    Uploading evidence is not verifying it: an Admin still has to review and complete the
+    request by hand, precisely as before.
+
+    Who may add, and to which set:
+      • the merchant who raised the request -> their slip set (`merchant_proofs`), while the
+        request is still open. Once it is completed, rejected or cancelled the evidence is
+        sealed; a correction after that goes through the existing Recheck flow.
+      • an Admin / Super Admin -> the payment-proof set (`admin_proofs`), at any point, since
+        they are the ones who record how a payout was actually made.
+
+    Every file is validated exactly as it is on the create and slip paths (JPG/JPEG/PNG/PDF,
+    per-file size limit); the number of files is what is unrestricted, never their size.
+    """
+    files = [p for p in (data.proofs or []) if p]
+    if not files:
+        raise HTTPException(status_code=400, detail="Select at least one file to upload.")
+
+    is_admin = current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN)
+    if is_admin:
+        tx = await _get_tx(tx_id, db)
+        await _add_admin_proofs(db, tx, _clean_proofs(files, field="admin_proof", label="payment receipt"))
+        target, count = "admin_proofs", len(_admin_proof_list(tx))
+    else:
+        tx = await _get_own_tx(tx_id, db, current_user)
+        if tx.status in _TERMINAL_STATUSES:
+            raise HTTPException(status_code=400,
+                                detail="This request is closed — no further files can be attached to it.")
+        await _add_merchant_proofs(db, tx, _clean_proofs(files))
+        target, count = "merchant_proofs", len(_parse_proofs(tx.merchant_proofs))
+
+    await db.flush()
+    await log_event(db, "PROOF_UPLOADED",
+                    f"{tx.ref}: {len(files)} proof file(s) added by {current_user.name}",
+                    actor=current_user)
+    await record_audit(db, "PROOF_UPLOADED", actor=current_user, entity_type=tx.type.value,
+                       entity_id=tx.ref, old=target, new=str(count), ip=_client_ip(request))
     await _refresh_with_images(db, tx)
     return _t(tx)
 
@@ -3309,6 +3400,106 @@ def _actor_role_label(user: User) -> str:
     return str(user.merchant_role or user.role.value).upper()
 
 
+async def _cdm_record(db: AsyncSession, tx: Transaction) -> dict:
+    """The stored CDM verification, with the proof columns loaded so the gate can read them."""
+    await _load_proof_columns(db, tx)
+    return cdm.parse(tx.cdm_verification)
+
+
+@router.post("/{tx_id}/cdm-verification")
+async def save_cdm_verification(
+    tx_id: str,
+    data: CdmVerification,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Record what an Admin has manually verified about a CDM deposit. Completes nothing.
+
+    Saving this is the Admin writing down what they compared — the receipt against the request,
+    and above all the actual bank credit against the designated account. It deliberately does NOT
+    move the status, credit the merchant, or complete the deposit: that is a separate, explicit
+    act (Mark as Done), which reads this record as its gate. Keeping the two apart is what stops
+    "the Admin looked at the receipt" from ever becoming "the merchant was paid".
+
+    Admin-only, and the actor is the authenticated user — never a synthesised identity.
+    """
+    tx = await _get_tx(tx_id, db)
+    if not cdm.is_cdm(tx.deposit_type):
+        raise HTTPException(status_code=400, detail="This applies to CDM deposits only.")
+    if tx.status in _TERMINAL_STATUSES:
+        raise HTTPException(status_code=400, detail="This request is closed — its verification can no longer be changed.")
+
+    previous = await _cdm_record(db, tx)
+    record = {k: bool(getattr(data, k)) for k in cdm.CHECK_KEYS}
+    for field in cdm.TEXT_FIELDS:
+        value = getattr(data, field, None)
+        record[field] = value.strip() if isinstance(value, str) else value
+    # Both are required before the deposit can be completed (see cdm.blocking_reasons). They are
+    # stored as entered-and-normalised — the amount as a number, the account trimmed — so the
+    # record carries the figures the Admin compared and not an approximation of them. A blank or
+    # whitespace-only account is stored as NULL rather than "", so "not entered" has one shape.
+    record["verifiedAmount"] = data.verifiedAmount
+    record["verifiedAccountRef"] = (data.verifiedAccountRef or "").strip() or None
+    # Who actually did this, from the authenticated session — never taken from the payload.
+    now = datetime.utcnow()
+    record["verifiedBy"] = actor.name
+    record["verifiedByUsername"] = actor.username
+    record["verifiedAt"] = now.isoformat() + "Z"
+    # When the bank credit was confirmed, stamped on the transition into confirmed and preserved
+    # afterwards — it is the moment the money became real, and re-saving the form must not move it.
+    if record[cdm.BANK_CREDIT_CHECK]:
+        record["bankCreditConfirmedAt"] = previous.get("bankCreditConfirmedAt") or (now.isoformat() + "Z")
+    tx.cdm_verification = json.dumps(record)
+    await db.flush()
+
+    # Audited as two distinct facts: the verification was updated, and — separately — the bank
+    # credit was confirmed or withdrawn, because that one is the control that releases the money.
+    ip = _client_ip(request)
+    ticked = ", ".join(cdm.CHECK_LABELS[k] for k in cdm.CHECK_KEYS if record[k]) or "nothing yet"
+    await log_event(db, "CDM_VERIFICATION_UPDATED",
+                    f"{tx.ref}: CDM verification updated by {actor.name} — confirmed: {ticked} · "
+                    f"amount {record.get('verifiedAmount') if record.get('verifiedAmount') is not None else '—'} · "
+                    f"account {record.get('verifiedAccountRef') or '—'}", actor=actor)
+    # The audit carries the FIGURES the Admin verified, not just which boxes they ticked — a
+    # reviewer reading the trail later has to be able to see what was compared against what.
+    _amount = cdm.verified_amount(record)
+    await record_audit(db, "CDM_VERIFICATION_UPDATED", actor=actor, entity_type=tx.type.value,
+                       entity_id=tx.ref, new=ticked,
+                       reason=f"Verified amount {_inr(_amount) if _amount is not None else '—'} "
+                              f"(requested {_inr(tx.amount)}) · verified account "
+                              f"{cdm.verified_account_ref(record) or '—'} (assigned {tx.admin_ref or '—'}) · "
+                              f"CDM ref {record.get('cdmReference') or '—'} · bank credit ref "
+                              f"{record.get('bankCreditRef') or '—'}", ip=ip)
+    if record[cdm.BANK_CREDIT_CHECK] != bool(previous.get(cdm.BANK_CREDIT_CHECK)):
+        confirmed = record[cdm.BANK_CREDIT_CHECK]
+        await record_audit(db, "CDM_BANK_CREDIT_CONFIRMED" if confirmed else "CDM_BANK_CREDIT_WITHDRAWN",
+                           actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
+                           old=str(bool(previous.get(cdm.BANK_CREDIT_CHECK))), new=str(confirmed),
+                           reason=record.get("bankCreditRef") or None, ip=ip)
+        await log_event(db, "CDM_BANK_CREDIT_CONFIRMED" if confirmed else "CDM_BANK_CREDIT_WITHDRAWN",
+                        f"{tx.ref}: actual bank credit "
+                        f"{'confirmed' if confirmed else 'no longer confirmed'} by {actor.name}", actor=actor)
+    await _refresh_with_images(db, tx)
+    return _t(tx)
+
+
+async def _require_cdm_verified(db: AsyncSession, tx: Transaction) -> None:
+    """Refuse to complete a CDM deposit that has not been manually verified end to end.
+
+    This is the anti-fraud control. A CDM receipt is an image — it can be edited, or it can be a
+    genuine receipt for a deposit made into a different account — so the only thing that releases
+    the money is an Admin confirming the actual credit in the designated account. The rule lives
+    in app.services.cdm so the checklist the Admin sees and the gate enforced here are the same
+    rule, and the reason is returned verbatim so the operator is told what is missing.
+    """
+    reasons = cdm.blocking_reasons(tx, cdm.parse(tx.cdm_verification))
+    if reasons:
+        raise HTTPException(
+            status_code=400,
+            detail="This CDM deposit cannot be completed yet — " + " ".join(reasons))
+
+
 @router.post("/{tx_id}/done")
 async def mark_done(
     tx_id: str,
@@ -3331,21 +3522,41 @@ async def mark_done(
     if is_withdrawal and tx.status == TxStatus.COMPLETED:
         await _refresh_with_images(db, tx)
         return _t(tx)
+    if is_deposit:
+        # The same protection on the deposit side. Two Admins pressing Mark as Done at the same
+        # moment must produce ONE completion: the row is locked for the rest of this transaction,
+        # so the second caller waits, re-reads the committed status and returns it untouched
+        # instead of appending a second approval remark, re-running the credit tracking and
+        # re-notifying. (The merchant balance is derived from completed rows rather than stored,
+        # so it was never double-counted — but everything around it was.)
+        tx = (await db.execute(
+            select(Transaction).where(Transaction.id == tx.id).with_for_update()
+        )).scalar_one()
+        if tx.status == TxStatus.DEPOSITED:
+            await _refresh_with_images(db, tx)
+            return _t(tx)
+        # A CDM deposit is physical cash: no rail confirms it and the receipt is only an image, so
+        # completion is gated on an Admin having confirmed the ACTUAL bank credit. Every other
+        # deposit type is untouched by this.
+        if cdm.is_cdm(tx.deposit_type):
+            await _load_proof_columns(db, tx)
+            await _require_cdm_verified(db, tx)
     # Settlement final approval requires a settlement proof (image or PDF) and — for every method
     # except cash, which has no bank reference — a UTR number. The admin cannot complete a
     # settlement without them. Deposits/withdrawals keep prior behaviour.
     if is_settlement:
         if _settlement_needs_utr(tx) and not (data and (data.adminUtr or "").strip()):
             raise HTTPException(status_code=400, detail="UTR Number is required to complete a settlement.")
-        if not (data and data.adminProof):
+        if not (data and (data.adminProof or data.adminProofs)):
             raise HTTPException(status_code=400, detail="Settlement proof (image or PDF) is required to complete a settlement.")
-    if data and data.adminProof:
-        # Settlement proof also accepts PDF; other payment receipts remain image-only.
+    if data and (data.adminProof or data.adminProofs):
+        # Settlement proof also accepts PDF; other payment receipts remain image-only. Every file
+        # is validated individually, however many were sent, and they are ADDED to any receipt
+        # already recorded rather than replacing it.
         proof_allowed = IMAGE_PDF_TYPES if is_settlement else IMAGE_TYPES
-        tx.admin_proof = _store(
-            validate_upload(data.adminProof, allowed=proof_allowed,
-                            label="settlement proof" if is_settlement else "payment receipt"),
-            field="admin_proof")
+        await _add_admin_proofs(db, tx, _clean_proofs(
+            data.adminProofs, data.adminProof, field="admin_proof", allowed=proof_allowed,
+            label="settlement proof" if is_settlement else "payment receipt"))
     if data and data.adminUtr:
         tx.admin_utr = data.adminUtr.strip()
     # Payout details + account debit + ledger entry. Runs BEFORE the status flips so the ledger's
@@ -3677,11 +3888,11 @@ async def supervisor_settle_settlement(
         raise HTTPException(status_code=400, detail="This settlement is not awaiting completion.")
     if _settlement_needs_utr(tx) and not (data.utr or "").strip():
         raise HTTPException(status_code=400, detail="UTR Number is required to complete a settlement.")
-    if not data.proof:
+    if not (data.proof or data.proofs):
         raise HTTPException(status_code=400, detail="Settlement proof (image or PDF) is required to complete a settlement.")
-    tx.admin_proof = _store(
-        validate_upload(data.proof, allowed=IMAGE_PDF_TYPES, label="settlement proof"),
-        field="admin_proof")
+    await _add_admin_proofs(db, tx, _clean_proofs(
+        data.proofs, data.proof, field="admin_proof", allowed=IMAGE_PDF_TYPES,
+        label="settlement proof"))
     if (data.utr or "").strip():
         tx.admin_utr = data.utr.strip()
     tx.status = TxStatus.COMPLETED

@@ -128,10 +128,10 @@ CASES: list[tuple[str, TxType, TxStatus, dict, float]] = [
     ("withdrawal, LARGE merchant_proof (~4.6MB)", TxType.WITHDRAWAL_REQUEST, TxStatus.COMPLETED,
      {"merchant_proof": LARGE_IMG}, 88000),
 
-    # ── merchant_proofs arrays (the JSON column, up to 3 files) ──
+    # ── merchant_proofs arrays (the JSON column; any number of files) ──
     ("deposit, 2 merchant_proofs", TxType.DEPOSIT_REQUEST, TxStatus.COMPLETED,
      {"merchant_proofs": [SMALL_IMG, MEDIUM_IMG]}, 31000),
-    ("deposit, 3 merchant_proofs (max)", TxType.DEPOSIT_REQUEST, TxStatus.COMPLETED,
+    ("deposit, 3 merchant_proofs", TxType.DEPOSIT_REQUEST, TxStatus.COMPLETED,
      {"merchant_proofs": [SMALL_IMG, MEDIUM_IMG, PDF_PROOF]}, 47000),
     ("withdrawal, 3 merchant_proofs incl. large", TxType.WITHDRAWAL_REQUEST, TxStatus.PENDING,
      {"merchant_proofs": [MEDIUM_IMG, LARGE_IMG, SMALL_IMG]}, 64000),

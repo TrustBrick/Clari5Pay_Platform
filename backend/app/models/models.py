@@ -194,9 +194,19 @@ class Transaction(Base):
     # the wire — the root cause of the DB `Client:ClientWrite` saturation. They load lazily on the
     # detail row when accessed within the request's session.
     merchant_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)  # first merchant slip image (data URL) — kept for back-compat
-    merchant_proofs: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)  # JSON array of up to 3 proof/slip files (data URLs)
+    # Every proof/slip the merchant has attached to this request, as a JSON array. There is NO
+    # fixed count: a payer may need one slip or a dozen, and each upload APPENDS rather than
+    # replacing, so evidence already on the record is never lost. Per-file type/size validation
+    # is unchanged (app.core.uploads) — "unlimited" is about the number of files, not their size.
+    merchant_proofs: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)  # JSON array of proof/slip files (data URLs)
     merchant_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # merchant payment reference number
     admin_proof: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)     # admin-uploaded bank-details image (data URL)
+    # The Admin/Supervisor side of the same story: every payment receipt / settlement proof
+    # uploaded when a withdrawal or settlement is paid out, as a JSON array, appended the same way.
+    # `admin_proof` above stays the first entry so historical rows and older clients keep working.
+    # NOTE: on a DEPOSIT `admin_proof` holds the bank/account-details image that was SENT to the
+    # merchant — not a payment proof — so it is deliberately never folded into this list.
+    admin_proofs: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)    # JSON array of admin payment-proof files (data URLs)
     admin_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True) # admin reference number
     admin_bank_details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)   # admin manually-entered bank details
     # Another large base64 image — deferred so bulk/list/report/balance SELECTs never drag it
@@ -267,6 +277,17 @@ class Transaction(Base):
     # allocation. Written once, at allocation; NULL on every manually-sent and historical row,
     # which keeps their existing `admin_bank_details` rendering exactly as it is.
     allocation_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # ── CDM (Cash Deposit Machine) manual verification ────────────────────────────
+    # A CDM deposit is physical cash pushed into a machine: no rail confirms it, the allocation
+    # engine never picks its receiving account, and an uploaded receipt proves only that a receipt
+    # exists. So the money is credited on ONE thing — an Admin confirming that the cash actually
+    # landed in the designated account — and this column is the record of that confirmation:
+    # the checklist the Admin ticked, the CDM reference and bank-credit reference they compared,
+    # and who confirmed it when. JSON, like `deposit_details` / `payout_details`, because it is a
+    # single evidence record read and written as a whole and never queried field-by-field.
+    # NULL on every non-CDM row and on any CDM request not yet verified.
+    cdm_verification: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -991,6 +1012,11 @@ class AgentTransaction(Base):
 
     # ── Slip upload (the payer's proof) ──
     slip_image: Mapped[Optional[str]] = mapped_column(Text, nullable=True)      # data URL
+    # Every slip / token image attached to this transaction, as a JSON array — one payment can be
+    # settled in several transfers and each has its own slip, so there is no fixed count. Uploads
+    # APPEND; `slip_image` above stays the FIRST of them, so every existing screen, report and
+    # historical row keeps working untouched. See app.core.proofs.
+    slip_images: Mapped[Optional[str]] = mapped_column(Text, nullable=True)     # JSON array of data URLs
     # NOTE: the former `slip_ref` (Reference Number) was removed — the UTR (`deposit_utr`) is
     # the only payment reference. Any physical slip_ref column on an existing database is
     # left orphaned rather than dropped, so no historical value is destroyed.
@@ -1088,8 +1114,9 @@ class TransactionAttachment(Base):
     metadata, operations and audit — "what was uploaded, how big, what type, when" — and can be
     joined when that is actually wanted. Losing a row here degrades reporting, never rendering.
 
-    One row per (transaction, field, key). `merchant_proofs` holds up to three files, so a
-    single transaction/field pair can legitimately have several rows; the key distinguishes them.
+    One row per (transaction, field, key). `merchant_proofs` / `admin_proofs` hold any number of
+    files, so a single transaction/field pair can legitimately have many rows; the key
+    distinguishes them.
     """
     __tablename__ = "transaction_attachment"
     __table_args__ = (
@@ -1098,7 +1125,8 @@ class TransactionAttachment(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     transaction_id: Mapped[int] = mapped_column(Integer, ForeignKey("transactions.id"), index=True, nullable=False)
-    # Which column the file belongs to: merchant_proof | merchant_proofs | admin_proof | admin_bank_image.
+    # Which column the file belongs to: merchant_proof | merchant_proofs | admin_proof |
+    # admin_proofs | admin_bank_image.
     field: Mapped[str] = mapped_column(String(32), nullable=False)
 
     # Which backend actually holds the bytes ("s3", and later "minio" / "azure" / "gcs"). The

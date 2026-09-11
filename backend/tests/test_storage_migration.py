@@ -315,7 +315,7 @@ def test_stored_bytes_verify_against_checksum(s3):
     assert hashlib.sha256(fetched).hexdigest() == decoded.sha256
 
 
-# ── merchant_proofs is a JSON array of up to 3 files ─────────────────────────────────────
+# ── merchant_proofs / admin_proofs are JSON arrays of any number of files ────────────────
 
 def test_json_array_of_proofs_migrates_per_entry(s3):
     others = [

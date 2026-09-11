@@ -161,7 +161,7 @@ class DepositCreate(BaseModel):
     # Type-specific fields for CASH (village/city/mobile) and CRYPTO (walletAddress/network/txHash).
     depositDetails: Optional[dict] = None
     proof: Optional[str] = None
-    proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
+    proofs: Optional[list[str]] = None  # proof/slip files (data URLs) — any number; each is size/type validated
     # Selected/added merchant bank account sent to admin with the request
     accountHolder: Optional[str] = None
     accountNumber: Optional[str] = None
@@ -191,7 +191,7 @@ class WithdrawalCreate(BaseModel):
     bankName: Optional[str] = None
     branch: Optional[str] = None
     proof: Optional[str] = None
-    proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
+    proofs: Optional[list[str]] = None  # proof/slip files (data URLs) — any number; each is size/type validated
     utr: Optional[str] = None
     notes: Optional[str] = None
     saveBankAccount: bool = False
@@ -220,7 +220,7 @@ class SettlementCreate(BaseModel):
     bankName: Optional[str] = None
     branch: Optional[str] = None
     proof: Optional[str] = None
-    proofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
+    proofs: Optional[list[str]] = None  # proof/slip files (data URLs) — any number; each is size/type validated
 
 
 class AccountSubmitRequest(BaseModel):
@@ -235,7 +235,9 @@ class AccountSubmitRequest(BaseModel):
 
 class SlipRequest(BaseModel):
     merchantProof: Optional[str] = None
-    merchantProofs: Optional[list[str]] = None  # up to 3 proof/slip files (data URLs)
+    # Any number of slip files. They are ADDED to whatever the request already carries — a later
+    # upload never replaces an earlier one.
+    merchantProofs: Optional[list[str]] = None  # proof/slip files (data URLs)
     merchantRef: Optional[str] = None
     # "Send To Approval" (demo only): the Authorized Approver chosen at this slip step for UPI/bank
     # deposits, once the proof has uploaded. Ignored on Production.
@@ -244,6 +246,9 @@ class SlipRequest(BaseModel):
 
 class CompleteRequest(BaseModel):
     adminProof: Optional[str] = None  # payment receipt image for withdrawals/settlements
+    # Several receipts for one payout (a split transfer, a multi-page settlement) — any number.
+    # Appended to what the transaction already holds; `adminProof` remains the first of them.
+    adminProofs: Optional[list[str]] = None
     adminUtr: Optional[str] = None    # agent's payment UTR number
     # ── Withdrawal payout details (Feature 2) ─────────────────────────────────────
     # How the withdrawal was actually paid, and from which managed account. All optional so the
@@ -256,6 +261,44 @@ class CompleteRequest(BaseModel):
     # Idempotency key minted per submission — a replayed "Mark as Done" resolves to the entry
     # already posted instead of debiting a second time.
     clientRequestId: Optional[str] = None
+
+
+class CdmVerification(BaseModel):
+    """The Admin's manual verification of a CDM (Cash Deposit Machine) deposit.
+
+    Every field records something a HUMAN compared. Nothing here is inferred, and submitting it
+    completes nothing: it saves what the Admin has confirmed so far, and the completion route
+    reads it as a gate. `bankCreditConfirmed` is the one that matters — a receipt can be edited,
+    an actual credit in the designated account cannot.
+    """
+    receiptVerified: bool = False
+    amountMatches: bool = False
+    accountMatches: bool = False
+    dateChecked: bool = False
+    referenceChecked: bool = False
+    bankCreditConfirmed: bool = False
+    # What the Admin read off the receipt and the bank statement, so the confirmation is
+    # auditable rather than a bare assertion.
+    cdmReference: Optional[str] = None       # the CDM machine's transaction/reference number
+    bankCreditRef: Optional[str] = None      # the bank credit reference / UTR evidencing the credit
+    depositedOn: Optional[str] = None        # deposit date/time as printed on the receipt
+    remarks: Optional[str] = None
+    # The figures the Admin verified. Checked against the request — a recorded mismatch is a hard
+    # stop, not a warning.
+    verifiedAmount: Optional[float] = None
+    verifiedAccountRef: Optional[str] = None
+
+
+class ProofsAppend(BaseModel):
+    """Attach more payment proofs/slips to a transaction that already exists.
+
+    Purely additive: the files are appended to the set already on the record and nothing else
+    about the transaction changes — no status transition, no approval, no completion. It exists
+    because a payer may need to supply more evidence than fits in (or was known at) the original
+    submission, and because a request body is capped by the reverse proxy, so a large set has to
+    arrive over several calls.
+    """
+    proofs: list[str]
 
 
 class AdjustmentCreate(BaseModel):
@@ -292,7 +335,10 @@ class SettlementSupervisorComplete(BaseModel):
     no bank reference) — the same evidence the Admin supplies at /done."""
     remark: str
     utr: Optional[str] = None
-    proof: str   # base64 data-URL, image or PDF
+    # At least one of these is required — enforced in the route, which is what lets a client
+    # send the set in `proofs` alone. Any number of files; each is validated individually.
+    proof: Optional[str] = None   # base64 data-URL, image or PDF
+    proofs: Optional[list[str]] = None
 
 
 class BankAccountCreate(BaseModel):

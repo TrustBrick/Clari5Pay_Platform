@@ -40,11 +40,13 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.models.models import Transaction, TransactionAttachment
 
-# (column, is_json_array). merchant_proofs holds a JSON list of up to 3 files; the rest are scalar.
+# (column, is_json_array). merchant_proofs / admin_proofs hold a JSON list of any number of
+# files; the rest are scalar.
 FIELDS: list[tuple[str, bool]] = [
     ("merchant_proof", False),
     ("merchant_proofs", True),
     ("admin_proof", False),
+    ("admin_proofs", True),
     ("admin_bank_image", False),
 ]
 

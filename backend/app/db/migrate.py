@@ -98,6 +98,15 @@ _NEW_COLUMNS = [
     ("merchant_bank_accounts", "is_default", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("transactions", "sender_upi_id", "VARCHAR(64)"),
     ("transactions", "merchant_proofs", "TEXT"),
+    # Admin payment receipts / settlement proofs as a JSON array — the multi-file counterpart of
+    # the single `admin_proof`, which stays populated with the first file for older clients.
+    ("transactions", "admin_proofs", "TEXT"),
+    # Agent module: the multi-file counterpart of agent_transaction.slip_image, which stays
+    # populated with the first file for older clients.
+    ("agent_transaction", "slip_images", "TEXT"),
+    # CDM deposits: the Admin's manual verification record (checklist + CDM/bank-credit references
+    # + who confirmed the actual bank credit, and when). NULL on every non-CDM row.
+    ("transactions", "cdm_verification", "TEXT"),
     # Cancellation reason capture (merchant cancels a pending request).
     ("transactions", "cancel_reason", "TEXT"),
     ("transactions", "cancelled_by", "VARCHAR(128)"),

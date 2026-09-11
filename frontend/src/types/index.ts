@@ -134,6 +134,35 @@ export interface AllocationDecision {
   createdAtIst: string | null;
 }
 
+/** The Admin's manual verification of a CDM (Cash Deposit Machine) deposit.
+ *
+ *  A CDM receipt is an image and proves nothing on its own, so the money is released by one
+ *  thing: `checks.bankCreditConfirmed` — an Admin having seen the cash land in the assigned
+ *  account. `canComplete` is the server's own answer, and `blockingReasons` says what is still
+ *  missing; the UI shows them rather than re-deriving the rule. */
+export interface CdmVerification {
+  checks: {
+    receiptVerified: boolean;
+    amountMatches: boolean;
+    accountMatches: boolean;
+    dateChecked: boolean;
+    referenceChecked: boolean;
+    bankCreditConfirmed: boolean;
+  };
+  cdmReference?: string | null;
+  bankCreditRef?: string | null;
+  depositedOn?: string | null;
+  remarks?: string | null;
+  verifiedAmount?: number | null;
+  verifiedAccountRef?: string | null;
+  verifiedBy?: string | null;
+  verifiedByUsername?: string | null;
+  verifiedAt?: string | null;
+  bankCreditConfirmedAt?: string | null;
+  canComplete: boolean;
+  blockingReasons: string[];
+}
+
 export interface Transaction {
   id: string;
   ref: string;
@@ -153,9 +182,16 @@ export interface Transaction {
   accountNumber?: string | null;
   ifsc?: string | null;
   merchantProof?: string | null;
+  // Every slip/proof the merchant attached, oldest first. There is no fixed count — read this
+  // and fall back to `merchantProof` only for rows written before the array existed.
   merchantProofs?: string[] | null;
   merchantRef?: string | null;
   adminProof?: string | null;
+  // Every payment receipt / settlement proof the Admin attached, oldest first (same fallback).
+  adminProofs?: string[] | null;
+  // CDM deposits only — the Admin's manual verification record, and whether the server will
+  // currently allow completion (with the reasons if not). Null on every other deposit type.
+  cdmVerification?: CdmVerification | null;
   adminBankImage?: string | null;     // admin custom bank-details image (detail fetch only)
   hasAdminBankImage?: boolean;        // lightweight flag present in list payloads
   adminRef?: string | null;

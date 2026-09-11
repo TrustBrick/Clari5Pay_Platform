@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx, isCardDeposit } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx, isCardDeposit, CDM_TXN_TYPE, isCdmDeposit, PROOF_ACCEPT, PROOF_MAX_BYTES, PROOF_TYPE_MSG, PROOF_SIZE_MSG, isAllowedProof, isPdfProof, proofBatches, proofList, proofFileName, attachRemainingProofs, PARTIAL_ATTACH_MSG } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
@@ -117,19 +117,12 @@ const BankAccountFields: React.FC<{
   );
 };
 
-// ─── Proof/slip upload (up to 3 files; JPG/JPEG/PNG/PDF) ─────────────────────────
-const PROOF_MAX = 3;
-const PROOF_ACCEPT = 'image/jpeg,image/jpg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf';
-const PROOF_LIMIT_MSG = 'You can upload a maximum of 3 proof/slip files per request.';
-const PROOF_TYPE_MSG = 'Unsupported file type. Allowed: JPG, JPEG, PNG, PDF.';
-const isAllowedProof = (f: File) => {
-  const t = (f.type || '').toLowerCase();
-  if (['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'].includes(t)) return true;
-  return /\.(jpe?g|png|pdf)$/i.test(f.name);
-};
-
+// ─── Proof/slip upload (JPG/JPEG/PNG/PDF) ───────────────────────────────────────
+// Any number of files may be attached to one request — a payment is sometimes settled in several
+// transfers, and each of them has its own slip. The accepted types and the per-file 5 MB limit
+// are unchanged and still enforced by the server; only the old cap of three is gone.
 const ProofThumb: React.FC<{ src: string }> = ({ src }) => {
-  if (src.startsWith('data:application/pdf')) {
+  if (isPdfProof(src)) {
     return <div style={{ width:64,height:64,borderRadius:8,border:`1px solid ${T.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:800,color:T.danger,background:T.canvas }}>PDF</div>;
   }
   return <img src={src} alt="proof" style={{ width:64,height:64,objectFit:'cover',borderRadius:8,border:`1px solid ${T.border}` }} />;
@@ -148,7 +141,7 @@ const RECEIPT_BOX: React.CSSProperties = {
   borderRadius: 12, border: `1px solid ${T.border}`, background: T.canvas, overflow: 'hidden',
 };
 export const ReceiptImage: React.FC<{ src?: string | null; alt?: string }> = ({ src, alt = 'Receipt' }) => {
-  const isPdf = !!src && src.startsWith('data:application/pdf');
+  const isPdf = isPdfProof(src);
   return (
     <div style={RECEIPT_BOX}>
       {!src
@@ -160,15 +153,35 @@ export const ReceiptImage: React.FC<{ src?: string | null; alt?: string }> = ({ 
   );
 };
 
-// Read-only viewer for one or more submitted proofs/slips/receipts — each rendered in the
-// shared ReceiptImage container, so every image looks identical across the application.
-export const ProofGallery: React.FC<{ srcs: string[] }> = ({ srcs }) => (
+// Read-only viewer for the proofs/slips/receipts on a request — each rendered in the shared
+// ReceiptImage container, so every image looks identical across the application.
+//
+// EVERY file attached to the request is shown, however many there are, and each one carries its
+// own View and Download control: an operator verifying a payment needs to inspect a particular
+// slip, and a PDF cannot be read in a thumbnail at all. `ref_` and `kind` only shape the saved
+// filename, so several downloads from one request don't overwrite each other.
+export const ProofGallery: React.FC<{ srcs: string[]; ref_?: string; kind?: string }> = ({ srcs, ref_ = 'proof', kind = 'slip' }) => (
   <div>
-    {srcs.map((src, i) => <ReceiptImage key={i} src={src} alt={`proof-${i + 1}`} />)}
+    {srcs.map((src, i) => (
+      <div key={i}>
+        {srcs.length > 1 && (
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'14px 0 0' }}>
+            {kind === 'receipt' ? 'Receipt' : 'Slip'} {i + 1} of {srcs.length}
+          </p>
+        )}
+        <ReceiptImage src={src} alt={`${kind}-${i + 1}`} />
+        <div style={{ display:'flex',gap:8,marginTop:6 }}>
+          <Btn size="sm" variant="ghost" onClick={() => openDataUrl(src)}><Icon name="view" size={14} /> View</Btn>
+          <Btn size="sm" variant="ghost" onClick={() => downloadDataUrl(src, proofFileName(src, ref_, i, srcs.length, kind))}><Icon name="download" size={14} /> Download</Btn>
+        </div>
+      </div>
+    ))}
   </div>
 );
 
-const MultiProofUpload: React.FC<{
+// Collects the files to attach. Choosing more files ADDS to the selection — it never clears what
+// was picked before — so slips can be added one at a time or in batches without losing any.
+export const MultiProofUpload: React.FC<{
   values: string[]; onChange: (v: string[]) => void; label?: string; required?: boolean;
 }> = ({ values, onChange, label = 'Proof Document / Image', required }) => {
   const { showToast } = useToast();
@@ -176,16 +189,18 @@ const MultiProofUpload: React.FC<{
     const files = Array.from(e.target.files || []);
     e.target.value = '';
     if (!files.length) return;
-    if (values.length + files.length > PROOF_MAX) { showToast(PROOF_LIMIT_MSG, 'error'); return; }
     if (files.some(f => !isAllowedProof(f))) { showToast(PROOF_TYPE_MSG, 'error'); return; }
+    // Per-file size, mirroring the server's own rule so an oversized file is caught before it is
+    // read and packed into a request that would only be rejected.
+    if (files.some(f => f.size > PROOF_MAX_BYTES)) { showToast(PROOF_SIZE_MSG, 'error'); return; }
     const urls = await Promise.all(files.map(fileToDataUrl));
     onChange([...values, ...urls]);
   };
   return (
     <div style={{ marginBottom:16 }}>
       <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{label}{required && <span style={{ color:T.danger }}> *</span>}</label>
-      {values.length < PROOF_MAX && <input type="file" multiple accept={PROOF_ACCEPT} onChange={onFiles} style={{ fontSize:12 }} />}
-      <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>Up to {PROOF_MAX} files · JPG, JPEG, PNG, PDF ({values.length}/{PROOF_MAX})</p>
+      <input type="file" multiple accept={PROOF_ACCEPT} onChange={onFiles} style={{ fontSize:12 }} />
+      <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>JPG, JPEG, PNG, PDF · up to 5 MB each · add as many as you need{values.length ? ` (${values.length} selected)` : ''}</p>
       {values.length > 0 && (
         <div style={{ display:'flex',gap:8,flexWrap:'wrap',marginTop:8 }}>
           {values.map((v, i) => (
@@ -268,6 +283,9 @@ export const MerchantSlipModal: React.FC<{
   // submit) is shared with every other deposit type unchanged — and so is what happens after the
   // reviewer approves: the Admin marks it deposited, exactly as they do for a bank deposit.
   const isCard = isCardDeposit(tx);
+  // CDM — the cash was pushed into a machine, so the reference the merchant enters is the one the
+  // machine printed on the receipt, not a bank UTR. Everything else about this step is identical.
+  const isCdm = isCdmDeposit(tx);
   // The link and the remarks trail are on the detail payload; hold the full record for them.
   const [record, setRecord] = useState<Transaction>(tx);
   useEffect(() => {
@@ -330,10 +348,16 @@ export const MerchantSlipModal: React.FC<{
     if (SEND_TO_APPROVAL_ENABLED && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setLoading(true);
     try {
-      await transactionAPI.submitSlip(tx.id, { merchantProofs: proofs, merchantRef: ref.trim() || undefined,
+      // The submission carries the first batch and moves the request into review; any remaining
+      // files are attached afterwards. Splitting is only about the proxy's request-body cap —
+      // every file ends up on the same request, and appending never changes its status.
+      const [first, ...rest] = proofBatches(proofs);
+      await transactionAPI.submitSlip(tx.id, { merchantProofs: first, merchantRef: ref.trim() || undefined,
         ...(SEND_TO_APPROVAL_ENABLED && approverId ? { approverUserId: Number(approverId) } : {}) });
+      const all = await attachRemainingProofs(rest, b => transactionAPI.addProofs(tx.id, b));
       fireConfetti();
-      showToast('Payment proof submitted');
+      if (all) showToast('Payment proof submitted');
+      else showToast(`Payment proof submitted. ${PARTIAL_ATTACH_MSG}`, 'info');
       onSubmitted?.();
       onClose();
     } catch {
@@ -460,17 +484,25 @@ export const MerchantSlipModal: React.FC<{
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Your Submitted Proof</p>
           {tx.merchantRef && <SlipRow k="Reference" v={tx.merchantRef} copy={tx.merchantRef} />}
           {(() => {
-            const list = (imgs.merchantProofs && imgs.merchantProofs.length) ? imgs.merchantProofs : (imgs.merchantProof ? [imgs.merchantProof] : []);
-            return list.length ? <ProofGallery srcs={list} /> : null;
+            const list = proofList(imgs.merchantProofs, imgs.merchantProof);
+            return list.length ? <ProofGallery srcs={list} ref_={tx.ref} /> : null;
           })()}
         </div>
       )}
 
       {canSubmitSlip ? (
         <div style={{ borderTop:`1px solid ${T.border}`,paddingTop:14 }}>
-          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Submit Your Payment Proof</p>
-          <Input label="UTR Number" value={ref} onChange={e=>setRef(e.target.value)} placeholder="Bank UTR / payment reference" required />
-          <MultiProofUpload values={proofs} onChange={setProofs} label="Upload Slip (up to 3)" required />
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>{isCdm ? 'Upload Your CDM Receipt' : 'Submit Your Payment Proof'}</p>
+          {isCdm && (
+            <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 12px',lineHeight:1.6 }}>
+              Deposit the cash into the account above, then upload the receipt the machine printed.
+              Attach as many images as you need — the agent checks them against the actual credit in
+              that account before the deposit is completed.
+            </p>
+          )}
+          <Input label={isCdm ? 'CDM Reference Number' : 'UTR Number'} value={ref} onChange={e=>setRef(e.target.value)}
+            placeholder={isCdm ? 'The reference printed on the CDM receipt' : 'Bank UTR / payment reference'} required />
+          <MultiProofUpload values={proofs} onChange={setProofs} label={isCdm ? 'Upload CDM Receipt' : 'Upload Slip'} required />
           {/* Send To Approval — revealed only after the slip proof uploads; the merchant chooses who
               reviews this deposit, then it routes to that approver (Supervisor review). Demo only. */}
           {SEND_TO_APPROVAL_ENABLED && proofs.length > 0 && (
@@ -697,7 +729,13 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   const isUpi = form.depositType === 'UPI';
   const isCash = form.depositType === 'CASH';
   const isCrypto = form.depositType === 'CRYPTO';
-  const isBankLike = !isCash && !isCrypto;   // UPI / BANK / IMPS / NEFT / RTGS collect a bank account
+  // CDM — physical cash pushed into a Cash Deposit Machine. There is no sending account and no
+  // rail: the payer walks to a machine, so nothing about a sender's bank account or UPI ID
+  // applies, and the receiving account is assigned by an Admin after the request is accepted
+  // rather than chosen here or picked automatically. The form therefore asks for the amount and
+  // the member only; the receipt is uploaded later, once the cash has actually been deposited.
+  const isCdm = form.depositType === CDM_TXN_TYPE;
+  const isBankLike = !isCash && !isCrypto && !isCdm;   // UPI / BANK / IMPS / NEFT / RTGS / Card collect a bank account
   // "Send To Approval" appears on THIS form only for CASH/CRYPTO — the one deposit type whose proof
   // is uploaded here, so the approver is revealed once that proof uploads. UPI/bank deposits carry no
   // proof on this form: their approver is chosen later, at the Pay & Submit Proof step (MerchantSlipModal).
@@ -742,6 +780,11 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
     // "optional"); a mandatory agent belongs to the Agent Management module, not here.
     setLoading(true);
     try {
+      // Cash/Crypto deposits carry their proofs with the request. A large set is split across
+      // several calls purely because the proxy caps one request body — the create call takes the
+      // first batch and the remainder is appended to the same request, which changes nothing
+      // about its status or review.
+      const [firstProofs, ...moreProofs] = proofBatches(proofs);
       const created = await transactionAPI.createDeposit({
         ...form, amount: parseFloat(parseIndianAmount(form.amount)), riskAnalysis,
         ...(showApproval && approverId ? { sentForApproval: true, approverUserId: Number(approverId) } : {}),
@@ -750,11 +793,13 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
           saveBankAccount: saveNew,
         } : {}),
         ...(isUpi ? { senderUpiId: senderUpi.trim() } : {}),
-        ...(isCash ? { depositDetails: { village: details.village, city: details.city, mobile: details.mobile }, proofs } : {}),
-        ...(isCrypto ? { depositDetails: { walletAddress: details.walletAddress, network: details.network, txHash: details.txHash }, proofs } : {}),
+        ...(isCash ? { depositDetails: { village: details.village, city: details.city, mobile: details.mobile }, proofs: firstProofs } : {}),
+        ...(isCrypto ? { depositDetails: { walletAddress: details.walletAddress, network: details.network, txHash: details.txHash }, proofs: firstProofs } : {}),
       });
+      const allAttached = await attachRemainingProofs(moreProofs, b => transactionAPI.addProofs(created.id, b));
       fireConfetti();
-      showToast('Deposit request submitted — awaiting agent review');
+      if (allAttached) showToast('Deposit request submitted — awaiting agent review');
+      else showToast(`Deposit request submitted — awaiting agent review. ${PARTIAL_ATTACH_MSG}`, 'info');
       onSubmitted?.();
     } catch (e: any) {
       showToast(e?.response?.data?.detail || 'Failed to submit deposit request','error');
@@ -789,6 +834,17 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
           <MultiProofUpload values={proofs} onChange={setProofs} label="Proof / Image Upload" required />
         </div>
       )}
+      {isCdm && (
+        <div style={{ background:T.infoBg,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Cash Deposit Machine</p>
+          <p style={{ fontSize:12,color:T.textMuted,margin:0,lineHeight:1.6 }}>
+            Submit this request first. The agent will accept it and send you the bank account to
+            deposit into — do not deposit cash before you receive it. Once the CDM has printed your
+            receipt, open this request and upload the receipt (you can add more than one image).
+            The deposit is credited only after the agent confirms the cash reached that account.
+          </p>
+        </div>
+      )}
       {isCrypto && (
         <div style={{ background:T.canvas,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Crypto (USDT) Details</p>
@@ -818,6 +874,11 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
         {isBankLike && (
           <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted,lineHeight:1.5 }}>
             The receiving account is selected automatically. Naming a bank ("Use Bank of Baroda") or asking for the "same account" is treated as a preference where one is available.
+          </p>
+        )}
+        {isCdm && (
+          <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted,lineHeight:1.5 }}>
+            The agent assigns the receiving account for a CDM deposit — it is not selected automatically. Name a bank here if you have a preference.
           </p>
         )}
       </div>
@@ -1694,7 +1755,7 @@ const buildMerchantTimeline = (
   const fmtTs = (v?: string | null) => (v ? formatDateTime(v) : '');
 
   const created = d.createdAt ? formatDateTime(d.createdAt) : `${d.date} ${d.time}`;
-  const slips = (d.merchantProofs && d.merchantProofs.length) ? d.merchantProofs : (d.merchantProof ? [d.merchantProof] : []);
+  const slips = proofList(d.merchantProofs, d.merchantProof);
   const sentForApproval = has('SENT_FOR_APPROVAL') || !!d.approverName;
   const reviewApproved = has('SUPERVISOR_APPROVED', 'MANAGER_APPROVED') || remarkHas('APPROVED');
   const adminApproved = has('ADMIN_APPROVED');
@@ -1767,7 +1828,10 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
   const isDeposit = d.type.startsWith('DEPOSIT');
   const isWithdrawal = d.type.startsWith('WITHDRAWAL');
   const isSettlement = d.type.startsWith('SETTLEMENT');
-  const slips = (d.merchantProofs && d.merchantProofs.length) ? d.merchantProofs : (d.merchantProof ? [d.merchantProof] : []);
+  const slips = proofList(d.merchantProofs, d.merchantProof);
+  // Everything the Admin attached when the payout was made. Several receipts are normal for one
+  // payment — a split transfer has one per leg — so all of them are listed, not just the first.
+  const receipts = proofList(d.adminProofs, d.adminProof);
   const created = d.createdAt ? formatDateTime(d.createdAt) : `${d.date} ${d.time}`;
   const paymentMethod = d.depositType ? depositTypeLabel(d.depositType) : (d.payoutMode || '—');
 
@@ -1855,29 +1919,24 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
       <TxnTimeline steps={tl.steps} currentIndex={tl.currentIndex} done={tl.done} rejected={tl.rejected} />
 
 
-      {(slips.length > 0 || d.adminProof || d.adminBankImage) && (
+      {(slips.length > 0 || receipts.length > 0 || d.adminBankImage) && (
         <DetailSection title="Uploaded Documents / Slips">
           {slips.length > 0 && (
             <>
-              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>{isDeposit ? 'Deposit Slip' : 'Payment Proof'}{d.merchantRef ? ` · Ref ${d.merchantRef}` : ''}</p>
-              <ProofGallery srcs={slips} />
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-                {slips.map((s, i) => <Btn key={i} size="sm" variant="ghost" onClick={() => downloadDataUrl(s, `slip-${d.ref}-${i + 1}.png`)}><Icon name="download" size={14} /> Download Slip{slips.length > 1 ? ` ${i + 1}` : ''}</Btn>)}
-              </div>
+              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>{isDeposit ? 'Deposit Slip' : 'Payment Proof'}{slips.length > 1 ? ` · ${slips.length} files` : ''}{d.merchantRef ? ` · Ref ${d.merchantRef}` : ''}</p>
+              <ProofGallery srcs={slips} ref_={d.ref} />
             </>
           )}
           {d.adminBankImage && (
             <div style={{ marginTop: slips.length ? 12 : 0 }}>
               <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Bank Details Image</p>
-              <ProofGallery srcs={[d.adminBankImage]} />
-              <Btn size="sm" variant="ghost" style={{ marginTop: 8 }} onClick={() => downloadDataUrl(d.adminBankImage!, `bank-details-${d.ref}.png`)}><Icon name="download" size={14} /> Download Bank Details Image</Btn>
+              <ProofGallery srcs={[d.adminBankImage]} ref_={d.ref} kind="bank-details" />
             </div>
           )}
-          {d.adminProof && (
-            <div style={{ marginTop: slips.length ? 12 : 0 }}>
-              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Payment Receipt</p>
-              <ProofGallery srcs={[d.adminProof]} />
-              <Btn size="sm" variant="ghost" style={{ marginTop: 8 }} onClick={() => downloadDataUrl(d.adminProof!, `receipt-${d.ref}.png`)}><Icon name="download" size={14} /> Download Receipt</Btn>
+          {receipts.length > 0 && (
+            <div style={{ marginTop: (slips.length || d.adminBankImage) ? 12 : 0 }}>
+              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Payment Receipt{receipts.length > 1 ? ` · ${receipts.length} files` : ''}</p>
+              <ProofGallery srcs={receipts} ref_={d.ref} kind="receipt" />
             </div>
           )}
         </DetailSection>
@@ -1941,7 +2000,7 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
   // and record a "<role> Viewed" audit entry (the reviewer is opening the request).
   useEffect(() => { transactionAPI.getDetail(tx.id).then(setD).catch(() => {}); transactionAPI.recordView(tx.id); }, [tx.id]);
 
-  const slips = (d.merchantProofs && d.merchantProofs.length) ? d.merchantProofs : (d.merchantProof ? [d.merchantProof] : []);
+  const slips = proofList(d.merchantProofs, d.merchantProof);
   const isDeposit = d.type.startsWith('DEPOSIT');
   const isCard = isCardDeposit(d);
 
@@ -2009,8 +2068,8 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
       {/* Deposit slip / proof submitted by the merchant. */}
       {isDeposit && slips.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Deposit Slip</p>
-          <ProofGallery srcs={slips} />
+          <p style={{ fontSize: 11, fontWeight: 800, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Deposit Slip{slips.length > 1 ? ` · ${slips.length} files` : ''}</p>
+          <ProofGallery srcs={slips} ref_={d.ref} />
         </div>
       )}
 

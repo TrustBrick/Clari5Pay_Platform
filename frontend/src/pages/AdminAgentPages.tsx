@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt, formatDateTimeIST } from '../utils/helpers';
+import { fmt, formatDateTimeIST, proofList } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen, Pager } from '../components/UI';
 import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -300,7 +300,10 @@ const AdminAgentTxnModal: React.FC<{ row: AdminAgentTxnRow; onClose: () => void 
   const proofLabel = isTokenMethod(row.txnMethod) ? 'Token Image' : 'Uploaded Slip';
   const images: Array<[string, string]> = [
     ...(row.accountProof ? [['Account Proof', row.accountProof] as [string, string]] : []),
-    ...(row.slipImage ? [[proofLabel, row.slipImage] as [string, string]] : []),
+    // Every slip on the transaction, not only the first — an Admin reviewing a payment has to be
+    // able to see all of the evidence that was attached to it.
+    ...proofList(row.slipImages, row.slipImage).map((src, i, all) =>
+      [all.length > 1 ? `${proofLabel} ${i + 1} of ${all.length}` : proofLabel, src] as [string, string]),
     ...(row.depositProof ? [['Deposit Proof', row.depositProof] as [string, string]] : []),
   ];
 

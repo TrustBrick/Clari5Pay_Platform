@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadDataUrl, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount, proofBatches, proofList, isCdmDeposit, CDM_CHECKS, attachRemainingProofs, PARTIAL_ATTACH_MSG } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
@@ -12,7 +12,7 @@ import TxTable from '../components/TxTable';
 import { TxExportButton, exportTransactionsPdf } from '../components/TxExport';
 import TxSearchFilters from '../components/TxSearchFilters';
 import { exportTransactionsXlsx, downloadXlsx } from '../utils/xlsx';
-import { ProofGallery, ReceiptImage } from './MerchantPages';
+import { ProofGallery, ReceiptImage, MultiProofUpload } from './MerchantPages';
 import { AgentLedgerReport } from './ReportsPage';
 import { useAuth } from '../context/AuthContext';
 import { usePoll, PRESENCE_POLL_MS, useActivitySignal } from '../utils/usePoll';
@@ -62,6 +62,10 @@ const RequestModal: React.FC<{
   // every other deposit type gets an account (Link Requested → Link Submitted). From there on it
   // is an ordinary deposit — including the Admin's own "Mark Deposited" once the reviewer approves.
   const isCardDeposit = isDeposit && depType === 'CARD';
+  // CDM — physical cash pushed into a Cash Deposit Machine. No rail confirms it and the receipt is
+  // only an image, so the deposit is credited on one thing: this Admin confirming the actual bank
+  // credit in the account they assigned. The panel below records that; the server enforces it.
+  const isCdm = isCdmDeposit(tx);
   // Withdrawal payout mode drives what proof the agent must capture (Crypto → Hash; Cash → image only).
   const payoutMode = (tx.payoutMode || 'BANK').toUpperCase();
   const isCryptoPayout = payoutMode === 'CRYPTO';
@@ -74,7 +78,9 @@ const RequestModal: React.FC<{
   const [sendVia, setSendVia] = useState<'BANK' | 'UPI'>('BANK');   // deposit: send a bank account or a linked UPI
   const [linkedUpis, setLinkedUpis] = useState<AdminUpi[]>([]);
   const [upiId, setUpiId] = useState('');
-  const [receipt, setReceipt] = useState<string | null>(null);
+  // Receipts for this payout. A payment split across several transfers has a slip per leg, so
+  // any number may be attached; the server validates each file exactly as before.
+  const [receipts, setReceipts] = useState<string[]>([]);
   const [bankImage, setBankImage] = useState<string | null>(null);   // optional custom bank-details image
   const [paymentLink, setPaymentLink] = useState('');                // Card: the generated gateway link
   const [payUtr, setPayUtr] = useState('');
@@ -92,16 +98,33 @@ const RequestModal: React.FC<{
   // completion already recorded instead of debiting the account twice.
   const payoutKey = useRef(newRequestId());
   const [saving, setSaving] = useState(false);
+  // The CDM verification form. Seeded from whatever has already been recorded, so re-opening the
+  // request shows what a previous Admin confirmed rather than a blank checklist.
+  const [cdm, setCdm] = useState<Record<string, unknown>>({});
+  const [cdmSaving, setCdmSaving] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
   const [riskConfirm, setRiskConfirm] = useState(false);
   // Proof/receipt images are omitted from list payloads; fetch them when the modal opens.
-  const [imgs, setImgs] = useState<{ adminProof?: string | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
+  const [imgs, setImgs] = useState<{ adminProof?: string | null; adminProofs?: string[] | null; adminBankImage?: string | null; merchantProof?: string | null; merchantProofs?: string[] | null }>({ adminProof: tx.adminProof, adminProofs: tx.adminProofs, adminBankImage: tx.adminBankImage, merchantProof: tx.merchantProof, merchantProofs: tx.merchantProofs });
   // Full record incl. proof images + the review-gate workflow trail; also records an
   // "Admin Viewed" audit entry (the admin is opening the request).
   const [record, setRecord] = useState<Transaction>(tx);
   useEffect(() => {
-    transactionAPI.getDetail(tx.id).then(d => { setImgs({ adminProof: d.adminProof, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs }); setRecord(d); }).catch(()=>{});
+    transactionAPI.getDetail(tx.id).then(d => {
+      setImgs({ adminProof: d.adminProof, adminProofs: d.adminProofs, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs });
+      setRecord(d);
+      const v = d.cdmVerification;
+      if (v) setCdm({
+        ...v.checks,
+        cdmReference: v.cdmReference ?? d.merchantRef ?? '',
+        bankCreditRef: v.bankCreditRef ?? '',
+        depositedOn: v.depositedOn ?? '',
+        remarks: v.remarks ?? '',
+        verifiedAmount: v.verifiedAmount ?? d.amount,
+        verifiedAccountRef: v.verifiedAccountRef ?? d.adminRef ?? '',
+      });
+    }).catch(()=>{});
     transactionAPI.recordView(tx.id);
   }, [tx.id]);
 
@@ -119,9 +142,14 @@ const RequestModal: React.FC<{
   // The retry banner covers BOTH unplaced states: the engine's own exception, and any request
   // raised before automatic allocation existed and left sitting in the old Admin queue. One click
   // places those too, which beats asking an Admin to pick an account by hand.
-  const allocationFailed = canAct && isDeposit && !isCardDeposit
+  // A CDM request is NOT an unplaced automatic allocation — it is a manual workflow whose account
+  // an Admin is supposed to assign, and the server refuses to run the engine on one. Offering
+  // "Run Automatic Allocation" here would present a button that can only fail, and would imply
+  // the request is stuck when it is simply waiting to be accepted.
+  const allocationFailed = canAct && isDeposit && !isCardDeposit && !isCdm
     && (tx.status === 'NO_ELIGIBLE_ACCOUNT' || tx.status === 'ACCOUNT_REQUESTED');
-  const allocationExplicitFailure = canAct && isDeposit && !isCardDeposit && tx.status === 'NO_ELIGIBLE_ACCOUNT';
+  const allocationExplicitFailure = canAct && isDeposit && !isCardDeposit && !isCdm && tx.status === 'NO_ELIGIBLE_ACCOUNT';
+  // The Admin still picks the account by hand for a CDM request — that is the acceptance step.
   const chooseStep = canAct && isDeposit && !isCardDeposit
     && (tx.status === 'ACCOUNT_REQUESTED' || tx.status === 'NO_ELIGIBLE_ACCOUNT');
   const depositDoneStep = canAct && isDeposit && tx.status === 'SLIP_SUBMITTED'; // review slip → Deposited
@@ -178,6 +206,13 @@ const RequestModal: React.FC<{
     finally { setSaving(false); }
   };
 
+  // A CDM verification names the account the cash was supposed to reach, so the Admin needs the
+  // account list while verifying — not only while choosing one.
+  useEffect(() => {
+    if (chooseStep || !isCdm || !canAct) return;
+    accountAPI.list().then(a => setAccounts(a.filter(x => (x.status || '').toUpperCase() === 'ACTIVE'))).catch(() => {});
+  }, [chooseStep, isCdm, canAct]);
+
   useEffect(() => {
     if (!chooseStep) return;
     // Remaining daily credit capacity per account — the same server figure the allocation engine
@@ -215,11 +250,6 @@ const RequestModal: React.FC<{
     adminUpiAPI.listActive().then(rows => setLinkedUpis(rows.filter(u => u.accountRef))).catch(()=>{});
   }, [chooseStep]);
 
-  const onReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) setReceipt(await fileToDataUrl(f));
-  };
-
   // Optional custom Bank-Details image (JPG/JPEG/PNG/WEBP). When set, it overrides the auto card.
   const BANK_IMG_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
   const onBankImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -254,6 +284,9 @@ const RequestModal: React.FC<{
   const sendAccount = async () => {
     const acc = accounts.find(a => a.referenceNumber === accountRef);
     if (!acc && !bankImage) { showToast('Select an account or upload a bank details image', 'error'); return; }
+    // A CDM request must name a real managed account — a bank-details image alone would leave
+    // nothing to check the later bank credit against. The server enforces this too.
+    if (isCdm && !acc) { showToast('Select the managed bank account for this CDM deposit', 'error'); return; }
     setSaving(true);
     try {
       if (bankImage) {
@@ -306,8 +339,52 @@ const RequestModal: React.FC<{
     finally { setSaving(false); }
   };
 
+  // Both figures are REQUIRED before a CDM deposit can be completed, and each is shown against
+  // its own field so the Admin sees which one is missing rather than hunting through a summary.
+  // These mirror app.services.cdm — the server enforces the same rules independently, so a
+  // caller bypassing this form gains nothing.
+  const cdmAmountRaw = String(cdm.verifiedAmount ?? '').trim();
+  const cdmAmountNum = cdmAmountRaw === '' ? NaN : Number(cdmAmountRaw);
+  const cdmAmountError =
+    cdmAmountRaw === '' ? 'Required — enter the amount read from the CDM receipt.'
+    : !Number.isFinite(cdmAmountNum) || cdmAmountNum <= 0 ? 'Enter a positive amount.'
+    : Math.round(cdmAmountNum * 100) !== Math.round(tx.amount * 100)
+      ? `Does not match the requested amount (${fmt(tx.amount)}).`
+    : '';
+  const cdmAccountRaw = String(cdm.verifiedAccountRef ?? '').trim();
+  const cdmAccountError =
+    cdmAccountRaw === '' ? 'Required — enter the receiving account shown on the receipt.'
+    : record.adminRef && cdmAccountRaw !== record.adminRef
+      ? `Not the account assigned to this request (${record.adminRef}).`
+    : '';
+
+  // Save what the Admin has verified. Deliberately a separate act from completing: this records
+  // evidence and nothing else — no status change, no credit — and the server re-reads it as the
+  // gate when Mark Deposited is pressed. Saving a PARTIAL verification is legitimate (an Admin
+  // works through the checks over time), so the two figures are flagged rather than blocked here;
+  // what they block is completion.
+  const saveCdm = async () => {
+    setCdmSaving(true);
+    try {
+      const d = await transactionAPI.saveCdmVerification(tx.id, {
+        ...Object.fromEntries(CDM_CHECKS.map(c => [c.key, cdm[c.key] === true])),
+        cdmReference: (cdm.cdmReference as string) || undefined,
+        bankCreditRef: (cdm.bankCreditRef as string) || undefined,
+        depositedOn: (cdm.depositedOn as string) || undefined,
+        remarks: (cdm.remarks as string) || undefined,
+        // A blank field is sent as absent, never as 0 or "" — "not entered" has one shape, and
+        // the server treats it as a blocking omission rather than a verified zero.
+        verifiedAmount: cdmAmountRaw === '' || !Number.isFinite(cdmAmountNum) ? undefined : cdmAmountNum,
+        verifiedAccountRef: cdmAccountRaw || undefined,
+      });
+      setRecord(d);
+      showToast('Verification saved');
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to save the verification', 'error'); }
+    finally { setCdmSaving(false); }
+  };
+
   const complete = async (withReceipt: boolean) => {
-    if (withReceipt && needReceipt && !receipt) { showToast('Upload the payment proof', 'error'); return; }
+    if (withReceipt && needReceipt && !receipts.length) { showToast('Upload the payment proof', 'error'); return; }
     if (withReceipt && needUtr && !payUtr.trim()) { showToast(isCryptoPayout ? 'Enter the transaction hash' : 'Enter the UTR number', 'error'); return; }
     // Withdrawal payout details. Validated again server-side — these checks only keep the
     // operator from submitting an obviously incomplete form.
@@ -321,8 +398,12 @@ const RequestModal: React.FC<{
     if (saving) return;                       // guard the in-flight click; the key below guards the rest
     setSaving(true);
     try {
+      // The completion carries the first batch of receipts (the proxy caps one request body);
+      // any remainder is appended to the same transaction straight after. Appending attaches
+      // files only — it never completes or verifies anything on its own.
+      const [firstReceipts, ...moreReceipts] = proofBatches(receipts);
       await transactionAPI.markDone(tx.id, withReceipt ? {
-        adminProof: receipt || undefined,
+        adminProofs: firstReceipts,
         adminUtr: payUtr.trim() || undefined,
         ...(needsPayout ? {
           paymentMethod: payMethod,
@@ -332,7 +413,12 @@ const RequestModal: React.FC<{
           clientRequestId: payoutKey.current,
         } : {}),
       } : undefined);
-      showToast(`${tx.ref} ${isDeposit ? 'deposited' : 'completed'}`);
+      // The request is completed at this point; a receipt that fails to attach must not be
+      // reported as a failed completion.
+      const all = !withReceipt || await attachRemainingProofs(moreReceipts, b => transactionAPI.addProofs(tx.id, b));
+      const done = `${tx.ref} ${isDeposit ? 'deposited' : 'completed'}`;
+      if (all) showToast(done);
+      else showToast(`${done}. ${PARTIAL_ATTACH_MSG}`, 'info');
       onDone?.(); onClose();
     } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to complete', 'error'); }
     finally { setSaving(false); }
@@ -429,8 +515,11 @@ const RequestModal: React.FC<{
                       {!tx.accountHolder && !tx.accountNumber && !tx.bank && <p style={{ margin:0,color:T.textMuted }}>No payout details provided.</p>}
                     </>}
               </div>
-              {imgs.adminProof && <><p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'12px 0 8px' }}>Payment Receipt</p>
-                <ReceiptImage src={imgs.adminProof} alt="Receipt" /></>}
+              {(() => {
+                const list = proofList(imgs.adminProofs, imgs.adminProof);
+                return list.length ? <><p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'12px 0 8px' }}>Payment Receipt{list.length > 1 ? ` · ${list.length} files` : ''}</p>
+                  <ProofGallery srcs={list} ref_={tx.ref} kind="receipt" /></> : null;
+              })()}
             </>
           )}
         </div>
@@ -439,20 +528,21 @@ const RequestModal: React.FC<{
       {/* Merchant payment slip (deposit) */}
       {isDeposit && (imgs.merchantProof || tx.merchantRef) && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
-          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Merchant Payment Slip</p>
-          {tx.merchantRef && <Row k={isCardDeposit ? 'UTR Number' : 'Reference Number'} v={tx.merchantRef} />}
           {(() => {
-            const list = (imgs.merchantProofs && imgs.merchantProofs.length) ? imgs.merchantProofs : (imgs.merchantProof ? [imgs.merchantProof] : []);
-            return list.length ? <ProofGallery srcs={list} /> : null;
+            // Every slip the merchant attached, each independently viewable and downloadable —
+            // an Admin verifying the payment has to be able to open a particular one.
+            const list = proofList(imgs.merchantProofs, imgs.merchantProof);
+            return <>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Merchant Payment Slip{list.length > 1 ? ` · ${list.length} files` : ''}</p>
+              {tx.merchantRef && <Row k={isCardDeposit ? 'UTR Number' : 'Reference Number'} v={tx.merchantRef} />}
+              {list.length
+                ? <ProofGallery srcs={list} ref_={tx.ref} kind="payment-slip" />
+                : <Btn size="sm" variant="ghost" style={{ marginTop:10 }}
+                    onClick={() => downloadText(`Payment slip — ${tx.ref}\nReference: ${tx.merchantRef}`, `payment-slip-${tx.ref}.txt`)}>
+                    <Icon name="download" size={14} /> Download Payment Slip
+                  </Btn>}
+            </>;
           })()}
-          {(imgs.merchantProof || tx.merchantRef) && (
-            <Btn size="sm" variant="ghost" style={{ marginTop:10 }}
-              onClick={() => imgs.merchantProof
-                ? downloadDataUrl(imgs.merchantProof, `payment-slip-${tx.ref}.png`)
-                : downloadText(`Payment slip — ${tx.ref}\nReference: ${tx.merchantRef}`, `payment-slip-${tx.ref}.txt`)}>
-              <Icon name="download" size={14} /> Download Payment Slip
-            </Btn>
-          )}
         </div>
       )}
 
@@ -535,11 +625,22 @@ const RequestModal: React.FC<{
       )}
       {chooseStep && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
-          <div style={{ display:'flex',gap:8,marginBottom:12 }}>
-            <Btn size="sm" variant={sendVia==='BANK'?'primary':'ghost'} onClick={()=>setSendVia('BANK')}><Icon name="bank" size={14} /> Bank Account</Btn>
-            <Btn size="sm" variant={sendVia==='UPI'?'primary':'ghost'} onClick={()=>setSendVia('UPI')}><Icon name="upi" size={14} /> UPI ID</Btn>
-          </div>
-          {sendVia === 'BANK' ? (
+          {isCdm && (
+            <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 12px',lineHeight:1.6 }}>
+              Accepting this CDM request means choosing the bank account the merchant should deposit
+              the cash into. That account is what you will later check for the actual credit, so it
+              is recorded on the request — a CDM deposit cannot be paid to a UPI ID.
+            </p>
+          )}
+          {/* A CDM deposit is physical cash, which a UPI ID cannot receive — the send-via choice
+              does not apply to it, and the server refuses one regardless. */}
+          {!isCdm && (
+            <div style={{ display:'flex',gap:8,marginBottom:12 }}>
+              <Btn size="sm" variant={sendVia==='BANK'?'primary':'ghost'} onClick={()=>setSendVia('BANK')}><Icon name="bank" size={14} /> Bank Account</Btn>
+              <Btn size="sm" variant={sendVia==='UPI'?'primary':'ghost'} onClick={()=>setSendVia('UPI')}><Icon name="upi" size={14} /> UPI ID</Btn>
+            </div>
+          )}
+          {sendVia === 'BANK' || isCdm ? (
             <>
               <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>
                 {allocationFailed ? 'Or send an account manually' : 'Select an account to send'} ({accounts.length} active)
@@ -601,11 +702,79 @@ const RequestModal: React.FC<{
         </div>
       )}
 
+      {/* ── CDM PAYMENT VERIFICATION ───────────────────────────────────────────────
+          The receipt is supporting evidence; the bank credit is the control. Every box is a
+          separate thing a person compared — nothing here is ticked by the system, and saving this
+          panel never completes the deposit. `canComplete` below is the server's own answer. */}
+      {isCdm && canAct && (
+        <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>CDM Payment Verification</p>
+          <div style={{ background:T.canvas,borderRadius:10,padding:'10px 14px',marginBottom:12 }}>
+            <Row k="Deposit Amount" v={fmt(tx.amount)} />
+            <Row k="Receiving Account" v={record.adminRef
+              ? (() => { const a = accounts.find(x => x.referenceNumber === record.adminRef);
+                         return a ? `${a.bankName} — A/C ${maskAccount(a.accountNumber)}` : record.adminRef; })()
+              : <span style={{ color:T.danger }}>Not assigned</span>} />
+            <Row k="Merchant's CDM Reference" v={record.merchantRef || '—'} />
+          </div>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'0 18px' }}>
+            <Input label="CDM Reference" value={(cdm.cdmReference as string) || ''} onChange={e=>setCdm(c=>({...c, cdmReference:e.target.value}))}
+              placeholder="Reference printed on the receipt" />
+            <Input label="Deposit Date / Time" value={(cdm.depositedOn as string) || ''} onChange={e=>setCdm(c=>({...c, depositedOn:e.target.value}))}
+              placeholder="As shown on the receipt" />
+            <Input label="Verified Amount" type="text" inputMode="decimal" required value={String(cdm.verifiedAmount ?? '')}
+              onChange={e=>setCdm(c=>({...c, verifiedAmount:e.target.value.replace(/[^0-9.]/g,'')}))}
+              placeholder="Amount on the receipt" error={cdmAmountError || undefined}
+              hint={`Must equal the requested amount (${fmt(tx.amount)}).`} />
+            <Input label="Verified Receiving Account" required value={(cdm.verifiedAccountRef as string) || ''}
+              onChange={e=>setCdm(c=>({...c, verifiedAccountRef:e.target.value.toUpperCase()}))}
+              placeholder="Account on the receipt" error={cdmAccountError || undefined}
+              hint={record.adminRef ? `Must be the assigned account (${record.adminRef}).` : 'No account is assigned to this request yet.'} />
+          </div>
+          <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px 18px',margin:'4px 0 12px' }}>
+            {CDM_CHECKS.map(c => (
+              <label key={c.key} style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,padding:'5px 0',cursor:'pointer' }}>
+                <input type="checkbox" checked={cdm[c.key] === true} onChange={e=>setCdm(v=>({...v, [c.key]:e.target.checked}))} />
+                <span style={c.key === 'bankCreditConfirmed' ? { fontWeight:800 } : undefined}>{c.label}</span>
+              </label>
+            ))}
+          </div>
+          <Input label="Bank Credit Reference / UTR" value={(cdm.bankCreditRef as string) || ''}
+            onChange={e=>setCdm(c=>({...c, bankCreditRef:e.target.value}))}
+            placeholder="The credit entry on the bank statement"
+            hint="Required once the actual bank credit is confirmed — it is what makes the confirmation auditable." />
+          <Input label="Remarks" value={(cdm.remarks as string) || ''} onChange={e=>setCdm(c=>({...c, remarks:e.target.value}))}
+            placeholder="Optional note recorded with the verification" />
+          {record.cdmVerification?.verifiedBy && (
+            <div style={{ background:T.canvas,borderRadius:10,padding:'8px 14px',marginBottom:10 }}>
+              <Row k="Verified By" v={record.cdmVerification.verifiedBy} />
+              {record.cdmVerification.verifiedAt && <Row k="Verified At" v={formatDateTime(record.cdmVerification.verifiedAt)} />}
+              {record.cdmVerification.bankCreditConfirmedAt && <Row k="Bank Credit Confirmed At" v={formatDateTime(record.cdmVerification.bankCreditConfirmedAt)} />}
+            </div>
+          )}
+          <Btn size="sm" variant="secondary" onClick={saveCdm} disabled={cdmSaving}>{cdmSaving ? 'Saving...' : <><Icon name="save" size={14} /> Save Verification</>}</Btn>
+          {/* What the server says is still missing. Shown verbatim so the operator is never left
+              guessing why Mark Deposited is unavailable. */}
+          {record.cdmVerification && !record.cdmVerification.canComplete && (
+            <div style={{ marginTop:12,padding:'10px 14px',borderRadius:10,background:T.dangerBg,border:`1px solid ${T.border}` }}>
+              <p style={{ margin:'0 0 6px',fontSize:11,fontWeight:800,color:T.danger,textTransform:'uppercase',letterSpacing:'0.05em' }}>Cannot be completed yet</p>
+              <ul style={{ margin:0,paddingLeft:18,fontSize:12,color:T.textMuted,lineHeight:1.7 }}>
+                {record.cdmVerification.blockingReasons.map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
       {depositDoneStep && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
-          <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 12px' }}>Review the merchant's payment slip above, then mark this deposit complete.</p>
+          <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 12px' }}>
+            {isCdm
+              ? "Review the merchant's CDM receipt above and confirm the actual bank credit before completing. Uploading a receipt is not payment verification."
+              : "Review the merchant's payment slip above, then mark this deposit complete."}
+          </p>
           <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={()=>complete(false)} disabled={saving}>{saving ? 'Saving...' : <><Icon name="approve" size={14} /> Mark Deposited</>}</Btn>
+            <Btn onClick={()=>complete(false)} disabled={saving || (isCdm && !record.cdmVerification?.canComplete)}>{saving ? 'Saving...' : <><Icon name="approve" size={14} /> Mark Deposited</>}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
           <div style={{ display:'flex',gap:10,flexWrap:'wrap',marginTop:12,paddingTop:12,borderTop:`1px dashed ${T.border}` }}>
@@ -685,13 +854,12 @@ const RequestModal: React.FC<{
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>Pay & Confirm{tx.payoutMode ? ` — ${PAYOUT_MODE_LABELS[payoutMode] || payoutMode}` : ''}</p>
           <p style={{ fontSize:12,color:T.textMuted,margin:'0 0 10px' }}>Pay the Receiver using the details above, then record the proof below. It's shared with the Receiver.</p>
           {needUtr && <Input label={isCryptoPayout ? 'Transaction Hash (Hash ID)' : 'UTR Number'} value={payUtr} onChange={e=>setPayUtr(e.target.value)} placeholder={isCryptoPayout ? 'On-chain transaction hash' : 'Bank UTR / payment reference'} required/>}
-          {needReceipt && <>
-            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>{isSettlement ? 'Settlement Proof (Image or PDF)' : isCashPayout ? 'Proof Image' : 'Payment Receipt'}<span style={{ color:T.danger }}> *</span></label>
-            <input type="file" accept="image/*,.pdf" onChange={onReceipt} style={{ fontSize:12 }} />
-            {receipt && <img src={receipt} alt="Receipt" style={{ width:'auto',maxWidth:240,maxHeight:200,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,margin:'12px 0',background:T.canvas }} />}
-          </>}
+          {needReceipt && (
+            <MultiProofUpload values={receipts} onChange={setReceipts} required
+              label={isSettlement ? 'Settlement Proof (Image or PDF)' : isCashPayout ? 'Proof Image' : 'Payment Receipt'} />
+          )}
           <div style={{ display:'flex',gap:10,marginTop:12 }}>
-            <Btn onClick={()=>complete(true)} disabled={saving||(needReceipt&&!receipt)||(needUtr&&!payUtr.trim())||(needsPayout&&payMethod==='BANK'&&!payoutAccountRef)||(needsPayout&&payMethod==='MANUAL'&&!manualRef.trim())}>{saving ? 'Saving...' : <><Icon name="approve" size={14} /> Complete</>}</Btn>
+            <Btn onClick={()=>complete(true)} disabled={saving||(needReceipt&&!receipts.length)||(needUtr&&!payUtr.trim())||(needsPayout&&payMethod==='BANK'&&!payoutAccountRef)||(needsPayout&&payMethod==='MANUAL'&&!manualRef.trim())}>{saving ? 'Saving...' : <><Icon name="approve" size={14} /> Complete</>}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
         </div>

@@ -28,11 +28,48 @@ from app.models.models import (
     User, UserRole,
 )
 from app.core.deps import get_current_agent_operator, agent_role_in
+from app.core import proofs as proofs_core
 from app.api.routes.system_logs import record_agent_audit
 # The one place a Membership ID is turned into a Member Name, for BOTH modules. The agent ledger
 # used to answer this from its own rows only, so a member the Merchant module already knew looked
 # brand new here and the operator had to retype the name.
 from app.services.membership import lookup_member_name
+
+# ── Payment slips / proofs ────────────────────────────────────────────────────────
+# Any number of files may be attached to one agent transaction — a payment settled in several
+# transfers has a slip per leg — and every upload APPENDS, so evidence already on the record is
+# never replaced. The rules live in app.core.proofs, shared with the merchant/admin workflow so
+# the two cannot drift on what an acceptable upload is.
+#
+# Each file is validated individually (JPG/JPEG/PNG/WEBP/PDF, per-file size limit) — the same
+# check the merchant/admin uploads have always had. This module previously stored whatever the
+# browser sent, unchecked; that gap is closed here rather than carried into a feature that lets a
+# user attach many more files.
+
+
+def _clean_slips(images: list[str] | None, single: str | None = None) -> list[str]:
+    """Validate slip/token images and hand them to storage. Any number, each checked."""
+    return proofs_core.clean_proofs(images, single, field="slip_image",
+                                    label="payment slip / proof file")
+
+
+def _add_slips(t: AgentTransaction, new: list[str]) -> None:
+    """Attach validated slips, keeping everything already uploaded on this transaction.
+
+    `slip_image` keeps holding the FIRST file so every existing screen, export and report that
+    reads it renders exactly as before.
+    """
+    if not new:
+        return
+    merged = proofs_core.merge_into(t.slip_images, t.slip_image, new)
+    t.slip_images = proofs_core.append_proofs([], merged)
+    t.slip_image = merged[0]
+
+
+def _slip_list(t: AgentTransaction) -> list[str]:
+    """Every slip on the record, back-filling from the legacy single column."""
+    return proofs_core.parse_proofs(t.slip_images) or ([t.slip_image] if t.slip_image else [])
+
 
 router = APIRouter(prefix="/api/agent-txns", tags=["agent-transactions-ledger"])
 
@@ -536,8 +573,10 @@ def _row(t: AgentTransaction) -> dict:
         "accountSubmittedBy": t.account_submitted_by,
         "accountSubmittedDate": _ist_parts(t.account_submitted_at)[1],
         "accountSubmittedTime": _ist_parts(t.account_submitted_at)[2],
-        # Slip
-        "slipImage": t.slip_image,
+        # Slip. `slipImage` stays the first file (unchanged for every existing caller);
+        # `slipImages` is the full set, oldest first, for the galleries.
+        "slipImage": proofs_core.resolve_proofs(t.slip_images)[0] if t.slip_images else t.slip_image,
+        "slipImages": proofs_core.resolve_proofs(t.slip_images) or ([t.slip_image] if t.slip_image else None),
         "slipSubmittedBy": t.slip_submitted_by,
         "slipSubmittedDate": _ist_parts(t.slip_submitted_at)[1],
         "slipSubmittedTime": _ist_parts(t.slip_submitted_at)[2],
@@ -956,8 +995,12 @@ class AgentAccountSubmit(BaseModel):
 
 class AgentSlipSubmit(BaseModel):
     """Payment evidence. Both are mandatory: the UTR is the payment reference (there is no
-    separate Reference Number) and the slip image is the proof."""
+    separate Reference Number) and the slip image is the proof.
+
+    `slipImages` carries any number of files; `slipImage` remains accepted as the single-file
+    form. At least one file is required — the route enforces that across both fields."""
     slipImage: str | None = None            # data URL — required
+    slipImages: list[str] | None = None     # any number of data URLs
     utr: str | None = None                  # required; the transaction's only payment reference
     # "Send To Approval" — the Authorized Approver, now chosen at this Pay/Upload Slip step (deposits),
     # once the slip has uploaded. Optional server-side; the frontend enforces it.
@@ -985,7 +1028,9 @@ class AgentPaymentDetails(BaseModel):
     walletAddress: str | None = None
     txHash: str | None = None
     slipImage: str | None = None       # data URL
+    slipImages: list[str] | None = None    # any number of data URLs
     tokenImage: str | None = None      # data URL — CASH: the token handed to the member
+    tokenImages: list[str] | None = None   # any number of data URLs
     utr: str | None = None
 
 
@@ -1371,6 +1416,41 @@ def _require_deposit(t: AgentTransaction) -> None:
         raise HTTPException(status_code=400, detail="This action applies to Agent Deposits only.")
 
 
+class AgentProofsAppend(BaseModel):
+    """More payment proofs for an agent transaction that already exists. Purely additive."""
+    slipImages: list[str]
+
+
+@router.post("/{txn_id}/proofs")
+async def append_agent_proofs(txn_id: int, body: AgentProofsAppend,
+                              db: AsyncSession = Depends(get_db),
+                              user: User = Depends(get_current_agent_operator)):
+    """Attach more slips/proofs to an agent transaction, without changing anything else.
+
+    The files join the set already on the record — nothing is replaced — and the status, the
+    review gate and the approval trail are left exactly as they were. Uploading evidence is not
+    approving it: the transaction still moves only through its own workflow steps.
+
+    Scoped to the operator's own business like every other route here, and closed once the
+    transaction reaches a final state — after that its evidence is sealed and a correction goes
+    through the existing re-upload/rejection path.
+    """
+    files = [p for p in (body.slipImages or []) if p]
+    if not files:
+        raise HTTPException(status_code=400, detail="Select at least one file to upload.")
+    t = await _load_own(db, _business(user), txn_id)
+    if t.status in (COMPLETED_STATUSES | REJECTED_STATUSES):
+        raise HTTPException(status_code=400,
+                            detail="This transaction is closed — no further files can be attached to it.")
+    _add_slips(t, _clean_slips(files))
+    t.updated_by, t.updated_by_id, t.updated_at = user.username, user.id, datetime.utcnow()
+    await _log(db, t, "PROOF_UPLOADED", user,
+               note=f"{len(files)} additional proof file(s) attached by {user.username} — status unchanged")
+    await db.commit()
+    await db.refresh(t)
+    return _row(t)
+
+
 @router.post("/{txn_id}/account-submit")
 async def account_submit(txn_id: int, body: AgentAccountSubmit, db: AsyncSession = Depends(get_db),
                          user: User = Depends(get_current_agent_operator)):
@@ -1468,13 +1548,15 @@ async def submit_slip(txn_id: int, body: AgentSlipSubmit, db: AsyncSession = Dep
     # the workflow (Approvals, Mark Deposit, Details, Reports). Cash has no UTR: money changes hands
     # in person and no rail issues a reference, so the slip is the only proof. Every other method is
     # paid over a rail that does issue one, and still requires it.
-    if not body.slipImage:
+    _slips = _clean_slips(body.slipImages, body.slipImage)
+    if not _slips:
         raise HTTPException(status_code=400, detail="Payment slip image is required.")
     _is_cash = str(t.txn_method or "").upper() in TOKEN_METHODS
     if not _is_cash and not (body.utr or "").strip():
         raise HTTPException(status_code=400, detail="UTR Number is required.")
 
-    t.slip_image = body.slipImage
+    # Added to whatever is already on the record — a re-upload after a rejection keeps the history.
+    _add_slips(t, _slips)
     if (body.utr or "").strip():
         t.deposit_utr = body.utr.strip()      # the payment reference; Mark Deposit displays it
     t.slip_submitted_by = user.username
@@ -1811,12 +1893,12 @@ async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSes
     # records how the payment was ACTUALLY made, so each method asks for its own proof and never
     # for a detail the request already carries (the Token Number and the Wallet Address are
     # captured when the withdrawal is raised — see _validate_common).
+    _slips = _clean_slips((body.tokenImages or []) + (body.slipImages or []),
+                          body.tokenImage or body.slipImage)
     if method in TOKEN_METHODS:                        # CASH → Token Image (the proof of hand-over)
-        image = body.tokenImage or body.slipImage
-        if not image and not t.slip_image:
+        if not _slips and not t.slip_image:
             raise HTTPException(status_code=400, detail="Token image is required.")
-        if image:
-            t.slip_image = image
+        _add_slips(t, _slips)
         # A correction to the token number stays possible; it is not re-demanded here.
         if (body.tokenDetails or "").strip():
             t.token_details = body.tokenDetails.strip()
@@ -1824,25 +1906,24 @@ async def payout_withdrawal(txn_id: int, body: AgentPaymentDetails, db: AsyncSes
         # `txHash` is the on-chain reference older clients sent under its own name — accepted as
         # the UTR so nothing that already works breaks.
         utr = (body.utr or body.txHash or "").strip()
-        if not body.slipImage and not t.slip_image:
+        if not _slips and not t.slip_image:
             raise HTTPException(status_code=400, detail="Payment slip image is required.")
         if not utr and not (t.deposit_utr or "").strip():
             raise HTTPException(status_code=400, detail="UTR Number is required.")
-        if body.slipImage:
-            t.slip_image = body.slipImage
+        _add_slips(t, _slips)
         if utr:
             t.deposit_utr = utr
         # A correction to the destination wallet stays possible; it is not re-demanded here.
         if (body.walletAddress or "").strip():
             t.wallet_address = body.walletAddress.strip()
     else:                                              # BANK → Slip + UTR; UPI → UTR + Screenshot
-        if not body.slipImage:
+        if not _slips:
             raise HTTPException(status_code=400,
                                 detail=("Payment slip image is required." if method == "BANK"
                                         else "Payment screenshot is required."))
         if not (body.utr or "").strip():
             raise HTTPException(status_code=400, detail="UTR Number is required.")
-        t.slip_image = body.slipImage
+        _add_slips(t, _slips)
         t.deposit_utr = body.utr.strip()
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
@@ -1954,10 +2035,11 @@ async def settlement_proof(txn_id: int, body: AgentSlipSubmit, db: AsyncSession 
     acknowledgement or crypto transfer proof). The proof is mandatory — that is the whole point
     of the step. An optional reference (UTR / txn hash) is stored alongside it."""
     t = await _settlement_step(db, user, txn_id, ST_SETTLEMENT_ACCEPTED, "proof upload")
-    if not body.slipImage:
+    _slips = _clean_slips(body.slipImages, body.slipImage)
+    if not _slips:
         raise HTTPException(status_code=400, detail="Payment proof is required.")
     t.status = ST_PROOF_UPLOADED
-    t.slip_image = body.slipImage
+    _add_slips(t, _slips)
     t.slip_submitted_by = user.username
     t.slip_submitted_at = datetime.utcnow()
     if (body.utr or "").strip():
