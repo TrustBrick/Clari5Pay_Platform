@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { formatDateTime, relativeTime } from '../utils/helpers';
 import { T } from '../utils/theme';
 import { Card, StatCard, Sel, Input, Modal, Skeleton, CountUp } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
@@ -11,17 +12,9 @@ import type { User, ActiveUsersData, ActiveUserRow } from '../types';
 const prettyRole = (r?: string | null) => (r || '—').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 const relTime = (iso?: string | null): string => {
   if (!iso) return '—';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '—';
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (s < 45) return 'Just now';
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
-  const d = new Date(iso);
-  if (s < 172800) return `Yesterday ${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`;
-  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  return relativeTime(iso);
 };
-const fmtTime = (iso?: string | null) => iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+const fmtTime = (iso?: string | null) => formatDateTime(iso);
 const fmtDuration = (secs?: number | null): string => {
   if (secs == null) return '—';
   const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;

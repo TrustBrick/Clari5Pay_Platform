@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { T } from '../utils/theme';
-import { timeAgo, merchantRoleLabel, formatDateTime } from '../utils/helpers';
+import { timeAgo, merchantRoleLabel, formatDateTime, formatDate } from '../utils/helpers';
 import ThemeToggle from './ThemeToggle';
 import SupportAvailabilityIndicator from './SupportAvailabilityIndicator';
 import { Icon } from './Icon';
@@ -163,8 +163,10 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
   const greetName = user.role === 'MERCHANT'
     ? ((user.fullName || '').trim() || user.username)
     : user.name;
-  const dateStr = now.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  const timeStr = now.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+  // The header clock is an actual date/time, so it takes the platform's standard shape like any
+  // other. `dateStr` is used alone in the narrow layout, where a time would not fit.
+  const dateStr = formatDate(now);
+  const dateTimeStr = formatDateTime(now);
 
   const roleLabel = user.role === 'MERCHANT' && user.merchantRole ? merchantRoleLabel(user.merchantRole) : user.role.replace('_', ' ');
 
@@ -184,7 +186,7 @@ const Header: React.FC<HeaderProps> = ({ user, title, onMenuClick, fullWidth, pa
           {isDashboard ? (
             <>
               <h1 style={{ fontSize:16,fontWeight:800,color:T.textMain,margin:0 }}>{greeting}, {greetName} <span aria-hidden style={{ fontSize:15 }}>👋</span></h1>
-              <p style={{ fontSize:10,color:T.textMuted,margin:0 }}>{dateStr} • {timeStr}</p>
+              <p style={{ fontSize:10,color:T.textMuted,margin:0 }}>{dateTimeStr}</p>
             </>
           ) : (
             <>

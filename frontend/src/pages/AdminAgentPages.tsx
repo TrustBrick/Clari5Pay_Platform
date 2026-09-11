@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { User } from '../types';
 import { T } from '../utils/theme';
-import { fmt, formatDateTimeIST } from '../utils/helpers';
+import { fmt, formatDateTimeIST, formatIstParts } from '../utils/helpers';
 import { Card, Btn, Input, Sel, Modal, LoadingScreen, Pager } from '../components/UI';
 import { usePoll, useDebouncedValue } from '../utils/usePoll';
 import { useToast } from '../context/ToastContext';
@@ -211,7 +211,7 @@ export const AdminAgentDashboardPage: React.FC<{ user: User; onNavigate?: (p: st
                   <td style={tdS}>{x.type.charAt(0) + x.type.slice(1).toLowerCase()}</td>
                   <td style={{ ...tdS, fontWeight: 700 }}>{fmt(x.amount)}</td>
                   <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} approverRole={x.approverRole} /></td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(x.createdDate, x.createdTime)}</td>
                 </tr>
               ))}
             </tbody>
@@ -273,7 +273,7 @@ const AdminAgentTxnModal: React.FC<{ row: AdminAgentTxnRow; onClose: () => void 
     // Who did what, and when — every performer the workflow records.
     { title: 'Performed By', fields: [
       ['Created By (Operator)', row.createdBy],
-      ['Created (IST)', `${row.createdDate || ''} ${row.createdTime || ''}`.trim() || null],
+      ['Created (IST)', formatIstParts(row.createdDate, row.createdTime)],
       ['Account / Token Submitted By', row.accountSubmittedBy],
       ['Account / Token Submitted (IST)', row.accountSubmittedDate ? `${row.accountSubmittedDate} ${row.accountSubmittedTime || ''}` : null],
       ['Sent For Approval', row.sentForApproval ? 'Yes' : 'No'],
@@ -282,13 +282,13 @@ const AdminAgentTxnModal: React.FC<{ row: AdminAgentTxnRow; onClose: () => void 
       ['Manager', row.managerName],
       ['Review Remark', row.reviewRemark],
       ['Approved By', row.approvedBy],
-      ['Approved (IST)', row.approvedDate ? `${row.approvedDate} ${row.approvedTime || ''}` : null],
+      ['Approved (IST)', row.approvedDate ? formatIstParts(row.approvedDate, row.approvedTime) : null],
       ['Proof Uploaded By', row.slipSubmittedBy],
       ['Proof Uploaded (IST)', row.slipSubmittedDate ? `${row.slipSubmittedDate} ${row.slipSubmittedTime || ''}` : null],
       ['Deposited By', row.depositedBy],
-      ['Deposited (IST)', row.depositedDate ? `${row.depositedDate} ${row.depositedTime || ''}` : null],
+      ['Deposited (IST)', row.depositedDate ? formatIstParts(row.depositedDate, row.depositedTime) : null],
       ['Last Updated By', row.updatedBy],
-      ['Completed (IST)', row.completedDate ? `${row.completedDate} ${row.completedTime || ''}` : null],
+      ['Completed (IST)', row.completedDate ? formatIstParts(row.completedDate, row.completedTime) : null],
     ] },
     { title: 'Payment Routing', fields: [
       ['Sent To (Agent A/C)', row.agentAccountRef ? `${row.agentAccountRef} · ${row.agentAccountDetail || ''}` : null],
@@ -340,7 +340,7 @@ const AdminAgentTxnModal: React.FC<{ row: AdminAgentTxnRow; onClose: () => void 
             {audit.length === 0 && <tr><td colSpan={6} style={{ ...tdS, textAlign: 'center', color: T.textMuted, padding: 18 }}>No history yet.</td></tr>}
             {audit.map(x => (
               <tr key={x.id} style={{ background: T.surface }}>
-                <td style={{ ...tdS, whiteSpace: 'nowrap', color: T.textMuted }}>{x.createdDate} {x.createdTime}</td>
+                <td style={{ ...tdS, whiteSpace: 'nowrap', color: T.textMuted }}>{formatIstParts(x.createdDate, x.createdTime)}</td>
                 <td style={{ ...tdS, fontWeight: 700 }}>{x.action.replace(/_/g, ' ')}</td>
                 <td style={tdS}>{x.oldAmount == null ? '—' : fmt(x.oldAmount)}</td>
                 <td style={tdS}>{x.newAmount == null ? '—' : fmt(x.newAmount)}</td>
@@ -456,8 +456,8 @@ export const AdminAgentTransactionsPage: React.FC<{ user: User; onNavigate?: (p:
                   <td style={tdS}><StatusPill status={x.status} type={x.type} method={x.txnMethod} approverRole={x.approverRole} /></td>
                   <td style={tdS}>{x.createdBy || '—'}</td>
                   <td style={tdS}>{x.managerName || x.supervisorName || x.approverName || '—'}</td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.createdDate} {x.createdTime}</td>
-                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.completedDate ? `${x.completedDate} ${x.completedTime || ''}` : '—'}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{formatIstParts(x.createdDate, x.createdTime)}</td>
+                  <td style={{ ...tdS, color: T.textMuted, whiteSpace: 'nowrap' }}>{x.completedDate ? formatIstParts(x.completedDate, x.completedTime) : '—'}</td>
                   <td style={tdS}><Btn size="sm" variant="ghost" onClick={() => setDetailRow(x)}>View Details</Btn></td>
                 </tr>
               ))}
