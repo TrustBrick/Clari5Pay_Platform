@@ -428,7 +428,7 @@ export const DEPOSIT_TYPE_LABELS: Record<string, string> = {
   RTGS: 'RTGS',
   CASH: 'Cash',
   CRYPTO: 'Crypto (USDT)',
-  CARD: 'Card',
+  CARD: 'Credit/Debit Card',
   CDM: 'CDM (Cash Deposit Machine)',
 };
 export const depositTypeLabel = (code?: string | null) =>
@@ -452,7 +452,7 @@ export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'RTGS', label: 'RTGS' },
   { value: 'CASH', label: 'Cash' },
   { value: 'CRYPTO', label: 'Crypto (USDT)' },
-  { value: 'CARD', label: 'Card' },
+  { value: 'CARD', label: 'Credit/Debit Card' },
   { value: 'CDM', label: 'CDM (Cash Deposit Machine)' },
 ];
 
