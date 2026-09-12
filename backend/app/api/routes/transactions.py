@@ -2529,6 +2529,13 @@ def _build_report_payload(
         # from the permanent creator FK (merchant_id); role/id are audit snapshots on the row.
         "operator": (operator_by_mid or {}).get(t.merchant_id) or t.creator_username or "",
         "operatorRole": t.creator_role,
+        # The merchant's own approver. `approvedBy` is not it: the Admin's account-send and
+        # card-link steps overwrite that column with the Admin's name, and deposit auto-allocation
+        # writes "System (Auto Allocation)". These three are stamped only by the merchant review
+        # gate, so they are what the Approved By column reads.
+        "supervisorName": t.supervisor_name,
+        "managerName": t.manager_name,
+        "approverName": t.approver_name,
         "operatorId": t.agent_code,
         "agentCode": t.agent_code,
         "riskLevel": "HIGH" if t.high_risk else "LOW",
