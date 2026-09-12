@@ -819,6 +819,8 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "approverUserId": t.approver_user_id,
         "approverName": t.approver_name,
         "approverRole": t.approver_role,
+        "approverUsername": t.approver_username,
+        "approverFullName": t.approver_full_name,
         # Agent Management (demo): which Non-EPS agent a request is routed through (NULL in prod).
         "assignedAgentId": t.assigned_agent_id,
         "remarksHistory": (json.loads(t.remarks_history) if t.remarks_history else []),
@@ -2330,6 +2332,9 @@ def _build_report_payload(
         # from the permanent creator FK (merchant_id); role/id are audit snapshots on the row.
         "operator": (operator_by_mid or {}).get(t.merchant_id) or t.creator_username or "",
         "operatorRole": t.creator_role,
+        # Who approved, as a person — see the model note on approver_username.
+        "approverUsername": t.approver_username,
+        "approverFullName": t.approver_full_name,
         "operatorId": t.agent_code,
         "agentCode": t.agent_code,
         "riskLevel": "HIGH" if t.high_risk else "LOW",
@@ -3146,6 +3151,16 @@ async def _reviewer_action(
 
     setattr(tx, cfg["name_attr"], reviewer.name)
     setattr(tx, cfg["time_attr"], datetime.utcnow())
+    # The PERSON who acted. The line above stores `reviewer.name`, which for a merchant user is the
+    # business every one of their operators shares — useful for attribution, useless for saying who
+    # approved. These two carry the individual, and are the only reliable source for that.
+    # Only when the reviewer is the MERCHANT'S own. Under "Send To Approval" the chosen approver
+    # may be an Admin, and an Admin recorded here would put an internal name back in the column
+    # this field exists to keep merchant-side — which is the whole complaint. On demo, 17 of 41
+    # recorded approvals were an Admin, so this is the common case, not an edge one.
+    if reviewer.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        tx.approver_username = reviewer.username
+        tx.approver_full_name = (reviewer.full_name or "").strip() or None
     # Name lands in the gate's slot (supervisor_name / manager_name) so every existing screen still
     # finds it; approver_role carries WHO that name belongs to, so the row can be labelled correctly.
     tx.approver_role = tx.approver_role or actor_role

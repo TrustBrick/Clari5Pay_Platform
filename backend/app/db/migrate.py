@@ -55,6 +55,10 @@ _NEW_COLUMNS = [
     ("transactions", "deposit_details", "TEXT"),
     # Reporting: approver / processor / creating-agent tracking.
     ("transactions", "approved_by", "VARCHAR(128)"),
+    # WHO approved, as a person. supervisor_name / manager_name hold the merchant BUSINESS name,
+    # so they cannot identify the individual; these can. Backfilled from remarks_history below.
+    ("transactions", "approver_username", "VARCHAR(64)"),
+    ("transactions", "approver_full_name", "VARCHAR(128)"),
     ("transactions", "processed_by", "VARCHAR(128)"),
     ("transactions", "agent_code", "VARCHAR(16)"),
     # Supervisor/Manager review-gate workflow: reviewer + admin actors/timestamps and
@@ -582,6 +586,30 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "  GROUP BY ma.reference_number"
             ") s "
             "WHERE a.reference_number = s.ref AND a.highest_debit = 0"
+        ))
+        # Backfill the approving PERSON from the review history, which has recorded the actor's
+        # username on every entry since the review gate existed. Without this, every historical row
+        # shows a role with no name — the data is already there, it was just never promoted to a
+        # column. Only fills rows that have none, so it is idempotent.
+        #
+        # `remarks_history` is TEXT holding JSON and a malformed value would abort the whole
+        # migration on the cast, so each row is validated first. DISTINCT ON keeps the LAST
+        # approval when a row was approved more than once.
+        await conn.execute(text(
+            "UPDATE transactions t SET approver_username = s.username "
+            "FROM ("
+            "  SELECT DISTINCT ON (t2.id) t2.id AS id, e->>'username' AS username "
+            "  FROM transactions t2, "
+            "       LATERAL jsonb_array_elements(t2.remarks_history::jsonb) AS e "
+            "  WHERE t2.remarks_history IS NOT NULL "
+            "    AND pg_input_is_valid(t2.remarks_history, 'jsonb') "
+            "    AND e->>'action' = 'APPROVED' "
+            "    AND COALESCE(e->>'username', '') <> '' "
+            "    AND upper(COALESCE(e->>'role', '')) "
+            "        NOT IN ('ADMIN', 'SUPER_ADMIN', 'SUPERADMIN', 'SUPPORT') "
+            "  ORDER BY t2.id, e->>'at' DESC"
+            ") s "
+            "WHERE t.id = s.id AND COALESCE(t.approver_username, '') = ''"
         ))
         # The former Lowest Credit column is superseded by Highest Debit — drop it once (idempotent).
         await conn.execute(text("ALTER TABLE account_master DROP COLUMN IF EXISTS lowest_credit"))

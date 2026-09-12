@@ -69,6 +69,57 @@ export const internalApproverLabel = (
   return role && role !== '—' ? `${person} (${role})` : person;
 };
 
+// The PERSON who approved, on the merchant's side.
+//
+// It deliberately reads neither `approvedBy` nor the supervisor/manager name columns, because
+// neither identifies a person:
+//   • `approvedBy` is written by whoever last touched the request. The Admin's account-send and
+//     card-link steps overwrite it with the ADMIN's name, and deposit auto-allocation writes
+//     "System (Auto Allocation)" — which is how "System (Auto Allocation) (Manager)" appeared.
+//   • `supervisorName` / `managerName` store the reviewer's `name`, and for a merchant user that
+//     is the BUSINESS. Every operator at one client shares it, so it can say BELLAGIO but never
+//     which person at BELLAGIO approved.
+// `approverUsername` / `approverFullName` are stamped by the review gate itself and are the only
+// fields that identify the individual.
+//
+// When no person was recorded the row shows the ROLE alone. That is the honest reading: the
+// merchant's workflow recorded no approver, and naming the Admin or the business there would be
+// asserting something untrue rather than merely unhelpful. The Admin keeps its own column.
+const SYSTEM_ACTORS = new Set(['system (auto allocation)', 'system']);
+
+export const merchantApproverName = (row: {
+  approverFullName?: string | null; approverUsername?: string | null;
+  approvedBy?: string | null; processedBy?: string | null;
+  merchant?: string | null; business?: string | null;
+}): string => {
+  // Stamped by the review gate, and only ever for a merchant-side reviewer.
+  const stamped = String(row.approverFullName || '').trim()
+    || String(row.approverUsername || '').trim();
+  if (stamped) return stamped;
+
+  // Nothing stamped — this row predates the field. `approvedBy` often still holds the right
+  // person (it is what the column showed before), so it is used, but ONLY once the three ways it
+  // is known to hold something else are ruled out. Dropping it outright would throw away a
+  // correct name on every historical row; trusting it blindly is what produced
+  // "System (Auto Allocation) (Manager)" and the Admin appearing in both columns.
+  const legacy = String(row.approvedBy || '').trim();
+  if (!legacy) return '';
+  if (SYSTEM_ACTORS.has(legacy.toLowerCase())) return '';            // the allocation engine
+  if (legacy.toLowerCase() === String(row.processedBy || '').trim().toLowerCase()) return '';
+  const businessName = String(row.merchant || row.business || '').trim().toLowerCase();
+  if (businessName && legacy.toLowerCase() === businessName) return '';  // the business, not a person
+  return legacy;
+};
+
+// "Name (Role)" for that person, for INTERNAL screens entitled to see it. Falls back to the role
+// alone — never to a business or an Admin name.
+export const merchantApproverLabel = (row: {
+  type?: string | null; approverRole?: string | null;
+  approverFullName?: string | null; approverUsername?: string | null;
+  approvedBy?: string | null; processedBy?: string | null;
+  merchant?: string | null; business?: string | null;
+}): string => internalApproverLabel(merchantApproverName(row), row.type, row.approverRole);
+
 // Roles that belong to Clari5Pay, not to the client. Their real names/usernames are recorded in
 // the internal audit log and shown on internal/admin screens, but never surfaced to the client —
 // a client-facing row attributed to one of these shows the role alone. That an Admin acted is

@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit, formatIstParts, internalApproverLabel } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit, formatIstParts, merchantApproverLabel } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton, CopyButton } from './UI';
 import { Icon, type IconName } from './Icon';
 import type { Transaction } from '../types';
@@ -126,7 +126,7 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
               {internal && (
                 <>
                   <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>
-                    {(t.approvedBy || '').trim() ? internalApproverLabel(t.approvedBy, t.type, t.approverRole) : '—'}
+                    {merchantApproverLabel(t)}
                   </td>
                   <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600,whiteSpace:'nowrap' }}>
                     {(t.processedBy || '').trim() || '—'}
