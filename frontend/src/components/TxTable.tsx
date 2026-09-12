@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit, formatIstParts, merchantApproverLabel } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit, formatIstParts } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton, CopyButton } from './UI';
 import { Icon, type IconName } from './Icon';
 import type { Transaction } from '../types';
@@ -67,8 +67,11 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
   // No action handler (e.g. the dashboard preview) → drop the Action column entirely.
   const showAction = !!onAction && actionMode !== 'none';
   const headers = ['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Membership - Member', 'Type', 'Amount', 'Date', 'Status'];
-  // Sit them after Status and before Action, matching the Reports table's column order.
-  if (internal) headers.push('Approved By', 'Approved By (Admin)');
+  // Sits after Status and before Action, matching the Reports table's column order.
+  // "Approved By" (the merchant's own approver) is deliberately NOT a column here — this listing
+  // shows only the Admin who processed the transaction. The merchant approver is still recorded,
+  // still returned by the API, and still present in the Reports table and every export/PDF.
+  if (internal) headers.push('Approved By (Admin)');
   if (showAction) headers.push('Action');
   if (loading) return <div style={{ overflowX: 'auto' }}><TableSkeleton rows={6} cols={headers.length} /></div>;
   return (
@@ -124,14 +127,9 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
                 )}
               </td>
               {internal && (
-                <>
-                  <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>
-                    {merchantApproverLabel(t)}
-                  </td>
-                  <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600,whiteSpace:'nowrap' }}>
-                    {(t.processedBy || '').trim() || '—'}
-                  </td>
-                </>
+                <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600,whiteSpace:'nowrap' }}>
+                  {(t.processedBy || '').trim() || '—'}
+                </td>
               )}
               {showAction && (
                 <td style={{ padding:'11px 14px' }}>
