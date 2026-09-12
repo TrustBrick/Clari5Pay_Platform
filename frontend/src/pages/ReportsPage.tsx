@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel, clientApproverLabel, internalApproverLabel, formatIndianAmountInput, parseIndianAmount, formatDateTime, formatIstParts } from '../utils/helpers';
+import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel, clientApproverLabel, merchantApproverLabel, formatIndianAmountInput, parseIndianAmount, formatDateTime, formatIstParts } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { Icon, type IconName } from '../components/Icon';
@@ -52,7 +52,7 @@ const adminApproverCell = (r: ReportRow): string => (r.processedBy || '').trim()
 // row actually having been approved, so a pending row still reads '—' in both views.
 const approverCell = (r: ReportRow, internal = false): string => (
   r.approvedBy
-    ? (internal ? internalApproverLabel(r.approvedBy, r.type, r.approverRole) : clientApproverLabel(r.type, r.approverRole))
+    ? (internal ? merchantApproverLabel(r) : clientApproverLabel(r.type, r.approverRole))
     : '—'
 );
 

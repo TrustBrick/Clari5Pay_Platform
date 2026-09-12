@@ -354,6 +354,10 @@ export interface Transaction {
   approverUserId?: number | null;
   approverName?: string | null;
   approverRole?: string | null;   // SUPERVISOR / MANAGER — makes the review status display as the chosen role.
+  // The approving PERSON, stamped by the review gate. supervisorName/managerName hold the merchant
+  // BUSINESS name (every operator at one client shares it), so only these identify an individual.
+  approverUsername?: string | null;
+  approverFullName?: string | null;
   // Resolved actual usernames of the approval-stage actors (display-only; from get_transaction_detail).
   supervisorUsername?: string | null;
   managerUsername?: string | null;
@@ -1113,6 +1117,10 @@ export interface ReportRow {
   paymentMethod?: string | null;
   approvedBy?: string | null;
   approverRole?: string | null;   // real role of the approver — never assume one from the type
+  // The approving PERSON. supervisorName/managerName hold the merchant BUSINESS name and cannot
+  // identify an individual; these can. See merchantApproverName().
+  approverUsername?: string | null;
+  approverFullName?: string | null;
   processedBy?: string | null;
   operator?: string | null;       // logged-in operator who performed (created) the transaction
   operatorRole?: string | null;   // that operator's role (e.g. DEPOSIT_OPERATOR)
