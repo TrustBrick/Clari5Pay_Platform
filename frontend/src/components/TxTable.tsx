@@ -1,6 +1,6 @@
 import React from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit, formatIstParts } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, memberLabel, isCryptoTx, isCardDeposit, formatIstParts, internalApproverLabel } from '../utils/helpers';
 import { Badge, Btn, TableSkeleton, CopyButton } from './UI';
 import { Icon, type IconName } from './Icon';
 import type { Transaction } from '../types';
@@ -13,6 +13,11 @@ interface TxTableProps {
   actionMode?: ActionMode;
   viewerRole?: string;
   loading?: boolean;
+  /** Admin-side only. Adds the two approver columns, the second of which names Clari5Pay staff.
+   *  Deliberately its own prop rather than a viewerRole check: one call site passes viewerRole
+   *  dynamically (`user.role`), so role is not a safe gate for a client-visible leak.
+   *  Never set it on a merchant-facing table — see clientApproverLabel in helpers.ts. */
+  internal?: boolean;
 }
 
 // Pick the per-row action button based on mode + transaction type + status.
@@ -58,10 +63,12 @@ const typeColor = (type: string): { color: string; bg: string } => {
   return { color: T.info, bg: T.infoBg };
 };
 
-const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole, loading }) => {
+const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', viewerRole, loading, internal = false }) => {
   // No action handler (e.g. the dashboard preview) → drop the Action column entirely.
   const showAction = !!onAction && actionMode !== 'none';
   const headers = ['Reference Number', (viewerRole === 'ADMIN' || viewerRole === 'SUPER_ADMIN') ? 'Receiver Name' : 'Merchant Name', 'Membership - Member', 'Type', 'Amount', 'Date', 'Status'];
+  // Sit them after Status and before Action, matching the Reports table's column order.
+  if (internal) headers.push('Approved By', 'Approved By (Admin)');
   if (showAction) headers.push('Action');
   if (loading) return <div style={{ overflowX: 'auto' }}><TableSkeleton rows={6} cols={headers.length} /></div>;
   return (
@@ -116,6 +123,16 @@ const TxTable: React.FC<TxTableProps> = ({ txns, onAction, actionMode = 'none', 
                   <span style={{ display:'inline-flex',alignItems:'center',gap:3,marginLeft:6,padding:'2px 8px',borderRadius:6,fontSize:10,fontWeight:800,background:'#fdecea',color:'#b71c1c',whiteSpace:'nowrap',letterSpacing:'0.04em' }}><Icon name="warning" size={11} weight="fill" /> HIGH RISK</span>
                 )}
               </td>
+              {internal && (
+                <>
+                  <td style={{ padding:'11px 14px',color:T.textMuted,whiteSpace:'nowrap' }}>
+                    {(t.approvedBy || '').trim() ? internalApproverLabel(t.approvedBy, t.type, t.approverRole) : '—'}
+                  </td>
+                  <td style={{ padding:'11px 14px',color:T.textMain,fontWeight:600,whiteSpace:'nowrap' }}>
+                    {(t.processedBy || '').trim() || '—'}
+                  </td>
+                </>
+              )}
               {showAction && (
                 <td style={{ padding:'11px 14px' }}>
                   {(() => {
