@@ -85,31 +85,18 @@ export const internalApproverLabel = (
 // When no person was recorded the row shows the ROLE alone. That is the honest reading: the
 // merchant's workflow recorded no approver, and naming the Admin or the business there would be
 // asserting something untrue rather than merely unhelpful. The Admin keeps its own column.
-const SYSTEM_ACTORS = new Set(['system (auto allocation)', 'system']);
-
 export const merchantApproverName = (row: {
   approverFullName?: string | null; approverUsername?: string | null;
-  approvedBy?: string | null; processedBy?: string | null;
-  merchant?: string | null; business?: string | null;
-}): string => {
-  // Stamped by the review gate, and only ever for a merchant-side reviewer.
-  const stamped = String(row.approverFullName || '').trim()
-    || String(row.approverUsername || '').trim();
-  if (stamped) return stamped;
+}): string =>
+  String(row.approverFullName || '').trim() || String(row.approverUsername || '').trim();
 
-  // Nothing stamped — this row predates the field. `approvedBy` often still holds the right
-  // person (it is what the column showed before), so it is used, but ONLY once the three ways it
-  // is known to hold something else are ruled out. Dropping it outright would throw away a
-  // correct name on every historical row; trusting it blindly is what produced
-  // "System (Auto Allocation) (Manager)" and the Admin appearing in both columns.
-  const legacy = String(row.approvedBy || '').trim();
-  if (!legacy) return '';
-  if (SYSTEM_ACTORS.has(legacy.toLowerCase())) return '';            // the allocation engine
-  if (legacy.toLowerCase() === String(row.processedBy || '').trim().toLowerCase()) return '';
-  const businessName = String(row.merchant || row.business || '').trim().toLowerCase();
-  if (businessName && legacy.toLowerCase() === businessName) return '';  // the business, not a person
-  return legacy;
-};
+// There is deliberately NO fallback to `approvedBy`. It was tried, and production settled it:
+// of 306 transactions, the fallback supplied an ADMIN's name on 100 rows and a legitimate one on
+// ZERO. Admins appear there because the account-send and card-link steps write `approved_by`, and
+// the guard that skipped them — "same as the Admin in the next column" — misses every row whose
+// `processed_by` is empty. A column whose whole purpose is to name the MERCHANT'S approver is
+// worse than useless when it names an Admin instead, so a row with no recorded merchant approver
+// shows the ROLE alone. That is true, and it is never the wrong person.
 
 // "Name (Role)" for that person, for INTERNAL screens entitled to see it. Falls back to the role
 // alone — never to a business or an Admin name.
