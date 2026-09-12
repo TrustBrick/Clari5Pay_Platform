@@ -719,7 +719,7 @@ export const AdminTransactionsPage: React.FC = () => {
           <TxExportButton txns={filtered} fetchTxns={exportRows} title="All Transactions" internal />
         </div>
       </div>
-      <TxTable loading={loading} txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>
+      <TxTable loading={loading} txns={filtered} actionMode="admin" viewerRole="ADMIN" internal onAction={(t)=>setActive(t)}/>
       <Pager page={page} pageSize={pageSize} total={total} totalPages={totalPages} loading={loading}
         onPage={setPage} onPageSize={n=>{ setPageSize(n); setPage(1); }}/>
       {active && <RequestModal tx={active} canAct onClose={()=>setActive(null)} onDone={()=>reload()}/>}
