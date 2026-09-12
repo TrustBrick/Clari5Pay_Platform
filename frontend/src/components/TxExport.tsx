@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { T } from '../utils/theme';
-import { fmt, memberLabel, formatDateTime, merchantApproverLabel } from '../utils/helpers';
+import { fmt, memberLabel, formatDateTime } from '../utils/helpers';
 import { exportTransactionsXlsx, txnTypeLabel } from '../utils/xlsx';
 import { Btn, Sel } from './UI';
 import { Icon } from './Icon';
@@ -10,10 +10,10 @@ import type { Transaction } from '../types';
 const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
 const prettyStatus = (s: string) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-// `internal` (Admin-side only) adds two approver columns — the business approver WITH the
-// person's name, and the Clari5Pay admin who finalised the transaction — plus a footer marking
-// the document not-for-merchant. Default false: the merchant's own exports are unchanged, which
-// is the whole point of clientApproverLabel (see helpers.ts).
+// `internal` (Admin-side only) adds the approver column — the Clari5Pay admin who finalised the
+// transaction — plus a footer marking the document not-for-merchant. Default false: the
+// merchant's own exports are unchanged, which is the whole point of clientApproverLabel (see
+// helpers.ts).
 export function exportTransactionsPdf(rows: Transaction[], title: string, subtitle: string, internal = false) {
   const w = window.open('', '_blank', 'width=1000,height=800');
   if (!w) { alert('Please allow pop-ups for this site to export the PDF.'); return; }
@@ -26,8 +26,7 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <td>${esc(prettyStatus(t.status))}</td>
     <td class="nowrap">${esc(t.date)} ${esc(t.time)}</td>
     <td class="mono">${esc(t.adminUtr || t.utr || t.merchantRef)}</td>
-    ${internal ? `<td>${esc(merchantApproverLabel(t) || '—')}</td>
-    <td>${esc((t.processedBy || '').trim() || '—')}</td>` : ''}
+    ${internal ? `<td>${esc((t.processedBy || '').trim() || '—')}</td>` : ''}
     <td>${esc(t.cancelReason ? `Cancelled: ${t.cancelReason}` : (t.rejectReason || t.notes))}</td>
   </tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
@@ -63,11 +62,11 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <table>
       <thead><tr>
         <th>Reference No.</th><th>Membership - Member</th><th>Type</th>
-        <th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>UTR</th>${internal ? '<th>Approved By</th><th>Approved By (Admin)</th>' : ''}<th>Remarks</th>
+        <th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>UTR</th>${internal ? '<th>Approved By (Admin)</th>' : ''}<th>Remarks</th>
       </tr></thead>
-      <tbody>${body || `<tr><td class="empty" colspan="${internal ? 10 : 8}">No transactions for this selection.</td></tr>`}</tbody>
+      <tbody>${body || `<tr><td class="empty" colspan="${internal ? 9 : 8}">No transactions for this selection.</td></tr>`}</tbody>
     </table>
-    <footer>Clari5Pay — confidential. This report was generated from live platform data.${internal ? '<br>INTERNAL: the approver columns name Clari5Pay staff. Do not share this document with a merchant.' : ''}</footer>
+    <footer>Clari5Pay — confidential. This report was generated from live platform data.${internal ? '<br>INTERNAL: the approver column names Clari5Pay staff. Do not share this document with a merchant.' : ''}</footer>
   </body></html>`);
   w.document.close();
   w.focus();

@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { typeLabel, depositTypeLabel, memberLabel, merchantApproverLabel } from './helpers';
+import { typeLabel, depositTypeLabel, memberLabel } from './helpers';
 import type { Transaction } from '../types';
 
 // ─── Shared client-side Excel (.xlsx) export — SheetJS, no server round-trip ──────
@@ -85,7 +85,6 @@ export const txnsToSheet = (rows: Transaction[], name = 'Transactions', internal
     { header: 'Created By', get: t => t.merchant || '' },
     { header: 'UTR / Reference', get: t => t.adminUtr || t.utr || t.merchantRef || '' },
     ...(internal ? [
-      { header: 'Approved By', get: (t: Transaction) => { const v = merchantApproverLabel(t); return v === '—' ? '' : v; }, width: 26 },
       { header: 'Approved By (Admin)', get: (t: Transaction) => (t.processedBy || '').trim(), width: 22 },
     ] : []),
     { header: 'Remarks', get: t => t.cancelReason ? `Cancelled: ${t.cancelReason}` : (t.rejectReason || t.notes || '') },
