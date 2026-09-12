@@ -36,7 +36,19 @@ const entityLabel = (r: ReportRow) =>
     ? (r.business || memberLabel(r.memberId, r.member))
     : memberLabel(r.memberId, r.member);
 
-const exportRowsXlsx = (rows: ReportRow[], filename: string) => {
+/** The internal Clari5Pay staffer who FINALISED the transaction — the answer to "which admin
+ *  approved this one". Deliberately reads `processedBy`, never `approvedBy`: the backend writes
+ *  `approved_by = approved_by or actor.name` (first writer wins), so on a request that went
+ *  through the merchant's own review gate it holds THEIR Supervisor/Manager, not the admin.
+ *  `processed_by` is set only by the Admin's Approve / Mark as Done (and the Super Admin's
+ *  complete), so it names the platform-side actor every time.
+ *
+ *  ADMIN-SIDE ONLY. The merchant view must keep showing the role via clientApproverLabel — see
+ *  the rule at the top of helpers.ts. Every caller below is gated on `internalView`. */
+const adminApproverCell = (r: ReportRow): string => (r.processedBy || '').trim() || '—';
+
+// `internal` adds the admin-approver column. Off for the merchant's own Reports page.
+const exportRowsXlsx = (rows: ReportRow[], filename: string, internal = false) => {
   downloadXlsx(filename, [{
     name: 'Transactions',
     columns: [
@@ -46,6 +58,7 @@ const exportRowsXlsx = (rows: ReportRow[], filename: string) => {
       { header: 'Amount (INR)', get: r => Number(r.amount), width: 14, z: INR_NUMFMT },
       { header: 'Status', get: r => prettyStatusR(r.status) },
       { header: 'Date & Time', get: r => `${r.date || ''} ${r.time || ''}`.trim(), width: 20 },
+      ...(internal ? [{ header: 'Approved By (Admin)', get: (r: ReportRow) => (r.processedBy || '').trim(), width: 22 }] : []),
       { header: 'Cancellation Reason', get: r => r.cancelReason || '' },
     ],
     rows,
@@ -591,13 +604,17 @@ const totalsOf = (rows: ReportRow[]) => {
 };
 
 // ── Filter-aware report export (Download PDF / Print) — includes the filtered table ──
-function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName: string, generatedBy: string, rangeLabel: string, autoPrint = true) {
+// `internal` (Admin / Super Admin Reports) adds an "Approved By (Admin)" column naming the
+// platform-side approver. The merchant's own export never passes it — it keeps the role-only
+// "Approved By" column, which is the whole point of clientApproverLabel.
+function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName: string, generatedBy: string, rangeLabel: string, autoPrint = true, internal = false) {
   const w = window.open('', '_blank', 'width=1180,height=820');
   if (!w) { alert('Please allow pop-ups to export the report.'); return; }
   const c = data.cards; const now = formatDateTimeExport(new Date()); const tot = totalsOf(rows);
   const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
   const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
-  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '—')}</td></tr>`).join('');
+  const cols = internal ? 10 : 9;
+  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '—')}</td>${internal ? `<td>${esc(adminApproverCell(r))}</td>` : ''}</tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay Report</title><style>
     @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
     .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0052cc;padding-bottom:10px}
@@ -614,11 +631,11 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
       ${kpi('Total Deposits', fmt(c.totalDepositAmount))}${kpi('Total Withdrawals', fmt(c.totalWithdrawalAmount))}${kpi('Total Settlements', fmt(c.totalSettlementAmount))}
       ${kpi('Available Balance', fmt(c.availableBalance))}</div>
     <h2>Transactions (filtered)</h2>
-    <table><thead><tr><th>Reference</th><th>Recipient</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th></tr></thead>
-      <tbody>${body || '<tr><td colspan="9" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>'}</tbody>
-      <tfoot><tr><td colspan="3">Footer Totals (filtered)</td><td class="amt">Dep ${esc(fmt(tot.deposits))}</td><td colspan="2">Wd ${esc(fmt(tot.withdrawals))}</td><td colspan="2">Set ${esc(fmt(tot.settlements))}</td><td>Available ${esc(fmt(c.availableBalance))}</td></tr></tfoot>
+    <table><thead><tr><th>Reference</th><th>Recipient</th><th>Type</th><th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>Payment Method</th><th style="text-align:right">Avail. Balance</th><th>Approved By</th>${internal ? '<th>Approved By (Admin)</th>' : ''}</tr></thead>
+      <tbody>${body || `<tr><td colspan="${cols}" style="text-align:center;padding:24px;color:#9ca3af">No transactions match the selected filters.</td></tr>`}</tbody>
+      <tfoot><tr><td colspan="${internal ? 4 : 3}">Footer Totals (filtered)</td><td class="amt">Dep ${esc(fmt(tot.deposits))}</td><td colspan="2">Wd ${esc(fmt(tot.withdrawals))}</td><td colspan="2">Set ${esc(fmt(tot.settlements))}</td><td>Available ${esc(fmt(c.availableBalance))}</td></tr></tfoot>
     </table>
-    <footer>Clari5Pay — confidential. Generated from live platform data, honouring the selected filters.</footer>
+    <footer>Clari5Pay — confidential. Generated from live platform data, honouring the selected filters.${internal ? '<br>INTERNAL: the "Approved By (Admin)" column names Clari5Pay staff. Do not share this document with a merchant.' : ''}</footer>
   </body></html>`);
   w.document.close(); w.focus();
   if (autoPrint) setTimeout(() => { try { w.print(); } catch { /* manual */ } }, 500);
@@ -967,13 +984,18 @@ interface ReportsViewProps {
   subtitle?: string;
   merchantSelector?: React.ReactNode;   // admin: scope dropdown rendered in the header
   showBusinessFilter?: boolean;         // admin all-merchants: enables the Business Name filter
+  // Admin / Super Admin view. Adds the "Approved By (Admin)" column — the internal Clari5Pay
+  // staffer who finalised each transaction — to the table, the PDF and the Excel export. Never
+  // set by the merchant's own Reports page: that view shows the approval ROLE and nothing more.
+  // Distinct from showBusinessFilter, which is off as soon as an admin scopes to one merchant.
+  internalView?: boolean;
   // Crypto Balance module (demo-only) — the SAME crypto* figures the dashboard/balance page
   // read (compute_balance / compute_global_summary), so the Crypto tab's cards match everywhere.
   cryptoSummary?: CryptoSummaryFigures | null;
 }
 
 const ReportsView: React.FC<ReportsViewProps> = ({
-  data, reload, businessName, generatedBy, subtitle, merchantSelector, showBusinessFilter, cryptoSummary,
+  data, reload, businessName, generatedBy, subtitle, merchantSelector, showBusinessFilter, cryptoSummary, internalView = false,
 }) => {
   const [profileId, setProfileId] = useState<string | null>(null);
   // Top-level Business / Crypto switch (demo-only). Business is the default and every existing
@@ -1076,7 +1098,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
     <div><span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block' }}>{label}</span><span style={{ fontSize: 13, fontWeight: 700, color: T.textMain }}>{value}</span></div>
   );
 
-  const downloadExcel = () => { exportRowsXlsx(filtered, `clari5pay-report-${today()}.xlsx`); toast.showToast(`Excel — ${filtered.length} rows`); };
+  const downloadExcel = () => { exportRowsXlsx(filtered, `clari5pay-report-${today()}.xlsx`, internalView); toast.showToast(`Excel — ${filtered.length} rows`); };
 
   return (
     <div>
@@ -1088,9 +1110,9 @@ const ReportsView: React.FC<ReportsViewProps> = ({
         </div>
         {merchantSelector}
         {reportType === 'full' && <>
-          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}><Icon name="pdf" size={14} /> Download PDF</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true, internalView)}><Icon name="pdf" size={14} /> Download PDF</Btn>
           <Btn size="sm" variant="secondary" onClick={downloadExcel}><Icon name="excel" size={14} /> Download Excel</Btn>
-          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true)}><Icon name="print" size={14} /> Print Report</Btn>
+          <Btn size="sm" variant="secondary" onClick={() => exportFilteredReport(data, filtered, businessName, generatedBy, rangeLabel, true, internalView)}><Icon name="print" size={14} /> Print Report</Btn>
         </>}
       </div>
 
@@ -1185,11 +1207,11 @@ const ReportsView: React.FC<ReportsViewProps> = ({
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: T.canvas }}>
-                {['Reference Number', 'Recipient', 'Transaction Type', 'Amount', 'Status', 'Date & Time', 'Payment Method', 'Available Balance', 'Approved By'].map(h => <th key={h} style={thR}>{h}</th>)}
+                {['Reference Number', 'Recipient', 'Transaction Type', 'Amount', 'Status', 'Date & Time', 'Payment Method', 'Available Balance', 'Approved By', ...(internalView ? ['Approved By (Admin)'] : [])].map(h => <th key={h} style={thR}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={9} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No transactions match the selected filters.</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={internalView ? 10 : 9} style={{ ...tdR, textAlign: 'center', color: T.textMuted }}>No transactions match the selected filters.</td></tr>}
               {filtered.slice(0, 500).map(r => (
                 <tr key={r.ref} className="c5-row-hover" style={{ cursor: r.memberId ? 'pointer' : 'default' }} onClick={() => r.memberId && setProfileId(r.memberId)}>
                   <td style={{ ...tdR, fontFamily: 'monospace', fontWeight: 700, color: T.blue }}>{r.ref}</td>
@@ -1201,6 +1223,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
                   <td style={tdR}>{r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—'}</td>
                   <td style={{ ...tdR, textAlign: 'right', color: T.textMuted }}>{r.availableBalance != null ? fmt(r.availableBalance) : '—'}</td>
                   <td style={{ ...tdR, color: T.textMuted }}>{approverCell(r)}</td>
+                  {internalView && <td style={{ ...tdR, fontWeight: 600 }}>{adminApproverCell(r)}</td>}
                 </tr>
               ))}
             </tbody>
@@ -1296,12 +1319,15 @@ export const AdminReportsPage: React.FC<{ user: User }> = ({ user }) => {
     <Sel label="Merchant" value={merchant} onChange={e => setMerchant(e.target.value)} style={{ marginBottom: 0, minWidth: 220 }}
       options={[{ value: '', label: 'All Merchants' }, ...businesses.map(b => ({ value: b, label: b }))]} />
   );
+  // `internalView`: Admin + Super Admin are the only roles routed here (admin-reports / sa-reports),
+  // so the internal approver column is on for the whole page — whether scoped to one merchant or all.
   return (
     <ReportsView
       data={data} reload={reload}
       businessName={merchant || 'All Merchants'} generatedBy={user.name}
       subtitle="System-wide financial intelligence — all merchants, transactions and reports."
       merchantSelector={selector} showBusinessFilter={!merchant} cryptoSummary={cryptoSummary}
+      internalView
     />
   );
 };
