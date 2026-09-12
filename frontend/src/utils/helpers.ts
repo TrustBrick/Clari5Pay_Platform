@@ -69,6 +69,46 @@ export const internalApproverLabel = (
   return role && role !== '—' ? `${person} (${role})` : person;
 };
 
+// The approver ON THE MERCHANT'S SIDE — the Supervisor or Manager in the client's own workflow
+// who actually approved the request.
+//
+// It deliberately does NOT read `approvedBy`. That column is written by whoever last touched the
+// request, and three of the five writers are not the merchant's approver: the Admin's
+// account-send and card-link steps both overwrite it with the ADMIN's name unconditionally, and
+// deposit auto-allocation writes "System (Auto Allocation)". The role suffix, meanwhile, comes
+// from `approverRole`, which IS the merchant reviewer's role — so the two halves came from
+// different sources and paired into nonsense like "System (Auto Allocation) (Manager)", or
+// repeated the Admin's name in both the Approved By and Approved By (Admin) columns.
+//
+// `supervisorName` / `managerName` are stamped only by the merchant review gate and are never
+// overwritten, so they are the trustworthy source. `approverName` (the chosen Authorized
+// Approver under "Send To Approval") is the fallback: it records who the request was addressed
+// to when no review name was stamped.
+export const merchantApproverName = (row: {
+  approverRole?: string | null; supervisorName?: string | null;
+  managerName?: string | null; approverName?: string | null;
+}): string => {
+  const role = String(row.approverRole || '').toUpperCase();
+  const supervisor = String(row.supervisorName || '').trim();
+  const manager = String(row.managerName || '').trim();
+  const addressed = String(row.approverName || '').trim();
+  // Prefer the name stamped by the gate the recorded role names; a withdrawal is Manager-only and
+  // a deposit may be either, so trusting the role beats guessing from the transaction type.
+  if (role === 'MANAGER') return manager || addressed;
+  if (role === 'SUPERVISOR') return supervisor || addressed;
+  return manager || supervisor || addressed;
+};
+
+// "Name (Role)" for the merchant's approver, for INTERNAL screens that are entitled to the name.
+// Falls back to the role alone when no merchant name was stamped — which is the correct reading of
+// a row an Admin or the allocation engine moved: the merchant's workflow recorded no approver, so
+// naming the Admin here would be wrong rather than merely unhelpful. The Admin is shown in its own
+// "Approved By (Admin)" column, sourced from `processedBy`.
+export const merchantApproverLabel = (row: {
+  type?: string | null; approverRole?: string | null; supervisorName?: string | null;
+  managerName?: string | null; approverName?: string | null;
+}): string => internalApproverLabel(merchantApproverName(row), row.type, row.approverRole);
+
 // Roles that belong to Clari5Pay, not to the client. Their real names/usernames are recorded in
 // the internal audit log and shown on internal/admin screens, but never surfaced to the client —
 // a client-facing row attributed to one of these shows the role alone. That an Admin acted is

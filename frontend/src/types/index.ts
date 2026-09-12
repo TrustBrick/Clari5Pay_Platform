@@ -834,6 +834,11 @@ export interface ReportRow {
   paymentMethod?: string | null;
   approvedBy?: string | null;
   approverRole?: string | null;   // real role of the approver — never assume one from the type
+  // The merchant's own review gate stamps these and nothing else overwrites them, so they — not
+  // approvedBy — are what the Approved By column reads. See merchantApproverName().
+  supervisorName?: string | null;
+  managerName?: string | null;
+  approverName?: string | null;
   processedBy?: string | null;
   operator?: string | null;       // logged-in operator who performed (created) the transaction
   operatorRole?: string | null;   // that operator's role (e.g. DEPOSIT_OPERATOR)

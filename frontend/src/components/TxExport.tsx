@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { T } from '../utils/theme';
-import { fmt, memberLabel, formatDateTime, formatDateTimeExport, internalApproverLabel } from '../utils/helpers';
+import { fmt, memberLabel, formatDateTime, formatDateTimeExport, merchantApproverLabel } from '../utils/helpers';
 import { exportTransactionsXlsx, txnTypeLabel } from '../utils/xlsx';
 import { Btn, Sel } from './UI';
 import { Icon } from './Icon';
@@ -26,7 +26,7 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <td>${esc(prettyStatus(t.status))}</td>
     <td class="nowrap">${esc(t.date)} ${esc(t.time)}</td>
     <td class="mono">${esc(t.adminUtr || t.utr || t.merchantRef)}</td>
-    ${internal ? `<td>${esc((t.approvedBy || '').trim() ? internalApproverLabel(t.approvedBy, t.type, t.approverRole) : '—')}</td>
+    ${internal ? `<td>${esc(merchantApproverLabel(t) || '—')}</td>
     <td>${esc((t.processedBy || '').trim() || '—')}</td>` : ''}
     <td>${esc(t.cancelReason ? `Cancelled: ${t.cancelReason}` : (t.rejectReason || t.notes))}</td>
   </tr>`).join('');
