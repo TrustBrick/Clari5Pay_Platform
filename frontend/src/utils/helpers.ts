@@ -54,6 +54,21 @@ export const clientApproverLabel = (type?: string | null, approverRole?: string 
   return '—';
 };
 
+// INTERNAL-ONLY counterpart to clientApproverLabel, for Admin / Super Admin screens which ARE
+// entitled to see the person. Shows "Name (Role)" — the role still resolved by
+// clientApproverLabel, so the internal and client views can never disagree about WHICH role
+// acted; this only ADDS the name the client view withholds.
+// Falls back to the role alone when no name was recorded, so a row never reads worse than before.
+// NEVER call this from a client-facing view — that is exactly what clientApproverLabel is for.
+export const internalApproverLabel = (
+  approvedBy?: string | null, type?: string | null, approverRole?: string | null,
+): string => {
+  const person = String(approvedBy || '').trim();
+  const role = clientApproverLabel(type, approverRole);
+  if (!person) return role;
+  return role && role !== '—' ? `${person} (${role})` : person;
+};
+
 // Roles that belong to Clari5Pay, not to the client. Their real names/usernames are recorded in
 // the internal audit log and shown on internal/admin screens, but never surfaced to the client —
 // a client-facing row attributed to one of these shows the role alone. That an Admin acted is

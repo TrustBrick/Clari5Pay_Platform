@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel, clientApproverLabel, formatIndianAmountInput, parseIndianAmount, formatDateTime, formatIstParts } from '../utils/helpers';
+import { fmt, today, depositTypeLabel, memberLabel, merchantRoleLabel, clientApproverLabel, internalApproverLabel, formatIndianAmountInput, parseIndianAmount, formatDateTime, formatIstParts } from '../utils/helpers';
 import { downloadXlsx, INR_NUMFMT } from '../utils/xlsx';
 import { Card, StatCard, Btn, Input, Sel, Modal, CountUp, Skeleton } from '../components/UI';
 import { Icon, type IconName } from '../components/Icon';
@@ -46,6 +46,15 @@ const entityLabel = (r: ReportRow) =>
  *  ADMIN-SIDE ONLY. The merchant view must keep showing the role via clientApproverLabel — see
  *  the rule at the top of helpers.ts. Every caller below is gated on `internalView`. */
 const adminApproverCell = (r: ReportRow): string => (r.processedBy || '').trim() || '—';
+
+// The business approver. `internal` (Admin / Super Admin) shows "Name (Role)"; the client keeps
+// seeing the ROLE alone, which is the rule clientApproverLabel exists to enforce. Gated on the
+// row actually having been approved, so a pending row still reads '—' in both views.
+const approverCell = (r: ReportRow, internal = false): string => (
+  r.approvedBy
+    ? (internal ? internalApproverLabel(r.approvedBy, r.type, r.approverRole) : clientApproverLabel(r.type, r.approverRole))
+    : '—'
+);
 
 // `internal` adds the admin-approver column. Off for the merchant's own Reports page.
 const exportRowsXlsx = (rows: ReportRow[], filename: string, internal = false) => {
@@ -583,14 +592,15 @@ const inDateWindow = (r: ReportRow, preset: string, from: string, to: string, fr
   if (preset === 'yesterday') return ts >= start.getTime() - day && ts < start.getTime();
   return true;
 };
-const matchesFilters = (r: ReportRow, f: RFilters): boolean => {
+const matchesFilters = (r: ReportRow, f: RFilters, internal = false): boolean => {
   const inc = (v: string | null | undefined, q: string) => !q || (v || '').toLowerCase().includes(q.toLowerCase());
   return inc(r.ref, f.ref) && inc(r.memberId, f.memberId) && inc(r.member, f.memberName)
     && inc(r.business, f.business)
     && (!f.combined || entityLabel(r).toLowerCase().includes(f.combined.toLowerCase()))
-    // Approver matches the role the client actually sees (Supervisor / Manager), not the internal
-    // admin name behind it — searching an internal name must never be able to identify rows.
-    && (!f.approvedBy || (r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '').toLowerCase().includes(f.approvedBy.toLowerCase()))
+    // Approver search matches exactly what this viewer is shown. For the client that is the role
+    // alone (Supervisor / Manager) — searching an internal name must never be able to identify
+    // rows. An internal viewer already sees the name in the column, so it must be searchable too.
+    && (!f.approvedBy || (r.approvedBy ? approverCell(r, internal) : '').toLowerCase().includes(f.approvedBy.toLowerCase()))
     && inc(r.agentCode, f.agentCode)
     && (!f.type || r.type === f.type) && (!f.status || r.status === f.status)
     && (!f.method || (r.paymentMethod || '').toUpperCase() === f.method) && (!f.riskLevel || (r.riskLevel || '') === f.riskLevel)
@@ -614,7 +624,7 @@ function exportFilteredReport(data: ReportData, rows: ReportRow[], businessName:
   const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
   const kpi = (l: string, v: string) => `<div class="kpi"><div class="kl">${l}</div><div class="kv">${v}</div></div>`;
   const cols = internal ? 10 : 9;
-  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '—')}</td>${internal ? `<td>${esc(adminApproverCell(r))}</td>` : ''}</tr>`).join('');
+  const body = rows.map((r, i) => `<tr class="${i % 2 ? 'alt' : ''}"><td class="mono">${esc(r.ref)}</td><td>${esc(entityLabel(r))}</td><td>${esc(rtypeLabel(r))}</td><td class="amt">${esc(fmt(r.amount))}</td><td>${esc(prettyStatusR(r.status))}</td><td class="nw">${esc(r.date)} ${esc(r.time)}</td><td>${esc(r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—')}</td><td class="amt">${r.availableBalance != null ? esc(fmt(r.availableBalance)) : '—'}</td><td>${esc(approverCell(r, internal))}</td>${internal ? `<td>${esc(adminApproverCell(r))}</td>` : ''}</tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Clari5Pay Report</title><style>
     @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Segoe UI',sans-serif;color:#0a2540;margin:0}
     .head{display:flex;align-items:center;gap:14px;border-bottom:3px solid #0052cc;padding-bottom:10px}
@@ -802,16 +812,13 @@ const operatorLabel = (r: ReportRow): string => {
   if (nm && role) return `${nm} (${role})`;
   return nm || '—';
 };
-// Approver shown to the client = their own approval hierarchy role, never the internal admin's
-// name. Gated on the row actually having been approved so pending rows still read '—'.
-const approverCell = (r: ReportRow): string => (r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '—');
-const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string }> =
-  ({ rows, businessName, generatedBy, rangeLabel }) => {
+const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; generatedBy: string; rangeLabel: string; internalView?: boolean }> =
+  ({ rows, businessName, generatedBy, rangeLabel, internalView = false }) => {
     const toast = useToast();
     const data = rows;   // all transactions honouring the advanced filters (incl. Status)
     const opCsv = (r: ReportRow) => ((r.operator || '').trim() ? operatorLabel(r) : '');
-    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', formatIstParts(r.date, r.time), prettyStatusR(r.status), r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '', opCsv(r), r.amount, methodLabel(r)]);
-    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', formatIstParts(r.date, r.time), prettyStatusR(r.status), approverCell(r), operatorLabel(r), fmt(r.amount), methodLabel(r)]);
+    const csvRows = data.map(r => [r.ref, r.member || '', r.memberId || '', formatIstParts(r.date, r.time), prettyStatusR(r.status), r.approvedBy ? approverCell(r, internalView) : '', opCsv(r), r.amount, methodLabel(r)]);
+    const pdfRows = data.map(r => [r.ref, r.member || '—', r.memberId || '—', formatIstParts(r.date, r.time), prettyStatusR(r.status), approverCell(r, internalView), operatorLabel(r), fmt(r.amount), methodLabel(r)]);
     const onExcel = () => {
       downloadXlsx(`clari5pay-treasury-${today()}.xlsx`, [{
         name: 'Treasury Report',
@@ -821,7 +828,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
           { header: 'Membership ID', get: r => r.memberId || '' },
           { header: 'Date & Time', get: r => formatIstParts(r.date, r.time), width: 20 },
           { header: 'Status', get: r => prettyStatusR(r.status) },
-          { header: 'Approver', get: r => (r.approvedBy ? clientApproverLabel(r.type, r.approverRole) : '') },
+          { header: 'Approver', get: r => (r.approvedBy ? approverCell(r, internalView) : '') },
           { header: 'Operator', get: r => ((r.operator || '').trim() ? operatorLabel(r) : '') },
           { header: 'Transaction Amount', get: r => Number(r.amount), width: 16, z: INR_NUMFMT },
           { header: 'Transaction Method', get: r => methodLabel(r) },
@@ -852,7 +859,7 @@ const TreasuryReport: React.FC<{ rows: ReportRow[]; businessName: string; genera
                     <td style={tdR}>{r.memberId || '—'}</td>
                     <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{formatIstParts(r.date, r.time)}</td>
                     <td style={tdR}>{prettyStatusR(r.status)}</td>
-                    <td style={tdR}>{approverCell(r)}</td>
+                    <td style={tdR}>{approverCell(r, internalView)}</td>
                     <td style={tdR}>{operatorLabel(r)}</td>
                     <td style={{ ...tdR, textAlign: 'right', fontWeight: 700 }}>{fmt(r.amount)}</td>
                     <td style={tdR}>{methodLabel(r)}</td>
@@ -1082,7 +1089,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
 
   const c = data.cards;
   const statuses = Array.from(new Set(data.transactions.map(r => r.status)));
-  const filtered = data.transactions.filter(r => matchesFilters(r, f));
+  const filtered = data.transactions.filter(r => matchesFilters(r, f, internalView));
   const tot = totalsOf(filtered);
   const rangeLabel = f.datePreset === 'custom'
     ? `${f.from || 'start'}${f.fromTime ? ' ' + fmtTime12(f.fromTime) : ''} → ${f.to || 'today'}${f.toTime ? ' ' + fmtTime12(f.toTime) : ''}`
@@ -1184,7 +1191,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
       </Card>
 
       {/* Focused report types (Treasury / Agent Ledger) — same filters, same exports */}
-      {reportType === 'treasury' && <TreasuryReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
+      {reportType === 'treasury' && <TreasuryReport rows={filtered} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} internalView={internalView} />}
       {reportType === 'ledger' && <AgentLedgerReport rows={filtered} allRows={data.transactions} businessName={businessName} generatedBy={generatedBy} rangeLabel={rangeLabel} />}
 
       {reportType === 'full' && <>
@@ -1222,7 +1229,7 @@ const ReportsView: React.FC<ReportsViewProps> = ({
                   <td style={{ ...tdR, whiteSpace: 'nowrap' }}>{formatIstParts(r.date, r.time)}</td>
                   <td style={tdR}>{r.paymentMethod ? depositTypeLabel(r.paymentMethod) : '—'}</td>
                   <td style={{ ...tdR, textAlign: 'right', color: T.textMuted }}>{r.availableBalance != null ? fmt(r.availableBalance) : '—'}</td>
-                  <td style={{ ...tdR, color: T.textMuted }}>{approverCell(r)}</td>
+                  <td style={{ ...tdR, color: T.textMuted }}>{approverCell(r, internalView)}</td>
                   {internalView && <td style={{ ...tdR, fontWeight: 600 }}>{adminApproverCell(r)}</td>}
                 </tr>
               ))}

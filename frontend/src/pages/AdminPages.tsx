@@ -1292,7 +1292,7 @@ export const AdminTransactionsPage: React.FC = () => {
           <select value={status} onChange={e=>setStatus(e.target.value)} style={{ padding:'8px 12px',border:`1.5px solid ${T.border}`,borderRadius:10,fontSize:12,outline:'none',fontFamily:'inherit' }}>
             {['ALL',...REQUEST_STATUSES].map(v=><option key={v} value={v}>{v==='ALL'?'All Statuses':typeLabel(v)}</option>)}
           </select>
-          <TxExportButton txns={filtered} fetchTxns={exportRows} title="All Transactions" />
+          <TxExportButton txns={filtered} fetchTxns={exportRows} title="All Transactions" internal />
         </div>
       </div>
       <TxTable loading={loading} txns={filtered} actionMode="admin" viewerRole="ADMIN" onAction={(t)=>setActive(t)}/>

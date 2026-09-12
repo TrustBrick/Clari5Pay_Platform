@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { typeLabel, depositTypeLabel, memberLabel } from './helpers';
+import { typeLabel, depositTypeLabel, memberLabel, internalApproverLabel } from './helpers';
 import type { Transaction } from '../types';
 
 // ─── Shared client-side Excel (.xlsx) export — SheetJS, no server round-trip ──────
@@ -69,7 +69,10 @@ export const txnTypeLabel = (t: Transaction): string => {
 };
 
 // Standard transaction columns used by the History / Member-Reports / Reports exports.
-export const txnsToSheet = (rows: Transaction[], name = 'Transactions'): SheetDef<Transaction> => ({
+// `internal` (Admin-side only) appends the two approver columns: the business approver WITH the
+// person's name, and the Clari5Pay admin who finalised it. Default false, so every existing
+// client-facing caller keeps exactly the columns it had.
+export const txnsToSheet = (rows: Transaction[], name = 'Transactions', internal = false): SheetDef<Transaction> => ({
   name,
   columns: [
     { header: 'Reference Number', get: t => t.ref },
@@ -81,11 +84,16 @@ export const txnsToSheet = (rows: Transaction[], name = 'Transactions'): SheetDe
     { header: 'Date & Time', get: t => `${t.date || ''} ${t.time || ''}`.trim(), width: 20 },
     { header: 'Created By', get: t => t.merchant || '' },
     { header: 'UTR / Reference', get: t => t.adminUtr || t.utr || t.merchantRef || '' },
+    ...(internal ? [
+      { header: 'Approved By', get: (t: Transaction) => (t.approvedBy || '').trim() ? internalApproverLabel(t.approvedBy, t.type, t.approverRole) : '', width: 26 },
+      { header: 'Approved By (Admin)', get: (t: Transaction) => (t.processedBy || '').trim(), width: 22 },
+    ] : []),
     { header: 'Remarks', get: t => t.cancelReason ? `Cancelled: ${t.cancelReason}` : (t.rejectReason || t.notes || '') },
   ],
   rows,
 });
 
-/** Convenience: export a list of transactions to a single-sheet workbook. */
-export const exportTransactionsXlsx = (rows: Transaction[], filename: string, sheetName = 'Transactions') =>
-  downloadXlsx(filename, [txnsToSheet(rows, sheetName)]);
+/** Convenience: export a list of transactions to a single-sheet workbook.
+ *  `internal` is Admin-side only — see txnsToSheet. */
+export const exportTransactionsXlsx = (rows: Transaction[], filename: string, sheetName = 'Transactions', internal = false) =>
+  downloadXlsx(filename, [txnsToSheet(rows, sheetName, internal)]);

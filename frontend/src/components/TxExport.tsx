@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { T } from '../utils/theme';
-import { fmt, memberLabel, formatDateTime } from '../utils/helpers';
+import { fmt, memberLabel, formatDateTime, internalApproverLabel } from '../utils/helpers';
 import { exportTransactionsXlsx, txnTypeLabel } from '../utils/xlsx';
 import { Btn, Sel } from './UI';
 import { Icon } from './Icon';
@@ -10,7 +10,11 @@ import type { Transaction } from '../types';
 const esc = (s: unknown) => String(s ?? '—').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
 const prettyStatus = (s: string) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-export function exportTransactionsPdf(rows: Transaction[], title: string, subtitle: string) {
+// `internal` (Admin-side only) adds two approver columns — the business approver WITH the
+// person's name, and the Clari5Pay admin who finalised the transaction — plus a footer marking
+// the document not-for-merchant. Default false: the merchant's own exports are unchanged, which
+// is the whole point of clientApproverLabel (see helpers.ts).
+export function exportTransactionsPdf(rows: Transaction[], title: string, subtitle: string, internal = false) {
   const w = window.open('', '_blank', 'width=1000,height=800');
   if (!w) { alert('Please allow pop-ups for this site to export the PDF.'); return; }
   const now = formatDateTime(new Date());
@@ -22,6 +26,8 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <td>${esc(prettyStatus(t.status))}</td>
     <td class="nowrap">${esc(t.date)} ${esc(t.time)}</td>
     <td class="mono">${esc(t.adminUtr || t.utr || t.merchantRef)}</td>
+    ${internal ? `<td>${esc((t.approvedBy || '').trim() ? internalApproverLabel(t.approvedBy, t.type, t.approverRole) : '—')}</td>
+    <td>${esc((t.processedBy || '').trim() || '—')}</td>` : ''}
     <td>${esc(t.cancelReason ? `Cancelled: ${t.cancelReason}` : (t.rejectReason || t.notes))}</td>
   </tr>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
@@ -57,11 +63,11 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
     <table>
       <thead><tr>
         <th>Reference No.</th><th>Membership - Member</th><th>Type</th>
-        <th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>UTR</th><th>Remarks</th>
+        <th style="text-align:right">Amount</th><th>Status</th><th>Date &amp; Time</th><th>UTR</th>${internal ? '<th>Approved By</th><th>Approved By (Admin)</th>' : ''}<th>Remarks</th>
       </tr></thead>
-      <tbody>${body || '<tr><td class="empty" colspan="8">No transactions for this selection.</td></tr>'}</tbody>
+      <tbody>${body || `<tr><td class="empty" colspan="${internal ? 10 : 8}">No transactions for this selection.</td></tr>`}</tbody>
     </table>
-    <footer>Clari5Pay — confidential. This report was generated from live platform data.</footer>
+    <footer>Clari5Pay — confidential. This report was generated from live platform data.${internal ? '<br>INTERNAL: the approver columns name Clari5Pay staff. Do not share this document with a merchant.' : ''}</footer>
   </body></html>`);
   w.document.close();
   w.focus();
@@ -76,7 +82,10 @@ export function exportTransactionsPdf(rows: Transaction[], title: string, subtit
  */
 export const TxExportButton: React.FC<{
   txns: Transaction[]; title?: string; fetchTxns?: () => Promise<Transaction[]>;
-}> = ({ txns, title = 'Transaction Report', fetchTxns }) => {
+  /** Admin-side only. Adds the approver columns naming Clari5Pay staff to BOTH exports.
+   *  Never set it on a merchant-facing page — see exportTransactionsPdf. */
+  internal?: boolean;
+}> = ({ txns, title = 'Transaction Report', fetchTxns, internal = false }) => {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<'last' | 'range'>('last');
   const [lastN, setLastN] = useState('50');
@@ -99,7 +108,7 @@ export const TxExportButton: React.FC<{
   const runPdf = async () => {
     if (busy) return;
     setBusy(true);
-    try { const { rows, subtitle } = await selected(); exportTransactionsPdf(rows, title, subtitle); setOpen(false); }
+    try { const { rows, subtitle } = await selected(); exportTransactionsPdf(rows, title, subtitle, internal); setOpen(false); }
     finally { setBusy(false); }
   };
   const runExcel = async () => {
@@ -107,7 +116,7 @@ export const TxExportButton: React.FC<{
     setBusy(true);
     try {
       const { rows, scope } = await selected();
-      exportTransactionsXlsx(rows, `${title.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${scope}.xlsx`, title.slice(0, 31));
+      exportTransactionsXlsx(rows, `${title.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${scope}.xlsx`, title.slice(0, 31), internal);
       setOpen(false);
     } finally { setBusy(false); }
   };
