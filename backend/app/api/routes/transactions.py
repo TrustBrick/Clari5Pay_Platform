@@ -21,7 +21,7 @@ from app.services import tg_notify as tgn
 from app.services import account_ledger as ledger
 from app.services import deposit_allocation as alloc
 from app.services import cdm
-from app.services import account_payment_image
+from app.services import account_details_image
 from app.services import member_account as macct
 from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cached_json
@@ -333,12 +333,36 @@ async def _add_merchant_proofs(db: AsyncSession, tx: Transaction, new: list[str]
     tx.merchant_proof = _parse_proofs(tx.merchant_proofs)[0]
 
 
-# A deposit's payment image comes from its receiving account (Account Management), never from the
-# deposit itself. Historical rows keep whatever admin_proof / admin_bank_image they were sent with.
+# A deposit's Account Details Image comes from its receiving account (Account Management), never
+# from the deposit itself. Historical rows keep whatever admin_proof / admin_bank_image they were
+# sent with.
 PER_DEPOSIT_IMAGE_RETIRED_MSG = (
-    "Images are no longer uploaded per deposit. The payment image is configured once on the "
+    "Images are no longer uploaded per deposit. The Account Details Image is uploaded once on the "
     "receiving account in Account Management and is shown to the merchant automatically. "
-    "Reload the page and send the account again.")
+    "Reload the page and assign the account again.")
+# ...and for an account-backed deposit the image IS the account details: no text version is sent.
+ACCOUNT_TEXT_RETIRED_MSG = (
+    "Account details are no longer sent as text. Select the receiving account only; the merchant "
+    "receives that account's Account Details Image. Reload the page and assign the account again.")
+
+
+def _with_admin_account_record(tx: Transaction, payload: dict) -> dict:
+    """Put back the account-details text an ADMIN needs, on a payload ``_t`` has withheld it from.
+
+    ``_t`` withholds the receiving account's text from EVERY payload, because the merchant side
+    must never receive it: for these deposits the Account Details Image is the account details.
+    An Admin is internal staff, and which account a deposit was sent to — with what was snapshotted
+    at the time — is their own record of the assignment. Every caller below is already Admin-only,
+    which is the whole of the authorization this needs.
+
+    A no-op for deposits that do not use an Account Details Image: their text was never withheld.
+    """
+    if not account_details_image.uses_account_details_image(tx):
+        return payload
+    payload["adminBankDetails"] = tx.admin_bank_details
+    payload["adminUpiId"] = tx.admin_upi_id
+    payload["allocationSnapshot"] = json.loads(tx.allocation_snapshot) if tx.allocation_snapshot else None
+    return payload
 
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
@@ -957,14 +981,23 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "adminBankImage": storage.resolve_value(t.admin_bank_image) if full else None,  # heavy — detail fetch only (deferred)
         "hasAdminBankImage": bool(t.has_admin_bank_image),        # cheap IS NOT NULL flag — never loads the blob
         "adminRef": t.admin_ref,
-        "adminBankDetails": t.admin_bank_details,
-        "adminUpiId": t.admin_upi_id,
+        # Account-details TEXT for the receiving account. For a deposit that uses an Account Details
+        # Image the merchant side receives none of it — the image is the account details — so these
+        # are None in every payload built here, lists included. Only an Admin's detail view adds the
+        # internal record back (get_transaction_detail). Cash / Crypto / Card / CDM are unchanged.
+        "adminBankDetails": (None if account_details_image.uses_account_details_image(t)
+                             else t.admin_bank_details),
+        "adminUpiId": None if account_details_image.uses_account_details_image(t) else t.admin_upi_id,
         # The receiving account the allocation engine selected, exactly as it stood when it was
         # sent: bank, account name, number, IFSC, branch and account type (a UPI allocation carries
         # the UPI ID instead of the bank details). Snapshotted on the row, so this costs no query
         # and a later edit to the account cannot rewrite what a past deposit was told to pay.
-        # NULL on every manually-sent and historical row, which keeps their rendering unchanged.
-        "allocationSnapshot": json.loads(t.allocation_snapshot) if t.allocation_snapshot else None,
+        # NULL on every manually-sent and historical row. Withheld for a deposit that uses an
+        # Account Details Image, exactly like the text fields above — it is the Admin's record.
+        "allocationSnapshot": (json.loads(t.allocation_snapshot)
+                               if t.allocation_snapshot
+                               and not account_details_image.uses_account_details_image(t)
+                               else None),
         # CARD deposits: the payment gateway link the Admin submitted. Carried by the same
         # already-authorized payloads as every other field here (own transactions, oversight roles
         # and admins), so it is never exposed more widely than the request it belongs to.
@@ -1732,11 +1765,16 @@ async def get_transaction_detail(
     payload = await _with_payout_legs(
         db, tx, unmask=current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN))
     payload.update({k: v for k, v in _t(tx, full=True).items() if k not in payload})
-    # The payment image configured on the receiving account THIS deposit was routed to, resolved
-    # from the deposit's own admin_ref — never copied onto the row, and never looked up by an
-    # account the viewer names. The viewer was authorized for this transaction just above, which
+    # The Account Details Image uploaded on the receiving account THIS deposit was routed to,
+    # resolved from the deposit's own admin_ref — never copied onto the row, and never looked up by
+    # an account the viewer names. The viewer was authorized for this transaction just above, which
     # is the only authorization the image needs: it can only ever be this deposit's own account.
-    payload["accountPaymentImage"] = await account_payment_image.for_transaction(db, tx)
+    payload["accountDetailsImage"] = await account_details_image.for_transaction(db, tx)
+    # The account-details text withheld from every payload (see _t) is the Admin's internal record
+    # of the assignment, so an Admin's own detail view carries it. No merchant-side role does —
+    # owners, Supervisors and Managers alike receive the image only.
+    if current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        _with_admin_account_record(tx, payload)
     # Enrich with the creating merchant's risk level for the details view (not stored on the row).
     creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
     payload["riskLevel"] = (creator.risk.value if creator and creator.risk else None)
@@ -2699,26 +2737,6 @@ async def list_approvers(
 AUTO_ALLOCATION_ACTOR = "System (Auto Allocation)"
 
 
-def _account_summary(snapshot: dict) -> str:
-    """The bank-details text sent to the merchant, in the platform's established field order.
-
-    Mirrors the summary the Admin's send builds in the browser, plus the Account Type the
-    automatic card carries. A UPI allocation has no bank details to print (the merchant pays a UPI
-    ID) and yields an empty string, which the caller stores as NULL — the same thing the manual
-    UPI send does.
-    """
-    if snapshot.get("upiId"):
-        return ""
-    return "\n".join([
-        f"Account Name: {snapshot.get('accountName') or '—'}",
-        f"Bank: {snapshot.get('bankName') or '—'}",
-        f"A/C: {snapshot.get('accountNumber') or '—'}",
-        f"IFSC: {snapshot.get('ifsc') or '—'}",
-        f"Branch: {snapshot.get('branch') or '—'}",
-        f"Account Type: {snapshot.get('accountType') or '—'}",
-    ])
-
-
 async def _sender_account_facts(
     db: AsyncSession, tx: Transaction, merchant: Optional[User] = None,
 ) -> tuple[Optional[str], Optional[int]]:
@@ -2861,12 +2879,13 @@ async def _auto_allocate_deposit_account(
     tx.allocation_snapshot = json.dumps(snapshot)
     tx.admin_ref = acc.reference_number
     if result.upi_id:
-        # A UPI deposit is paid to the account's linked UPI; the deposit still credits the parent
-        # account, so bank + UPI traffic rolls up together exactly as the manual UPI send does.
+        # A UPI deposit is routed to the account's linked UPI (recorded for the Admin); the deposit
+        # still credits the parent account, so bank + UPI traffic rolls up together exactly as the
+        # manual UPI send does.
         tx.admin_upi_id = result.upi_id
-        tx.admin_bank_details = None
-    else:
-        tx.admin_bank_details = _account_summary(snapshot)
+    # No account-details text is written for the merchant: they receive this account's Account
+    # Details Image, resolved from admin_ref, and nothing is reconstructed from the account record.
+    tx.admin_bank_details = None
     tx.status = TxStatus.ACCOUNT_SUBMITTED
     tx.approved_by = AUTO_ALLOCATION_ACTOR
     # Remember which managed account served this Member ID — the platform's existing account usage
@@ -3493,11 +3512,12 @@ async def account_submit(
 ):
     """Admin selects a managed account, the app sends its details, status → Account Submitted.
 
-    No image travels with this call. The payment image a merchant sees is the one configured ONCE
-    on the receiving account in Account Management, resolved from ``admin_ref`` whenever the
-    deposit is opened (services/account_payment_image). A per-deposit image — the old custom
-    bank-details upload or the browser-generated account card — is refused before anything is
-    written, so a deposit can never carry an image that is not its own account's.
+    No image and, for an account-backed deposit, no account-details text travels with this call.
+    The merchant receives the Account Details Image uploaded ONCE on the receiving account in
+    Account Management, resolved from ``admin_ref`` whenever the deposit is opened
+    (services/account_details_image). A per-deposit image — the old custom upload or the
+    browser-generated account card — and typed account details are refused before anything is
+    written, so a deposit can never carry account details that are not its own account's image.
 
     A Card deposit takes the same hop with a different payload: the Admin submits the externally
     generated payment gateway link instead of an account, and the request moves Link Requested →
@@ -3507,7 +3527,13 @@ async def account_submit(
         return await _card_link_submit(db, tx, data, actor)
     if data.adminProof or data.adminBankImage:
         raise HTTPException(status_code=400, detail=PER_DEPOSIT_IMAGE_RETIRED_MSG)
-    if not (data.adminBankDetails or data.adminUpiId):
+    # For an account-backed deposit the Admin only chooses the account; the merchant receives that
+    # account's Account Details Image and no text. Details typed or generated by a client are
+    # refused rather than stored, so none can reach the merchant by calling this route directly.
+    image_only = account_details_image.uses_account_details_image(tx)
+    if image_only and data.adminBankDetails:
+        raise HTTPException(status_code=400, detail=ACCOUNT_TEXT_RETIRED_MSG)
+    if not (data.adminBankDetails or data.adminUpiId or (image_only and (data.adminRef or "").strip())):
         raise HTTPException(
             status_code=400,
             detail="Select an account to send",
@@ -3525,8 +3551,6 @@ async def account_submit(
         if not (data.adminRef or "").strip().upper().startswith("ACC"):
             raise HTTPException(status_code=400,
                                 detail="Select a managed bank account for this CDM deposit.")
-    tx.admin_bank_details = data.adminBankDetails
-    tx.admin_upi_id = data.adminUpiId
     ref = data.adminRef
     # A sent UPI always belongs to a receiving account → credit that parent account so its
     # deposits (bank + UPI) roll up together. No QR is generated.
@@ -3534,8 +3558,17 @@ async def account_submit(
         upi_row = (await db.execute(select(AdminUpi).where(AdminUpi.upi_id == data.adminUpiId))).scalar_one_or_none()
         if upi_row and upi_row.account_ref:
             ref = upi_row.account_ref
-        tx.admin_bank_details = None  # a UPI send doesn't also expose bank details
-        tx.admin_bank_image = None    # nor a bank-details image
+    # The image is looked up by the receiving account, so an account-backed deposit must end up
+    # assigned to one. Checked before anything is written to the request.
+    if image_only and not (ref or "").strip():
+        raise HTTPException(status_code=400, detail=(
+            "Select a managed receiving account. The merchant is sent that account's Account "
+            "Details Image, so the deposit must be assigned to an account."))
+    # A UPI send never exposed bank details, and an account-backed deposit exposes none at all.
+    tx.admin_bank_details = None if (image_only or data.adminUpiId) else data.adminBankDetails
+    tx.admin_upi_id = data.adminUpiId
+    if data.adminUpiId:
+        tx.admin_bank_image = None    # nor a per-deposit image
     # ── The Admin's choice is checked by the same rules the engine obeys ──
     # A manual assignment exists because automatic allocation found nothing, not because the rules
     # stop applying. Every gate below is the engine's own, so an account the engine would refuse
@@ -3568,7 +3601,7 @@ async def account_submit(
     await log_event(db, "ACCOUNT_SUBMITTED", f"{tx.ref}: account details sent to {tx.merchant_name}", actor=actor)
     await record_audit(db, "ACCOUNT_SUBMITTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="ACCOUNT_SUBMITTED")
     await _refresh_with_images(db, tx)
-    return _t(tx)
+    return _with_admin_account_record(tx, _t(tx))      # Admin-only route: their own record
 
 
 @router.get("/{tx_id}/allocation")
@@ -3637,7 +3670,7 @@ async def retry_allocation(
     await log_event(db, "DEPOSIT_ALLOCATION_RETRIED",
                     f"{tx.ref}: allocation retried by {actor.name} — {tx.admin_ref} assigned",
                     actor=actor)
-    return _t(tx)
+    return _with_admin_account_record(tx, _t(tx))      # Admin-only route: their own record
 
 
 @router.get("/{tx_id}/payout-allocation")

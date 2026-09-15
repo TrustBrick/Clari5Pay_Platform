@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountPaymentImage, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MemberAccountView, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountDetailsImage, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MemberAccountView, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -352,7 +352,9 @@ export const transactionAPI = {
     id: string,
     // `paymentLink` is the Card variant of this same step: the Admin submits the payment gateway
     // link instead of an account, and the request moves Link Requested → Link Submitted.
-    // No image field: a deposit's payment image comes from its receiving account, not this call.
+    // No image field: a deposit's Account Details Image comes from its receiving account, not this
+    // call. `adminBankDetails` is refused outright for a deposit that uses one (UPI / IMPS / NEFT /
+    // RTGS / BANK) — the image is the account details — and remains in use for CDM, which does not.
     data: { adminRef?: string; adminBankDetails?: string; adminUpiId?: string; paymentLink?: string },
   ) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/account-submit`, data);
@@ -577,19 +579,21 @@ export const accountAPI = {
     const res = await api.patch<Account>(`/api/accounts/${ref}/own-account`, { is_own_account: isOwnAccount, reason });
     return res.data;
   },
-  // ── Account payment image (Account Management, Admin-only) ──
-  // Configured ONCE per receiving account; every deposit routed to the account shows it to the
-  // merchant. Upload and replace are the same call. The server validates type, size and content.
-  paymentImage: async (ref: string) => {
-    const res = await api.get<AccountPaymentImage>(`/api/accounts/${ref}/payment-image`);
+  // ── Account Details Image (Account Management, Admin-only) ──
+  // Uploaded ONCE per receiving account; every deposit routed to the account sends it to the
+  // merchant as the account details. Upload and replace are the same call. The server validates
+  // type, size and content, and these three routes are the ONLY way the image is managed — there
+  // is no per-deposit upload.
+  accountDetailsImage: async (ref: string) => {
+    const res = await api.get<AccountDetailsImage>(`/api/accounts/${ref}/account-details-image`);
     return res.data;
   },
-  setPaymentImage: async (ref: string, image: string) => {
-    const res = await api.put<AccountPaymentImage>(`/api/accounts/${ref}/payment-image`, { image });
+  setAccountDetailsImage: async (ref: string, image: string) => {
+    const res = await api.put<AccountDetailsImage>(`/api/accounts/${ref}/account-details-image`, { image });
     return res.data;
   },
-  removePaymentImage: async (ref: string) => {
-    const res = await api.delete<AccountPaymentImage>(`/api/accounts/${ref}/payment-image`);
+  removeAccountDetailsImage: async (ref: string) => {
+    const res = await api.delete<AccountDetailsImage>(`/api/accounts/${ref}/account-details-image`);
     return res.data;
   },
   // ── Accounting ledger + manual adjustment (Account Management) ──

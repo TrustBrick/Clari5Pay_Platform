@@ -1,28 +1,35 @@
-"""Tests for the account payment image — configured once per receiving account, shown per deposit.
+"""Tests for the Account Details Image — uploaded once per receiving account, the ONLY account
+details a merchant ever receives for a deposit.
 
-The Admin uploads a bank / payment image against a managed account in Account Management. Every
-deposit routed to that account then shows the merchant that account's image with its payment
-instructions. The properties worth pinning down:
+The Admin uploads one Account Details Image against a managed account in Account Management. Every
+deposit routed to that account — automatically by the allocation engine, or by an Admin's manual
+assignment — sends the merchant that account's image AND NOTHING ELSE about the account. The
+properties worth pinning down:
 
-  1. **Configured once, reused everywhere.** One image per account; nothing is uploaded or copied
+  1. **Uploaded once, reused everywhere.** One image per account; nothing is uploaded or copied
      per transaction, and a deposit's own row carries no image of it.
-  2. **A merchant only ever receives the image of the account assigned to THEIR deposit.** The
+  2. **The image IS the account details.** For a deposit that uses one, no merchant-side payload
+     carries the bank name, account number, IFSC, branch, UPI ID or allocation snapshot — as text
+     or in any other form. An Admin's own detail view still carries that internal record.
+  3. **No image means no account details at all.** Nothing is rebuilt from the account record as a
+     fallback: the merchant is told plainly that none is configured.
+  4. **A merchant only ever receives the image of the account assigned to THEIR deposit.** The
      account is derived from the transaction server-side; there is no merchant route that names an
      account, and another merchant's transaction is refused outright.
-  3. **The image never influences allocation.** The engine picks the same account with or without
+  5. **The image never influences allocation.** The engine picks the same account with or without
      images, and an account with no image is still allocated.
-  4. **Upload security holds.** Only genuine JPG/JPEG/PNG/WEBP data URLs within 5 MB whose bytes
+  6. **Upload security holds.** Only genuine JPG/JPEG/PNG/WEBP data URLs within 5 MB whose bytes
      match their declared type are accepted; URLs and storage references are refused, so a caller
      can never point an account at an arbitrary stored object.
-  5. **History is untouched.** Uploading, replacing or removing an image changes no transaction
-     row, and historical Bank Transfer deposits still read as they always have (new Bank Transfer
-     requests are refused — see tests/test_bank_transfer_retired.py).
+  7. **History is untouched.** Uploading, replacing or removing an image changes no transaction
+     row, and a historical deposit's stored columns are exactly as they were recorded (new Bank
+     Transfer requests are refused — see tests/test_bank_transfer_retired.py).
 
 NO PRODUCTION REFERENCE IDS ARE CONSUMED — ``_next_ref`` is patched to a counter.
 
 Run from the backend directory:
 
-    python -m pytest tests/test_account_payment_image.py -v
+    python -m pytest tests/test_account_details_image.py -v
 """
 from __future__ import annotations
 
@@ -43,11 +50,11 @@ from app.core import deps, storage
 from app.core.uploads import MAX_UPLOAD_BYTES
 from app.db.session import Base
 from app.models.models import (
-    AccountMaster, AccountPaymentImage, AccountType, AuditLog, Transaction, TxStatus, TxType,
+    AccountMaster, AccountDetailsImage, AccountType, AuditLog, Transaction, TxStatus, TxType,
     User, UserRole,
 )
-from app.schemas.schemas import AccountPaymentImageUpload, DepositCreate
-from app.services import account_payment_image as payimg
+from app.schemas.schemas import AccountDetailsImageUpload, DepositCreate
+from app.services import account_details_image as detimg
 from app.services import deposit_allocation as alloc
 
 
@@ -188,7 +195,49 @@ def _payload(amount: float, **kw) -> DepositCreate:
 
 
 async def _upload(db, ref: str, image: str):
-    return await acr.put_account_payment_image(ref, AccountPaymentImageUpload(image=image), _Req(), db, _admin())
+    return await acr.put_account_details_image(ref, AccountDetailsImageUpload(image=image), _Req(), db, _admin())
+
+
+def _image(ref: str, image: str, content_type: str = "image/png") -> dict:
+    """What a deposit's detail payload carries when its account HAS an Account Details Image."""
+    return {"accountRef": ref, "hasImage": True, "image": image,
+            "contentType": content_type, "message": None}
+
+
+def _no_image(ref: str) -> dict:
+    """...and when it has none: the plain statement, never reconstructed account details."""
+    return {"accountRef": ref, "hasImage": False, "image": None, "contentType": None,
+            "message": detimg.NOT_CONFIGURED_MSG}
+
+
+def _no_account_text(payload: dict) -> bool:
+    """No account-details text of any kind reached the merchant on this payload."""
+    return (payload.get("adminBankDetails") is None
+            and payload.get("adminUpiId") is None
+            and payload.get("allocationSnapshot") is None)
+
+
+# A receiving account whose every identifying field differs from the SENDER details _payload
+# carries, so a sweep of the payload can tell the two apart. The sender is HDFC Bank / HDFC0001234
+# / A-C 999; nothing below is shared with it.
+RECEIVER = dict(name="Receiving Alpha", bank="Bank of Baroda")
+RECEIVER_FIELDS = ("Receiving Alpha", "Bank of Baroda", "BARB0TESTAC", "Andheri East")
+
+
+async def _receiver(db: AsyncSession, ref: str = "ACC1", **kw) -> AccountMaster:
+    """The account the deposit is paid INTO, identifiable in a payload by any of its own fields."""
+    acc = await _account(db, ref, **{**RECEIVER, **kw})
+    acc.account_number = f"AC{ref}"
+    acc.ifsc_code = "BARB0TESTAC"
+    acc.branch = "Andheri East"
+    await db.flush()
+    return acc
+
+
+def _mentions_receiver(payload: dict) -> list[str]:
+    """Which of the receiving account's own details leaked into a merchant payload (none may)."""
+    blob = json.dumps(payload, default=str)
+    return [f for f in RECEIVER_FIELDS if f in blob]
 
 
 async def _raw_transactions(db: AsyncSession) -> list[dict]:
@@ -207,14 +256,14 @@ async def test_admin_uploads_an_image_against_the_account(db):
 
     assert out["hasImage"] is True and out["image"] == _png("A")
     assert out["contentType"] == "image/png" and out["uploadedBy"] == "Admin One"
-    row = (await db.execute(select(AccountPaymentImage))).scalars().one()
+    row = (await db.execute(select(AccountDetailsImage))).scalars().one()
     assert row.account_ref == "ACC1"
-    audit = (await db.execute(select(AuditLog).where(AuditLog.action_type == "ACCOUNT_PAYMENT_IMAGE_UPLOADED"))).scalars().one()
+    audit = (await db.execute(select(AuditLog).where(AuditLog.action_type == "ACCOUNT_DETAILS_IMAGE_UPLOADED"))).scalars().one()
     assert audit.entity_id == "ACC1"
     # And Admin can read it back, and the account list reports it.
-    assert (await acr.get_account_payment_image("ACC1", db, _admin()))["image"] == _png("A")
+    assert (await acr.get_account_details_image("ACC1", db, _admin()))["image"] == _png("A")
     listed = await acr.list_accounts(None, db, _admin())
-    assert listed[0]["hasPaymentImage"] is True
+    assert listed[0]["hasAccountDetailsImage"] is True
 
 
 @pytest.mark.asyncio
@@ -236,23 +285,27 @@ async def test_an_unknown_account_is_404(db):
 @pytest.mark.asyncio
 async def test_an_auto_allocated_deposit_shows_its_accounts_image_with_no_per_transaction_upload(db):
     merchant = await _merchant(db)
-    await _account(db, "ACC1", name="Account A")
+    await _receiver(db, "ACC1")
     await _upload(db, "ACC1", _png("A"))
 
     out = await txr.create_deposit(_payload(50000), db, merchant)
 
     # B — the engine ran normally and allocated Account A.
     assert out["status"] == TxStatus.ACCOUNT_SUBMITTED and out["adminRef"] == "ACC1"
-    # C — the merchant opening the deposit receives Account A's image with the account details.
+    # C — the merchant opening the deposit receives Account A's image AS the account details, and
+    # no text version of them: no bank name, account number, IFSC, branch, UPI ID or snapshot.
     detail = await txr.get_transaction_detail(out["id"], db, merchant)
-    assert detail["accountPaymentImage"] == {
-        "accountRef": "ACC1", "hasImage": True, "image": _png("A"), "contentType": "image/png"}
-    assert detail["allocationSnapshot"]["referenceNumber"] == "ACC1"
+    assert detail["accountDetailsImage"] == _image("ACC1", _png("A"))
+    assert _no_account_text(detail)
+    assert _mentions_receiver(detail) == []
+    # The Admin's own view keeps the internal record of what was assigned.
+    admin_view = await txr.get_transaction_detail(out["id"], db, _admin())
+    assert admin_view["allocationSnapshot"]["referenceNumber"] == "ACC1"
     # D — nothing was attached to the transaction: no per-transaction image column was written.
     raw = (await _raw_transactions(db))[0]
     assert raw["admin_proof"] is None and raw["admin_bank_image"] is None and raw["admin_proofs"] is None
     assert _png("A") not in json.dumps(raw, default=str)
-    assert (await db.execute(select(func.count()).select_from(AccountPaymentImage))).scalar() == 1
+    assert (await db.execute(select(func.count()).select_from(AccountDetailsImage))).scalar() == 1
 
 
 @pytest.mark.asyncio
@@ -264,7 +317,7 @@ async def test_a_upi_deposit_shows_the_parent_accounts_image(db):
 
     out = await txr.create_deposit(_payload(1000, depositType="UPI", senderUpiId="m@ybl"), db, merchant)
     detail = await txr.get_transaction_detail(out["id"], db, merchant)
-    assert detail["accountPaymentImage"]["image"] == _png("A")
+    assert detail["accountDetailsImage"]["image"] == _png("A")
 
 
 # ── E. Account B's image is never shown for Account A (and vice versa) ─────────────────────────
@@ -283,8 +336,8 @@ async def test_each_deposit_receives_only_its_own_accounts_image(db):
 
     detail_a = await txr.get_transaction_detail(to_a["id"], db, merchant)
     detail_b = await txr.get_transaction_detail(to_b["id"], db, merchant)
-    assert detail_a["accountPaymentImage"]["image"] == _png("A")
-    assert detail_b["accountPaymentImage"]["image"] == _png("B")
+    assert detail_a["accountDetailsImage"]["image"] == _png("A")
+    assert detail_b["accountDetailsImage"]["image"] == _png("B")
     # Not anywhere in the payload — not just not in the one field.
     assert _png("B") not in json.dumps(detail_a, default=str)
     assert _png("A") not in json.dumps(detail_b, default=str)
@@ -306,7 +359,7 @@ async def test_another_merchant_cannot_open_the_deposit_or_its_image(db):
 @pytest.mark.asyncio
 async def test_the_account_image_routes_are_admin_only(db):
     """Merchants have no route to an account's image — every one depends on get_current_admin."""
-    for fn in (acr.get_account_payment_image, acr.put_account_payment_image, acr.delete_account_payment_image):
+    for fn in (acr.get_account_details_image, acr.put_account_details_image, acr.delete_account_details_image):
         gates = [p.default.dependency for p in inspect.signature(fn).parameters.values()
                  if hasattr(p.default, "dependency")]
         assert deps.get_current_admin in gates, fn.__name__
@@ -327,14 +380,14 @@ async def test_non_account_deposit_types_show_no_account_image(db):
                          deposit_type=dtype, admin_ref="ACC1", created_at=datetime.utcnow())
         db.add(tx)
         await db.flush()
-        assert await payimg.for_transaction(db, tx) is None, dtype
+        assert await detimg.for_transaction(db, tx) is None, dtype
     # A withdrawal is never shown one either.
     wd = Transaction(ref="W1", type=TxType.WITHDRAWAL_REQUEST, amount=1000, status=TxStatus.ACCOUNT_SUBMITTED,
                      merchant_id=7, merchant_name="BELLAGIO", tx_date=date.today(), tx_time="10:00:00",
                      payout_mode="IMPS", admin_ref="ACC1", created_at=datetime.utcnow())
     db.add(wd)
     await db.flush()
-    assert await payimg.for_transaction(db, wd) is None
+    assert await detimg.for_transaction(db, wd) is None
 
 
 @pytest.mark.asyncio
@@ -345,7 +398,7 @@ async def test_an_unplaced_deposit_has_no_account_and_no_image(db):
     out = await txr.create_deposit(_payload(5000), db, merchant)      # over the ceiling
     assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
     detail = await txr.get_transaction_detail(out["id"], db, merchant)
-    assert detail["accountPaymentImage"] is None
+    assert detail["accountDetailsImage"] is None
 
 
 # ── F. Replacing works ─────────────────────────────────────────────────────────────────────────
@@ -360,10 +413,10 @@ async def test_replacing_the_image_updates_it_for_every_deposit_on_the_account(d
     replaced = await _upload(db, "ACC1", _jpeg("new"))
 
     assert replaced["image"] == _jpeg("new") and replaced["contentType"] == "image/jpeg"
-    assert (await db.execute(select(func.count()).select_from(AccountPaymentImage))).scalar() == 1
+    assert (await db.execute(select(func.count()).select_from(AccountDetailsImage))).scalar() == 1
     detail = await txr.get_transaction_detail(out["id"], db, merchant)
-    assert detail["accountPaymentImage"]["image"] == _jpeg("new")
-    assert (await db.execute(select(AuditLog).where(AuditLog.action_type == "ACCOUNT_PAYMENT_IMAGE_REPLACED"))).scalars().one()
+    assert detail["accountDetailsImage"]["image"] == _jpeg("new")
+    assert (await db.execute(select(AuditLog).where(AuditLog.action_type == "ACCOUNT_DETAILS_IMAGE_REPLACED"))).scalars().one()
 
 
 # ── G. Removing works ──────────────────────────────────────────────────────────────────────────
@@ -374,20 +427,21 @@ async def test_removing_the_image_leaves_the_account_eligible_and_the_deposit_ex
     await _account(db, "ACC1", name="Account A")
     await _upload(db, "ACC1", _png("A"))
 
-    out = await acr.delete_account_payment_image("ACC1", _Req(), db, _admin())
+    out = await acr.delete_account_details_image("ACC1", _Req(), db, _admin())
 
     assert out["hasImage"] is False and out["image"] is None
-    assert (await db.execute(select(func.count()).select_from(AccountPaymentImage))).scalar() == 0
-    assert (await db.execute(select(AuditLog).where(AuditLog.action_type == "ACCOUNT_PAYMENT_IMAGE_REMOVED"))).scalars().one()
+    assert (await db.execute(select(func.count()).select_from(AccountDetailsImage))).scalar() == 0
+    assert (await db.execute(select(AuditLog).where(AuditLog.action_type == "ACCOUNT_DETAILS_IMAGE_REMOVED"))).scalars().one()
     # Removing twice is harmless and audits nothing further.
-    await acr.delete_account_payment_image("ACC1", _Req(), db, _admin())
+    await acr.delete_account_details_image("ACC1", _Req(), db, _admin())
     assert (await db.execute(select(func.count()).select_from(AuditLog).where(
-        AuditLog.action_type == "ACCOUNT_PAYMENT_IMAGE_REMOVED"))).scalar() == 1
+        AuditLog.action_type == "ACCOUNT_DETAILS_IMAGE_REMOVED"))).scalar() == 1
 
     dep = await txr.create_deposit(_payload(1000), db, merchant)
     assert dep["adminRef"] == "ACC1"
     detail = await txr.get_transaction_detail(dep["id"], db, merchant)
-    assert detail["accountPaymentImage"] == {"accountRef": "ACC1", "hasImage": False, "image": None, "contentType": None}
+    assert detail["accountDetailsImage"] == _no_image("ACC1")
+    assert _no_account_text(detail)                 # no fallback text takes the image's place
 
 
 # ── H. The image never influences allocation ───────────────────────────────────────────────────
@@ -410,7 +464,7 @@ async def test_images_do_not_change_which_account_the_engine_chooses(db):
     await _upload(db, "ACC2", _png("B"))
     after_other = await alloc.allocate_deposit_account(db, amount=45000, member_id="OLDM")
     await _upload(db, "ACC1", _png("A"))
-    await acr.delete_account_payment_image("ACC2", _Req(), db, _admin())
+    await acr.delete_account_details_image("ACC2", _Req(), db, _admin())
     after_swap = await alloc.allocate_deposit_account(db, amount=45000, member_id="OLDM")
 
     refs = {r.account.reference_number for r in (before, after_other, after_swap)}
@@ -420,7 +474,9 @@ async def test_images_do_not_change_which_account_the_engine_chooses(db):
 
 def test_the_allocation_engine_does_not_read_the_image():
     source = inspect.getsource(alloc)
-    assert "AccountPaymentImage" not in source and "payment_image" not in source
+    for name in ("AccountDetailsImage", "account_details_image", "AccountPaymentImage",
+                 "payment_image", "detimg"):
+        assert name not in source, name
 
 
 # ── Upload security ────────────────────────────────────────────────────────────────────────────
@@ -445,7 +501,7 @@ async def test_unsafe_uploads_are_rejected_and_nothing_is_stored(db, bad, why):
     with pytest.raises(HTTPException) as e:
         await _upload(db, "ACC1", bad)
     assert e.value.status_code == 400, why
-    assert (await db.execute(select(func.count()).select_from(AccountPaymentImage))).scalar() == 0
+    assert (await db.execute(select(func.count()).select_from(AccountDetailsImage))).scalar() == 0
 
 
 @pytest.mark.asyncio
@@ -463,7 +519,7 @@ async def test_a_rejected_replacement_keeps_the_existing_image(db):
     await _upload(db, "ACC1", _png("good"))
     with pytest.raises(HTTPException):
         await _upload(db, "ACC1", "data:image/png;base64," + base64.b64encode(b"<html>").decode())
-    assert (await acr.get_account_payment_image("ACC1", db, _admin()))["image"] == _png("good")
+    assert (await acr.get_account_details_image("ACC1", db, _admin()))["image"] == _png("good")
 
 
 @pytest.mark.asyncio
@@ -472,13 +528,13 @@ async def test_with_object_storage_the_image_is_a_private_object_served_by_presi
     await _account(db, "ACC1", name="Account A")
     await _upload(db, "ACC1", _png("A"))
 
-    row = (await db.execute(select(AccountPaymentImage))).scalars().one()
+    row = (await db.execute(select(AccountDetailsImage))).scalars().one()
     assert row.image.startswith("storage://uploads/account_payment_image/")
     assert "base64" not in row.image and len(s3.objects) == 1
 
     out = await txr.create_deposit(_payload(1000), db, merchant)
     detail = await txr.get_transaction_detail(out["id"], db, merchant)
-    assert detail["accountPaymentImage"]["image"].startswith("https://fake-bucket.example/uploads/account_payment_image/")
+    assert detail["accountDetailsImage"]["image"].startswith("https://fake-bucket.example/uploads/account_payment_image/")
     assert "storage://" not in json.dumps(detail, default=str)
 
 
@@ -502,13 +558,19 @@ async def test_image_changes_never_modify_any_transaction_row(db):
     await _upload(db, "ACC1", _png("v1"))
     await _upload(db, "ACC1", _png("v2"))
     detail = await txr.get_transaction_detail(f"TXN{historical.id:03d}", db, merchant)
-    await acr.delete_account_payment_image("ACC1", _Req(), db, _admin())
+    await acr.delete_account_details_image("ACC1", _Req(), db, _admin())
 
     assert await _raw_transactions(db) == snapshot
-    # The historical Bank Transfer deposit still reads exactly as it was recorded.
+    # The historical Bank Transfer deposit still reads exactly as it was recorded, and its own
+    # legacy per-deposit image still reaches the merchant — historical access is preserved.
     assert detail["depositType"] == "BANK"
     assert detail["adminProof"] == _png("sent-card")
-    assert detail["adminBankDetails"] == historical.admin_bank_details
+    # BANK is an account-backed deposit, so the merchant side receives the account as an Account
+    # Details Image and never as text — on a historical row exactly as on a new one. The stored
+    # column is untouched (asserted above) and an Admin still reads it.
+    assert detail["adminBankDetails"] is None
+    admin_view = await txr.get_transaction_detail(f"TXN{historical.id:03d}", db, _admin())
+    assert admin_view["adminBankDetails"] == historical.admin_bank_details
 
 
 # ── J. Manual assignment: the Admin picks the account, the image follows the account ───────────
@@ -523,8 +585,9 @@ async def _unplaced(db, merchant, member_id: str) -> dict:
 
 
 async def _send(db, tx_id: str, ref: str, **kw):
-    return await txr.account_submit(
-        tx_id, txr.AccountSubmitRequest(adminRef=ref, adminBankDetails=f"Account {ref}", **kw), db, _admin())
+    """The Admin's manual assignment: the ACCOUNT travels and nothing else. Typed account details
+    are refused outright for these deposits (see the dedicated test below)."""
+    return await txr.account_submit(tx_id, txr.AccountSubmitRequest(adminRef=ref, **kw), db, _admin())
 
 
 @pytest.mark.asyncio
@@ -540,16 +603,20 @@ async def test_manual_assignment_shows_exactly_the_assigned_accounts_image(db):
     # Tests 3-5: assigned to A → merchant receives A, never B.
     await _send(db, first["id"], "ACC0000013")
     detail_a = await txr.get_transaction_detail(first["id"], db, merchant)
-    assert detail_a["accountPaymentImage"] == {
-        "accountRef": "ACC0000013", "hasImage": True, "image": _png("HDFC-A"), "contentType": "image/png"}
+    assert detail_a["accountDetailsImage"] == _image("ACC0000013", _png("HDFC-A"))
     assert _png("ICICI-B") not in json.dumps(detail_a, default=str)
+    assert _no_account_text(detail_a)
 
     # Tests 6-8: assigned to B → merchant receives B, never A.
     await _send(db, second["id"], "ACC0000014")
     detail_b = await txr.get_transaction_detail(second["id"], db, merchant)
-    assert detail_b["accountPaymentImage"]["accountRef"] == "ACC0000014"
-    assert detail_b["accountPaymentImage"]["image"] == _png("ICICI-B")
+    assert detail_b["accountDetailsImage"]["accountRef"] == "ACC0000014"
+    assert detail_b["accountDetailsImage"]["image"] == _png("ICICI-B")
     assert _png("HDFC-A") not in json.dumps(detail_b, default=str)
+    assert _no_account_text(detail_b)
+    # Neither merchant payload names the other account, by reference or by bank.
+    assert "ACC0000014" not in json.dumps(detail_a, default=str)
+    assert "ACC0000013" not in json.dumps(detail_b, default=str)
 
     # And nothing was copied onto either deposit row.
     for raw in await _raw_transactions(db):
@@ -560,14 +627,16 @@ async def test_manual_assignment_shows_exactly_the_assigned_accounts_image(db):
 async def test_manual_send_to_an_account_with_no_image_still_works_and_says_so(db):
     merchant = await _merchant(db)
     out = await _unplaced(db, merchant, "MBR1")
-    await _account(db, "ACC1", name="No image")
+    await _receiver(db, "ACC1")
 
     sent = await _send(db, out["id"], "ACC1")
 
     assert sent["status"] == TxStatus.ACCOUNT_SUBMITTED and sent["adminRef"] == "ACC1"
     detail = await txr.get_transaction_detail(out["id"], db, merchant)
-    assert detail["accountPaymentImage"] == {"accountRef": "ACC1", "hasImage": False, "image": None, "contentType": None}
-    assert detail["adminBankDetails"] == "Account ACC1"
+    assert detail["accountDetailsImage"] == _no_image("ACC1")
+    # No image means NO account details: nothing is rebuilt from the account record to stand in.
+    assert _no_account_text(detail)
+    assert _mentions_receiver(detail) == []
 
 
 @pytest.mark.asyncio
@@ -599,13 +668,13 @@ async def test_a_replaced_image_is_what_later_deposits_on_the_account_receive(db
     await _account(db, "ACC1", name="Account A")
     await _upload(db, "ACC1", _png("v1"))
     earlier = await txr.create_deposit(_payload(1000, memberId="MBR1"), db, merchant)
-    assert (await txr.get_transaction_detail(earlier["id"], db, merchant))["accountPaymentImage"]["image"] == _png("v1")
+    assert (await txr.get_transaction_detail(earlier["id"], db, merchant))["accountDetailsImage"]["image"] == _png("v1")
 
     await _upload(db, "ACC1", _png("v2"))
     later = await txr.create_deposit(_payload(1000, memberId="MBR2"), db, merchant)
 
     detail = await txr.get_transaction_detail(later["id"], db, merchant)
-    assert later["adminRef"] == "ACC1" and detail["accountPaymentImage"]["image"] == _png("v2")
+    assert later["adminRef"] == "ACC1" and detail["accountDetailsImage"]["image"] == _png("v2")
     assert _png("v1") not in json.dumps(detail, default=str)
 
 
@@ -616,4 +685,145 @@ def test_the_merchant_path_never_takes_an_account_reference():
     account-image routes that DO take a reference are Admin-only (tested above)."""
     detail_params = set(inspect.signature(txr.get_transaction_detail).parameters)
     assert detail_params == {"tx_id", "db", "current_user"}
-    assert set(inspect.signature(payimg.for_transaction).parameters) == {"db", "tx"}
+    assert set(inspect.signature(detimg.for_transaction).parameters) == {"db", "tx"}
+
+
+# ── K. The image IS the account details ────────────────────────────────────────────────────────
+# The rule that gives this feature its name: whichever way the account was chosen, the merchant
+# receives that account's image and NO text version of the account — and when there is no image,
+# no account details at all rather than details rebuilt from the account record.
+
+def test_the_not_configured_wording_is_the_platforms_own():
+    """The merchant-facing sentence for an account with no image, in one place."""
+    assert detimg.NOT_CONFIGURED_MSG == "Account details image is not configured for this account."
+
+
+@pytest.mark.asyncio
+async def test_auto_allocation_to_an_account_with_no_image_sends_nothing_and_says_so(db):
+    """Allocation is untouched by the image: the deposit is placed, and the merchant is told
+    plainly that no account details are configured rather than being sent any."""
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC1")
+
+    out = await txr.create_deposit(_payload(1000), db, merchant)
+
+    assert out["status"] == TxStatus.ACCOUNT_SUBMITTED and out["adminRef"] == "ACC1"
+    detail = await txr.get_transaction_detail(out["id"], db, merchant)
+    assert detail["accountDetailsImage"] == _no_image("ACC1")
+    assert _no_account_text(detail)
+    assert _mentions_receiver(detail) == []
+
+
+@pytest.mark.asyncio
+async def test_auto_allocation_writes_no_account_details_text_to_the_row(db):
+    """Not merely hidden on the way out — the automatic engine never writes the text at all."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1", name="Account A")
+    await _upload(db, "ACC1", _png("A"))
+
+    out = await txr.create_deposit(_payload(1000), db, merchant)
+
+    assert out["adminRef"] == "ACC1"
+    raw = (await _raw_transactions(db))[0]
+    assert raw["admin_bank_details"] is None
+    # The snapshot is still recorded for the Admin's journal — it simply never reaches a merchant.
+    assert json.loads(raw["allocation_snapshot"])["referenceNumber"] == "ACC1"
+
+
+@pytest.mark.asyncio
+async def test_the_same_account_gives_the_same_result_however_it_was_chosen(db):
+    """Automatic allocation and a manual assignment of the SAME account are indistinguishable to
+    the merchant: the same image, and the same absence of text."""
+    merchant = await _merchant(db)
+    other = await _merchant(db, uid=9, name="OTHER BIZ")
+    # The manual leg has to be raised while nothing is eligible — that is what leaves a deposit for
+    # an Admin to assign by hand in the first place.
+    manual_tx = await _unplaced(db, other, "MBR9")
+
+    await _receiver(db, "ACC1")
+    await _upload(db, "ACC1", _png("A"))
+    auto = await txr.create_deposit(_payload(1000, memberId="MBR1"), db, merchant)
+    await _send(db, manual_tx["id"], "ACC1")
+
+    auto_detail = await txr.get_transaction_detail(auto["id"], db, merchant)
+    manual_detail = await txr.get_transaction_detail(manual_tx["id"], db, other)
+    assert auto["adminRef"] == "ACC1"
+    assert auto_detail["accountDetailsImage"] == manual_detail["accountDetailsImage"] == _image("ACC1", _png("A"))
+    assert _no_account_text(auto_detail) and _no_account_text(manual_detail)
+    assert _mentions_receiver(auto_detail) == _mentions_receiver(manual_detail) == []
+
+
+@pytest.mark.asyncio
+async def test_a_upi_deposits_vpa_is_recorded_for_the_admin_and_withheld_from_the_merchant(db):
+    """A UPI deposit still routes to the account's linked VPA — that is an allocation rule and it
+    is untouched. What changes is that the VPA is not sent to the merchant as text either: the
+    account's Account Details Image is the whole of what they receive."""
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC1")
+    await _upload(db, "ACC1", _png("A"))
+    tx = Transaction(
+        ref="UPI1", type=TxType.DEPOSIT_REQUEST, amount=1000, status=TxStatus.ACCOUNT_SUBMITTED,
+        merchant_id=merchant.id, merchant_name="BELLAGIO", tx_date=date.today(), tx_time="10:00:00",
+        deposit_type="UPI", admin_ref="ACC1", admin_upi_id="receiver@ybl",
+        admin_bank_details="Account Name: Receiving Alpha\nBank: Bank of Baroda",
+        created_at=datetime.utcnow(),
+    )
+    db.add(tx)
+    await db.flush()
+
+    detail = await txr.get_transaction_detail(f"TXN{tx.id:03d}", db, merchant)
+    assert _no_account_text(detail) and "receiver@ybl" not in json.dumps(detail, default=str)
+    assert detail["accountDetailsImage"] == _image("ACC1", _png("A"))
+    # The row itself is untouched — a payload rule, not a data deletion — and an Admin still reads it.
+    assert tx.admin_upi_id == "receiver@ybl" and tx.admin_bank_details is not None
+    admin_view = await txr.get_transaction_detail(f"TXN{tx.id:03d}", db, _admin())
+    assert admin_view["adminUpiId"] == "receiver@ybl"
+
+
+# ── L. The deposit-processing screen cannot supply account details at all ──────────────────────
+
+@pytest.mark.asyncio
+async def test_typed_account_details_are_refused_and_nothing_is_written(db):
+    """Test 13's other half: the Admin's send cannot carry account-details TEXT either, so a
+    client that still builds a bank-details summary cannot slip one past the image."""
+    merchant = await _merchant(db)
+    out = await _unplaced(db, merchant, "MBR1")
+    await _account(db, "ACC1", name="Account A")
+    await _upload(db, "ACC1", _png("A"))
+    before = await _raw_transactions(db)
+
+    with pytest.raises(HTTPException) as err:
+        await txr.account_submit(out["id"], txr.AccountSubmitRequest(
+            adminRef="ACC1", adminBankDetails="Account Name: Account A\nBank: HDFC Bank"), db, _admin())
+
+    assert err.value.status_code == 400 and "no longer sent as text" in err.value.detail
+    assert await _raw_transactions(db) == before      # status, admin_ref and the text all untouched
+
+
+@pytest.mark.asyncio
+async def test_an_account_backed_deposit_cannot_be_sent_without_an_account(db):
+    """The image is resolved from the receiving account, so there must be one. Refused before
+    anything is written rather than leaving a deposit that can show the merchant nothing."""
+    merchant = await _merchant(db)
+    out = await _unplaced(db, merchant, "MBR1")
+    before = await _raw_transactions(db)
+
+    with pytest.raises(HTTPException) as err:
+        await txr.account_submit(out["id"], txr.AccountSubmitRequest(), db, _admin())
+
+    assert err.value.status_code == 400
+    assert await _raw_transactions(db) == before
+
+
+@pytest.mark.asyncio
+async def test_account_management_is_the_only_place_the_image_is_managed(db):
+    """Upload, replace and remove live on the account — and nowhere on a transaction."""
+    await _account(db, "ACC1", name="Account A")
+    assert (await _upload(db, "ACC1", _png("A")))["hasImage"] is True
+    assert (await _upload(db, "ACC1", _jpeg("B")))["image"] == _jpeg("B")
+    assert (await acr.delete_account_details_image("ACC1", _Req(), db, _admin()))["hasImage"] is False
+    # No transaction route offers an image field of its own.
+    submit_fields = set(txr.AccountSubmitRequest.model_fields)
+    assert not {f for f in submit_fields if "image" in f.lower()} - {"adminBankImage"}
+    # ...and the one that remains exists only to REFUSE a stale client (tested above).
+    assert "adminProof" in submit_fields

@@ -293,36 +293,39 @@ const AllocatedAccountCard: React.FC<{ acct: AllocatedAccount; amount: number }>
   );
 };
 
-// ─── Receiving account's payment image ────────────────────────────────────────
-// The bank / payment image the Admin configured ONCE on the account this deposit was routed to.
+// ─── Receiving account's Account Details Image ────────────────────────────────
+// The image the Admin uploaded ONCE on the account this deposit was routed to, in Account
+// Management. It IS the account details: for these deposits the merchant receives no bank name,
+// account number, IFSC, branch or UPI ID as text, so this panel is the whole of what to pay into.
 // The server resolves it from the deposit's own account, so this can only ever be that account's
 // image — the browser never names an account and receives nothing about any other. An account with
-// no image configured still takes the deposit; the merchant simply pays from the details above,
-// and this says so rather than leaving an unexplained gap.
+// no image uploaded still takes the deposit; the merchant is then told plainly that no account
+// details have been sent, rather than being handed details rebuilt from the database.
 const ACCOUNT_IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/webp': 'webp' };
-const AccountPaymentImagePanel: React.FC<{ img: DepositAccountImage; txRef: string }> = ({ img, txRef }) => {
+const ACCOUNT_IMAGE_MISSING = 'Account details image is not configured for this account.';
+const AccountDetailsImagePanel: React.FC<{ img: DepositAccountImage; txRef: string }> = ({ img, txRef }) => {
   const src = img.hasImage ? img.image : null;
   const ext = ACCOUNT_IMAGE_EXT[(img.contentType || '').toLowerCase()] || 'png';
   return (
     <div style={{ marginTop:14 }}>
-      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Payment Image</p>
+      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Account Details Image</p>
       {src ? (
         <>
           <div role="button" tabIndex={0} title="Click to view larger" onClick={()=>openDataUrl(src)}
             onKeyDown={e=>{ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDataUrl(src); } }}
             style={{ cursor:'zoom-in' }}>
-            <ReceiptImage src={src} alt="Account payment image" />
+            <ReceiptImage src={src} alt="Account Details Image" />
           </div>
           <div style={{ display:'flex',gap:8,marginTop:6 }}>
             <Btn size="sm" variant="ghost" onClick={()=>openDataUrl(src)}><Icon name="view" size={14} /> View</Btn>
-            <Btn size="sm" variant="ghost" onClick={()=>downloadDataUrl(src, `payment-image-${txRef}.${ext}`)}><Icon name="download" size={14} /> Download</Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>downloadDataUrl(src, `account-details-${txRef}.${ext}`)}><Icon name="download" size={14} /> Download</Btn>
           </div>
         </>
       ) : (
         <p style={{ fontSize:12,color:T.textMuted,margin:0,background:T.canvas,borderRadius:10,padding:'10px 12px' }}>
           {img.hasImage
-            ? 'The payment image for this account could not be loaded right now. Use the account details above to pay.'
-            : 'No payment image is configured for this account. Use the account details above to pay.'}
+            ? 'The Account Details Image for this account could not be loaded right now. Please refresh, or contact support if it does not appear.'
+            : `${img.message || ACCOUNT_IMAGE_MISSING} No account details have been sent for this request — please contact support before paying.`}
         </p>
       )}
     </div>
@@ -446,7 +449,7 @@ export const MerchantSlipModal: React.FC<{
   // Security: bank-detail fields are NOT copyable/exportable as text — only the image (if any) can be saved.
   const downloadDetails = () => {
     const img = bankImageSrc || imgs.adminProof;
-    if (img) downloadDataUrl(img, `bank-details-${tx.ref}.png`);
+    if (img) downloadDataUrl(img, `account-details-${tx.ref}.png`);
   };
 
   // Card names its payment step after the phase the operator is in; every other type keeps its wording.
@@ -531,23 +534,28 @@ export const MerchantSlipModal: React.FC<{
               </div>
             )}
           {/* Card carries a payment link, not an account — it prints its own waiting line above. */}
-          {!isCard && !allocated && !tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof && !bankImageSrc && !tx.hasAdminBankImage &&
+          {/* `accountDetailsImage` is present only once a receiving account has been assigned, so
+              its absence is what "still waiting" actually means for these deposits — the empty text
+              fields above are deliberate, not a missing update. */}
+          {!isCard && !record.accountDetailsImage && !allocated && !tx.adminUpiId && !tx.adminBankDetails && !imgs.adminProof && !bankImageSrc && !tx.hasAdminBankImage &&
             <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting updates from Agent.</p>}
         </div>
 
-        {/* The payment image configured on this deposit's receiving account (Account Management),
-            shown with the account it belongs to. Arrives with the detail fetch; absent for types
-            that are not paid into a managed account (Cash, Crypto, Card, CDM). */}
-        {record.accountPaymentImage && <AccountPaymentImagePanel img={record.accountPaymentImage} txRef={tx.ref} />}
-        {/* Historical requests only: an image attached to the deposit itself before payment images
-            moved to Account Management. New requests never carry one, so they show only the
-            account's own image above. */}
+        {/* The Account Details Image uploaded on this deposit's receiving account (Account
+            Management). For these deposits it is the ONLY account detail sent — the block above
+            carries no bank name, account number, IFSC or UPI ID, because the server withholds all
+            of it. Arrives with the detail fetch; absent for types that are not paid into a managed
+            account (Cash, Crypto, Card, CDM). */}
+        {record.accountDetailsImage && <AccountDetailsImagePanel img={record.accountDetailsImage} txRef={tx.ref} />}
+        {/* Historical requests only: an image attached to the deposit itself before the account
+            details image moved to Account Management. New requests never carry one, so they show
+            only the account's own image above. */}
         {bankImageSrc
           ? <ReceiptImage src={bankImageSrc} alt="Bank details" />
           : imgs.adminProof && <ReceiptImage src={imgs.adminProof} alt="Admin details" />}
         {hasImage && (
           <div style={{ marginTop:10 }}>
-            <Btn size="sm" variant="ghost" onClick={downloadDetails}><Icon name="download" size={14} /> Download Bank Details Image</Btn>
+            <Btn size="sm" variant="ghost" onClick={downloadDetails}><Icon name="download" size={14} /> Download Account Details Image</Btn>
           </div>
         )}
       </div>
@@ -2166,8 +2174,8 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
           )}
           {d.adminBankImage && (
             <div style={{ marginTop: slips.length ? 12 : 0 }}>
-              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Bank Details Image</p>
-              <ProofGallery srcs={[d.adminBankImage]} ref_={d.ref} kind="bank-details" />
+              <p style={{ fontSize: 11, color: T.textMuted, margin: '0 0 6px' }}>Account Details Image</p>
+              <ProofGallery srcs={[d.adminBankImage]} ref_={d.ref} kind="account-details" />
             </div>
           )}
           {receipts.length > 0 && (

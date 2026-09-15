@@ -235,9 +235,11 @@ class SettlementCreate(BaseModel):
 class AccountSubmitRequest(BaseModel):
     adminRef: Optional[str] = None
     # RETIRED: per-deposit images. Kept on the schema only so a stale client that still sends one is
-    # refused with a clear 400 instead of having the file silently dropped. The merchant's payment
-    # image comes from the receiving account (Account Management), never from this request.
+    # refused with a clear 400 instead of having the file silently dropped. The merchant's Account
+    # Details Image comes from the receiving account (Account Management), never from this request.
     adminProof: Optional[str] = None
+    # Refused for an account-backed deposit (the image is the account details); still used by the
+    # deposit types that do not use an Account Details Image, such as CDM.
     adminBankDetails: Optional[str] = None
     adminBankImage: Optional[str] = None
     adminUpiId: Optional[str] = None
@@ -435,8 +437,8 @@ class AccountOwnFlagUpdate(BaseModel):
     reason: Optional[str] = None
 
 
-class AccountPaymentImageUpload(BaseModel):
-    """Admin upload (or replacement) of one account's bank / payment image.
+class AccountDetailsImageUpload(BaseModel):
+    """Admin upload (or replacement) of one account's Account Details Image.
 
     ``image`` is a base64 data URL — JPG, JPEG, PNG or WEBP, 5 MB at most, and its bytes must be
     the image type it claims to be (app.core.uploads.validate_image_content).

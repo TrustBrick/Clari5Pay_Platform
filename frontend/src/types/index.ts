@@ -295,16 +295,21 @@ export interface Transaction {
   adminBankImage?: string | null;     // admin custom bank-details image (detail fetch only)
   hasAdminBankImage?: boolean;        // lightweight flag present in list payloads
   adminRef?: string | null;
+  // Account-details TEXT for the receiving account. The server withholds all three from every
+  // merchant-side payload of a deposit that uses an Account Details Image (UPI / IMPS / NEFT /
+  // RTGS / BANK) — for those the image IS the account details and no text version is ever sent.
+  // They still arrive on an ADMIN's own detail fetch, as the internal record of the assignment,
+  // and are untouched for Cash, Crypto, Card and CDM.
   adminBankDetails?: string | null;
   adminUpiId?: string | null;
   // The receiving account the allocation engine selected, snapshotted as it stood when it was
   // sent. Present only on auto-allocated deposits; a manually sent or historical request has
-  // null here and keeps rendering from adminBankDetails alone. A UPI allocation carries upiId
-  // instead of the bank account number / IFSC / branch.
+  // null here. A UPI allocation carries upiId instead of the bank account number / IFSC / branch.
   allocationSnapshot?: AllocatedAccount | null;
-  // Detail fetch only: the payment image configured on THIS deposit's receiving account, resolved
-  // by the server from the deposit's own account. Null when the deposit shows no account image.
-  accountPaymentImage?: DepositAccountImage | null;
+  // Detail fetch only: the Account Details Image uploaded on THIS deposit's receiving account,
+  // resolved by the server from the deposit's own account. Null when the deposit shows no account
+  // image at all (Cash, Crypto, Card, CDM, or a request with no account assigned yet).
+  accountDetailsImage?: DepositAccountImage | null;
   adminUtr?: string | null;
   // Card deposits: the payment gateway link the Admin submitted (Link Requested → Link Submitted).
   paymentLink?: string | null;
@@ -422,14 +427,14 @@ export interface Account {
   // returned as all four — unconfigured means fully capable, never unusable.
   payoutModes?: string[];
   payoutModesConfigured?: boolean;
-  // Whether a payment image is configured on this account. Present on the list / get payloads
-  // only (the edit routes omit it) — so treat undefined as "unknown", not as "no image".
-  hasPaymentImage?: boolean;
+  // Whether an Account Details Image is uploaded on this account. Present on the list / get
+  // payloads only (the edit routes omit it) — so treat undefined as "unknown", not as "no image".
+  hasAccountDetailsImage?: boolean;
   merchantName: string;
 }
 
-/** The bank / payment image an Admin configures once against a receiving account. */
-export interface AccountPaymentImage {
+/** The Account Details Image an Admin uploads once against a receiving account. */
+export interface AccountDetailsImage {
   referenceNumber: string;
   hasImage: boolean;
   image: string | null;          // data URL, or a short-lived presigned URL under object storage
@@ -439,12 +444,15 @@ export interface AccountPaymentImage {
   uploadedBy: string | null;
 }
 
-/** The payment image of the account a deposit was routed to, on that deposit's detail payload. */
+/** The Account Details Image of the account a deposit was routed to, on its detail payload.
+ *  When `hasImage` is false the merchant receives NO account details at all — `message` is the
+ *  server's own wording for that state, and nothing is rebuilt from the account record. */
 export interface DepositAccountImage {
   accountRef: string;
-  hasImage: boolean;             // false → the account simply has none configured
+  hasImage: boolean;             // false → the account simply has none uploaded
   image: string | null;
   contentType: string | null;
+  message?: string | null;       // the not-configured wording; set only when hasImage is false
 }
 
 export interface AccountMerchantBalance {

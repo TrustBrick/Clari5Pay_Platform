@@ -32,6 +32,7 @@ Run from the backend directory:
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -767,7 +768,22 @@ async def test_a_upi_deposit_through_the_endpoint_is_allocated_with_no_upi_confi
 
     assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
     assert out["adminRef"] == "ACC1"
-    assert out["allocationSnapshot"]["accountNumber"] == "ACACC1"
+    assert _snapshot(await _row(db, out["ref"]))["accountNumber"] == "ACACC1"
+
+
+async def _row(db, ref: str) -> Transaction:
+    """The stored transaction — where the allocation snapshot actually lives."""
+    return (await db.execute(select(Transaction).where(Transaction.ref == ref))).scalar_one()
+
+
+def _snapshot(tx: Transaction) -> dict | None:
+    """The account the engine snapshotted onto the row when it allocated this deposit.
+
+    Read from the row, not from a merchant payload: the snapshot is the Admin's record of the
+    decision, and the merchant side of an account-backed deposit carries no account details at all
+    — it receives that account's Account Details Image instead.
+    """
+    return json.loads(tx.allocation_snapshot) if tx.allocation_snapshot else None
 
 
 # ═══ Concurrency ════════════════════════════════════════════════════════════════════════════════
@@ -838,12 +854,18 @@ async def test_a_deposit_request_is_allocated_and_lands_in_account_submitted(db)
 
     assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
     assert out["adminRef"] == "ACC1"
-    assert out["allocationSnapshot"] == {
+    row = await _row(db, out["ref"])
+    assert _snapshot(row) == {
         "bankName": "HDFC Bank", "accountName": "sindu", "accountType": "Savings Account",
         "referenceNumber": "ACC1", "accountNumber": "ACACC1", "ifsc": "HDFC0001234",
         "branch": "Mumbai",
     }
-    assert "Account Type: Savings Account" in out["adminBankDetails"]
+    # The engine writes NO account-details text: the merchant receives the account's Account
+    # Details Image instead, and nothing is reconstructed from the account record as a fallback
+    # (tests/test_account_details_image.py). The snapshot above is the Admin's own journal of the
+    # decision, which is why it is read from the row and not from the merchant's payload.
+    assert row.admin_bank_details is None
+    assert out["allocationSnapshot"] is None and out["adminBankDetails"] is None
     # The platform's existing account-usage record is written, exactly as the manual send writes it.
     link = (await db.execute(select(AccountTransaction))).scalars().one()
     assert (link.reference_number, link.member_id, link.transaction_reference_number) == (
@@ -1027,11 +1049,9 @@ async def test_the_snapshot_is_immutable_when_the_account_is_edited_later(db):
     acc.branch = "Delhi"
     await db.flush()
 
-    tx = (await db.execute(select(Transaction).where(Transaction.ref == out["ref"]))).scalar_one()
-    # full=False keeps the deferred image columns out of the payload, which is what a list read
-    # does; the snapshot is a plain column and is present either way.
-    assert txr._t(tx, full=False)["allocationSnapshot"]["accountNumber"] == "ACACC1"
-    assert txr._t(tx, full=False)["allocationSnapshot"]["branch"] == "Mumbai"
+    tx = await _row(db, out["ref"])
+    assert _snapshot(tx)["accountNumber"] == "ACACC1"
+    assert _snapshot(tx)["branch"] == "Mumbai"
 
 
 # ═══ Highest Credit is configuration, and stays where the Admin put it ══════════════════════════

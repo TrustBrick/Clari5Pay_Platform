@@ -181,7 +181,12 @@ async def test_a_historical_bank_transfer_deposit_can_still_be_viewed_unchanged(
         assert payload["depositType"] == "BANK"
         assert payload["status"] == TxStatus.DEPOSITED
         assert payload["adminRef"] == "ACC1"
-        assert payload["adminBankDetails"] == tx.admin_bank_details
+    # BANK is an account-backed deposit, so the receiving account reaches the MERCHANT only as that
+    # account's Account Details Image — never as text — on a historical row exactly as on a new one
+    # (tests/test_account_details_image.py). The Admin keeps the internal record, and the stored
+    # column is untouched either way, which is what the raw comparison below proves.
+    assert by_owner["adminBankDetails"] is None
+    assert by_admin["adminBankDetails"] == tx.admin_bank_details
     # Reading it changed nothing — not the type, not the status, not any other column.
     assert await _raw(db, tx.id) == before
 

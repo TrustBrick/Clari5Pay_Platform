@@ -517,6 +517,18 @@ export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'CDM', label: 'CDM (Cash Deposit Machine)' },
 ];
 
+// ── Account Details Image ──────────────────────────────────────────────────────────────────────
+// The deposit types that are paid into a managed receiving account, and therefore reach the
+// merchant as that account's Account Details Image and nothing else: no bank name, account number,
+// IFSC, branch or UPI ID as text. Mirrors services/deposit_allocation.ALLOCATABLE_DEPOSIT_TYPES —
+// the server withholds the text for exactly these, so the forms must not offer to type it.
+// Cash, Crypto, Card and CDM are NOT in this list and keep the screens they have today.
+export const ACCOUNT_DETAILS_IMAGE_DEPOSIT_TYPES = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS'];
+/** True for a deposit whose account details reach the merchant only as an Account Details Image. */
+export const usesAccountDetailsImage = (tx: { type?: string | null; depositType?: string | null }): boolean =>
+  String(tx.type || '').toUpperCase().startsWith('DEPOSIT') &&
+  ACCOUNT_DETAILS_IMAGE_DEPOSIT_TYPES.includes(String(tx.depositType || '').trim().toUpperCase());
+
 // ── CDM (Cash Deposit Machine) ─────────────────────────────────────────────────────────────────
 // Physical cash pushed into a machine. It shares the whole Deposit lifecycle with every other
 // type, and differs in exactly two places: the automatic allocation engine never picks its

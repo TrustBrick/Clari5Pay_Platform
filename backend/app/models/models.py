@@ -391,20 +391,23 @@ class AccountTransaction(Base):
     transaction_time: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
-class AccountPaymentImage(Base):
-    """The bank / payment image an Admin configures ONCE against a managed receiving account.
+class AccountDetailsImage(Base):
+    """The Account Details Image an Admin uploads ONCE against a managed receiving account.
 
-    Every deposit later routed to that account shows this same image to the merchant as part of
-    its payment instructions, so the Admin never uploads it per transaction. It is resolved from
-    the deposit's own ``admin_ref`` when the deposit is opened — never copied onto the row.
+    Every deposit later routed to that account sends the merchant this image — and only this image —
+    as the account details, so the Admin never uploads it per transaction. It is resolved from the
+    deposit's own ``admin_ref`` when the deposit is opened — never copied onto the row.
 
     Deliberately its OWN table rather than a column on ``account_master``: the allocation engine
     selects (and row-locks) ``account_master``, and keeping the image out of that model means the
-    engine's queries, and therefore its decisions, are untouched by this feature. The image is an
-    informational payment-instruction asset only — nothing reads it to decide eligibility.
+    engine's queries, and therefore its decisions, are untouched by this feature. Nothing reads the
+    image to decide eligibility.
 
     ``image`` holds what every other upload column holds: a ``storage://<key>`` reference when
     object storage is enabled, otherwise the validated data URL (see app.core.storage).
+
+    The physical table keeps its original name: it is live on demo, and renaming it would be a
+    data migration for a label.
     """
     __tablename__ = "account_payment_image"
 

@@ -12,12 +12,12 @@ from app.models.models import (
 )
 from app.core.deps import get_current_admin
 from app.services import account_ledger as ledger
-from app.services import account_payment_image as payimg
+from app.services import account_details_image as detimg
 from app.services import deposit_allocation as alloc
 from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cache_get, cache_set
 from app.schemas.schemas import (
-    AccountCreate, AccountLimitsUpdate, AccountOwnFlagUpdate, AccountPaymentImageUpload,
+    AccountCreate, AccountLimitsUpdate, AccountOwnFlagUpdate, AccountDetailsImageUpload,
     AccountPayoutModesUpdate, AdjustmentCreate, ReasonRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
@@ -576,7 +576,7 @@ async def account_users(
     }
 
 
-def _a(a: AccountMaster, merchant_name: str | None = None, has_payment_image: bool | None = None) -> dict:
+def _a(a: AccountMaster, merchant_name: str | None = None, has_account_details_image: bool | None = None) -> dict:
     out = {
         "id": a.id,
         "referenceNumber": a.reference_number,
@@ -616,11 +616,11 @@ def _a(a: AccountMaster, merchant_name: str | None = None, has_payment_image: bo
         "payoutModesConfigured": walloc.account_modes(a) is not None,
         "merchantName": merchant_name or a.account_name,
     }
-    # Whether an Admin has configured this account's payment image. Only the list/get routes know
+    # Whether an Admin has configured this account's account details image. Only the list/get routes know
     # it (they query it), so it is present only where it is true to the database — the edit routes
     # that return an account omit it rather than report a guessed False.
-    if has_payment_image is not None:
-        out["hasPaymentImage"] = has_payment_image
+    if has_account_details_image is not None:
+        out["hasAccountDetailsImage"] = has_account_details_image
     return out
 
 
@@ -656,7 +656,7 @@ async def list_accounts(
     else:
         accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id.desc()))).scalars().all()
         name_map = await _merchant_name_map(db)
-        with_image = await payimg.refs_with_image(db)
+        with_image = await detimg.refs_with_image(db)
         out = [_a(a, name_map.get(a.reference_number), a.reference_number in with_image)
                for a in accounts]
         # Cached ~5s: the base account list (global) is the heavy part; the q-filter runs on the
@@ -745,7 +745,7 @@ async def get_account(
         raise HTTPException(status_code=404, detail="Account not found")
     name_map = await _merchant_name_map(db)
     return _a(a, name_map.get(a.reference_number),
-              (await payimg.get(db, a.reference_number)) is not None)
+              (await detimg.get(db, a.reference_number)) is not None)
 
 
 def _created_debit_limit(data: AccountCreate) -> float:
@@ -1118,10 +1118,10 @@ async def update_own_account_flag(
     return _a(acc, name_map.get(acc.reference_number))
 
 
-# ═══ Account payment image ═══════════════════════════════════════════════════════
-# The bank / payment image an Admin configures ONCE per receiving account. Every deposit routed to
-# the account shows it to the merchant (resolved on the transaction detail from the deposit's own
-# admin_ref — see services/account_payment_image), so nothing is uploaded per transaction.
+# ═══ Account Details Image ═══════════════════════════════════════════════════════
+# The Account Details Image an Admin uploads ONCE per receiving account. Every deposit routed to
+# the account sends it to the merchant as the account details (resolved on the transaction detail from the deposit's own
+# admin_ref — see services/account_details_image), so nothing is uploaded per transaction.
 #
 # Configuration, not money, and not eligibility: no balance, limit or allocation rule reads it.
 # All three routes sit behind the module's existing gate, ``get_current_admin`` — merchants have no
@@ -1138,39 +1138,39 @@ async def _account_or_404(db: AsyncSession, reference_number: str) -> AccountMas
     return acc
 
 
-@router.get("/{reference_number}/payment-image")
-async def get_account_payment_image(
+@router.get("/{reference_number}/account-details-image")
+async def get_account_details_image(
     reference_number: str,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_admin),
 ):
-    """The account's configured payment image (Admin-only), or ``hasImage: false``."""
+    """The account's configured account details image (Admin-only), or ``hasImage: false``."""
     acc = await _account_or_404(db, reference_number)
-    return payimg.serialize(await payimg.get(db, acc.reference_number), acc.reference_number)
+    return detimg.serialize(await detimg.get(db, acc.reference_number), acc.reference_number)
 
 
-@router.put("/{reference_number}/payment-image")
-async def put_account_payment_image(
+@router.put("/{reference_number}/account-details-image")
+async def put_account_details_image(
     reference_number: str,
-    data: AccountPaymentImageUpload,
+    data: AccountDetailsImageUpload,
     request: Request,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """Upload or REPLACE the account's payment image (Admin-only).
+    """Upload or REPLACE the account's account details image (Admin-only).
 
     One image per account: a replacement overwrites the account's image rather than adding a
     second one, and every deposit routed to the account shows the new image from then on.
     """
     acc = await _account_or_404(db, reference_number)
-    row, previous = await payimg.put(db, acc.reference_number, data.image, uploaded_by=actor.name)
-    action = "ACCOUNT_PAYMENT_IMAGE_REPLACED" if previous else "ACCOUNT_PAYMENT_IMAGE_UPLOADED"
+    row, previous = await detimg.put(db, acc.reference_number, data.image, uploaded_by=actor.name)
+    action = "ACCOUNT_DETAILS_IMAGE_REPLACED" if previous else "ACCOUNT_DETAILS_IMAGE_UPLOADED"
     verb = "replaced" if previous else "uploaded"
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
     ip = request.client.host if request and request.client else None
     await log_event(
         db, action,
-        f"{acc.reference_number} ({acc.account_name}) payment image {verb} by {actor.name}", actor=actor,
+        f"{acc.reference_number} ({acc.account_name}) account details image {verb} by {actor.name}", actor=actor,
     )
     await record_audit(
         db, action, actor=actor, entity_type="account", entity_id=acc.reference_number,
@@ -1179,38 +1179,38 @@ async def put_account_payment_image(
         reason=f"{acc.account_name} · {ts}", ip=ip,
     )
     await cache_delete("c:accounts:list")
-    return payimg.serialize(row, acc.reference_number)
+    return detimg.serialize(row, acc.reference_number)
 
 
-@router.delete("/{reference_number}/payment-image")
-async def delete_account_payment_image(
+@router.delete("/{reference_number}/account-details-image")
+async def delete_account_details_image(
     reference_number: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """Remove the account's payment image (Admin-only).
+    """Remove the account's account details image (Admin-only).
 
     The account stays exactly as eligible for deposits as it was — an image is never an allocation
-    requirement. Deposits routed to it simply show their account details without an image.
+    requirement. Deposits routed to it send the merchant no account details until one is uploaded.
     """
     acc = await _account_or_404(db, reference_number)
-    removed = await payimg.remove(db, acc.reference_number)
+    removed = await detimg.remove(db, acc.reference_number)
     if removed is None:
-        return payimg.serialize(None, acc.reference_number)     # nothing there — nothing to audit
+        return detimg.serialize(None, acc.reference_number)     # nothing there — nothing to audit
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
     ip = request.client.host if request and request.client else None
     await log_event(
-        db, "ACCOUNT_PAYMENT_IMAGE_REMOVED",
-        f"{acc.reference_number} ({acc.account_name}) payment image removed by {actor.name}", actor=actor,
+        db, "ACCOUNT_DETAILS_IMAGE_REMOVED",
+        f"{acc.reference_number} ({acc.account_name}) account details image removed by {actor.name}", actor=actor,
     )
     await record_audit(
-        db, "ACCOUNT_PAYMENT_IMAGE_REMOVED", actor=actor, entity_type="account",
+        db, "ACCOUNT_DETAILS_IMAGE_REMOVED", actor=actor, entity_type="account",
         entity_id=acc.reference_number, old=f"sha256 {removed[:12]}", new="No image",
         reason=f"{acc.account_name} · {ts}", ip=ip,
     )
     await cache_delete("c:accounts:list")
-    return payimg.serialize(None, acc.reference_number)
+    return detimg.serialize(None, acc.reference_number)
 
 
 # ═══ Manual balance adjustment (Feature 3) ═══════════════════════════════════════

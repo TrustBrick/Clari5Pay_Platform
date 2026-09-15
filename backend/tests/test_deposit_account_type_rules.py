@@ -302,6 +302,10 @@ async def test_the_failure_is_journalled_so_the_admin_can_see_why(db):
 
 # ═══ The Admin's manual choice obeys the engine's rules ═════════════════════════════════════════
 
+# A manual assignment sends the ACCOUNT and nothing else: these deposits reach the merchant as the
+# account's Account Details Image, so account-details TEXT on this request is refused outright
+# (tests/test_account_details_image.py). Every rule below is unchanged by that — they are checks on
+# the account the Admin picked, not on what was typed alongside it.
 async def _stuck(db, merchant):
     """A deposit the engine could not place: Savings sender, Current-only pool."""
     await _account(db, "CUR", name="c", credit=500000.0, atype=AccountType.CURRENT)
@@ -318,7 +322,7 @@ async def test_an_admin_can_place_a_deposit_the_engine_could_not(db):
     await _account(db, "SAV", name="s", credit=500000.0, atype=AccountType.SAVINGS)
 
     sent = await txr.account_submit(
-        out["id"], AccountSubmitRequest(adminRef="SAV", adminBankDetails="SAV details"), db, admin)
+        out["id"], AccountSubmitRequest(adminRef="SAV"), db, admin)
     assert sent["adminRef"] == "SAV"
     assert sent["status"] == TxStatus.ACCOUNT_SUBMITTED
 
@@ -331,7 +335,7 @@ async def test_an_admin_cannot_hand_pick_the_wrong_account_type(db):
 
     with pytest.raises(HTTPException) as e:
         await txr.account_submit(
-            out["id"], AccountSubmitRequest(adminRef="CUR", adminBankDetails="x"), db, admin)
+            out["id"], AccountSubmitRequest(adminRef="CUR"), db, admin)
     assert e.value.status_code == 400
     assert "same type" in e.value.detail
 
@@ -349,7 +353,7 @@ async def test_an_admin_cannot_hand_pick_past_the_highest_credit(db):
     assert second["adminRef"] is None
     with pytest.raises(HTTPException) as e:
         await txr.account_submit(
-            second["id"], AccountSubmitRequest(adminRef="SAV", adminBankDetails="x"), db, admin)
+            second["id"], AccountSubmitRequest(adminRef="SAV"), db, admin)
     assert e.value.status_code == 400
     assert "Highest Credit" in e.value.detail
 
@@ -364,7 +368,7 @@ async def test_an_admin_cannot_hand_pick_an_inactive_account(db):
 
     with pytest.raises(HTTPException) as e:
         await txr.account_submit(
-            out["id"], AccountSubmitRequest(adminRef="OFF", adminBankDetails="x"), db, admin)
+            out["id"], AccountSubmitRequest(adminRef="OFF"), db, admin)
     assert e.value.status_code == 400
     assert "INACTIVE" in e.value.detail
 
@@ -378,7 +382,7 @@ async def test_an_admin_cannot_hand_pick_an_account_with_no_credit_limit(db):
 
     with pytest.raises(HTTPException) as e:
         await txr.account_submit(
-            out["id"], AccountSubmitRequest(adminRef="NOLIM", adminBankDetails="x"), db, admin)
+            out["id"], AccountSubmitRequest(adminRef="NOLIM"), db, admin)
     assert e.value.status_code == 400
     assert "Highest Credit" in e.value.detail
 
@@ -391,7 +395,7 @@ async def test_an_admin_cannot_hand_pick_an_account_that_does_not_exist(db):
 
     with pytest.raises(HTTPException) as e:
         await txr.account_submit(
-            out["id"], AccountSubmitRequest(adminRef="ACC9999", adminBankDetails="x"), db, admin)
+            out["id"], AccountSubmitRequest(adminRef="ACC9999"), db, admin)
     assert e.value.status_code == 400
 
 
@@ -406,7 +410,7 @@ async def test_a_manual_send_that_passes_every_rule_is_accepted_exactly_at_the_c
     exact = await txr.create_deposit(_dep(amount=40000, accountType="SAVINGS"), db, merchant)
     # The engine already placed it; a manual re-send of the same account must also be accepted.
     sent = await txr.account_submit(
-        exact["id"], AccountSubmitRequest(adminRef="SAV", adminBankDetails="x"), db, admin)
+        exact["id"], AccountSubmitRequest(adminRef="SAV"), db, admin)
     assert sent["adminRef"] == "SAV"
 
 
@@ -434,7 +438,7 @@ async def test_a_manually_assigned_account_is_visible_to_the_admin(db):
     out = await _stuck(db, merchant)
     await _account(db, "SAV", name="s", credit=500000.0, atype=AccountType.SAVINGS)
     await txr.account_submit(
-        out["id"], AccountSubmitRequest(adminRef="SAV", adminBankDetails="x"), db, admin)
+        out["id"], AccountSubmitRequest(adminRef="SAV"), db, admin)
 
     detail = await txr.get_transaction_detail(out["id"], db, admin)
     assert detail["adminRef"] == "SAV"
