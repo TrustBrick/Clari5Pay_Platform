@@ -69,6 +69,44 @@ export const internalApproverLabel = (
   return role && role !== '—' ? `${person} (${role})` : person;
 };
 
+// The PERSON who approved, on the merchant's side.
+//
+// It deliberately reads neither `approvedBy` nor the supervisor/manager name columns, because
+// neither identifies a person:
+//   • `approvedBy` is written by whoever last touched the request. The Admin's account-send and
+//     card-link steps overwrite it with the ADMIN's name, and deposit auto-allocation writes
+//     "System (Auto Allocation)" — which is how "System (Auto Allocation) (Manager)" appeared.
+//   • `supervisorName` / `managerName` store the reviewer's `name`, and for a merchant user that
+//     is the BUSINESS. Every operator at one client shares it, so it can say BELLAGIO but never
+//     which person at BELLAGIO approved.
+// `approverUsername` / `approverFullName` are stamped by the review gate itself and are the only
+// fields that identify the individual.
+//
+// When no person was recorded the row shows the ROLE alone. That is the honest reading: the
+// merchant's workflow recorded no approver, and naming the Admin or the business there would be
+// asserting something untrue rather than merely unhelpful. The Admin keeps its own column.
+export const merchantApproverName = (row: {
+  approverFullName?: string | null; approverUsername?: string | null;
+}): string =>
+  String(row.approverFullName || '').trim() || String(row.approverUsername || '').trim();
+
+// There is deliberately NO fallback to `approvedBy`. It was tried, and production settled it:
+// of 306 transactions, the fallback supplied an ADMIN's name on 100 rows and a legitimate one on
+// ZERO. Admins appear there because the account-send and card-link steps write `approved_by`, and
+// the guard that skipped them — "same as the Admin in the next column" — misses every row whose
+// `processed_by` is empty. A column whose whole purpose is to name the MERCHANT'S approver is
+// worse than useless when it names an Admin instead, so a row with no recorded merchant approver
+// shows the ROLE alone. That is true, and it is never the wrong person.
+
+// "Name (Role)" for that person, for INTERNAL screens entitled to see it. Falls back to the role
+// alone — never to a business or an Admin name.
+export const merchantApproverLabel = (row: {
+  type?: string | null; approverRole?: string | null;
+  approverFullName?: string | null; approverUsername?: string | null;
+  approvedBy?: string | null; processedBy?: string | null;
+  merchant?: string | null; business?: string | null;
+}): string => internalApproverLabel(merchantApproverName(row), row.type, row.approverRole);
+
 // Roles that belong to Clari5Pay, not to the client. Their real names/usernames are recorded in
 // the internal audit log and shown on internal/admin screens, but never surfaced to the client —
 // a client-facing row attributed to one of these shows the role alone. That an Admin acted is

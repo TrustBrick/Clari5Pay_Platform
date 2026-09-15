@@ -252,6 +252,13 @@ class Transaction(Base):
     # The chosen approver's role (SUPERVISOR / MANAGER) — lets the review status DISPLAY as the
     # selected person's role (e.g. a deposit sent to a Manager reads "Manager Review"). NULL on Prod.
     approver_role: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # WHO approved, as a person. `supervisor_name` / `manager_name` store `reviewer.name`, and for
+    # a merchant user that is the BUSINESS name — every operator at one client shares it, so those
+    # columns can never say which person acted. The login username always can, and `full_name` is
+    # the display name when the user has set one. Recorded at the moment of approval, alongside the
+    # role, so the pair answers "who, in what capacity" without a join.
+    approver_username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    approver_full_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     # UPI/QR deposits: when the generated QR stops being valid (15 minutes after it is issued/regenerated).
     qr_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
