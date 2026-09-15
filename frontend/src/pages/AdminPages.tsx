@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount, proofBatches, proofList, isCdmDeposit, CDM_CHECKS, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, openDataUrl, downloadDataUrl, formatBytes, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount, proofBatches, proofList, isCdmDeposit, CDM_CHECKS, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
 import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
@@ -22,7 +22,7 @@ import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLo
 import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappStats, TelegramStatus } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts, MerchantAnalyticsRow } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, AccountLedgerEntry, AllocationDecision, PayoutAllocation, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
+import type { Transaction, User, Account, AccountBalance, AccountLedgerEntry, AccountPaymentImage, AllocationDecision, PayoutAllocation, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
@@ -2089,6 +2089,60 @@ export const AdminAccountsPage: React.FC = () => {
   const [editModes, setEditModes] = useState(false);
   const [savingModes, setSavingModes] = useState(false);
 
+  // Payment image, inside the Details popup. Configured ONCE per account: every deposit routed to
+  // this account shows it to the merchant, so nothing is uploaded per transaction. It is never an
+  // allocation input — an account with no image is exactly as eligible as one with an image.
+  // The server re-validates type, size and actual content; the checks here only save a round-trip.
+  const [payImg, setPayImg] = useState<AccountPaymentImage | null>(null);
+  const [payImgLoading, setPayImgLoading] = useState(false);
+  const [payImgBusy, setPayImgBusy] = useState(false);
+  const [confirmRemoveImg, setConfirmRemoveImg] = useState(false);
+  const payImgInput = useRef<HTMLInputElement>(null);
+  const detailRef = detail?.referenceNumber;
+  useEffect(() => {
+    setPayImg(null); setConfirmRemoveImg(false);
+    if (!detailRef) return;
+    let alive = true;
+    setPayImgLoading(true);
+    accountAPI.paymentImage(detailRef)
+      .then(r => { if (alive) setPayImg(r); })
+      .catch(() => { if (alive) showToast('Failed to load the payment image', 'error'); })
+      .finally(() => { if (alive) setPayImgLoading(false); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailRef]);
+  const PAY_IMG_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  const PAY_IMG_MAX = 5 * 1024 * 1024;
+  const onPayImgFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !detail) return;
+    if (!PAY_IMG_TYPES.includes((file.type || '').toLowerCase())) { showToast('Unsupported file type. Allowed: JPG, JPEG, PNG, WEBP.', 'error'); return; }
+    if (file.size > PAY_IMG_MAX) { showToast('The image must be 5 MB or smaller.', 'error'); return; }
+    const replacing = !!payImg?.hasImage;
+    setPayImgBusy(true);
+    try {
+      const saved = await accountAPI.setPaymentImage(detail.referenceNumber, await fileToDataUrl(file));
+      setPayImg(saved);
+      reload();                  // the list's Payment Image column reads the same fact
+      showToast(replacing ? 'Payment image replaced' : 'Payment image uploaded');
+    } catch (err: any) {
+      showToast(err?.response?.data?.detail || 'Failed to upload the payment image', 'error');
+    } finally { setPayImgBusy(false); }
+  };
+  const removePayImg = async () => {
+    if (!detail) return;
+    setPayImgBusy(true);
+    try {
+      setPayImg(await accountAPI.removePaymentImage(detail.referenceNumber));
+      setConfirmRemoveImg(false);
+      reload();
+      showToast('Payment image removed');
+    } catch (err: any) {
+      showToast(err?.response?.data?.detail || 'Failed to remove the payment image', 'error');
+    } finally { setPayImgBusy(false); }
+  };
+
   // Account Limits (Highest Credit / Highest Debit) editing, inside the Details popup.
   // CONFIGURATION only: these never enter a balance calculation, so saving them cannot move
   // Current Balance, Deposits Received, Commission or the accounting ledger below.
@@ -2300,7 +2354,7 @@ export const AdminAccountsPage: React.FC = () => {
                 {/* Deposits Received, Commission and Manual Adjustment deliberately live in the
                     View popup, not here — the list stays scannable and the money detail sits with
                     the account it belongs to. The underlying data is unchanged. */}
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Used Today','Remaining','Highest Debit','Debit Used','Debit Left','Available','Users','Status','Details'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Used Today','Remaining','Highest Debit','Debit Used','Debit Left','Available','Users','Payment Image','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -2337,6 +2391,13 @@ export const AdminAccountsPage: React.FC = () => {
                     {bal && (bal.userCount ?? 0) > 0
                       ? <Btn size="sm" variant="ghost" onClick={()=>openAcctUsers(a)}><Icon name="users" size={14} /> {bal.userCount} user{(bal.userCount ?? 0)>1?'s':''}</Btn>
                       : <span style={{ color:T.textLight }}>0</span>}
+                  </td>
+                  {/* Informational only — whether the merchant is shown an image for deposits
+                      routed here. It never affects which account a deposit is allocated to. */}
+                  <td style={{ padding:'11px 14px' }}>
+                    {a.hasPaymentImage
+                      ? <span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:T.successBg,color:T.success }}>Configured</span>
+                      : <span style={{ color:T.textLight }}>—</span>}
                   </td>
                   <td style={{ padding:'11px 14px' }}>
                     <Btn size="sm" variant={a.status==='ACTIVE'?'success':'danger'} onClick={()=>setToggleAcc(a)}>{a.status==='ACTIVE'?'● ACTIVE':'○ INACTIVE'}</Btn>
@@ -2561,6 +2622,66 @@ export const AdminAccountsPage: React.FC = () => {
               </span>
             </div>
           ))}
+
+          {/* ── Payment Image ─────────────────────────────────────────
+              Uploaded ONCE against this account. Every deposit routed here — automatically or by
+              an Admin's send — shows the merchant this image with the account details, so it is
+              never uploaded per transaction. Informational only: it is not an allocation rule,
+              and removing it leaves the account exactly as eligible as before. */}
+          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap' }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>Payment Image</p>
+              {canEditLimits && (
+                <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
+                  <input ref={payImgInput} type="file" accept="image/jpeg,image/jpg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={onPayImgFile} style={{ display:'none' }} />
+                  <Btn size="sm" variant="secondary" disabled={payImgBusy || payImgLoading} onClick={()=>payImgInput.current?.click()}>
+                    <Icon name="upload" size={13} /> {payImg?.hasImage ? 'Replace Image' : 'Upload Image'}
+                  </Btn>
+                  {payImg?.hasImage && !confirmRemoveImg && (
+                    <Btn size="sm" variant="ghost" disabled={payImgBusy} onClick={()=>setConfirmRemoveImg(true)}>Remove</Btn>
+                  )}
+                </div>
+              )}
+            </div>
+            {payImgLoading ? (
+              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Loading…</p>
+            ) : payImg?.hasImage ? (
+              <>
+                {payImg.image
+                  ? <div role="button" tabIndex={0} title="Click to view larger" style={{ cursor:'zoom-in' }}
+                      onClick={()=>openDataUrl(payImg.image!)}
+                      onKeyDown={e=>{ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDataUrl(payImg.image!); } }}>
+                      <ReceiptImage src={payImg.image} alt="Account payment image" />
+                    </div>
+                  : <p style={{ fontSize:12,color:T.danger,margin:0 }}>An image is configured but could not be loaded right now.</p>}
+                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginTop:6 }}>
+                  <span style={{ fontSize:11,color:T.textMuted }}>
+                    {[payImg.uploadedBy && `Uploaded by ${payImg.uploadedBy}`, payImg.uploadedAt && formatDateTime(payImg.uploadedAt), payImg.sizeBytes != null && formatBytes(payImg.sizeBytes)].filter(Boolean).join(' · ')}
+                  </span>
+                  {payImg.image && (
+                    <div style={{ display:'flex',gap:6 }}>
+                      <Btn size="sm" variant="ghost" onClick={()=>openDataUrl(payImg.image!)}><Icon name="view" size={13} /> View</Btn>
+                      <Btn size="sm" variant="ghost" onClick={()=>downloadDataUrl(payImg.image!, `payment-image-${detail.referenceNumber}.${(payImg.contentType || '').includes('png') ? 'png' : (payImg.contentType || '').includes('webp') ? 'webp' : 'jpg'}`)}><Icon name="download" size={13} /> Download</Btn>
+                    </div>
+                  )}
+                </div>
+                {confirmRemoveImg && (
+                  <div style={{ marginTop:10,background:T.dangerBg,borderRadius:10,padding:'10px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap' }}>
+                    <span style={{ fontSize:12,color:T.textMain }}>Remove this image? Deposits routed here will show the account details without an image. The account stays eligible for deposits.</span>
+                    <div style={{ display:'flex',gap:6 }}>
+                      <Btn size="sm" variant="danger" disabled={payImgBusy} onClick={removePayImg}>{payImgBusy ? 'Removing…' : 'Remove Image'}</Btn>
+                      <Btn size="sm" variant="ghost" disabled={payImgBusy} onClick={()=>setConfirmRemoveImg(false)}>Cancel</Btn>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>
+                No payment image configured. Deposits routed to this account show its account details only.
+              </p>
+            )}
+            <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>JPG, JPEG, PNG or WEBP · up to 5 MB · shown to the merchant on every deposit allocated to this account.</p>
+          </div>
 
           {/* ── Account Limits ────────────────────────────────────────
               The account's configured Highest Credit / Highest Debit.

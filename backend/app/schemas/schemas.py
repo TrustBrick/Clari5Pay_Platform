@@ -432,6 +432,15 @@ class AccountOwnFlagUpdate(BaseModel):
     reason: Optional[str] = None
 
 
+class AccountPaymentImageUpload(BaseModel):
+    """Admin upload (or replacement) of one account's bank / payment image.
+
+    ``image`` is a base64 data URL — JPG, JPEG, PNG or WEBP, 5 MB at most, and its bytes must be
+    the image type it claims to be (app.core.uploads.validate_image_content).
+    """
+    image: str
+
+
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────
 class SupportMessageCreate(BaseModel):
     merchant_id: Optional[int] = None  # required when sent by a support agent

@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MemberAccountView, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountPaymentImage, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MemberAccountView, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -574,6 +574,21 @@ export const accountAPI = {
   // server-side like every other Account Management route.
   updateOwnAccount: async (ref: string, isOwnAccount: boolean, reason?: string) => {
     const res = await api.patch<Account>(`/api/accounts/${ref}/own-account`, { is_own_account: isOwnAccount, reason });
+    return res.data;
+  },
+  // ── Account payment image (Account Management, Admin-only) ──
+  // Configured ONCE per receiving account; every deposit routed to the account shows it to the
+  // merchant. Upload and replace are the same call. The server validates type, size and content.
+  paymentImage: async (ref: string) => {
+    const res = await api.get<AccountPaymentImage>(`/api/accounts/${ref}/payment-image`);
+    return res.data;
+  },
+  setPaymentImage: async (ref: string, image: string) => {
+    const res = await api.put<AccountPaymentImage>(`/api/accounts/${ref}/payment-image`, { image });
+    return res.data;
+  },
+  removePaymentImage: async (ref: string) => {
+    const res = await api.delete<AccountPaymentImage>(`/api/accounts/${ref}/payment-image`);
     return res.data;
   },
   // ── Accounting ledger + manual adjustment (Account Management) ──

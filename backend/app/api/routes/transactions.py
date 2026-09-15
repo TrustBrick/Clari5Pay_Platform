@@ -21,6 +21,7 @@ from app.services import tg_notify as tgn
 from app.services import account_ledger as ledger
 from app.services import deposit_allocation as alloc
 from app.services import cdm
+from app.services import account_payment_image
 from app.services import member_account as macct
 from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cached_json
@@ -1705,6 +1706,11 @@ async def get_transaction_detail(
     payload = await _with_payout_legs(
         db, tx, unmask=current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN))
     payload.update({k: v for k, v in _t(tx, full=True).items() if k not in payload})
+    # The payment image configured on the receiving account THIS deposit was routed to, resolved
+    # from the deposit's own admin_ref — never copied onto the row, and never looked up by an
+    # account the viewer names. The viewer was authorized for this transaction just above, which
+    # is the only authorization the image needs: it can only ever be this deposit's own account.
+    payload["accountPaymentImage"] = await account_payment_image.for_transaction(db, tx)
     # Enrich with the creating merchant's risk level for the details view (not stored on the row).
     creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
     payload["riskLevel"] = (creator.risk.value if creator and creator.risk else None)

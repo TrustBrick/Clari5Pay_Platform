@@ -384,6 +384,36 @@ class AccountTransaction(Base):
     transaction_time: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
+class AccountPaymentImage(Base):
+    """The bank / payment image an Admin configures ONCE against a managed receiving account.
+
+    Every deposit later routed to that account shows this same image to the merchant as part of
+    its payment instructions, so the Admin never uploads it per transaction. It is resolved from
+    the deposit's own ``admin_ref`` when the deposit is opened — never copied onto the row.
+
+    Deliberately its OWN table rather than a column on ``account_master``: the allocation engine
+    selects (and row-locks) ``account_master``, and keeping the image out of that model means the
+    engine's queries, and therefore its decisions, are untouched by this feature. The image is an
+    informational payment-instruction asset only — nothing reads it to decide eligibility.
+
+    ``image`` holds what every other upload column holds: a ``storage://<key>`` reference when
+    object storage is enabled, otherwise the validated data URL (see app.core.storage).
+    """
+    __tablename__ = "account_payment_image"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    account_ref: Mapped[str] = mapped_column(
+        String(40), ForeignKey("account_master.reference_number"), unique=True, index=True,
+        nullable=False,
+    )
+    image: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    uploaded_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+
 class AdminUpi(Base):
     """A UPI ID managed by Admins for receiving merchant deposits — the UPI counterpart of
     AccountMaster (bank accounts). Kept separate so the agent can pick a saved UPI instead of

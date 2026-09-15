@@ -302,6 +302,9 @@ export interface Transaction {
   // null here and keeps rendering from adminBankDetails alone. A UPI allocation carries upiId
   // instead of the bank account number / IFSC / branch.
   allocationSnapshot?: AllocatedAccount | null;
+  // Detail fetch only: the payment image configured on THIS deposit's receiving account, resolved
+  // by the server from the deposit's own account. Null when the deposit shows no account image.
+  accountPaymentImage?: DepositAccountImage | null;
   adminUtr?: string | null;
   // Card deposits: the payment gateway link the Admin submitted (Link Requested → Link Submitted).
   paymentLink?: string | null;
@@ -415,7 +418,29 @@ export interface Account {
   // returned as all four — unconfigured means fully capable, never unusable.
   payoutModes?: string[];
   payoutModesConfigured?: boolean;
+  // Whether a payment image is configured on this account. Present on the list / get payloads
+  // only (the edit routes omit it) — so treat undefined as "unknown", not as "no image".
+  hasPaymentImage?: boolean;
   merchantName: string;
+}
+
+/** The bank / payment image an Admin configures once against a receiving account. */
+export interface AccountPaymentImage {
+  referenceNumber: string;
+  hasImage: boolean;
+  image: string | null;          // data URL, or a short-lived presigned URL under object storage
+  contentType: string | null;
+  sizeBytes: number | null;
+  uploadedAt: string | null;
+  uploadedBy: string | null;
+}
+
+/** The payment image of the account a deposit was routed to, on that deposit's detail payload. */
+export interface DepositAccountImage {
+  accountRef: string;
+  hasImage: boolean;             // false → the account simply has none configured
+  image: string | null;
+  contentType: string | null;
 }
 
 export interface AccountMerchantBalance {

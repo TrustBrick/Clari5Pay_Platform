@@ -20,7 +20,7 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { BANK_NAMES } from '../utils/ifsc';
 import { BankLogo, bankLogoIcon } from '../components/BankLogo';
-import type { Transaction, User, SupportMessage, BalanceSummary, MemberAccountView, MerchantBankAccount, NewsPost, AuditLogEntry, Notification, AllocatedAccount } from '../types';
+import type { Transaction, User, SupportMessage, BalanceSummary, MemberAccountView, MerchantBankAccount, NewsPost, AuditLogEntry, Notification, AllocatedAccount, DepositAccountImage } from '../types';
 
 // The Reports module lives in its own file; re-exported here so App.tsx imports stay grouped.
 export { ReportsPage } from './ReportsPage';
@@ -293,6 +293,42 @@ const AllocatedAccountCard: React.FC<{ acct: AllocatedAccount; amount: number }>
   );
 };
 
+// ─── Receiving account's payment image ────────────────────────────────────────
+// The bank / payment image the Admin configured ONCE on the account this deposit was routed to.
+// The server resolves it from the deposit's own account, so this can only ever be that account's
+// image — the browser never names an account and receives nothing about any other. An account with
+// no image configured still takes the deposit; the merchant simply pays from the details above,
+// and this says so rather than leaving an unexplained gap.
+const ACCOUNT_IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/webp': 'webp' };
+const AccountPaymentImagePanel: React.FC<{ img: DepositAccountImage; txRef: string }> = ({ img, txRef }) => {
+  const src = img.hasImage ? img.image : null;
+  const ext = ACCOUNT_IMAGE_EXT[(img.contentType || '').toLowerCase()] || 'png';
+  return (
+    <div style={{ marginTop:14 }}>
+      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Payment Image</p>
+      {src ? (
+        <>
+          <div role="button" tabIndex={0} title="Click to view larger" onClick={()=>openDataUrl(src)}
+            onKeyDown={e=>{ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDataUrl(src); } }}
+            style={{ cursor:'zoom-in' }}>
+            <ReceiptImage src={src} alt="Account payment image" />
+          </div>
+          <div style={{ display:'flex',gap:8,marginTop:6 }}>
+            <Btn size="sm" variant="ghost" onClick={()=>openDataUrl(src)}><Icon name="view" size={14} /> View</Btn>
+            <Btn size="sm" variant="ghost" onClick={()=>downloadDataUrl(src, `payment-image-${txRef}.${ext}`)}><Icon name="download" size={14} /> Download</Btn>
+          </div>
+        </>
+      ) : (
+        <p style={{ fontSize:12,color:T.textMuted,margin:0,background:T.canvas,borderRadius:10,padding:'10px 12px' }}>
+          {img.hasImage
+            ? 'The payment image for this account could not be loaded right now. Use the account details above to pay.'
+            : 'No payment image is configured for this account. Use the account details above to pay.'}
+        </p>
+      )}
+    </div>
+  );
+};
+
 export const MerchantSlipModal: React.FC<{
   tx: Transaction;
   onClose: () => void;
@@ -499,6 +535,10 @@ export const MerchantSlipModal: React.FC<{
             <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Awaiting updates from Agent.</p>}
         </div>
 
+        {/* The payment image configured on this deposit's receiving account (Account Management),
+            shown with the account it belongs to. Arrives with the detail fetch; absent for types
+            that are not paid into a managed account (Cash, Crypto, Card, CDM). */}
+        {record.accountPaymentImage && <AccountPaymentImagePanel img={record.accountPaymentImage} txRef={tx.ref} />}
         {/* A custom uploaded image overrides the auto-generated card; otherwise show the auto card PNG. */}
         {bankImageSrc
           ? <ReceiptImage src={bankImageSrc} alt="Bank details" />

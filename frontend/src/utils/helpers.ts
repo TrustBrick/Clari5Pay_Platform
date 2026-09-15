@@ -464,9 +464,12 @@ export const depositDetailLabel = (key: string) =>
   key.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()).trim();
 
 // Deposit-type dropdown options for the request form (code → display label).
+// "Bank Transfer" (BANK) is no longer offered for a NEW request — the specific rails IMPS / NEFT /
+// RTGS replace it. It is removed from THIS list only: DEPOSIT_TYPE_LABELS above still names it, so
+// every historical BANK deposit keeps rendering as "Bank Transfer" in history, reports, exports
+// and filters, and the backend still reads and processes those rows exactly as before.
 export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'UPI', label: 'UPI' },
-  { value: 'BANK', label: 'Bank Transfer' },
   { value: 'IMPS', label: 'IMPS' },
   { value: 'NEFT', label: 'NEFT' },
   { value: 'RTGS', label: 'RTGS' },
