@@ -25,7 +25,7 @@ from app.services import account_payment_image
 from app.services import member_account as macct
 from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cached_json
-from app.core.uploads import validate_upload, IMAGE_TYPES, IMAGE_PDF_TYPES
+from app.core.uploads import IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
 from app.core import proofs as proofs_core
 from app.core.config import settings
@@ -333,10 +333,12 @@ async def _add_merchant_proofs(db: AsyncSession, tx: Transaction, new: list[str]
     tx.merchant_proof = _parse_proofs(tx.merchant_proofs)[0]
 
 
-def _validate_bank_image(img: str | None) -> str | None:
-    """Validate the admin's uploaded bank-details image (JPG/JPEG/PNG/WEBP, size-limited)."""
-    return _store(validate_upload(img, allowed=IMAGE_TYPES, label="bank-details image"),
-                  field="admin_bank_image")
+# A deposit's payment image comes from its receiving account (Account Management), never from the
+# deposit itself. Historical rows keep whatever admin_proof / admin_bank_image they were sent with.
+PER_DEPOSIT_IMAGE_RETIRED_MSG = (
+    "Images are no longer uploaded per deposit. The payment image is configured once on the "
+    "receiving account in Account Management and is shown to the merchant automatically. "
+    "Reload the page and send the account again.")
 
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
@@ -3489,9 +3491,13 @@ async def account_submit(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """Admin selects a managed account, the app sends its details/image, status → Account Submitted.
-    If the admin uploads a custom bank-details image, it overrides the auto-generated card for
-    this transaction (the structured bank details are not stored/shown).
+    """Admin selects a managed account, the app sends its details, status → Account Submitted.
+
+    No image travels with this call. The payment image a merchant sees is the one configured ONCE
+    on the receiving account in Account Management, resolved from ``admin_ref`` whenever the
+    deposit is opened (services/account_payment_image). A per-deposit image — the old custom
+    bank-details upload or the browser-generated account card — is refused before anything is
+    written, so a deposit can never carry an image that is not its own account's.
 
     A Card deposit takes the same hop with a different payload: the Admin submits the externally
     generated payment gateway link instead of an account, and the request moves Link Requested →
@@ -3499,7 +3505,9 @@ async def account_submit(
     tx = await _get_tx(tx_id, db)
     if _is_card_deposit(tx):
         return await _card_link_submit(db, tx, data, actor)
-    if not (data.adminBankDetails or data.adminUpiId or data.adminProof or data.adminBankImage):
+    if data.adminProof or data.adminBankImage:
+        raise HTTPException(status_code=400, detail=PER_DEPOSIT_IMAGE_RETIRED_MSG)
+    if not (data.adminBankDetails or data.adminUpiId):
         raise HTTPException(
             status_code=400,
             detail="Select an account to send",
@@ -3517,17 +3525,8 @@ async def account_submit(
         if not (data.adminRef or "").strip().upper().startswith("ACC"):
             raise HTTPException(status_code=400,
                                 detail="Select a managed bank account for this CDM deposit.")
-    if data.adminBankImage:
-        # Custom image becomes the official bank details — skip the auto-generated card.
-        tx.admin_bank_image = _validate_bank_image(data.adminBankImage)
-        tx.admin_bank_details = None
-    else:
-        tx.admin_bank_details = data.adminBankDetails
+    tx.admin_bank_details = data.adminBankDetails
     tx.admin_upi_id = data.adminUpiId
-    if data.adminProof:
-        tx.admin_proof = _store(
-            validate_upload(data.adminProof, allowed=IMAGE_TYPES, label="bank-details image"),
-            field="admin_proof")
     ref = data.adminRef
     # A sent UPI always belongs to a receiving account → credit that parent account so its
     # deposits (bank + UPI) roll up together. No QR is generated.

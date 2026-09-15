@@ -234,9 +234,12 @@ class SettlementCreate(BaseModel):
 
 class AccountSubmitRequest(BaseModel):
     adminRef: Optional[str] = None
+    # RETIRED: per-deposit images. Kept on the schema only so a stale client that still sends one is
+    # refused with a clear 400 instead of having the file silently dropped. The merchant's payment
+    # image comes from the receiving account (Account Management), never from this request.
     adminProof: Optional[str] = None
     adminBankDetails: Optional[str] = None
-    adminBankImage: Optional[str] = None   # custom bank-details image (overrides the auto card)
+    adminBankImage: Optional[str] = None
     adminUpiId: Optional[str] = None
     # CARD deposits only: the payment gateway link the Admin pastes in place of an account.
     paymentLink: Optional[str] = None

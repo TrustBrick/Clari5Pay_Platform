@@ -509,3 +509,111 @@ async def test_image_changes_never_modify_any_transaction_row(db):
     assert detail["depositType"] == "BANK"
     assert detail["adminProof"] == _png("sent-card")
     assert detail["adminBankDetails"] == historical.admin_bank_details
+
+
+# ── J. Manual assignment: the Admin picks the account, the image follows the account ───────────
+# The per-deposit image upload is gone. Whether the engine placed the deposit or an Admin sent the
+# account by hand, the merchant receives the image configured on THAT account and nothing else.
+
+async def _unplaced(db, merchant, member_id: str) -> dict:
+    """A deposit the engine could not place (no accounts exist yet) — the manual-send case."""
+    out = await txr.create_deposit(_payload(40000, memberId=member_id), db, merchant)
+    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT and out["adminRef"] is None
+    return out
+
+
+async def _send(db, tx_id: str, ref: str, **kw):
+    return await txr.account_submit(
+        tx_id, txr.AccountSubmitRequest(adminRef=ref, adminBankDetails=f"Account {ref}", **kw), db, _admin())
+
+
+@pytest.mark.asyncio
+async def test_manual_assignment_shows_exactly_the_assigned_accounts_image(db):
+    merchant = await _merchant(db)
+    first = await _unplaced(db, merchant, "MBR1")
+    second = await _unplaced(db, merchant, "MBR2")
+    await _account(db, "ACC0000013", name="Account A", bank="HDFC Bank")
+    await _account(db, "ACC0000014", name="Account B", bank="ICICI Bank")
+    await _upload(db, "ACC0000013", _png("HDFC-A"))
+    await _upload(db, "ACC0000014", _png("ICICI-B"))
+
+    # Tests 3-5: assigned to A → merchant receives A, never B.
+    await _send(db, first["id"], "ACC0000013")
+    detail_a = await txr.get_transaction_detail(first["id"], db, merchant)
+    assert detail_a["accountPaymentImage"] == {
+        "accountRef": "ACC0000013", "hasImage": True, "image": _png("HDFC-A"), "contentType": "image/png"}
+    assert _png("ICICI-B") not in json.dumps(detail_a, default=str)
+
+    # Tests 6-8: assigned to B → merchant receives B, never A.
+    await _send(db, second["id"], "ACC0000014")
+    detail_b = await txr.get_transaction_detail(second["id"], db, merchant)
+    assert detail_b["accountPaymentImage"]["accountRef"] == "ACC0000014"
+    assert detail_b["accountPaymentImage"]["image"] == _png("ICICI-B")
+    assert _png("HDFC-A") not in json.dumps(detail_b, default=str)
+
+    # And nothing was copied onto either deposit row.
+    for raw in await _raw_transactions(db):
+        assert raw["admin_proof"] is None and raw["admin_bank_image"] is None
+
+
+@pytest.mark.asyncio
+async def test_manual_send_to_an_account_with_no_image_still_works_and_says_so(db):
+    merchant = await _merchant(db)
+    out = await _unplaced(db, merchant, "MBR1")
+    await _account(db, "ACC1", name="No image")
+
+    sent = await _send(db, out["id"], "ACC1")
+
+    assert sent["status"] == TxStatus.ACCOUNT_SUBMITTED and sent["adminRef"] == "ACC1"
+    detail = await txr.get_transaction_detail(out["id"], db, merchant)
+    assert detail["accountPaymentImage"] == {"accountRef": "ACC1", "hasImage": False, "image": None, "contentType": None}
+    assert detail["adminBankDetails"] == "Account ACC1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["adminProof", "adminBankImage"])
+async def test_a_per_deposit_image_is_refused_and_nothing_is_written(db, field):
+    """Test 13, server side: the removed upload cannot be reached by calling the API directly."""
+    merchant = await _merchant(db)
+    out = await _unplaced(db, merchant, "MBR1")
+    await _account(db, "ACC1", name="Account A")
+    await _upload(db, "ACC1", _png("A"))
+    before = await _raw_transactions(db)
+
+    with pytest.raises(HTTPException) as e:
+        await _send(db, out["id"], "ACC1", **{field: _png("smuggled")})
+
+    assert e.value.status_code == 400 and "Account Management" in e.value.detail
+    assert await _raw_transactions(db) == before           # status, admin_ref, image columns all untouched
+    # Also refused with no account named at all (the old "image only" send).
+    with pytest.raises(HTTPException) as e:
+        await txr.account_submit(out["id"], txr.AccountSubmitRequest(**{field: _png("smuggled")}), db, _admin())
+    assert e.value.status_code == 400
+    assert await _raw_transactions(db) == before
+
+
+@pytest.mark.asyncio
+async def test_a_replaced_image_is_what_later_deposits_on_the_account_receive(db):
+    """Test 10: replace once in Account Management — no re-upload per deposit."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1", name="Account A")
+    await _upload(db, "ACC1", _png("v1"))
+    earlier = await txr.create_deposit(_payload(1000, memberId="MBR1"), db, merchant)
+    assert (await txr.get_transaction_detail(earlier["id"], db, merchant))["accountPaymentImage"]["image"] == _png("v1")
+
+    await _upload(db, "ACC1", _png("v2"))
+    later = await txr.create_deposit(_payload(1000, memberId="MBR2"), db, merchant)
+
+    detail = await txr.get_transaction_detail(later["id"], db, merchant)
+    assert later["adminRef"] == "ACC1" and detail["accountPaymentImage"]["image"] == _png("v2")
+    assert _png("v1") not in json.dumps(detail, default=str)
+
+
+def test_the_merchant_path_never_takes_an_account_reference():
+    """Test 11: nothing a merchant can call accepts an account reference to resolve an image by.
+
+    The detail route takes only the transaction id; the resolver takes only the transaction. The
+    account-image routes that DO take a reference are Admin-only (tested above)."""
+    detail_params = set(inspect.signature(txr.get_transaction_detail).parameters)
+    assert detail_params == {"tx_id", "db", "current_user"}
+    assert set(inspect.signature(payimg.for_transaction).parameters) == {"db", "tx"}

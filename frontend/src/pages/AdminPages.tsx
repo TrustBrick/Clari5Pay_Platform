@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
 import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, openDataUrl, downloadDataUrl, formatBytes, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount, proofBatches, proofList, isCdmDeposit, CDM_CHECKS, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
-import { accountToPng } from '../utils/image';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { BANK_NAMES } from '../utils/ifsc';
@@ -83,7 +82,6 @@ const RequestModal: React.FC<{
   // Receipts for this payout. A payment split across several transfers has a slip per leg, so
   // any number may be attached; the server validates each file exactly as before.
   const [receipts, setReceipts] = useState<string[]>([]);
-  const [bankImage, setBankImage] = useState<string | null>(null);   // optional custom bank-details image
   const [paymentLink, setPaymentLink] = useState('');                // Card: the generated gateway link
   const [payUtr, setPayUtr] = useState('');
   // ── Payout details (withdrawal completion) ────────────────────────────────
@@ -271,15 +269,6 @@ const RequestModal: React.FC<{
     adminUpiAPI.listActive().then(rows => setLinkedUpis(rows.filter(u => u.accountRef))).catch(()=>{});
   }, [chooseStep]);
 
-  // Optional custom Bank-Details image (JPG/JPEG/PNG/WEBP). When set, it overrides the auto card.
-  const BANK_IMG_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-  const onBankImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    if (!BANK_IMG_TYPES.includes(f.type)) { showToast('Allowed image types: JPG, JPEG, PNG, WEBP', 'error'); return; }
-    setBankImage(await fileToDataUrl(f));
-  };
-
   // The intended fix for a request the engine could not place: correct the configuration, then
   // re-run the engine. The Admin never names an account here — that is the whole point.
   // The recorded reason the engine could not place this request. Fetched only for the exception
@@ -323,29 +312,22 @@ const RequestModal: React.FC<{
 
   const sendAccount = async () => {
     const acc = accounts.find(a => a.referenceNumber === accountRef);
-    if (!acc && !bankImage) { showToast('Select an account or upload a bank details image', 'error'); return; }
-    // A CDM request must name a real managed account — a bank-details image alone would leave
-    // nothing to check the later bank credit against. The server enforces this too.
-    if (isCdm && !acc) { showToast('Select the managed bank account for this CDM deposit', 'error'); return; }
+    if (!acc) { showToast(isCdm ? 'Select the managed bank account for this CDM deposit' : 'Select an account to send', 'error'); return; }
     setSaving(true);
     try {
-      if (bankImage) {
-        // Custom image becomes the official bank details — the auto card is not generated.
-        await transactionAPI.submitAccount(tx.id, { adminBankImage: bankImage, adminRef: acc?.referenceNumber });
-      } else {
-        const png = accountToPng(acc!);
-        const summary = [
-          `Account Name: ${acc!.accountName}`,
-          `Bank: ${acc!.bankName}`,
-          `A/C: ${acc!.accountNumber}`,
-          `IFSC: ${acc!.ifscCode}`,
-          `Branch: ${acc!.branch}`,
-        ].join('\n');
-        await transactionAPI.submitAccount(tx.id, { adminProof: png, adminBankDetails: summary, adminRef: acc!.referenceNumber });
-      }
+      // Only the account travels. Its payment image is the one configured in Account Management,
+      // which the server resolves from this account for the merchant — nothing is uploaded here.
+      const summary = [
+        `Account Name: ${acc.accountName}`,
+        `Bank: ${acc.bankName}`,
+        `A/C: ${acc.accountNumber}`,
+        `IFSC: ${acc.ifscCode}`,
+        `Branch: ${acc.branch}`,
+      ].join('\n');
+      await transactionAPI.submitAccount(tx.id, { adminBankDetails: summary, adminRef: acc.referenceNumber });
       showToast(`${tx.ref} — account details sent`);
       onDone?.(); onClose();
-    } catch { showToast('Failed to send account', 'error'); }
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to send account', 'error'); }
     finally { setSaving(false); }
   };
 
@@ -553,6 +535,15 @@ const RequestModal: React.FC<{
                   {tx.hasAdminBankImage && !tx.adminBankDetails && <p style={{ margin:0,color:T.textMuted }}>Custom bank details image sent.</p>}
                 </div>
               ) : <div style={{ padding:24,textAlign:'center',color:T.textMuted,background:T.canvas,borderRadius:10,fontSize:12 }}>Not sent yet</div>}
+              {/* What the merchant is shown: the payment image configured on THIS deposit's receiving
+                  account, resolved by the server from the deposit itself. */}
+              {record.accountPaymentImage && (record.accountPaymentImage.hasImage && record.accountPaymentImage.image
+                ? <ReceiptImage src={record.accountPaymentImage.image} alt="Account payment image" />
+                : <p style={{ fontSize:12,color:T.textMuted,margin:'8px 0 0' }}>
+                    {record.accountPaymentImage.hasImage ? 'The payment image for this account could not be loaded right now.' : 'No payment image is configured for this account.'}
+                  </p>)}
+              {/* Historical requests only: images that were attached per deposit before the payment
+                  image moved to Account Management. No new request carries one. */}
               {imgs.adminProof && <ReceiptImage src={imgs.adminProof} alt="Account details" />}
               {imgs.adminBankImage && <ReceiptImage src={imgs.adminBankImage} alt="Bank details" />}
             </>
@@ -764,21 +755,22 @@ const RequestModal: React.FC<{
               {reusedRef && accountRef === reusedRef && (
                 <p style={{ fontSize:11,color:T.success,margin:'-8px 0 10px',fontWeight:600 }}><Icon name="refresh" size={12} /> Reused from Member {tx.memberId}'s previous deposit — change it if needed.</p>
               )}
-              <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>A PNG of the selected account is auto-generated and sent to the merchant.</p>
-              {/* Optional: upload a custom bank-details image. When set, it overrides the auto card. */}
-              <div style={{ marginBottom:12,paddingTop:12,borderTop:`1px solid ${T.borderLight}` }}>
-                <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:6 }}>Upload Bank Details Image (optional)</p>
-                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={onBankImage} style={{ fontSize:12 }} />
-                {bankImage && (
-                  <div style={{ marginTop:8 }}>
-                    <img src={bankImage} alt="Bank details preview" style={{ display:'block',maxWidth:'100%',maxHeight:180,objectFit:'contain',borderRadius:10,border:`1px solid ${T.border}`,background:T.canvas }} />
-                    <Btn size="sm" variant="ghost" style={{ marginTop:6 }} onClick={()=>setBankImage(null)}><Icon name="reject" size={13} /> Remove Image</Btn>
-                  </div>
-                )}
-                <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>JPG, JPEG, PNG or WEBP. Re-select to replace. If uploaded, this image is sent instead of the auto-generated card.</p>
-              </div>
+              {/* No image is uploaded per deposit: the merchant is shown the payment image already
+                  configured on the chosen account in Account Management. */}
+              {(() => {
+                const chosen = accounts.find(a => a.referenceNumber === accountRef);
+                return (
+                  <p style={{ fontSize:11,color:T.textMuted,margin:'0 0 12px' }}>
+                    {!chosen
+                      ? "The merchant receives the chosen account's details and the payment image configured for it in Account Management."
+                      : chosen.hasPaymentImage === false
+                        ? 'No payment image is configured for this account. The merchant will see the account details only.'
+                        : "The merchant receives this account's details and its Account Management payment image."}
+                  </p>
+                );
+              })()}
               <div style={{ display:'flex',gap:10 }}>
-                <Btn onClick={sendAccount} disabled={saving||(!accountRef && !bankImage)}>{saving ? 'Sending...' : (bankImage ? <><Icon name="upload-image" size={14} /> Send Bank Details Image</> : <><Icon name="bank" size={14} /> Send Account</>)}</Btn>
+                <Btn onClick={sendAccount} disabled={saving||!accountRef}>{saving ? 'Sending...' : <><Icon name="bank" size={14} /> Send Account</>}</Btn>
                 <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
               </div>
             </>

@@ -539,7 +539,9 @@ export const MerchantSlipModal: React.FC<{
             shown with the account it belongs to. Arrives with the detail fetch; absent for types
             that are not paid into a managed account (Cash, Crypto, Card, CDM). */}
         {record.accountPaymentImage && <AccountPaymentImagePanel img={record.accountPaymentImage} txRef={tx.ref} />}
-        {/* A custom uploaded image overrides the auto-generated card; otherwise show the auto card PNG. */}
+        {/* Historical requests only: an image attached to the deposit itself before payment images
+            moved to Account Management. New requests never carry one, so they show only the
+            account's own image above. */}
         {bankImageSrc
           ? <ReceiptImage src={bankImageSrc} alt="Bank details" />
           : imgs.adminProof && <ReceiptImage src={imgs.adminProof} alt="Admin details" />}
