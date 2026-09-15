@@ -234,7 +234,7 @@ async def test_an_ordinary_bank_deposit_is_still_allocated_automatically(db):
     await _account(db, "ACC1", credit=500000.0)
 
     out = await txr.create_deposit(
-        DepositCreate(amount=45000.0, depositType="BANK", memberName="M", memberId="MBR2",
+        DepositCreate(amount=45000.0, depositType="IMPS", memberName="M", memberId="MBR2",
                       accountHolder="M", accountNumber="999", ifsc="HDFC0001234",
                       bankName="HDFC Bank", accountType="CURRENT"), db, merchant)
 
@@ -819,7 +819,7 @@ async def test_a_non_cdm_deposit_is_not_gated_by_the_cdm_checklist(db):
     merchant = await _merchant(db)
     await _account(db, "ACC1", credit=500000.0)
     out = await txr.create_deposit(
-        DepositCreate(amount=45000.0, depositType="BANK", memberName="M", memberId="MBR2",
+        DepositCreate(amount=45000.0, depositType="IMPS", memberName="M", memberId="MBR2",
                       accountHolder="M", accountNumber="999", ifsc="HDFC0001234",
                       bankName="HDFC Bank", accountType="CURRENT"), db, merchant)
     await txr.submit_slip(out["id"], SlipRequest(merchantProofs=[RECEIPT], merchantRef="U1"),

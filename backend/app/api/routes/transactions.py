@@ -81,6 +81,28 @@ CARD_OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR")
 CARD_PAYABLE_STATUSES = (TxStatus.ACCOUNT_SUBMITTED, TxStatus.RESUBMITTED)
 
 
+# ─── Bank Transfer: retired for NEW deposit requests ──────────────────────────
+# "Bank Transfer" (deposit_type='BANK') is no longer a deposit type a request can be raised with —
+# the specific rails IMPS / NEFT / RTGS replace it. This is a CREATION rule only, enforced in
+# create_deposit alone. Every existing BANK deposit stays exactly as it is: it is still listed,
+# opened, reported, exported, reviewed, completed and — while unplaced — retried, because every
+# one of those paths reads the stored deposit_type rather than asking whether a new request may
+# use it. Nothing here rewrites, migrates or hides a stored row, and the allocation engine still
+# serves BANK so a historical request can finish its lifecycle.
+#
+# Compared after removing case, spaces, underscores and hyphens, so " bank ", "Bank Transfer" and
+# "BANK_TRANSFER" cannot slip past as a differently-spelled BANK.
+RETIRED_NEW_DEPOSIT_TYPES = ("BANK", "BANKTRANSFER")
+BANK_TRANSFER_RETIRED_MSG = ("Bank Transfer is no longer available for new deposit requests. "
+                             "Select UPI, IMPS, NEFT or RTGS instead.")
+
+
+def _is_retired_new_deposit_type(deposit_type: str | None) -> bool:
+    """True when a NEW deposit request names Bank Transfer, however it is spelled."""
+    key = "".join(ch for ch in str(deposit_type or "").upper() if ch not in " _-\t")
+    return key in RETIRED_NEW_DEPOSIT_TYPES
+
+
 def _is_card_deposit(tx: Transaction) -> bool:
     """True for a deposit raised with Transaction Type = Card."""
     return tx.type.value.startswith("DEPOSIT") and (tx.deposit_type or "").upper() == CARD_DEPOSIT_TYPE
@@ -3078,6 +3100,11 @@ async def create_deposit(
     current_user: User = Depends(get_current_user),
 ):
     _forbid_checker_create(current_user)
+    # Bank Transfer is retired for new requests. Refused FIRST — before any member lookup, proof
+    # upload or saved-account write — so a refused request leaves nothing behind. Creation only:
+    # existing BANK deposits are never checked against this (see RETIRED_NEW_DEPOSIT_TYPES).
+    if _is_retired_new_deposit_type(data.depositType):
+        raise HTTPException(status_code=400, detail=BANK_TRANSFER_RETIRED_MSG)
     _require_amount(data.amount)
     data.memberId = normalize_member_id(data.memberId)
     # Membership lookup + capture rule (shared service): existing ID keeps its name,

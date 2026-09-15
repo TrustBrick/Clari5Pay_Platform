@@ -15,7 +15,8 @@ instructions. The properties worth pinning down:
      match their declared type are accepted; URLs and storage references are refused, so a caller
      can never point an account at an arbitrary stored object.
   5. **History is untouched.** Uploading, replacing or removing an image changes no transaction
-     row, and historical Bank Transfer deposits still read and process as they always have.
+     row, and historical Bank Transfer deposits still read as they always have (new Bank Transfer
+     requests are refused — see tests/test_bank_transfer_retired.py).
 
 NO PRODUCTION REFERENCE IDS ARE CONSUMED — ``_next_ref`` is patched to a counter.
 
@@ -508,15 +509,3 @@ async def test_image_changes_never_modify_any_transaction_row(db):
     assert detail["depositType"] == "BANK"
     assert detail["adminProof"] == _png("sent-card")
     assert detail["adminBankDetails"] == historical.admin_bank_details
-
-
-@pytest.mark.asyncio
-async def test_the_server_still_accepts_a_bank_transfer_deposit(db):
-    """Bank Transfer was removed from the NEW-request selector only (a UI/business-option change).
-    The server keeps reading and processing BANK exactly as before, so historical rows, retries and
-    any existing API caller are unaffected."""
-    merchant = await _merchant(db)
-    await _account(db, "ACC1", name="Account A")
-    out = await txr.create_deposit(_payload(1000, depositType="BANK"), db, merchant)
-    assert out["status"] == TxStatus.ACCOUNT_SUBMITTED and out["depositType"] == "BANK"
-    assert "BANK" in alloc.ALLOCATABLE_DEPOSIT_TYPES

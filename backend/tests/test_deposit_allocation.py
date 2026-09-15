@@ -136,7 +136,10 @@ async def _merchant(db: AsyncSession, uid: int = 7) -> User:
 
 def _payload(amount: float, **kw) -> DepositCreate:
     base = dict(
-        amount=amount, depositType="BANK", memberName="Test Member", memberId="MBR1",
+        # IMPS: an account-backed rail the engine allocates. Bank Transfer (BANK) can no longer be
+        # raised as a NEW request (transactions.RETIRED_NEW_DEPOSIT_TYPES); the engine itself
+        # still serves BANK for historical requests, and the engine-level tests still cover it.
+        amount=amount, depositType="IMPS", memberName="Test Member", memberId="MBR1",
         accountHolder="Test Member", accountNumber="999", ifsc="HDFC0001234", bankName="HDFC Bank",
         # Savings/Current is mandatory the first time an account is seen, and the sending account's
         # type must match the managed account's (Rule 2). `_account` creates CURRENT accounts by
