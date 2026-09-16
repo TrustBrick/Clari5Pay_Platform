@@ -398,12 +398,34 @@ const RequestModal: React.FC<{
       ? `Not the account assigned to this request (${record.adminRef}).`
     : '';
 
+  // Does the checklist ON SCREEN still match the one that was SAVED? It matters because the gate
+  // below — the blocking list and Mark Deposited — is the server's answer about the SAVED record.
+  // Ticking a box changes neither, so an Admin who reads "Not yet confirmed: Date / Time Checked",
+  // ticks that very box and still sees the same red banner is looking at a screen contradicting
+  // itself, which reads as a broken system. It is an unsaved form, and the panel now says so.
+  const cdmSaved = record.cdmVerification;
+  const sameCdmText = (a: unknown, b: unknown) => String(a ?? '').trim() === String(b ?? '').trim();
+  const cdmDirty = isCdm && !!cdmSaved && (
+    CDM_CHECKS.some(c => (cdm[c.key] === true) !== (cdmSaved.checks?.[c.key] === true))
+    || !sameCdmText(cdm.cdmReference, cdmSaved.cdmReference)
+    || !sameCdmText(cdm.bankCreditRef, cdmSaved.bankCreditRef)
+    || !sameCdmText(cdm.depositedOn, cdmSaved.depositedOn)
+    || !sameCdmText(cdm.remarks, cdmSaved.remarks)
+    || !sameCdmText(cdm.verifiedAccountRef, cdmSaved.verifiedAccountRef)
+    || (() => {                               // compared as money, so 30500 and 30500.00 are equal
+         const saved = cdmSaved.verifiedAmount == null ? NaN : Number(cdmSaved.verifiedAmount);
+         const here = cdmAmountRaw === '' ? NaN : Number(cdmAmountRaw);
+         if (Number.isNaN(saved) && Number.isNaN(here)) return false;
+         return Math.round(saved * 100) !== Math.round(here * 100);
+       })()
+  );
+
   // Save what the Admin has verified. Deliberately a separate act from completing: this records
   // evidence and nothing else — no status change, no credit — and the server re-reads it as the
   // gate when Mark Deposited is pressed. Saving a PARTIAL verification is legitimate (an Admin
   // works through the checks over time), so the two figures are flagged rather than blocked here;
   // what they block is completion.
-  const saveCdm = async () => {
+  const saveCdm = async (): Promise<Transaction | null> => {
     setCdmSaving(true);
     try {
       const d = await transactionAPI.saveCdmVerification(tx.id, {
@@ -419,7 +441,8 @@ const RequestModal: React.FC<{
       });
       setRecord(d);
       showToast('Verification saved');
-    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to save the verification', 'error'); }
+      return d;
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to save the verification', 'error'); return null; }
     finally { setCdmSaving(false); }
   };
 
@@ -440,7 +463,20 @@ const RequestModal: React.FC<{
         showToast('That account does not have enough balance for this payout', 'error'); return;
       }
     }
-    if (saving) return;                       // guard the in-flight click; the key below guards the rest
+    if (saving || cdmSaving) return;          // guard the in-flight click; the key below guards the rest
+    // A CDM deposit is gated on the SAVED verification, so a tick that is still only on screen
+    // would be refused for something the Admin can see they have already done. Record what is on
+    // screen first, then complete. The server remains the gate — it re-reads the record it has
+    // just been given and still refuses anything genuinely missing, with its own reasons.
+    if (isCdm) {
+      const current = cdmDirty ? await saveCdm() : record;
+      if (!current) return;                   // the save failed; its own toast already said why
+      const gate = current.cdmVerification;
+      if (!gate?.canComplete) {
+        showToast(gate?.blockingReasons?.[0] || 'This CDM deposit has not been verified yet', 'error');
+        return;
+      }
+    }
     setSaving(true);
     try {
       // The completion carries the first batch of receipts (the proxy caps one request body);
@@ -849,12 +885,32 @@ const RequestModal: React.FC<{
               {record.cdmVerification.bankCreditConfirmedAt && <Row k="Bank Credit Confirmed At" v={formatDateTime(record.cdmVerification.bankCreditConfirmedAt)} />}
             </div>
           )}
-          <Btn size="sm" variant="secondary" onClick={saveCdm} disabled={cdmSaving}>{cdmSaving ? 'Saving...' : <><Icon name="save" size={14} /> Save Verification</>}</Btn>
-          {/* What the server says is still missing. Shown verbatim so the operator is never left
-              guessing why Mark Deposited is unavailable. */}
+          <div style={{ display:'flex',alignItems:'center',gap:10,flexWrap:'wrap' }}>
+            <Btn size="sm" variant={cdmDirty ? 'primary' : 'secondary'} onClick={saveCdm} disabled={cdmSaving}>{cdmSaving ? 'Saving...' : <><Icon name="save" size={14} /> Save Verification</>}</Btn>
+            {cdmDirty && (
+              <span style={{ fontSize:11,fontWeight:800,color:T.warning,textTransform:'uppercase',letterSpacing:'0.05em' }}>
+                <Icon name="warning" size={12} /> Unsaved changes
+              </span>
+            )}
+          </div>
+          {/* What the server says is still missing, verbatim — and said as of WHEN. The list is the
+              server's answer about the SAVED record, so while the form carries unsaved edits it is
+              history, not a verdict on what is on screen, and it is labelled as such. */}
           {record.cdmVerification && !record.cdmVerification.canComplete && (
             <div style={{ marginTop:12,padding:'10px 14px',borderRadius:10,background:T.dangerBg,border:`1px solid ${T.border}` }}>
-              <p style={{ margin:'0 0 6px',fontSize:11,fontWeight:800,color:T.danger,textTransform:'uppercase',letterSpacing:'0.05em' }}>Cannot be completed yet</p>
+              <p style={{ margin:'0 0 6px',fontSize:11,fontWeight:800,color:cdmDirty ? T.warning : T.danger,textTransform:'uppercase',letterSpacing:'0.05em' }}>
+                {cdmDirty ? 'Not saved yet' : 'Cannot be completed yet'}
+              </p>
+              {cdmDirty && (
+                <p style={{ margin:'0 0 8px',fontSize:12.5,color:T.textMain,lineHeight:1.55 }}>
+                  {record.cdmVerification.verifiedAt
+                    ? <>This checklist has changes that are not recorded yet — press <b>Save Verification</b>.
+                        What is listed below is what had been confirmed at the last save
+                        ({formatDateTime(record.cdmVerification.verifiedAt)}).</>
+                    : <>Nothing has been recorded for this request yet — press <b>Save Verification</b> to
+                        record what is on screen.</>}
+                </p>
+              )}
               <ul style={{ margin:0,paddingLeft:18,fontSize:12,color:T.textMuted,lineHeight:1.7 }}>
                 {record.cdmVerification.blockingReasons.map((r, i) => <li key={i}>{r}</li>)}
               </ul>
@@ -871,7 +927,10 @@ const RequestModal: React.FC<{
               : "Review the merchant's payment slip above, then mark this deposit complete."}
           </p>
           <div style={{ display:'flex',gap:10 }}>
-            <Btn onClick={()=>complete(false)} disabled={saving || (isCdm && !record.cdmVerification?.canComplete)}>{saving ? 'Saving...' : <><Icon name="approve" size={14} /> Mark Deposited</>}</Btn>
+            {/* A CDM deposit with unsaved verification edits is NOT blocked here: the click records
+                them and then completes, and the server's gate still decides. Blocking it left the
+                Admin with a dead button and a red banner naming a box they had already ticked. */}
+            <Btn onClick={()=>complete(false)} disabled={saving || cdmSaving || (isCdm && !cdmDirty && !record.cdmVerification?.canComplete)}>{saving || cdmSaving ? 'Saving...' : <><Icon name="approve" size={14} /> {isCdm && cdmDirty ? 'Save & Mark Deposited' : 'Mark Deposited'}</>}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
           <div style={{ display:'flex',gap:10,flexWrap:'wrap',marginTop:12,paddingTop:12,borderTop:`1px dashed ${T.border}` }}>
