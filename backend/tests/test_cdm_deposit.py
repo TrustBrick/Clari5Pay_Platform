@@ -143,8 +143,9 @@ async def _accepted(db: AsyncSession, merchant: User, admin: User, amount: float
                     account_ref: str = "ACC1"):
     """A CDM request an Admin has accepted, with the receiving account assigned."""
     out = await _cdm_request(db, merchant, amount)
-    await txr.account_submit(out["id"], AccountSubmitRequest(
-        adminRef=account_ref, adminBankDetails=f"Account: {account_ref}"), db, admin)
+    # The ACCOUNT travels and nothing else: a CDM merchant receives that account's Account Details
+    # Image, so typed details are refused exactly as on every other account-backed deposit.
+    await txr.account_submit(out["id"], AccountSubmitRequest(adminRef=account_ref), db, admin)
     return out["id"]
 
 
@@ -247,8 +248,7 @@ async def test_admin_accepts_the_request_by_assigning_the_receiving_account(db):
     await _account(db, "ACC1")
     out = await _cdm_request(db, merchant)
 
-    result = await txr.account_submit(out["id"], AccountSubmitRequest(
-        adminRef="ACC1", adminBankDetails="Account: ACC1"), db, _admin())
+    result = await txr.account_submit(out["id"], AccountSubmitRequest(adminRef="ACC1"), db, _admin())
 
     assert result["status"] == TxStatus.ACCOUNT_SUBMITTED
     assert result["adminRef"] == "ACC1"
@@ -269,7 +269,8 @@ async def test_a_cdm_deposit_cannot_be_pointed_at_a_upi_id(db):
 
 @pytest.mark.asyncio
 async def test_a_cdm_deposit_requires_a_managed_account_not_free_typed_details(db):
-    """Free-typed bank details would put the request outside Account Management's controls."""
+    """Free-typed bank details would put the request outside Account Management's controls — and
+    a CDM merchant is sent the assigned account's Account Details Image, never typed text."""
     merchant = await _merchant(db)
     out = await _cdm_request(db, merchant)
 
@@ -277,7 +278,52 @@ async def test_a_cdm_deposit_requires_a_managed_account_not_free_typed_details(d
         await txr.account_submit(out["id"], AccountSubmitRequest(
             adminBankDetails="Pay into A/C 123456 at Some Bank"), db, _admin())
     assert e.value.status_code == 400
-    assert "managed bank account" in e.value.detail.lower()
+    assert "no longer sent as text" in e.value.detail.lower()
+
+    tx = await txr._get_tx(out["id"], db)
+    assert tx.admin_bank_details is None and tx.status == TxStatus.ACCOUNT_REQUESTED
+
+
+@pytest.mark.asyncio
+async def test_the_account_is_assigned_with_no_verification_value_anywhere(db):
+    """Requirements 1–4: a CDM request is created and its receiving account assigned without an
+    ATM ID or a bank credit reference existing at all. Neither can: the cash has not been paid in,
+    so there is no receipt to read a machine ID from and no credit to reference."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+
+    created = await _cdm_request(db, merchant)              # no ATM ID, no UTR
+    assert created["status"] == TxStatus.ACCOUNT_REQUESTED
+
+    sent = await txr.account_submit(created["id"], AccountSubmitRequest(adminRef="ACC1"),
+                                    db, _admin())           # still none of either
+
+    assert sent["status"] == TxStatus.ACCOUNT_SUBMITTED
+    assert sent["adminRef"] == "ACC1"
+    detail = await txr.get_transaction_detail(created["id"], db, _admin())
+    assert detail["cdmVerification"]["receiptUploaded"] is False, "no receipt yet"
+    assert detail["cdmVerification"]["atmId"] is None and detail["cdmVerification"]["bankCreditRef"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_two_values_are_asked_for_only_once_the_receipt_is_in(db):
+    """Requirements 11–12 — the SEQUENCE. `receiptUploaded` is the server's own answer about when
+    the ATM ID and the credit reference become answerable, so the screen cannot ask earlier."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _accepted(db, merchant, _admin())
+
+    before = await txr.get_transaction_detail(tx_id, db, _admin())
+    assert before["cdmVerification"]["receiptUploaded"] is False
+
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="CDM887766"),
+                          None, db, merchant)               # the merchant uploads, entering neither
+
+    after = await txr.get_transaction_detail(tx_id, db, _admin())
+    assert after["cdmVerification"]["receiptUploaded"] is True
+    assert after["cdmVerification"]["atmId"] is None, "uploading records neither value"
+    assert after["cdmVerification"]["bankCreditRef"] is None
+    assert "No CDM receipt has been uploaded." not in after["cdmVerification"]["blockingReasons"]
 
 
 @pytest.mark.asyncio
@@ -837,7 +883,7 @@ async def test_cdm_introduces_no_new_status_values(db):
     tx_id = await _cdm_request(db, merchant)
     tx_id = tx_id["id"]
     seen.append((await txr._get_tx(tx_id, db)).status)
-    await txr.account_submit(tx_id, AccountSubmitRequest(adminRef="ACC1", adminBankDetails="x"), db, _admin())
+    await txr.account_submit(tx_id, AccountSubmitRequest(adminRef="ACC1"), db, _admin())
     seen.append((await txr._get_tx(tx_id, db)).status)
     await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="C1"), None, db, merchant)
     seen.append((await txr._get_tx(tx_id, db)).status)

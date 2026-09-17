@@ -520,10 +520,12 @@ export const DEPOSIT_TYPE_OPTIONS = [
 // ── Account Details Image ──────────────────────────────────────────────────────────────────────
 // The deposit types that are paid into a managed receiving account, and therefore reach the
 // merchant as that account's Account Details Image and nothing else: no bank name, account number,
-// IFSC, branch or UPI ID as text. Mirrors services/deposit_allocation.ALLOCATABLE_DEPOSIT_TYPES —
+// IFSC, branch or UPI ID as text. Mirrors services/account_details_image.IMAGE_DEPOSIT_TYPES —
 // the server withholds the text for exactly these, so the forms must not offer to type it.
-// Cash, Crypto, Card and CDM are NOT in this list and keep the screens they have today.
-export const ACCOUNT_DETAILS_IMAGE_DEPOSIT_TYPES = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS'];
+// CDM is here as well: its account is assigned by an Admin rather than picked by the engine, but
+// the merchant still pays into a managed account and still needs to see which one. Cash, Crypto
+// and Card are NOT in this list and keep the screens they have today.
+export const ACCOUNT_DETAILS_IMAGE_DEPOSIT_TYPES = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'CDM'];
 /** True for a deposit whose account details reach the merchant only as an Account Details Image. */
 export const usesAccountDetailsImage = (tx: { type?: string | null; depositType?: string | null }): boolean =>
   String(tx.type || '').toUpperCase().startsWith('DEPOSIT') &&

@@ -545,7 +545,7 @@ export const MerchantSlipModal: React.FC<{
             Management). For these deposits it is the ONLY account detail sent — the block above
             carries no bank name, account number, IFSC or UPI ID, because the server withholds all
             of it. Arrives with the detail fetch; absent for types that are not paid into a managed
-            account (Cash, Crypto, Card, CDM). */}
+            account (Cash, Crypto, Card). */}
         {record.accountDetailsImage && <AccountDetailsImagePanel img={record.accountDetailsImage} txRef={tx.ref} />}
         {/* Historical requests only: an image attached to the deposit itself before the account
             details image moved to Account Management. New requests never carry one, so they show
@@ -989,17 +989,10 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
           <MultiProofUpload values={proofs} onChange={setProofs} label="Proof / Image Upload" required />
         </div>
       )}
-      {isCdm && (
-        <div style={{ background:T.infoBg,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
-          <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Cash Deposit Machine</p>
-          <p style={{ fontSize:12,color:T.textMuted,margin:0,lineHeight:1.6 }}>
-            Submit this request first. The agent will accept it and send you the bank account to
-            deposit into — do not deposit cash before you receive it. Once the CDM has printed your
-            receipt, open this request and upload the receipt (you can add more than one image).
-            The deposit is credited only after the agent confirms the cash reached that account.
-          </p>
-        </div>
-      )}
+      {/* A CDM request carries no extra fields and no standing instructions: the form asks for the
+          member and the amount like any other deposit, and the workflow tells the merchant what to
+          do next when there is something to do — the account arrives as its Account Details Image,
+          and the receipt upload appears on the request once it has. */}
       {isCrypto && (
         <div style={{ background:T.canvas,borderRadius:12,padding:'12px 14px',margin:'4px 0 14px' }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMain,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 8px' }}>Crypto (USDT) Details</p>

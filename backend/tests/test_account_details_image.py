@@ -371,10 +371,13 @@ async def test_the_account_image_routes_are_admin_only(db):
 
 @pytest.mark.asyncio
 async def test_non_account_deposit_types_show_no_account_image(db):
-    """Cash, Crypto, Card and CDM keep their screens — even when an admin_ref names an imaged account."""
+    """Cash, Crypto and Card keep their screens — even when an admin_ref names an imaged account.
+
+    CDM is deliberately NOT in this list: it is paid into a managed receiving account like any
+    allocatable type, so its merchant receives that account's image (see the CDM section below)."""
     await _account(db, "ACC1", name="Account A")
     await _upload(db, "ACC1", _png("A"))
-    for i, dtype in enumerate(("CASH", "CRYPTO", "CARD", "CDM"), start=1):
+    for i, dtype in enumerate(("CASH", "CRYPTO", "CARD"), start=1):
         tx = Transaction(ref=f"H{i}", type=TxType.DEPOSIT_REQUEST, amount=1000, status=TxStatus.ACCOUNT_SUBMITTED,
                          merchant_id=7, merchant_name="BELLAGIO", tx_date=date.today(), tx_time="10:00:00",
                          deposit_type=dtype, admin_ref="ACC1", created_at=datetime.utcnow())
@@ -827,3 +830,119 @@ async def test_account_management_is_the_only_place_the_image_is_managed(db):
     assert not {f for f in submit_fields if "image" in f.lower()} - {"adminBankImage"}
     # ...and the one that remains exists only to REFUSE a stale client (tested above).
     assert "adminProof" in submit_fields
+
+# ═══ CDM — the account an Admin assigns by hand reaches the merchant the same way ══════════════
+# A CDM deposit is cash walked into a machine, so the allocation engine never picks its receiving
+# account — an Admin assigns one. That is a difference in HOW the account is chosen, and the
+# merchant's side does not depend on how: they are paying into a managed account either way, and
+# what they receive is that account's Account Details Image and no text.
+
+
+async def _cdm(db, merchant, member_id: str = "MBR9") -> dict:
+    """A CDM request as the merchant raises it: no receiving account, nothing to show yet."""
+    out = await txr.create_deposit(_payload(40000, depositType="CDM", memberId=member_id), db, merchant)
+    assert out["adminRef"] is None
+    return out
+
+
+@pytest.mark.asyncio
+async def test_a_cdm_deposit_shows_the_assigned_accounts_image(db):
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017")
+    await _upload(db, "ACC0000017", _png("SEVENTEEN"))
+    out = await _cdm(db, merchant)
+
+    await _send(db, out["id"], "ACC0000017")
+
+    tx = await txr._get_tx(out["id"], db)
+    assert await detimg.for_transaction(db, tx) == _image("ACC0000017", _png("SEVENTEEN"))
+
+
+@pytest.mark.asyncio
+async def test_a_cdm_deposit_never_shows_another_accounts_image(db):
+    """The image is resolved from the assigned reference — not by bank, not the first one, not a
+    default. Two imaged accounts exist and only the assigned one\u2019s image is ever returned."""
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017")
+    await _receiver(db, "ACC0000018", bank="ICICI Bank")
+    await _upload(db, "ACC0000017", _png("SEVENTEEN"))
+    await _upload(db, "ACC0000018", _png("EIGHTEEN"))
+    first = await _cdm(db, merchant, "MBR1")
+    second = await _cdm(db, merchant, "MBR2")
+
+    await _send(db, first["id"], "ACC0000017")
+    await _send(db, second["id"], "ACC0000018")
+
+    a = await detimg.for_transaction(db, await txr._get_tx(first["id"], db))
+    b = await detimg.for_transaction(db, await txr._get_tx(second["id"], db))
+    assert a == _image("ACC0000017", _png("SEVENTEEN"))
+    assert b == _image("ACC0000018", _png("EIGHTEEN"))
+    assert a["image"] != b["image"], "two accounts, two images"
+
+
+@pytest.mark.asyncio
+async def test_a_cdm_deposits_account_text_never_reaches_the_merchant(db):
+    """The image IS the account details for a CDM deposit too: no bank name, number, IFSC or
+    branch on the merchant's payload, and no snapshot standing in for them."""
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017")
+    await _upload(db, "ACC0000017", _png("SEVENTEEN"))
+    out = await _cdm(db, merchant)
+
+    sent = await _send(db, out["id"], "ACC0000017")
+
+    assert _no_account_text(sent), sent
+    assert _mentions_receiver(sent) == [], "the receiving account leaked into the merchant payload"
+    row = await txr._get_tx(out["id"], db)
+    assert row.admin_bank_details is None, "and nothing was written to the row either"
+
+
+@pytest.mark.asyncio
+async def test_a_cdm_account_with_no_image_says_so_and_substitutes_nothing(db):
+    """Requirement 3 — no text fallback. The merchant is told the image is missing."""
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017")                      # no image uploaded
+    out = await _cdm(db, merchant)
+
+    sent = await _send(db, out["id"], "ACC0000017")
+
+    tx = await txr._get_tx(out["id"], db)
+    assert await detimg.for_transaction(db, tx) == _no_image("ACC0000017")
+    assert _no_account_text(sent) and _mentions_receiver(sent) == []
+
+
+@pytest.mark.asyncio
+async def test_typed_account_details_are_refused_on_a_cdm_deposit(db):
+    """A client cannot route text to the merchant by calling the assignment route directly."""
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017")
+    out = await _cdm(db, merchant)
+
+    with pytest.raises(HTTPException) as e:
+        await _send(db, out["id"], "ACC0000017", adminBankDetails="Bank: X\nA/C: 1")
+
+    assert e.value.status_code == 400
+    row = await txr._get_tx(out["id"], db)
+    assert row.admin_bank_details is None and row.admin_ref is None
+
+
+@pytest.mark.asyncio
+async def test_a_cdm_account_with_no_image_is_still_assignable(db):
+    """Requirement 7 — the image has zero effect on which accounts may be used. An account with
+    no image is assigned exactly as readily as one with an image."""
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017")                      # no image
+    out = await _cdm(db, merchant)
+
+    sent = await _send(db, out["id"], "ACC0000017")
+
+    assert sent["adminRef"] == "ACC0000017" and sent["status"] == TxStatus.ACCOUNT_SUBMITTED
+
+
+def test_the_image_set_and_the_allocatable_set_are_separate():
+    """CDM shows an image but is never allocated. Two questions, two constants — collapsing them
+    would either hand CDM to the engine or take the image off the merchant's screen."""
+    from app.services.deposit_allocation import ALLOCATABLE_DEPOSIT_TYPES
+    assert "CDM" in detimg.IMAGE_DEPOSIT_TYPES
+    assert "CDM" not in ALLOCATABLE_DEPOSIT_TYPES
+    assert set(ALLOCATABLE_DEPOSIT_TYPES) < set(detimg.IMAGE_DEPOSIT_TYPES)

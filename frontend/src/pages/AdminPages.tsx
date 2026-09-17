@@ -317,7 +317,8 @@ const RequestModal: React.FC<{
       // text version of the bank name, number, IFSC or branch. Nothing about the account is typed
       // or generated here; the server refuses account-details text for these deposits outright, so
       // sending a summary would only produce a 400.
-      // CDM does not use an Account Details Image and keeps the written summary it has always sent.
+      // A CDM deposit is assigned the same way and its merchant receives the same image, so it
+      // takes the same branch: the account travels, the text does not.
       const imageOnly = usesAccountDetailsImage(tx);
       const summary = [
         `Account Name: ${acc.accountName}`,
@@ -842,8 +843,13 @@ const RequestModal: React.FC<{
           The receipt is supporting evidence; the bank credit is the control. What the request
           already knows is shown read-only; the Admin enters the two things it does not — the ATM
           ID printed on the receipt, and the bank credit reference for the money landing in the
-          assigned account. Both are required, and app.services.cdm enforces that server-side. */}
-      {isCdm && canAct && (
+          assigned account. Both are required, and app.services.cdm enforces that server-side.
+
+          Shown only once the merchant has UPLOADED that receipt (`receiptUploaded`, the server's
+          own answer). Before then the Admin is still choosing which account the cash goes into,
+          and neither value exists yet to be read — there is no receipt to take an ATM ID from and
+          no credit to reference. Asking on the account-selection screen asked for the unknowable. */}
+      {isCdm && canAct && record.cdmVerification?.receiptUploaded && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>CDM Payment Verification</p>
           <div style={{ background:T.canvas,borderRadius:10,padding:'10px 14px',marginBottom:12 }}>

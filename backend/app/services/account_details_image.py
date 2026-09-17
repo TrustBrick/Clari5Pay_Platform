@@ -7,6 +7,11 @@ merchant that account's image, and nothing else about the account: no bank name,
 IFSC or branch as text. Nothing is uploaded per transaction and nothing is copied onto a
 transaction row: the image is resolved from the deposit's own ``admin_ref`` when it is opened.
 
+That covers CDM too. A CDM deposit is cash walked into a machine, so its account is assigned by an
+Admin rather than picked by the engine — but it is still a managed receiving account, the merchant
+still has to know which one, and what they receive is the same image resolved the same way. Which
+account was assigned, not how it was chosen, is the whole of the question.
+
 Four rules this module exists to keep:
 
   * **The image is the account details.** For a deposit that uses an Account Details Image
@@ -41,7 +46,19 @@ from app.core import storage
 from app.core.proofs import store
 from app.core.uploads import validate_image_content
 from app.models.models import AccountDetailsImage, Transaction
+from app.services.cdm import CDM_DEPOSIT_TYPE
 from app.services.deposit_allocation import ALLOCATABLE_DEPOSIT_TYPES
+
+# The deposit types whose receiving account reaches the merchant ONLY as its Account Details Image.
+#
+# The allocatable types plus CDM. CDM is here because it is the same thing from the merchant's side
+# — cash walked into a machine still has to land in a managed account, and the merchant needs that
+# account on screen — and it is a SEPARATE constant from ALLOCATABLE_DEPOSIT_TYPES because the two
+# answer different questions. That tuple decides what the allocation engine may place; this one
+# decides what a merchant is shown. A CDM deposit must stay out of the first (an Admin assigns its
+# account, never the engine) while being in the second, and keeping one name for both would make
+# that impossible to express.
+IMAGE_DEPOSIT_TYPES = tuple(ALLOCATABLE_DEPOSIT_TYPES) + (CDM_DEPOSIT_TYPE,)
 
 # The object-storage "field" segment for these files. A storage key, not a label: existing objects
 # live under it, so it keeps its original spelling.
@@ -121,14 +138,14 @@ def serialize(row: Optional[AccountDetailsImage], account_ref: str) -> dict:
 def uses_account_details_image(tx: Transaction) -> bool:
     """Whether a transaction's receiving account reaches the merchant ONLY as its Account Details Image.
 
-    A deposit of an account-backed type — the same types the allocation engine serves. For these,
-    no account-details text (bank name, account number, IFSC, branch, UPI ID, allocation snapshot)
-    goes to the merchant side, whether the account was chosen automatically or by an Admin. Cash,
-    Crypto, Card and CDM keep the exact screens and payloads they have today.
+    A deposit of an account-backed type — the allocatable types and CDM. For these, no
+    account-details text (bank name, account number, IFSC, branch, UPI ID, allocation snapshot)
+    goes to the merchant side, whether the account was chosen automatically by the engine or
+    assigned by an Admin. Cash, Crypto and Card keep the exact screens and payloads they have.
     """
     return (
         tx.type is not None and tx.type.value.startswith("DEPOSIT")
-        and (tx.deposit_type or "").strip().upper() in ALLOCATABLE_DEPOSIT_TYPES
+        and (tx.deposit_type or "").strip().upper() in IMAGE_DEPOSIT_TYPES
     )
 
 

@@ -140,6 +140,19 @@ def blocking_reasons(tx, record: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def receipt_uploaded(tx) -> bool:
+    """Whether the merchant has uploaded the CDM receipt yet.
+
+    The ORDER of the workflow, in one place: request → Admin assigns the receiving account →
+    merchant pays the cash in → merchant uploads the receipt → ONLY THEN the ATM ID and the bank
+    credit reference. Those two are read off the receipt and off the statement of a credit that
+    cannot exist yet, so asking for them while an Admin is still choosing the account asks for
+    something nobody can know. Reported in ``summary`` so the screen and the gate agree about when
+    that moment has arrived.
+    """
+    return _has_proof(tx)
+
+
 def _has_proof(tx) -> bool:
     """Whether any receipt is attached. Reads the multi-file array first, then the legacy column.
 
@@ -159,6 +172,8 @@ def summary(tx, record: dict[str, Any]) -> dict[str, Any]:
     reasons = blocking_reasons(tx, record)
     return {
         **{f: record.get(f) for f in TEXT_FIELDS},
+        # The two values are asked for only once there is a receipt to read them against.
+        "receiptUploaded": receipt_uploaded(tx),
         "bankCreditConfirmed": bank_credit_confirmed(record),
         "verifiedBy": record.get("verifiedBy"),
         "verifiedByUsername": record.get("verifiedByUsername"),
