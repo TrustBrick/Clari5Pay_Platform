@@ -253,6 +253,16 @@ class SlipRequest(BaseModel):
     # upload never replaces an earlier one.
     merchantProofs: Optional[list[str]] = None  # proof/slip files (data URLs)
     merchantRef: Optional[str] = None
+    # CDM deposits only: the two values printed on the machine's receipt. The ATM ID identifies the
+    # machine; the transaction number is the one it printed for this deposit. Two different lines of
+    # the same slip — neither is derived from the other, and neither is the request's own reference.
+    atmId: Optional[str] = None
+    txnNo: Optional[str] = None
+    # CDM deposits only: the two values printed on the machine's receipt. The ATM ID identifies the
+    # machine; the transaction number is the one it printed for this deposit. Two different lines of
+    # the same slip — neither is derived from the other, and neither is the request's own reference.
+    atmId: Optional[str] = None
+    txnNo: Optional[str] = None
     # "Send To Approval" (demo only): the Authorized Approver chosen at this slip step for UPI/bank
     # deposits, once the proof has uploaded. Ignored on Production.
     approverUserId: Optional[int] = None
@@ -426,6 +436,34 @@ class AccountOwnFlagUpdate(BaseModel):
     """
     is_own_account: bool
     reason: Optional[str] = None
+
+
+class AccountCdmLimitUpdate(BaseModel):
+    """Admin edit of one account's CDM daily limit.
+
+    Its own route and its own field for the same reason AccountOwnFlagUpdate is separate: the
+    Highest Credit / Highest Debit edit documents exactly what it touches, and folding a third,
+    independent ceiling into it would make that promise false. The CDM limit is never derived from
+    either of those two and changing it never changes them.
+
+    0 means UNCONFIGURED — no CDM capacity — which is the same convention the other two use.
+    """
+    cdm_daily_limit: float
+    reason: Optional[str] = None       # optional note carried into the audit trail
+
+
+class AccountCdmLimitUpdate(BaseModel):
+    """Admin edit of one account's CDM daily limit.
+
+    Its own route and its own field for the same reason AccountOwnFlagUpdate is separate: the
+    Highest Credit / Highest Debit edit documents exactly what it touches, and folding a third,
+    independent ceiling into it would make that promise false. The CDM limit is never derived from
+    either of those two and changing it never changes them.
+
+    0 means UNCONFIGURED — no CDM capacity — which is the same convention the other two use.
+    """
+    cdm_daily_limit: float
+    reason: Optional[str] = None       # optional note carried into the audit trail
 
 
 class AccountDetailsImageUpload(BaseModel):

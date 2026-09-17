@@ -295,6 +295,11 @@ export interface Transaction {
   // and fall back to `merchantProof` only for rows written before the array existed.
   merchantProofs?: string[] | null;
   merchantRef?: string | null;
+  // CDM deposits: the two values the merchant read off the machine's receipt when they uploaded
+  // it. Two separate lines of the same slip — the ATM ID names the machine, the TXN NO is what it
+  // printed for this deposit. Null on every other type.
+  cdmAtmId?: string | null;
+  cdmTxnNo?: string | null;
   adminProof?: string | null;
   // Every payment receipt / settlement proof the Admin attached, oldest first (same fallback).
   adminProofs?: string[] | null;
@@ -439,12 +444,21 @@ export interface Account {
   // Whether an Account Details Image is uploaded on this account. Present on the list / get
   // payloads only (the edit routes omit it) — so treat undefined as "unknown", not as "no image".
   hasAccountDetailsImage?: boolean;
+  // Whether a CDM Account Details Image is configured. A separate answer from the one above: an
+  // account can carry one, the other, both or neither.
+  hasCdmAccountDetailsImage?: boolean;
+  // The account's HARD DAILY limit for CDM deposits. 0 = unconfigured = no CDM capacity, the same
+  // convention Highest Credit and Highest Debit use. Never derived from either of them.
+  cdmDailyLimit?: number;
   merchantName: string;
 }
 
 /** The Account Details Image an Admin uploads once against a receiving account. */
 export interface AccountDetailsImage {
   referenceNumber: string;
+  /** Which of the account's two images this is: 'ACCOUNT' (normal) or 'CDM'. They are configured,
+   *  stored, replaced and removed independently, and neither is ever shown for the other. */
+  kind?: string;
   hasImage: boolean;
   image: string | null;          // data URL, or a short-lived presigned URL under object storage
   contentType: string | null;
@@ -458,7 +472,10 @@ export interface AccountDetailsImage {
  *  server's own wording for that state, and nothing is rebuilt from the account record. */
 export interface DepositAccountImage {
   accountRef: string;
-  hasImage: boolean;             // false → the account simply has none uploaded
+  /** Which image this deposit receives, decided by its type: a CDM deposit gets the account's CDM
+   *  image, everything else the normal one. There is no fallback between them. */
+  kind?: string;
+  hasImage: boolean;             // false → the account simply has none of THIS kind uploaded
   image: string | null;
   contentType: string | null;
   message?: string | null;       // the not-configured wording; set only when hasImage is false
@@ -488,6 +505,14 @@ export interface AccountBalance {
   highestDeposit?: number;
   lowestDeposit?: number;
   highestCredit?: number;   // configured HARD DAILY CREDIT LIMIT (Admin-editable)
+  // The account's CDM ceiling and where today stands against it. Independent of the credit figures
+  // in both directions: only CDM deposits consume it, and consuming it never touches Highest
+  // Credit. `cdmLimitConfigured` distinguishes "nothing left today" from "no limit ever granted",
+  // because the fix for each is a different action.
+  cdmDailyLimit?: number;
+  cdmUsedToday?: number;
+  cdmRemainingToday?: number;
+  cdmLimitConfigured?: boolean;
   highestDebit?: number;    // configured HARD DAILY DEBIT LIMIT (Admin-editable)
   isOwnAccount?: boolean;
   // Which transaction modes this account can PAY OUT by. An account with none configured is

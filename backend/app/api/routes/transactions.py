@@ -22,6 +22,7 @@ from app.services import account_ledger as ledger
 from app.services import deposit_allocation as alloc
 from app.services import cdm
 from app.services import account_details_image
+from app.services import cdm_capacity
 from app.services import member_account as macct
 from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cached_json
@@ -973,6 +974,11 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "merchantProof": storage.resolve_value(t.merchant_proof) if full else None,
         "merchantProofs": _resolve_proofs(t.merchant_proofs) if full else None,
         "merchantRef": t.merchant_ref,
+        # CDM deposits: what the merchant read off the machine's receipt. Two separate values from
+        # two separate lines; NULL on every other deposit type and on CDM rows raised before the
+        # fields existed (their machine reference survives in merchantRef).
+        "cdmAtmId": getattr(t, "cdm_atm_id", None),
+        "cdmTxnNo": getattr(t, "cdm_txn_no", None),
         "adminProof": storage.resolve_value(t.admin_proof) if full else None,
         # Every payment receipt / settlement proof the Admin (or the Supervisor completing an
         # agent-assigned settlement) attached, oldest first. NULL on rows completed before the
@@ -3551,6 +3557,12 @@ async def account_submit(
         if not (data.adminRef or "").strip().upper().startswith("ACC"):
             raise HTTPException(status_code=400,
                                 detail="Select a managed bank account for this CDM deposit.")
+        # The CDM daily limit, enforced HERE because this is the moment capacity is consumed: the
+        # deposit is about to be routed to this account and counts against it from now on. The
+        # check takes a row lock on the account FIRST, so two Admins assigning the same account at
+        # the same instant cannot both read the same remaining figure and together breach it.
+        # An ADDITIONAL restriction — passing it excuses the account from nothing else.
+        await cdm_capacity.check_and_reserve(db, data.adminRef.strip(), tx.amount)
     ref = data.adminRef
     # A sent UPI always belongs to a receiving account → credit that parent account so its
     # deposits (bank + UPI) roll up together. No QR is generated.
@@ -3814,10 +3826,30 @@ async def submit_slip(
         # Send To Approval feature is switched off, in which case there is nobody to choose).
         if settings.SEND_TO_APPROVAL_ENABLED and data.approverUserId is None and tx.approver_user_id is None:
             raise HTTPException(status_code=400, detail="Select the Manager/Supervisor who should approve this request.")
+    # CDM: the receipt the machine printed carries two different values on two different lines,
+    # and the merchant enters both as printed. The ATM ID says WHICH MACHINE took the cash; the
+    # transaction number is the one that machine issued for this deposit. Neither is derived from
+    # the other and neither is the request's own reference — copying one into the other would make
+    # the pair worthless for tracing the deposit back to a machine.
+    _atm_id = (data.atmId or "").strip()
+    _txn_no = (data.txnNo or "").strip()
+    if cdm.is_cdm(tx.deposit_type):
+        if not _atm_id:
+            raise HTTPException(status_code=400, detail="Enter the ATM ID printed on the CDM receipt.")
+        if not _txn_no:
+            raise HTTPException(status_code=400, detail="Enter the transaction number printed on the CDM receipt.")
     # Added to whatever is already on the request — a merchant who returns with a second slip
     # keeps the first. (A Recheck is the one place proofs are cleared, and it does so explicitly.)
     await _add_merchant_proofs(db, tx, _proofs)
-    tx.merchant_ref = data.merchantRef
+    if cdm.is_cdm(tx.deposit_type):
+        tx.cdm_atm_id = _atm_id
+        tx.cdm_txn_no = _txn_no
+        # `merchant_ref` keeps meaning what it has always meant for a CDM deposit: the reference
+        # the machine printed, which IS the transaction number. Set from it rather than the other
+        # way round, so every screen and export that already reads merchant_ref keeps working.
+        tx.merchant_ref = _txn_no
+    else:
+        tx.merchant_ref = data.merchantRef
     # "Send To Approval": the merchant chose an Authorized Approver at this slip step (GA on Demo +
     # Prod). Record who the deposit is addressed to; the request then routes to that approver.
     if settings.SEND_TO_APPROVAL_ENABLED and data.approverUserId is not None:

@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import storage
 from app.core.proofs import store
 from app.core.uploads import validate_image_content
-from app.models.models import AccountDetailsImage, Transaction
+from app.models.models import AccountCdmImage, AccountDetailsImage, Transaction
 from app.services.cdm import CDM_DEPOSIT_TYPE
 from app.services.deposit_allocation import ALLOCATABLE_DEPOSIT_TYPES
 
@@ -66,35 +66,71 @@ STORAGE_FIELD = "account_payment_image"
 LABEL = "account details image"
 NOT_CONFIGURED_MSG = "Account details image is not configured for this account."
 
+# ── The two images an account can carry ────────────────────────────────────────────────────────
+# One account, two independent images: the one a UPI/bank payer is shown, and the one a merchant
+# walking to a cash machine is shown. Same rules, same storage, separate rows — uploading,
+# replacing or removing either leaves the other exactly as it was, and NEITHER is ever a fallback
+# for the other. Showing a CDM merchant the normal image would send them to the wrong instructions,
+# so a missing CDM image says so instead.
+ACCOUNT_KIND = "ACCOUNT"
+CDM_KIND = "CDM"
+CDM_STORAGE_FIELD = "account_cdm_image"
+CDM_LABEL = "CDM account details image"
+CDM_NOT_CONFIGURED_MSG = "CDM account details image is not configured for this account."
 
-async def get(db: AsyncSession, account_ref: str) -> Optional[AccountDetailsImage]:
-    """The image row configured for one account, or None."""
+_KINDS = {
+    ACCOUNT_KIND: (AccountDetailsImage, STORAGE_FIELD, LABEL, NOT_CONFIGURED_MSG),
+    CDM_KIND: (AccountCdmImage, CDM_STORAGE_FIELD, CDM_LABEL, CDM_NOT_CONFIGURED_MSG),
+}
+
+
+def _spec(kind: str):
+    """(model, storage field, upload label, not-configured message) for a kind. Unknown kinds are a
+    programming error, never a caller's input — the routes name the kind, nobody posts it."""
+    try:
+        return _KINDS[kind]
+    except KeyError:                                   # pragma: no cover - defensive
+        raise ValueError(f"unknown account image kind: {kind!r}")
+
+
+def kind_for(tx: Transaction) -> str:
+    """Which of the two images THIS deposit's merchant receives. A CDM deposit receives the CDM
+    image; every other account-backed deposit receives the normal one."""
+    from app.services import cdm as cdm_service
+    return CDM_KIND if cdm_service.is_cdm(tx.deposit_type) else ACCOUNT_KIND
+
+
+async def get(db: AsyncSession, account_ref: str, *, kind: str = ACCOUNT_KIND):
+    """The image row of one kind configured for one account, or None."""
+    model = _spec(kind)[0]
     return (await db.execute(
-        select(AccountDetailsImage).where(AccountDetailsImage.account_ref == account_ref)
+        select(model).where(model.account_ref == account_ref)
     )).scalar_one_or_none()
 
 
-async def refs_with_image(db: AsyncSession) -> set[str]:
-    """Every account reference that currently has an image — one light query, no image bytes."""
-    rows = (await db.execute(select(AccountDetailsImage.account_ref))).scalars().all()
-    return set(rows)
+async def refs_with_image(db: AsyncSession, *, kind: str = ACCOUNT_KIND) -> set[str]:
+    """Every account reference that currently has an image of this kind — one light query, no
+    image bytes."""
+    model = _spec(kind)[0]
+    return set((await db.execute(select(model.account_ref))).scalars().all())
 
 
-async def put(db: AsyncSession, account_ref: str, data_url: str, *, uploaded_by: str | None
-              ) -> tuple[AccountDetailsImage, Optional[str]]:
-    """Validate, store and set (or REPLACE) the account's image.
+async def put(db: AsyncSession, account_ref: str, data_url: str, *, uploaded_by: str | None,
+              kind: str = ACCOUNT_KIND) -> tuple[object, Optional[str]]:
+    """Validate, store and set (or REPLACE) one of the account's images.
 
     Returns ``(row, previous_sha256)`` — the previous digest is None on a first upload, and is
-    what the audit trail records so a replacement is traceable. One row per account: a replacement
-    updates that row, it never adds a second image.
+    what the audit trail records so a replacement is traceable. One row per account PER KIND: a
+    replacement updates that row, it never adds a second image, and it never touches the other kind.
     """
-    value, content_type, raw = validate_image_content(data_url, label=LABEL)
-    stored = store(value, field=STORAGE_FIELD)
+    model, storage_field, label, _ = _spec(kind)
+    value, content_type, raw = validate_image_content(data_url, label=label)
+    stored = store(value, field=storage_field)
     digest = hashlib.sha256(raw).hexdigest()
-    row = await get(db, account_ref)
+    row = await get(db, account_ref, kind=kind)
     previous = row.sha256 if row else None
     if row is None:
-        row = AccountDetailsImage(account_ref=account_ref)
+        row = model(account_ref=account_ref)
         db.add(row)
     row.image = stored
     row.content_type = content_type
@@ -106,9 +142,10 @@ async def put(db: AsyncSession, account_ref: str, data_url: str, *, uploaded_by:
     return row, previous
 
 
-async def remove(db: AsyncSession, account_ref: str) -> Optional[str]:
-    """Remove the account's image. Returns the removed digest, or None when there was none."""
-    row = await get(db, account_ref)
+async def remove(db: AsyncSession, account_ref: str, *, kind: str = ACCOUNT_KIND) -> Optional[str]:
+    """Remove one of the account's images, leaving the other kind untouched. Returns the removed
+    digest, or None when there was none."""
+    row = await get(db, account_ref, kind=kind)
     if row is None:
         return None
     digest = row.sha256
@@ -117,13 +154,14 @@ async def remove(db: AsyncSession, account_ref: str) -> Optional[str]:
     return digest
 
 
-def serialize(row: Optional[AccountDetailsImage], account_ref: str) -> dict:
-    """The Admin-facing description of an account's image (image resolved for display)."""
+def serialize(row, account_ref: str, *, kind: str = ACCOUNT_KIND) -> dict:
+    """The Admin-facing description of one of an account's images (image resolved for display)."""
     if row is None:
-        return {"referenceNumber": account_ref, "hasImage": False, "image": None,
+        return {"referenceNumber": account_ref, "kind": kind, "hasImage": False, "image": None,
                 "contentType": None, "sizeBytes": None, "uploadedAt": None, "uploadedBy": None}
     return {
         "referenceNumber": account_ref,
+        "kind": kind,
         "hasImage": True,
         # A presigned URL (object storage) or the data URL itself; None only when a stored object
         # cannot currently be signed, which hasImage=True still makes visible.
@@ -160,20 +198,24 @@ async def for_transaction(db: AsyncSession, tx: Transaction) -> Optional[dict]:
 
     The CALLER must already have authorized the viewer for ``tx`` — this function performs no
     access check of its own, exactly like ``storage.presigned_url``. The account is taken from the
-    transaction alone, so the answer can only ever be this deposit's own account.
+    transaction alone, so the answer can only ever be this deposit's own account, and the KIND is
+    taken from the deposit type: a CDM deposit gets the CDM image, everything else the normal one.
 
     Returns None when the transaction does not show an account image at all, and a dict with
-    ``hasImage=False`` and the not-configured message when its account simply has none — so the
-    merchant screen says so plainly. No account details are substituted in that case.
+    ``hasImage=False`` and the not-configured message for ITS OWN KIND when its account simply has
+    none — so the merchant screen says so plainly. Nothing is substituted in that case: not the
+    account details as text, and not the other image.
     """
     if not applies_to(tx):
         return None
     ref = tx.admin_ref.strip()
-    row = await get(db, ref)
+    kind = kind_for(tx)
+    row = await get(db, ref, kind=kind)
     return {
         "accountRef": ref,
+        "kind": kind,
         "hasImage": row is not None,
         "image": storage.resolve_value(row.image) if row else None,
         "contentType": row.content_type if row else None,
-        "message": None if row else NOT_CONFIGURED_MSG,
+        "message": None if row else _spec(kind)[3],
     }

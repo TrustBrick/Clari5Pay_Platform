@@ -172,12 +172,15 @@ async def _merchant(db: AsyncSession, uid: int = 7, role: str = "DATA_OPERATOR",
 
 async def _account(db: AsyncSession, ref: str, *, name: str, bank: str = "HDFC Bank",
                    credit: float = 100000.0, status: str = "ACTIVE",
-                   atype: AccountType = AccountType.CURRENT) -> AccountMaster:
+                   atype: AccountType = AccountType.CURRENT,
+                   cdm_limit: float = 0.0) -> AccountMaster:
+    # `cdm_limit` defaults to 0 — unconfigured — because that is what an account looks like until
+    # an Admin grants it CDM capacity, and no non-CDM test should need to think about it.
     acc = AccountMaster(
         reference_number=ref, account_name=name, account_number=f"AC{ref}", ifsc_code="HDFC0001234",
         bank_name=bank, branch="Mumbai", account_type=atype, status=status,
         created_date=date.today(), created_time="10:00:00", highest_credit=credit,
-        highest_debit=50000.0, debit_alert_threshold=50000.0,
+        highest_debit=50000.0, debit_alert_threshold=50000.0, cdm_daily_limit=cdm_limit,
     )
     db.add(acc)
     await db.flush()
@@ -198,16 +201,23 @@ async def _upload(db, ref: str, image: str):
     return await acr.put_account_details_image(ref, AccountDetailsImageUpload(image=image), _Req(), db, _admin())
 
 
-def _image(ref: str, image: str, content_type: str = "image/png") -> dict:
-    """What a deposit's detail payload carries when its account HAS an Account Details Image."""
-    return {"accountRef": ref, "hasImage": True, "image": image,
+def _image(ref: str, image: str, content_type: str = "image/png",
+           kind: str = detimg.ACCOUNT_KIND) -> dict:
+    """What a deposit's detail payload carries when its account HAS the image of ITS OWN kind."""
+    return {"accountRef": ref, "kind": kind, "hasImage": True, "image": image,
             "contentType": content_type, "message": None}
 
 
-def _no_image(ref: str) -> dict:
-    """...and when it has none: the plain statement, never reconstructed account details."""
-    return {"accountRef": ref, "hasImage": False, "image": None, "contentType": None,
-            "message": detimg.NOT_CONFIGURED_MSG}
+def _no_image(ref: str, kind: str = detimg.ACCOUNT_KIND) -> dict:
+    """...and when it has none: the plain statement for that kind, never reconstructed account
+    details and never the other image."""
+    return {"accountRef": ref, "kind": kind, "hasImage": False, "image": None, "contentType": None,
+            "message": detimg._spec(kind)[3]}
+
+
+async def _upload_cdm(db, ref: str, image: str):
+    return await acr.put_cdm_account_details_image(ref, AccountDetailsImageUpload(image=image),
+                                                   _Req(), db, _admin())
 
 
 def _no_account_text(payload: dict) -> bool:
@@ -848,14 +858,15 @@ async def _cdm(db, merchant, member_id: str = "MBR9") -> dict:
 @pytest.mark.asyncio
 async def test_a_cdm_deposit_shows_the_assigned_accounts_image(db):
     merchant = await _merchant(db)
-    await _receiver(db, "ACC0000017")
-    await _upload(db, "ACC0000017", _png("SEVENTEEN"))
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
+    await _upload_cdm(db, "ACC0000017", _png("CDM-SEVENTEEN"))
     out = await _cdm(db, merchant)
 
     await _send(db, out["id"], "ACC0000017")
 
     tx = await txr._get_tx(out["id"], db)
-    assert await detimg.for_transaction(db, tx) == _image("ACC0000017", _png("SEVENTEEN"))
+    assert await detimg.for_transaction(db, tx) == _image(
+        "ACC0000017", _png("CDM-SEVENTEEN"), kind=detimg.CDM_KIND)
 
 
 @pytest.mark.asyncio
@@ -863,10 +874,10 @@ async def test_a_cdm_deposit_never_shows_another_accounts_image(db):
     """The image is resolved from the assigned reference — not by bank, not the first one, not a
     default. Two imaged accounts exist and only the assigned one’s image is ever returned."""
     merchant = await _merchant(db)
-    await _receiver(db, "ACC0000017")
-    await _receiver(db, "ACC0000018", bank="ICICI Bank")
-    await _upload(db, "ACC0000017", _png("SEVENTEEN"))
-    await _upload(db, "ACC0000018", _png("EIGHTEEN"))
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
+    await _receiver(db, "ACC0000018", bank="ICICI Bank", cdm_limit=100000.0)
+    await _upload_cdm(db, "ACC0000017", _png("CDM-SEVENTEEN"))
+    await _upload_cdm(db, "ACC0000018", _png("CDM-EIGHTEEN"))
     first = await _cdm(db, merchant, "MBR1")
     second = await _cdm(db, merchant, "MBR2")
 
@@ -875,8 +886,8 @@ async def test_a_cdm_deposit_never_shows_another_accounts_image(db):
 
     a = await detimg.for_transaction(db, await txr._get_tx(first["id"], db))
     b = await detimg.for_transaction(db, await txr._get_tx(second["id"], db))
-    assert a == _image("ACC0000017", _png("SEVENTEEN"))
-    assert b == _image("ACC0000018", _png("EIGHTEEN"))
+    assert a == _image("ACC0000017", _png("CDM-SEVENTEEN"), kind=detimg.CDM_KIND)
+    assert b == _image("ACC0000018", _png("CDM-EIGHTEEN"), kind=detimg.CDM_KIND)
     assert a["image"] != b["image"], "two accounts, two images"
 
 
@@ -885,8 +896,8 @@ async def test_a_cdm_deposits_account_text_never_reaches_the_merchant(db):
     """The image IS the account details for a CDM deposit too: no bank name, number, IFSC or
     branch on the merchant's payload, and no snapshot standing in for them."""
     merchant = await _merchant(db)
-    await _receiver(db, "ACC0000017")
-    await _upload(db, "ACC0000017", _png("SEVENTEEN"))
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
+    await _upload_cdm(db, "ACC0000017", _png("CDM-SEVENTEEN"))
     out = await _cdm(db, merchant)
 
     sent = await _send(db, out["id"], "ACC0000017")
@@ -898,16 +909,22 @@ async def test_a_cdm_deposits_account_text_never_reaches_the_merchant(db):
 
 
 @pytest.mark.asyncio
-async def test_a_cdm_account_with_no_image_says_so_and_substitutes_nothing(db):
-    """Requirement 3 — no text fallback. The merchant is told the image is missing."""
+async def test_a_cdm_account_with_no_cdm_image_says_so_and_substitutes_nothing(db):
+    """No text fallback AND no image fallback. The account below has a perfectly good NORMAL
+    Account Details Image; a CDM deposit is still told its CDM image is missing, because sending a
+    CDM merchant the UPI instructions would walk them to the wrong thing."""
     merchant = await _merchant(db)
-    await _receiver(db, "ACC0000017")                      # no image uploaded
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
+    await _upload(db, "ACC0000017", _png("NORMAL-ONLY"))        # normal image, no CDM image
     out = await _cdm(db, merchant)
 
     sent = await _send(db, out["id"], "ACC0000017")
 
     tx = await txr._get_tx(out["id"], db)
-    assert await detimg.for_transaction(db, tx) == _no_image("ACC0000017")
+    got = await detimg.for_transaction(db, tx)
+    assert got == _no_image("ACC0000017", kind=detimg.CDM_KIND)
+    assert got["message"] == "CDM account details image is not configured for this account."
+    assert _png("NORMAL-ONLY") not in json.dumps(got), "the normal image is never the fallback"
     assert _no_account_text(sent) and _mentions_receiver(sent) == []
 
 
@@ -915,7 +932,7 @@ async def test_a_cdm_account_with_no_image_says_so_and_substitutes_nothing(db):
 async def test_typed_account_details_are_refused_on_a_cdm_deposit(db):
     """A client cannot route text to the merchant by calling the assignment route directly."""
     merchant = await _merchant(db)
-    await _receiver(db, "ACC0000017")
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
     out = await _cdm(db, merchant)
 
     with pytest.raises(HTTPException) as e:
@@ -931,7 +948,7 @@ async def test_a_cdm_account_with_no_image_is_still_assignable(db):
     """Requirement 7 — the image has zero effect on which accounts may be used. An account with
     no image is assigned exactly as readily as one with an image."""
     merchant = await _merchant(db)
-    await _receiver(db, "ACC0000017")                      # no image
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)                      # no image
     out = await _cdm(db, merchant)
 
     sent = await _send(db, out["id"], "ACC0000017")
@@ -946,3 +963,69 @@ def test_the_image_set_and_the_allocatable_set_are_separate():
     assert "CDM" in detimg.IMAGE_DEPOSIT_TYPES
     assert "CDM" not in ALLOCATABLE_DEPOSIT_TYPES
     assert set(ALLOCATABLE_DEPOSIT_TYPES) < set(detimg.IMAGE_DEPOSIT_TYPES)
+
+
+@pytest.mark.asyncio
+async def test_one_account_carries_both_images_independently(db):
+    """The same account, two images, two audiences. Neither upload disturbs the other row."""
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
+    await _upload(db, "ACC0000017", _png("NORMAL"))
+    await _upload_cdm(db, "ACC0000017", _png("CDM"))
+
+    # An IMPS deposit the engine places on the only account there is, and a CDM deposit an Admin
+    # assigns to that same account — the two ways an account is chosen, one account, two images.
+    normal = await txr.create_deposit(_payload(40000, memberId="MBR1"), db, merchant)
+    assert normal["adminRef"] == "ACC0000017", "auto-allocated"
+    cdm_dep = await _cdm(db, merchant, "MBR2")
+    await _send(db, cdm_dep["id"], "ACC0000017")
+
+    got_normal = await detimg.for_transaction(db, await txr._get_tx(normal["id"], db))
+    got_cdm = await detimg.for_transaction(db, await txr._get_tx(cdm_dep["id"], db))
+    assert got_normal == _image("ACC0000017", _png("NORMAL"))
+    assert got_cdm == _image("ACC0000017", _png("CDM"), kind=detimg.CDM_KIND)
+    assert got_normal["image"] != got_cdm["image"]
+
+
+@pytest.mark.asyncio
+async def test_replacing_one_image_leaves_the_other_exactly_as_it_was(db):
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
+    await _upload(db, "ACC0000017", _png("NORMAL"))
+    await _upload_cdm(db, "ACC0000017", _png("CDM"))
+
+    await _upload_cdm(db, "ACC0000017", _png("CDM-V2"))         # replace only the CDM one
+    assert (await detimg.get(db, "ACC0000017")).image == _png("NORMAL")
+    assert (await detimg.get(db, "ACC0000017", kind=detimg.CDM_KIND)).image == _png("CDM-V2")
+
+    await _upload(db, "ACC0000017", _png("NORMAL-V2"))          # ...and only the normal one
+    assert (await detimg.get(db, "ACC0000017")).image == _png("NORMAL-V2")
+    assert (await detimg.get(db, "ACC0000017", kind=detimg.CDM_KIND)).image == _png("CDM-V2")
+
+
+@pytest.mark.asyncio
+async def test_removing_one_image_leaves_the_other_in_place(db):
+    merchant = await _merchant(db)
+    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
+    await _upload(db, "ACC0000017", _png("NORMAL"))
+    await _upload_cdm(db, "ACC0000017", _png("CDM"))
+
+    await acr.delete_cdm_account_details_image("ACC0000017", _Req(), db, _admin())
+
+    assert await detimg.get(db, "ACC0000017", kind=detimg.CDM_KIND) is None
+    assert (await detimg.get(db, "ACC0000017")).image == _png("NORMAL"), "untouched"
+    # ...and the account is exactly as assignable as it was: an image is never a requirement.
+    out = await _cdm(db, merchant)
+    assert (await _send(db, out["id"], "ACC0000017"))["adminRef"] == "ACC0000017"
+
+
+@pytest.mark.asyncio
+async def test_the_cdm_image_routes_are_admin_only(db):
+    """A merchant cannot name an account and receive its CDM image: there is no route to try."""
+    import inspect
+    from app.core.deps import get_current_admin
+    for fn in (acr.get_cdm_account_details_image, acr.put_cdm_account_details_image,
+               acr.delete_cdm_account_details_image):
+        param = inspect.signature(fn).parameters
+        dep = param.get("actor") or param.get("_")
+        assert dep.default.dependency is get_current_admin, fn.__name__

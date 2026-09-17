@@ -340,6 +340,12 @@ export const MerchantSlipModal: React.FC<{
   const { showToast } = useToast();
   const [proofs, setProofs] = useState<string[]>([]);
   const [ref, setRef] = useState('');
+  // CDM only: the two values printed on the machine's receipt. Two different lines of the same
+  // slip — the ATM ID names the machine the cash went into, the TXN NO is the number that machine
+  // printed for this deposit. Kept apart on purpose: copying one into the other, or filling either
+  // from the request's own reference, would make the pair useless for tracing the cash back.
+  const [atmId, setAtmId] = useState('');
+  const [txnNo, setTxnNo] = useState('');
   const [loading, setLoading] = useState(false);
   // "Send To Approval" (demo): once the slip proof uploads, the merchant chooses the Authorized
   // Approver who should review this deposit — revealed here rather than on the create form.
@@ -407,7 +413,9 @@ export const MerchantSlipModal: React.FC<{
 
   // Both the UTR number and at least one payment proof are mandatory when submitting a slip; in demo
   // the Authorized Approver (revealed after the proof uploads) is required too.
-  const canSubmit = proofs.length > 0 && !!ref.trim() && (!SEND_TO_APPROVAL_ENABLED || !!approverId);
+  const canSubmit = proofs.length > 0
+    && (isCdm ? (!!atmId.trim() && !!txnNo.trim()) : !!ref.trim())
+    && (!SEND_TO_APPROVAL_ENABLED || !!approverId);
   // Slip submission applies to deposits awaiting the merchant's payment proof, or those a
   // Supervisor returned for resubmission (the Data Operator re-uploads the correct slip).
   const canSubmitSlip = tx.type.startsWith('DEPOSIT') && (tx.status === 'ACCOUNT_SUBMITTED' || tx.status === 'RESUBMITTED');
@@ -423,7 +431,11 @@ export const MerchantSlipModal: React.FC<{
       // files are attached afterwards. Splitting is only about the proxy's request-body cap —
       // every file ends up on the same request, and appending never changes its status.
       const [first, ...rest] = proofBatches(proofs);
-      await transactionAPI.submitSlip(tx.id, { merchantProofs: first, merchantRef: ref.trim() || undefined,
+      await transactionAPI.submitSlip(tx.id, { merchantProofs: first,
+        // A CDM receipt carries the two machine values instead of a bank UTR; every other deposit
+        // type keeps the single reference it has always sent.
+        ...(isCdm ? { atmId: atmId.trim(), txnNo: txnNo.trim() }
+                  : { merchantRef: ref.trim() || undefined }),
         ...(SEND_TO_APPROVAL_ENABLED && approverId ? { approverUserId: Number(approverId) } : {}) });
       const all = await attachRemainingProofs(rest, b => transactionAPI.addProofs(tx.id, b));
       fireConfetti();
@@ -438,9 +450,11 @@ export const MerchantSlipModal: React.FC<{
     }
   };
 
-  const helper = canSubmit
-    ? 'UTR number and proof attached — ready to submit.'
-    : 'Both the UTR number and a payment proof image are required.';
+  const helper = isCdm
+    ? (canSubmit ? 'ATM ID, TXN NO and receipt attached — ready to submit.'
+                 : 'The ATM ID, the TXN NO and at least one receipt image are required.')
+    : (canSubmit ? 'UTR number and proof attached — ready to submit.'
+                 : 'Both the UTR number and a payment proof image are required.');
 
   // A custom uploaded image overrides the auto-generated card for this transaction.
   const bankImageSrc = imgs.adminBankImage || null;
@@ -582,8 +596,19 @@ export const MerchantSlipModal: React.FC<{
               that account before the deposit is completed.
             </p>
           )}
-          <Input label={isCdm ? 'CDM Reference Number' : 'UTR Number'} value={ref} onChange={e=>setRef(e.target.value)}
-            placeholder={isCdm ? 'The reference printed on the CDM receipt' : 'Bank UTR / payment reference'} required />
+          {isCdm ? (
+            <>
+              <Input label="ATM ID" value={atmId} onChange={e=>setAtmId(e.target.value)}
+                placeholder="Enter ATM ID from the CDM receipt" required
+                hint="The machine's ID, printed near the top of the receipt." />
+              <Input label="TXN NO" value={txnNo} onChange={e=>setTxnNo(e.target.value)}
+                placeholder="Enter transaction number from the CDM receipt" required
+                hint="The transaction number the machine printed for this deposit — not the ATM ID." />
+            </>
+          ) : (
+            <Input label="UTR Number" value={ref} onChange={e=>setRef(e.target.value)}
+              placeholder="Bank UTR / payment reference" required />
+          )}
           <MultiProofUpload values={proofs} onChange={setProofs} label={isCdm ? 'Upload CDM Receipt' : 'Upload Slip'} required />
           {/* Send To Approval — revealed only after the slip proof uploads; the merchant chooses who
               reviews this deposit, then it routes to that approver (Supervisor review). Demo only. */}

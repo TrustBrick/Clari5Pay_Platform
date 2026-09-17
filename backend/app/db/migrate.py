@@ -133,6 +133,17 @@ _NEW_COLUMNS = [
     # CDM deposits: the Admin's manual verification record (checklist + CDM/bank-credit references
     # + who confirmed the actual bank credit, and when). NULL on every non-CDM row.
     ("transactions", "cdm_verification", "TEXT"),
+    # CDM deposits: what the merchant read off the machine's receipt when they uploaded it — the
+    # ATM ID identifying the machine, and the transaction number it printed. Two different values
+    # from two different lines of the same slip; neither is derived from the other or from the
+    # request. NULL on every non-CDM row and on CDM rows raised before the fields existed.
+    ("transactions", "cdm_atm_id", "VARCHAR(64)"),
+    ("transactions", "cdm_txn_no", "VARCHAR(64)"),
+    # The account's HARD DAILY limit for CDM deposits only — independent of highest_credit and
+    # never derived from it. Defaults to 0, which means UNCONFIGURED (no CDM capacity), the same
+    # convention the other two ceilings use. Additive: no existing row's behaviour changes until
+    # an Admin sets a limit.
+    ("account_master", "cdm_daily_limit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
     # Cancellation reason capture (merchant cancels a pending request).
     ("transactions", "cancel_reason", "TEXT"),
     ("transactions", "cancelled_by", "VARCHAR(128)"),

@@ -744,7 +744,16 @@ const RequestModal: React.FC<{
                 );
               })()}
               <div style={{ display:'flex',gap:10 }}>
-                <Btn onClick={sendAccount} disabled={saving||!accountRef}>{saving ? 'Sending...' : <><Icon name="bank" size={14} /> Send Account</>}</Btn>
+                {/* For CDM the button is held back when the figures on screen already say the
+                    server will refuse: over the remaining capacity, or no limit configured at all.
+                    The server enforces the same rule under a row lock — this only saves a
+                    round-trip and names the reason before the click. */}
+                <Btn onClick={sendAccount} disabled={saving||!accountRef||(isCdm && (() => {
+                  const bal = payoutBalances.find(b => b.referenceNumber === accountRef);
+                  if (!bal) return false;                       // figures not loaded — let the server answer
+                  const configured = bal.cdmLimitConfigured !== false && (bal.cdmDailyLimit || 0) > 0;
+                  return !configured || tx.amount > (bal.cdmRemainingToday ?? 0);
+                })())}>{saving ? 'Sending...' : <><Icon name="bank" size={14} /> Send Account</>}</Btn>
                 <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
               </div>
             </>
@@ -798,8 +807,27 @@ const RequestModal: React.FC<{
               ? (() => { const a = accounts.find(x => x.referenceNumber === record.adminRef);
                          return a ? `${a.bankName} — A/C ${maskAccount(a.accountNumber)}` : record.adminRef; })()
               : <span style={{ color:T.danger }}>Not assigned</span>} />
-            <Row k="Merchant's CDM Reference" v={record.merchantRef || '—'} />
+            {/* What the MERCHANT read off the machine's receipt when they uploaded it. Read-only
+                here: the Admin's job is to check these against the image above, not to re-type
+                them. Older CDM rows carry only the machine reference, in merchantRef. */}
+            <Row k="ATM ID" v={record.cdmAtmId || '—'} />
+            <Row k="TXN NO" v={record.cdmTxnNo || record.merchantRef || '—'} />
           </div>
+          {/* Where the assigned account stands against its CDM ceiling today, after this deposit
+              was routed to it. The same figures the account picker showed before the assignment. */}
+          {record.adminRef && (() => {
+            const bal = payoutBalances.find(b => b.referenceNumber === record.adminRef);
+            if (!bal) return null;
+            return (
+              <div style={{ background:T.canvas,borderRadius:10,padding:'10px 14px',marginBottom:12 }}>
+                <Row k="CDM Daily Limit" v={(bal.cdmDailyLimit || 0) > 0
+                  ? fmt(bal.cdmDailyLimit || 0)
+                  : <span style={{ color:T.warning }}>Not configured</span>} />
+                <Row k="CDM Used Today" v={fmt(bal.cdmUsedToday || 0)} />
+                <Row k="CDM Remaining Today" v={fmt(bal.cdmRemainingToday || 0)} />
+              </div>
+            );
+          })()}
           <p style={{ fontSize:12,color:T.textMuted,margin:'10px 0 0',lineHeight:1.6 }}>
             Review the CDM receipt above against these figures, then complete the deposit below.
           </p>
@@ -2049,15 +2077,25 @@ export const AdminAccountsPage: React.FC = () => {
   const [detImgBusy, setDetImgBusy] = useState(false);
   const [confirmRemoveImg, setConfirmRemoveImg] = useState(false);
   const detImgInput = useRef<HTMLInputElement>(null);
+  // The SECOND image, for CDM deposits only. Same rules, same limits, its own row on the server:
+  // uploading, replacing or removing either one leaves the other exactly as it was, and neither is
+  // ever shown in place of the other.
+  const [cdmImg, setCdmImg] = useState<AccountDetailsImage | null>(null);
+  const [cdmImgBusy, setCdmImgBusy] = useState(false);
+  const [confirmRemoveCdmImg, setConfirmRemoveCdmImg] = useState(false);
+  const cdmImgInput = useRef<HTMLInputElement>(null);
   const detailRef = detail?.referenceNumber;
   useEffect(() => {
     setDetImg(null); setConfirmRemoveImg(false);
+    setCdmImg(null); setConfirmRemoveCdmImg(false);
     if (!detailRef) return;
     let alive = true;
     setDetImgLoading(true);
-    accountAPI.accountDetailsImage(detailRef)
-      .then(r => { if (alive) setDetImg(r); })
-      .catch(() => { if (alive) showToast('Failed to load the account details image', 'error'); })
+    Promise.all([
+      accountAPI.accountDetailsImage(detailRef).then(r => { if (alive) setDetImg(r); }),
+      accountAPI.cdmAccountDetailsImage(detailRef).then(r => { if (alive) setCdmImg(r); }),
+    ])
+      .catch(() => { if (alive) showToast('Failed to load the account details images', 'error'); })
       .finally(() => { if (alive) setDetImgLoading(false); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2092,6 +2130,65 @@ export const AdminAccountsPage: React.FC = () => {
     } catch (err: any) {
       showToast(err?.response?.data?.detail || 'Failed to remove the account details image', 'error');
     } finally { setDetImgBusy(false); }
+  };
+
+  // The CDM image, managed by the same rules through its own routes. Nothing here reads or writes
+  // the normal image above.
+  const onCdmImgFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !detail) return;
+    if (!DET_IMG_TYPES.includes((file.type || '').toLowerCase())) { showToast('Unsupported file type. Allowed: JPG, JPEG, PNG, WEBP.', 'error'); return; }
+    if (file.size > DET_IMG_MAX) { showToast('The image must be 5 MB or smaller.', 'error'); return; }
+    const replacing = !!cdmImg?.hasImage;
+    setCdmImgBusy(true);
+    try {
+      const saved = await accountAPI.setCdmAccountDetailsImage(detail.referenceNumber, await fileToDataUrl(file));
+      setCdmImg(saved);
+      reload();
+      showToast(replacing ? 'CDM account details image replaced' : 'CDM account details image uploaded');
+    } catch (err: any) {
+      showToast(err?.response?.data?.detail || 'Failed to upload the CDM account details image', 'error');
+    } finally { setCdmImgBusy(false); }
+  };
+  const removeCdmImg = async () => {
+    if (!detail) return;
+    setCdmImgBusy(true);
+    try {
+      setCdmImg(await accountAPI.removeCdmAccountDetailsImage(detail.referenceNumber));
+      setConfirmRemoveCdmImg(false);
+      reload();
+      showToast('CDM account details image removed');
+    } catch (err: any) {
+      showToast(err?.response?.data?.detail || 'Failed to remove the CDM account details image', 'error');
+    } finally { setCdmImgBusy(false); }
+  };
+
+  // ── The CDM daily limit ──────────────────────────────────────────────────────────────────────
+  // A third ceiling, edited on its own because it IS its own: never derived from Highest Credit or
+  // Highest Debit, and setting it changes neither. 0 means unconfigured — the account can take no
+  // CDM at all until a number is chosen, which is the same thing 0 means for the other two.
+  const [editCdmLimit, setEditCdmLimit] = useState(false);
+  const [cdmLimitInput, setCdmLimitInput] = useState('');
+  const [cdmLimitBusy, setCdmLimitBusy] = useState(false);
+  const startEditCdmLimit = () => {
+    setCdmLimitInput(String(detail?.cdmDailyLimit ?? 0));
+    setEditCdmLimit(true);
+  };
+  const saveCdmLimit = async () => {
+    if (!detail) return;
+    const value = Number(parseIndianAmount(cdmLimitInput));
+    if (!Number.isFinite(value) || value < 0) { showToast('Enter a valid CDM daily limit', 'error'); return; }
+    setCdmLimitBusy(true);
+    try {
+      const saved = await accountAPI.setCdmLimit(detail.referenceNumber, value);
+      setDetail(d => (d ? { ...d, cdmDailyLimit: saved.cdmDailyLimit } : d));
+      setEditCdmLimit(false);
+      reload();
+      showToast('CDM daily limit updated');
+    } catch (err: any) {
+      showToast(err?.response?.data?.detail || 'Failed to update the CDM daily limit', 'error');
+    } finally { setCdmLimitBusy(false); }
   };
 
   // Account Limits (Highest Credit / Highest Debit) editing, inside the Details popup.
@@ -2635,6 +2732,112 @@ export const AdminAccountsPage: React.FC = () => {
               </p>
             )}
             <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>Upload the account details image that will be shown to the merchant when this account is assigned to a deposit. JPG, JPEG, PNG or WEBP · up to 5 MB.</p>
+          </div>
+
+          {/* ── CDM Account Details Image ──────────────────────────────
+              The SECOND image, shown to a merchant depositing CASH into a machine. Separate from
+              the one above in every way: separate upload, separate row, separate removal — and
+              never a substitute for it. A CDM deposit whose account has no CDM image tells the
+              merchant so rather than showing them the normal one, which would send someone
+              standing at a cash machine the wrong instructions. */}
+          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap' }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>CDM Account Details Image</p>
+              {canEditLimits && (
+                <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
+                  <input ref={cdmImgInput} type="file" accept="image/jpeg,image/jpg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={onCdmImgFile} style={{ display:'none' }} />
+                  <Btn size="sm" variant="secondary" disabled={cdmImgBusy || detImgLoading} onClick={()=>cdmImgInput.current?.click()}>
+                    <Icon name="upload" size={13} /> {cdmImg?.hasImage ? 'Replace CDM Image' : 'Upload CDM Image'}
+                  </Btn>
+                  {cdmImg?.hasImage && !confirmRemoveCdmImg && (
+                    <Btn size="sm" variant="ghost" disabled={cdmImgBusy} onClick={()=>setConfirmRemoveCdmImg(true)}>Remove</Btn>
+                  )}
+                </div>
+              )}
+            </div>
+            {detImgLoading ? (
+              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Loading…</p>
+            ) : cdmImg?.hasImage ? (
+              <>
+                {cdmImg.image
+                  ? <div role="button" tabIndex={0} title="Click to view larger" style={{ cursor:'zoom-in' }}
+                      onClick={()=>openDataUrl(cdmImg.image!)}
+                      onKeyDown={e=>{ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDataUrl(cdmImg.image!); } }}>
+                      <ReceiptImage src={cdmImg.image} alt="CDM Account Details Image" />
+                    </div>
+                  : <p style={{ fontSize:12,color:T.danger,margin:0 }}>A CDM image is uploaded but could not be loaded right now.</p>}
+                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginTop:6 }}>
+                  <span style={{ fontSize:11,color:T.textMuted }}>
+                    {[cdmImg.uploadedBy && `Uploaded by ${cdmImg.uploadedBy}`, cdmImg.uploadedAt && formatDateTime(cdmImg.uploadedAt), cdmImg.sizeBytes != null && formatBytes(cdmImg.sizeBytes)].filter(Boolean).join(' · ')}
+                  </span>
+                  {cdmImg.image && (
+                    <div style={{ display:'flex',gap:6 }}>
+                      <Btn size="sm" variant="ghost" onClick={()=>openDataUrl(cdmImg.image!)}><Icon name="view" size={13} /> View</Btn>
+                      <Btn size="sm" variant="ghost" onClick={()=>downloadDataUrl(cdmImg.image!, `cdm-account-details-${detail.referenceNumber}.${(cdmImg.contentType || '').includes('png') ? 'png' : (cdmImg.contentType || '').includes('webp') ? 'webp' : 'jpg'}`)}><Icon name="download" size={13} /> Download</Btn>
+                    </div>
+                  )}
+                </div>
+                {confirmRemoveCdmImg && (
+                  <div style={{ marginTop:10,background:T.dangerBg,borderRadius:10,padding:'10px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap' }}>
+                    <span style={{ fontSize:12,color:T.textMain }}>Remove the CDM image? CDM deposits routed here will tell the merchant it is not configured — they are never shown the normal Account Details Image instead. The account stays eligible for deposits.</span>
+                    <div style={{ display:'flex',gap:6 }}>
+                      <Btn size="sm" variant="danger" disabled={cdmImgBusy} onClick={removeCdmImg}>{cdmImgBusy ? 'Removing…' : 'Remove CDM Image'}</Btn>
+                      <Btn size="sm" variant="ghost" disabled={cdmImgBusy} onClick={()=>setConfirmRemoveCdmImg(false)}>Cancel</Btn>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>
+                CDM account details image is not configured for this account. CDM deposits routed here tell the merchant exactly that — the normal Account Details Image is never shown in its place.
+              </p>
+            )}
+            <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>Shown only to merchants depositing cash into a machine (Deposit Type = CDM). Separate from the image above. JPG, JPEG, PNG or WEBP · up to 5 MB.</p>
+          </div>
+
+          {/* ── CDM Daily Limit ─────────────────────────────────────
+              How much CASH this account may take through a machine in a day. A hard ceiling and a
+              SEPARATE one: it is never derived from Highest Credit, reaching it does not touch
+              Highest Credit, and only CDM deposits consume it. 0 means no CDM capacity has been
+              granted — the account cannot be assigned to a CDM deposit at all until a number is
+              set, which is the same thing 0 means for the two limits below. */}
+          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap' }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>CDM Daily Limit</p>
+              {canEditLimits && !editCdmLimit && (
+                <Btn size="sm" variant="secondary" onClick={startEditCdmLimit}><Icon name="edit" size={13} /> Edit</Btn>
+              )}
+            </div>
+            {editCdmLimit ? (
+              <>
+                <Input label="CDM Daily Limit (₹)" value={cdmLimitInput} inputMode="decimal"
+                  onChange={e=>setCdmLimitInput(formatIndianAmountInput(e.target.value))}
+                  placeholder="e.g. 1,00,000"
+                  hint="Cash through a machine only. 0 means no CDM capacity — the account cannot be assigned to a CDM deposit." />
+                <div style={{ display:'flex',gap:8 }}>
+                  <Btn size="sm" disabled={cdmLimitBusy} onClick={saveCdmLimit}>{cdmLimitBusy ? 'Saving…' : 'Save CDM Limit'}</Btn>
+                  <Btn size="sm" variant="ghost" disabled={cdmLimitBusy} onClick={()=>setEditCdmLimit(false)}>Cancel</Btn>
+                </div>
+              </>
+            ) : (
+              <>
+                <Row k="CDM Daily Limit" v={(detail.cdmDailyLimit || 0) > 0
+                  ? fmt(detail.cdmDailyLimit || 0)
+                  : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
+                {(() => {
+                  const cdmBal = balances.find(b => b.referenceNumber === detail.referenceNumber);
+                  return <>
+                    <Row k="CDM Used Today" v={fmt(cdmBal?.cdmUsedToday || 0)} />
+                    <Row k="CDM Remaining Today" v={<b style={{ color:(cdmBal?.cdmRemainingToday || 0) > 0 ? T.success : T.danger }}>{fmt(cdmBal?.cdmRemainingToday || 0)}</b>} />
+                  </>;
+                })()}
+                <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>
+                  {(detail.cdmDailyLimit || 0) > 0
+                    ? 'Only CDM deposits consume this. It is separate from Highest Credit in both directions — neither is derived from the other.'
+                    : 'No CDM capacity has been granted, so this account cannot be assigned to a CDM deposit. Set a limit to allow one.'}
+                </p>
+              </>
+            )}
           </div>
 
           {/* ── Account Limits ────────────────────────────────────────

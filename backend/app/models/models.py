@@ -345,6 +345,13 @@ class AccountMaster(Base):
     highest_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     highest_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     debit_alert_threshold: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    #  • cdm_daily_limit — the account's HARD DAILY limit for CDM deposits ONLY, and a separate
+    #    ceiling from highest_credit in both directions: it is never derived from it, and reaching
+    #    it does not touch it. Cash walked into a machine is the one deposit the platform cannot
+    #    see arriving, so how much of it an account may take in a day is its own decision.
+    #    Admin-configured, never auto-raised, and 0 means UNCONFIGURED — no CDM capacity at all —
+    #    exactly as 0 does for the two ceilings above. See services/cdm_capacity.
+    cdm_daily_limit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     # The largest single debit ever observed leaving this account. This is what `highest_debit`
     # used to mean before it became a daily ceiling, and it is preserved here so that history is
     # not lost by the change of meaning. INFORMATIONAL ONLY: nothing reads it to decide whether a
@@ -410,6 +417,37 @@ class AccountDetailsImage(Base):
     data migration for a label.
     """
     __tablename__ = "account_payment_image"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    account_ref: Mapped[str] = mapped_column(
+        String(40), ForeignKey("account_master.reference_number"), unique=True, index=True,
+        nullable=False,
+    )
+    image: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    uploaded_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+
+class AccountCdmImage(Base):
+    """The CDM Account Details Image an Admin uploads against a managed receiving account.
+
+    A SECOND, independent image beside ``AccountDetailsImage``. A CDM merchant is walking to a cash
+    machine, and what they need on screen is not always what a UPI payer needs — so the two are
+    configured separately, stored separately, and replaced or removed separately. Neither is ever a
+    fallback for the other: a CDM deposit whose account has no CDM image is told so rather than
+    shown the normal one, which would send a merchant to the wrong instructions.
+
+    Its own table rather than a ``kind`` column on ``account_payment_image`` because that table's
+    ``account_ref`` is UNIQUE — a second row per account would mean dropping and recreating a live
+    constraint, where a new table is purely additive and cannot disturb a row that already exists.
+
+    Identical shape to the normal image otherwise: ``image`` holds a ``storage://<key>`` reference
+    when object storage is enabled, otherwise the validated data URL.
+    """
+    __tablename__ = "account_cdm_image"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     account_ref: Mapped[str] = mapped_column(

@@ -107,16 +107,24 @@ def _admin(uid: int = 1, name: str = "Priya Nair") -> User:
 
 
 async def _account(db: AsyncSession, ref: str = "ACC1", *, bank: str = "HDFC Bank",
-                   credit: float = 500000.0) -> AccountMaster:
+                   credit: float = 500000.0, cdm_limit: float = 500000.0) -> AccountMaster:
+    # `cdm_limit` is its own number, deliberately NOT `credit`: a test that wanted them equal would
+    # hide the day this code started reading one for the other.
     acc = AccountMaster(
         reference_number=ref, account_name="sindu", account_number=f"AC{ref}",
         ifsc_code="HDFC0001234", bank_name=bank, branch="Mumbai",
         account_type=AccountType.CURRENT, status="ACTIVE", created_date=date.today(),
         created_time="10:00:00", highest_credit=credit, highest_debit=50000.0,
+        cdm_daily_limit=cdm_limit,
     )
     db.add(acc)
     await db.flush()
     return acc
+
+
+# What the machine printed, as the merchant reads it off the slip: two values, two lines.
+ATM_ID = "13161SRY"
+TXN_NO = "CDM887766"
 
 
 def _payload(amount: float = 50000.0, **kw) -> DepositCreate:
@@ -156,7 +164,7 @@ async def _awaiting_completion(db: AsyncSession, merchant: User, admin: User,
     reviewer approved. Everything except the verification."""
     tx_id = await _accepted(db, merchant, admin, amount, account_ref)
     await txr.submit_slip(tx_id, SlipRequest(merchantProofs=receipts or [RECEIPT],
-                                             merchantRef="CDM887766"), None, db, merchant)
+                                             atmId=ATM_ID, txnNo=TXN_NO), None, db, merchant)
     tx = await txr._get_tx(tx_id, db)
     tx.status = TxStatus.SLIP_SUBMITTED          # the Supervisor's approval, already tested elsewhere
     await db.flush()
@@ -316,7 +324,7 @@ async def test_the_two_values_are_asked_for_only_once_the_receipt_is_in(db):
     before = await txr.get_transaction_detail(tx_id, db, _admin())
     assert before["cdmVerification"]["receiptUploaded"] is False
 
-    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="CDM887766"),
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo=TXN_NO),
                           None, db, merchant)               # the merchant uploads, entering neither
 
     after = await txr.get_transaction_detail(tx_id, db, _admin())
@@ -343,7 +351,7 @@ async def test_the_merchant_uploads_one_receipt(db):
     await _account(db, "ACC1")
     tx_id = await _accepted(db, merchant, _admin())
 
-    out = await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="CDM1"),
+    out = await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo="CDM1"),
                                 None, db, merchant)
 
     assert out["merchantProofs"] == [RECEIPT]
@@ -358,7 +366,7 @@ async def test_the_merchant_uploads_many_receipts(db):
     tx_id = await _accepted(db, merchant, _admin())
     many = ["data:image/png;base64," + base64.b64encode(f"r{i}".encode()).decode() for i in range(8)]
 
-    out = await txr.submit_slip(tx_id, SlipRequest(merchantProofs=many, merchantRef="CDM1"),
+    out = await txr.submit_slip(tx_id, SlipRequest(merchantProofs=many, atmId=ATM_ID, txnNo="CDM1"),
                                 None, db, merchant)
 
     assert out["merchantProofs"] == many
@@ -370,7 +378,7 @@ async def test_a_later_receipt_is_appended_not_substituted(db):
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _accepted(db, merchant, _admin())
-    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="CDM1"),
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo="CDM1"),
                           None, db, merchant)
 
     out = await txr.append_proofs(tx_id, ProofsAppend(proofs=[RECEIPT_2]), None, db, merchant)
@@ -384,7 +392,7 @@ async def test_uploading_more_receipts_creates_no_second_deposit(db):
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _accepted(db, merchant, _admin())
-    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="CDM1"),
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo="CDM1"),
                           None, db, merchant)
     await txr.append_proofs(tx_id, ProofsAppend(proofs=[RECEIPT_2]), None, db, merchant)
 
@@ -398,7 +406,7 @@ async def test_uploading_a_receipt_does_not_verify_or_complete_anything(db):
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _accepted(db, merchant, _admin())
-    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="CDM1"),
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo="CDM1"),
                           None, db, merchant)
 
     out = await txr.append_proofs(tx_id, ProofsAppend(proofs=[RECEIPT_2]), None, db, merchant)
@@ -532,7 +540,7 @@ async def test_nothing_is_invented_to_satisfy_the_completion(db):
 
     tx = await txr._get_tx(tx_id, db)
     assert tx.cdm_verification is None, "completing wrote no verification record at all"
-    assert tx.merchant_ref == "CDM887766", "the merchant's own reference is untouched…"
+    assert tx.merchant_ref == TXN_NO, "the merchant's own reference is untouched…"
     record = cdm.parse(tx.cdm_verification)
     assert cdm.field(record, "atmId") == "" and cdm.field(record, cdm.BANK_CREDIT_FIELD) == ""
 
@@ -799,7 +807,7 @@ async def test_the_merchant_is_credited_only_when_the_deposit_completes(db):
 
     tx_id = await _accepted(db, merchant, _admin())
     assert (await txr.compute_balance(db, merchant))["totalDeposit"] == 0
-    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="CDM1"),
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo="CDM1"),
                           None, db, merchant)
     assert (await txr.compute_balance(db, merchant))["totalDeposit"] == 0
     tx = await txr._get_tx(tx_id, db)
@@ -899,7 +907,7 @@ async def test_cdm_introduces_no_new_status_values(db):
     seen.append((await txr._get_tx(tx_id, db)).status)
     await txr.account_submit(tx_id, AccountSubmitRequest(adminRef="ACC1"), db, _admin())
     seen.append((await txr._get_tx(tx_id, db)).status)
-    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], merchantRef="C1"), None, db, merchant)
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo="C1"), None, db, merchant)
     seen.append((await txr._get_tx(tx_id, db)).status)
     tx = await txr._get_tx(tx_id, db)
     tx.status = TxStatus.SLIP_SUBMITTED

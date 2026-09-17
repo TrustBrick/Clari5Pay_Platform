@@ -360,7 +360,7 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/account-submit`, data);
     return res.data;
   },
-  submitSlip: async (id: string, data: { merchantProof?: string; merchantProofs?: string[]; merchantRef?: string; approverUserId?: number }) => {
+  submitSlip: async (id: string, data: { merchantProof?: string; merchantProofs?: string[]; merchantRef?: string; atmId?: string; txnNo?: string; approverUserId?: number }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/slip`, data);
     return res.data;
   },
@@ -594,6 +594,29 @@ export const accountAPI = {
   },
   removeAccountDetailsImage: async (ref: string) => {
     const res = await api.delete<AccountDetailsImage>(`/api/accounts/${ref}/account-details-image`);
+    return res.data;
+  },
+  // ── The SECOND image: the one a CDM deposit's merchant receives ──
+  // Configured independently of the three routes above and never a fallback for them: a CDM
+  // deposit whose account has no CDM image tells the merchant so rather than showing the normal
+  // one, which would point them at the wrong instructions.
+  cdmAccountDetailsImage: async (ref: string) => {
+    const res = await api.get<AccountDetailsImage>(`/api/accounts/${ref}/cdm-account-details-image`);
+    return res.data;
+  },
+  setCdmAccountDetailsImage: async (ref: string, image: string) => {
+    const res = await api.put<AccountDetailsImage>(`/api/accounts/${ref}/cdm-account-details-image`, { image });
+    return res.data;
+  },
+  removeCdmAccountDetailsImage: async (ref: string) => {
+    const res = await api.delete<AccountDetailsImage>(`/api/accounts/${ref}/cdm-account-details-image`);
+    return res.data;
+  },
+  // The account's HARD DAILY limit for CDM deposits. Its own route because it is its own ceiling:
+  // it is never derived from Highest Credit / Highest Debit and setting it changes neither.
+  setCdmLimit: async (ref: string, cdmDailyLimit: number, reason?: string) => {
+    const res = await api.put<Account>(`/api/accounts/${ref}/cdm-limit`,
+                                       { cdm_daily_limit: cdmDailyLimit, reason });
     return res.data;
   },
   // ── Accounting ledger + manual adjustment (Account Management) ──

@@ -13,11 +13,13 @@ from app.models.models import (
 from app.core.deps import get_current_admin
 from app.services import account_ledger as ledger
 from app.services import account_details_image as detimg
+from app.services import cdm_capacity
 from app.services import deposit_allocation as alloc
 from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cache_get, cache_set
 from app.schemas.schemas import (
     AccountCreate, AccountLimitsUpdate, AccountOwnFlagUpdate, AccountDetailsImageUpload,
+    AccountCdmLimitUpdate,
     AccountPayoutModesUpdate, AdjustmentCreate, ReasonRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
@@ -215,6 +217,9 @@ async def account_balances(
     # figure on this screen never grants or withholds capacity.
     acct_refs = [a.reference_number for a in accounts]
     used_today = await alloc.credit_used_today(db, acct_refs)
+    # CDM deposits only, against the account's own CDM ceiling. A separate figure from the one
+    # above because it answers a separate question, and the two must never be read for each other.
+    cdm_used_today = await cdm_capacity.used_today(db, acct_refs)
     count_today = await alloc.deposit_counts_today(db, acct_refs)
     # Today's DEBIT position per account, from the withdrawal allocation engine — the SAME
     # functions that decide whether a withdrawal may be paid from here, so what Account Management
@@ -341,6 +346,15 @@ async def account_balances(
             # the money lands, which is what stops the limit being oversubscribed.
             "creditUsedToday": round(used_today.get(ref, 0.0), 2),
             "remainingCredit": alloc.remaining_credit(a, used_today.get(ref, 0.0)),
+            # Where this account stands against its CDM daily limit right now. Independent of the
+            # credit figures above in both directions: only CDM deposits consume it, and consuming
+            # it does not touch Highest Credit. 0 limit = unconfigured, which `cdmLimitConfigured`
+            # states outright so a screen can tell "nothing left" from "nothing granted".
+            "cdmDailyLimit": round(getattr(a, "cdm_daily_limit", 0.0) or 0.0, 2),
+            "cdmUsedToday": round(cdm_used_today.get(ref, 0.0), 2),
+            "cdmRemainingToday": round(cdm_capacity.remaining(
+                getattr(a, "cdm_daily_limit", 0.0), cdm_used_today.get(ref, 0.0)), 2),
+            "cdmLimitConfigured": float(getattr(a, "cdm_daily_limit", 0.0) or 0.0) > 0,
             "depositsToday": count_today.get(ref, 0),
             # Where this account stands against its daily DEBIT limit right now. "Used" counts
             # every payout leg placed on it today that has not been released — an allocated
@@ -576,7 +590,8 @@ async def account_users(
     }
 
 
-def _a(a: AccountMaster, merchant_name: str | None = None, has_account_details_image: bool | None = None) -> dict:
+def _a(a: AccountMaster, merchant_name: str | None = None, has_account_details_image: bool | None = None,
+       has_cdm_account_details_image: bool | None = None) -> dict:
     out = {
         "id": a.id,
         "referenceNumber": a.reference_number,
@@ -608,6 +623,10 @@ def _a(a: AccountMaster, merchant_name: str | None = None, has_account_details_i
         "highestDebitConfiguredAt": (a.highest_debit_configured_at.isoformat() + "Z")
                                     if a.highest_debit_configured_at else None,
         "highestDebitConfiguredBy": a.highest_debit_configured_by,
+        # The account's HARD DAILY limit for CDM deposits, independent of the two ceilings above:
+        # never derived from Highest Credit and never changed by it. 0 = unconfigured = no CDM
+        # capacity, so the account cannot be assigned to a CDM deposit until an Admin sets one.
+        "cdmDailyLimit": round(getattr(a, "cdm_daily_limit", 0.0) or 0.0, 2),
         "isOwnAccount": bool(a.is_own_account),
         # Which transaction modes this account can pay out by. An account with none configured
         # supports every mode, and is reported as all four rather than as an empty list, so the
@@ -621,6 +640,10 @@ def _a(a: AccountMaster, merchant_name: str | None = None, has_account_details_i
     # that return an account omit it rather than report a guessed False.
     if has_account_details_image is not None:
         out["hasAccountDetailsImage"] = has_account_details_image
+    # The CDM image is a SEPARATE configuration with a separate answer: an account can have one,
+    # the other, both or neither, and the screen has to be able to say which.
+    if has_cdm_account_details_image is not None:
+        out["hasCdmAccountDetailsImage"] = has_cdm_account_details_image
     return out
 
 
@@ -657,7 +680,10 @@ async def list_accounts(
         accounts = (await db.execute(select(AccountMaster).order_by(AccountMaster.id.desc()))).scalars().all()
         name_map = await _merchant_name_map(db)
         with_image = await detimg.refs_with_image(db)
-        out = [_a(a, name_map.get(a.reference_number), a.reference_number in with_image)
+        # The two images are configured independently, so the listing reports them independently.
+        with_cdm_image = await detimg.refs_with_image(db, kind=detimg.CDM_KIND)
+        out = [_a(a, name_map.get(a.reference_number), a.reference_number in with_image,
+                  a.reference_number in with_cdm_image)
                for a in accounts]
         # Cached ~5s: the base account list (global) is the heavy part; the q-filter runs on the
         # cached result so any search term benefits. Read-only.
@@ -1341,3 +1367,137 @@ async def create_adjustment(
     # figure immediately rather than the pre-adjustment one.
     await cache_delete("c:accounts:balances")
     return {"duplicate": False, "entry": ledger.serialize(entry)}
+
+
+# ═══ CDM Account Details Image ═══════════════════════════════════════════════════
+# The SECOND image an account can carry, for CDM deposits only. Uploaded, replaced and removed
+# independently of the normal Account Details Image above: neither route touches the other's row,
+# and neither image is ever shown in place of the other. A CDM merchant whose account has no CDM
+# image is told so — being sent the normal one would point them at the wrong instructions.
+#
+# Same gate as every other route in this module (``get_current_admin``): merchants have no route
+# here at all, so no one can fetch an account's CDM image by naming the account. What a merchant
+# receives is resolved from THEIR OWN transaction's admin_ref (services/account_details_image).
+
+
+@router.get("/{reference_number}/cdm-account-details-image")
+async def get_cdm_account_details_image(
+    reference_number: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_admin),
+):
+    """The account's configured CDM account details image (Admin-only), or ``hasImage: false``."""
+    acc = await _account_or_404(db, reference_number)
+    row = await detimg.get(db, acc.reference_number, kind=detimg.CDM_KIND)
+    return detimg.serialize(row, acc.reference_number, kind=detimg.CDM_KIND)
+
+
+@router.put("/{reference_number}/cdm-account-details-image")
+async def put_cdm_account_details_image(
+    reference_number: str,
+    data: AccountDetailsImageUpload,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Upload or REPLACE the account's CDM account details image (Admin-only).
+
+    One CDM image per account, and it never disturbs the normal Account Details Image: an account
+    can carry both, either, or neither.
+    """
+    acc = await _account_or_404(db, reference_number)
+    row, previous = await detimg.put(db, acc.reference_number, data.image,
+                                     uploaded_by=actor.name, kind=detimg.CDM_KIND)
+    action = "CDM_ACCOUNT_IMAGE_REPLACED" if previous else "CDM_ACCOUNT_IMAGE_UPLOADED"
+    verb = "replaced" if previous else "uploaded"
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    ip = request.client.host if request and request.client else None
+    await log_event(
+        db, action,
+        f"{acc.reference_number} ({acc.account_name}) CDM account details image {verb} by {actor.name}",
+        actor=actor,
+    )
+    await record_audit(
+        db, action, actor=actor, entity_type="account", entity_id=acc.reference_number,
+        old=(f"sha256 {previous[:12]}" if previous else "No CDM image"),
+        new=f"sha256 {row.sha256[:12]} · {row.content_type} · {row.size_bytes} bytes",
+        reason=f"{acc.account_name} · {ts}", ip=ip,
+    )
+    await cache_delete("c:accounts:list")
+    return detimg.serialize(row, acc.reference_number, kind=detimg.CDM_KIND)
+
+
+@router.delete("/{reference_number}/cdm-account-details-image")
+async def delete_cdm_account_details_image(
+    reference_number: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Remove the account's CDM account details image (Admin-only).
+
+    The normal Account Details Image is untouched, and the account stays exactly as eligible for
+    deposits as it was — an image is never an allocation requirement. CDM deposits routed here
+    tell the merchant the CDM image is not configured until one is uploaded.
+    """
+    acc = await _account_or_404(db, reference_number)
+    removed = await detimg.remove(db, acc.reference_number, kind=detimg.CDM_KIND)
+    if removed is None:
+        return detimg.serialize(None, acc.reference_number, kind=detimg.CDM_KIND)
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    ip = request.client.host if request and request.client else None
+    await log_event(
+        db, "CDM_ACCOUNT_IMAGE_REMOVED",
+        f"{acc.reference_number} ({acc.account_name}) CDM account details image removed by {actor.name}",
+        actor=actor,
+    )
+    await record_audit(
+        db, "CDM_ACCOUNT_IMAGE_REMOVED", actor=actor, entity_type="account",
+        entity_id=acc.reference_number, old=f"sha256 {removed[:12]}", new="No CDM image",
+        reason=f"{acc.account_name} · {ts}", ip=ip,
+    )
+    await cache_delete("c:accounts:list")
+    return detimg.serialize(None, acc.reference_number, kind=detimg.CDM_KIND)
+
+
+# ═══ CDM daily limit ═════════════════════════════════════════════════════════════
+# A third ceiling, and its own route for the same reason the Own Account flag has one: the
+# Highest Credit / Highest Debit edit says exactly what it touches, and this touches neither.
+
+
+@router.put("/{reference_number}/cdm-limit")
+async def update_account_cdm_limit(
+    reference_number: str,
+    data: AccountCdmLimitUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Set or edit one account's CDM daily limit (Admin-only).
+
+    Never auto-raised and never derived from anything: an Admin chooses this number, and CDM
+    deposits are refused the moment they would take the account past it. 0 clears it back to
+    unconfigured, which means the account can take no CDM at all — not that it can take any amount.
+    """
+    limit = float(data.cdm_daily_limit or 0.0)
+    if limit < 0:
+        raise HTTPException(status_code=400, detail="The CDM daily limit cannot be negative.")
+    acc = await _account_or_404(db, reference_number)
+    before = float(getattr(acc, "cdm_daily_limit", 0.0) or 0.0)
+    acc.cdm_daily_limit = limit
+    await db.flush()
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    ip = request.client.host if request and request.client else None
+    await log_event(
+        db, "ACCOUNT_CDM_LIMIT_UPDATED",
+        f"{acc.reference_number} ({acc.account_name}) CDM daily limit ₹{before:,.2f} → ₹{limit:,.2f} "
+        f"by {actor.name}", actor=actor,
+    )
+    await record_audit(
+        db, "ACCOUNT_CDM_LIMIT_UPDATED", actor=actor, entity_type="account",
+        entity_id=acc.reference_number, old=f"{before:.2f}", new=f"{limit:.2f}",
+        reason=f"{(data.reason or '').strip() or acc.account_name} · {ts}", ip=ip,
+    )
+    await cache_delete("c:accounts:list")
+    await cache_delete("c:accounts:balances")
+    return _a(acc)
