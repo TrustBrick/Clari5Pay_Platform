@@ -287,7 +287,6 @@ class CdmVerification(BaseModel):
     """
     atmId: Optional[str] = None              # the ATM / machine ID printed on the receipt
     bankCreditRef: Optional[str] = None      # the bank credit reference / UTR evidencing the credit
-    remarks: Optional[str] = None
 
 
 class ProofsAppend(BaseModel):

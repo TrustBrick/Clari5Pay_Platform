@@ -60,12 +60,13 @@ BANK_CREDIT_FIELD = "bankCreditRef"
 # reference above, so a record keeps one truthful shape for anything reading the history.
 BANK_CREDIT_CONFIRMED_FLAG = "bankCreditConfirmed"
 
-# Free-text evidence written by the current form.
-TEXT_FIELDS = ("atmId", "bankCreditRef", "remarks")
+# What the save route writes. Exactly the two required values — nothing else is asked for, so
+# nothing else is written, and a key absent from this tuple can never be blanked by a save.
+TEXT_FIELDS = REQUIRED_KEYS
 
-# Written by the previous regime and still READ, so an old record keeps rendering everything it
+# Written by a previous regime and still READ, so an old record keeps rendering everything it
 # recorded. Nothing writes these any more and nothing requires them.
-LEGACY_TEXT_FIELDS = ("cdmReference", "depositedOn")
+LEGACY_TEXT_FIELDS = ("cdmReference", "depositedOn", "remarks")
 LEGACY_CHECKS: tuple[tuple[str, str], ...] = (
     ("receiptVerified", "Receipt Verified"),
     ("amountMatches", "Amount Matches"),

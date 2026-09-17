@@ -388,7 +388,7 @@ async def test_the_verification_records_the_authenticated_admin(db):
                                           _admin(uid=9, name="Rahul Verma"))
 
     v = out["cdmVerification"]
-    assert v["verifiedBy"] == "Rahul Verma"
+    assert v["verifiedBy"] == "Rahul Verma", "recorded server-side even though no panel shows it"
     assert v["verifiedByUsername"] == "admin1"
     assert v["verifiedAt"]
     assert v["bankCreditConfirmedAt"], "the moment the money became real is stamped"
@@ -630,7 +630,7 @@ async def test_a_historical_record_is_preserved_by_a_new_save(db):
         "dateChecked": True, "referenceChecked": True, "bankCreditConfirmed": True,
         "cdmReference": "CDM887766", "depositedOn": "11 Sep 2026, 03:40 PM",
         "verifiedAmount": 50000.0, "verifiedAccountRef": "ACC1",
-        "verifiedBy": "An Earlier Admin",
+        "remarks": "counted at the branch", "verifiedBy": "An Earlier Admin",
     })
     await db.flush()
 
@@ -639,11 +639,13 @@ async def test_a_historical_record_is_preserved_by_a_new_save(db):
     stored = json.loads((await txr._get_tx(tx_id, db)).cdm_verification)
     assert stored["verifiedAmount"] == 50000.0 and stored["verifiedAccountRef"] == "ACC1"
     assert stored["cdmReference"] == "CDM887766" and stored["depositedOn"] == "11 Sep 2026, 03:40 PM"
+    assert stored["remarks"] == "counted at the branch", "a field the form no longer has is not blanked"
     assert stored["receiptVerified"] is True
     assert stored["atmId"] == "317110RY", "…and today's values are recorded alongside"
     # The historical fields are still REPORTED, so an old record keeps showing what it recorded.
     assert out["cdmVerification"]["verifiedAmount"] == 50000.0
     assert out["cdmVerification"]["checks"]["dateChecked"] is True
+    assert out["cdmVerification"]["remarks"] == "counted at the branch"
 
 
 @pytest.mark.asyncio

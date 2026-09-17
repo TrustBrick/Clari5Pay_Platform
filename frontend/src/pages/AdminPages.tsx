@@ -127,7 +127,6 @@ const RequestModal: React.FC<{
       if (v) setCdm({
         atmId: v.atmId ?? '',
         bankCreditRef: v.bankCreditRef ?? '',
-        remarks: v.remarks ?? '',
       });
     }).catch(()=>{});
     transactionAPI.recordView(tx.id);
@@ -393,8 +392,7 @@ const RequestModal: React.FC<{
   const sameCdmText = (a: unknown, b: unknown) => String(a ?? '').trim() === String(b ?? '').trim();
   const cdmDirty = isCdm && (!cdmSaved
     || !sameCdmText(cdm.atmId, cdmSaved.atmId)
-    || !sameCdmText(cdm.bankCreditRef, cdmSaved.bankCreditRef)
-    || !sameCdmText(cdm.remarks, cdmSaved.remarks));
+    || !sameCdmText(cdm.bankCreditRef, cdmSaved.bankCreditRef));
 
   // Record what the Admin read off the receipt and the bank statement. This still completes
   // NOTHING — it writes evidence, and the server re-reads it as the gate — but it is no longer a
@@ -408,7 +406,6 @@ const RequestModal: React.FC<{
         // as a blocking omission rather than as a recorded empty value.
         atmId: cdmAtmId || undefined,
         bankCreditRef: cdmCreditRef || undefined,
-        remarks: (cdm.remarks as string) || undefined,
       });
       setRecord(d);
       return d;
@@ -832,15 +829,9 @@ const RequestModal: React.FC<{
             placeholder="Enter actual bank credit reference / UTR"
             error={cdmCreditRef ? undefined : 'Required — confirm the actual bank credit, then enter its reference.'}
             hint="The credit entry on the bank statement for the assigned account — this is what confirms the money arrived." />
-          <Input label="Remarks" value={(cdm.remarks as string) || ''} onChange={e=>setCdm(c=>({...c, remarks:e.target.value}))}
-            placeholder="Optional note recorded with the verification" />
-          {record.cdmVerification?.verifiedBy && (
-            <div style={{ background:T.canvas,borderRadius:10,padding:'8px 14px',marginBottom:10 }}>
-              <Row k="Verified By" v={record.cdmVerification.verifiedBy} />
-              {record.cdmVerification.verifiedAt && <Row k="Verified At" v={formatDateTime(record.cdmVerification.verifiedAt)} />}
-              {record.cdmVerification.bankCreditConfirmedAt && <Row k="Bank Credit Confirmed At" v={formatDateTime(record.cdmVerification.bankCreditConfirmedAt)} />}
-            </div>
-          )}
+          {/* Who recorded this and when is still captured — by the server, from the authenticated
+              session, into the audit trail and the verification record. It is simply not a panel
+              the Admin doing the work needs to read back at themselves. */}
         </div>
       )}
 
