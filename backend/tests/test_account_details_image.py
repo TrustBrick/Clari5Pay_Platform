@@ -861,7 +861,7 @@ async def test_a_cdm_deposit_shows_the_assigned_accounts_image(db):
 @pytest.mark.asyncio
 async def test_a_cdm_deposit_never_shows_another_accounts_image(db):
     """The image is resolved from the assigned reference — not by bank, not the first one, not a
-    default. Two imaged accounts exist and only the assigned one\u2019s image is ever returned."""
+    default. Two imaged accounts exist and only the assigned one’s image is ever returned."""
     merchant = await _merchant(db)
     await _receiver(db, "ACC0000017")
     await _receiver(db, "ACC0000018", bank="ICICI Bank")

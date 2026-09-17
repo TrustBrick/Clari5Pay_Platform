@@ -103,10 +103,6 @@ const RequestModal: React.FC<{
   // completion already recorded instead of debiting the account twice.
   const payoutKey = useRef(newRequestId());
   const [saving, setSaving] = useState(false);
-  // The CDM verification form. Seeded from whatever has already been recorded, so re-opening the
-  // request shows what a previous Admin confirmed rather than a blank checklist.
-  const [cdm, setCdm] = useState<Record<string, unknown>>({});
-  const [cdmSaving, setCdmSaving] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
   const [riskConfirm, setRiskConfirm] = useState(false);
@@ -119,13 +115,6 @@ const RequestModal: React.FC<{
     transactionAPI.getDetail(tx.id).then(d => {
       setImgs({ adminProof: d.adminProof, adminProofs: d.adminProofs, adminBankImage: d.adminBankImage, merchantProof: d.merchantProof, merchantProofs: d.merchantProofs });
       setRecord(d);
-      const v = d.cdmVerification;
-      // Seeded from what was recorded and from NOTHING else. Pre-filling these from the request
-      // would have the Admin verify the request against itself.
-      if (v) setCdm({
-        atmId: v.atmId ?? '',
-        bankCreditRef: v.bankCreditRef ?? '',
-      });
     }).catch(()=>{});
     transactionAPI.recordView(tx.id);
   }, [tx.id]);
@@ -366,43 +355,6 @@ const RequestModal: React.FC<{
     finally { setSaving(false); }
   };
 
-  // The two values a CDM deposit is completed on, and the only two the Admin enters. Everything
-  // else the receipt carries — the amount, the receiving account, the merchant's CDM reference —
-  // is already on the request and is shown read-only above: re-typing it produced transcription,
-  // not verification. These mirror app.services.cdm, which enforces the same rule independently,
-  // so a caller going round this form gains nothing.
-  const cdmAtmId = String(cdm.atmId ?? '').trim();
-  const cdmCreditRef = String(cdm.bankCreditRef ?? '').trim();
-  const cdmReady = !!cdmAtmId && !!cdmCreditRef;
-
-  // Whether what is on screen has reached the server yet. There is no Save step any more —
-  // Mark Deposited records these first and then completes — so this only decides whether that
-  // write is needed at all.
-  const cdmSaved = record.cdmVerification;
-  const sameCdmText = (a: unknown, b: unknown) => String(a ?? '').trim() === String(b ?? '').trim();
-  const cdmDirty = isCdm && (!cdmSaved
-    || !sameCdmText(cdm.atmId, cdmSaved.atmId)
-    || !sameCdmText(cdm.bankCreditRef, cdmSaved.bankCreditRef));
-
-  // Record what the Admin read off the receipt and the bank statement. This still completes
-  // NOTHING — it writes evidence, and the server re-reads it as the gate — but it is no longer a
-  // button of its own: the completion below calls it. Silent on success for that reason; a failure
-  // still says so, because the completion stops there.
-  const saveCdm = async (): Promise<Transaction | null> => {
-    setCdmSaving(true);
-    try {
-      const d = await transactionAPI.saveCdmVerification(tx.id, {
-        // A blank field is sent as absent — "not entered" has one shape, and the server treats it
-        // as a blocking omission rather than as a recorded empty value.
-        atmId: cdmAtmId || undefined,
-        bankCreditRef: cdmCreditRef || undefined,
-      });
-      setRecord(d);
-      return d;
-    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to save the verification', 'error'); return null; }
-    finally { setCdmSaving(false); }
-  };
-
   const complete = async (withReceipt: boolean) => {
     if (withReceipt && needReceipt && !receipts.length) { showToast('Upload the payment proof', 'error'); return; }
     if (withReceipt && needUtr && !payUtr.trim()) { showToast(isCryptoPayout ? 'Enter the transaction hash' : 'Enter the UTR number', 'error'); return; }
@@ -420,20 +372,10 @@ const RequestModal: React.FC<{
         showToast('That account does not have enough balance for this payout', 'error'); return;
       }
     }
-    if (saving || cdmSaving) return;          // guard the in-flight click; the key below guards the rest
-    // A CDM deposit is gated on the RECORDED verification, so what the Admin has typed is written
-    // first and the completion follows. The server remains the gate — it re-reads the record it
-    // has just been given and still refuses anything missing, in its own words.
-    if (isCdm) {
-      if (!cdmReady) { showToast('Enter the ATM ID and the bank credit reference / UTR', 'error'); return; }
-      const current = cdmDirty ? await saveCdm() : record;
-      if (!current) return;                   // the save failed; its own toast already said why
-      const gate = current.cdmVerification;
-      if (!gate?.canComplete) {
-        showToast(gate?.blockingReasons?.[0] || 'This CDM deposit has not been verified yet', 'error');
-        return;
-      }
-    }
+    if (saving) return;                       // guard the in-flight click; the key below guards the rest
+    // A CDM deposit needs nothing typed here. The server's own gate — an assigned receiving
+    // account and an uploaded receipt — is checked on the completion itself, and its refusal is
+    // surfaced verbatim by the catch below.
     setSaving(true);
     try {
       // The completion carries the first batch of receipts (the proxy caps one request body);
@@ -840,15 +782,13 @@ const RequestModal: React.FC<{
       )}
 
       {/* ── CDM PAYMENT VERIFICATION ───────────────────────────────────────────────
-          The receipt is supporting evidence; the bank credit is the control. What the request
-          already knows is shown read-only; the Admin enters the two things it does not — the ATM
-          ID printed on the receipt, and the bank credit reference for the money landing in the
-          assigned account. Both are required, and app.services.cdm enforces that server-side.
+          What the request already knows, shown read-only beside the receipt the merchant uploaded,
+          so the Admin can compare the two. Nothing is entered: the review IS the verification, and
+          Mark Deposited below is the act that records it.
 
           Shown only once the merchant has UPLOADED that receipt (`receiptUploaded`, the server's
-          own answer). Before then the Admin is still choosing which account the cash goes into,
-          and neither value exists yet to be read — there is no receipt to take an ATM ID from and
-          no credit to reference. Asking on the account-selection screen asked for the unknowable. */}
+          own answer). Before then the Admin is still choosing which account the cash goes into and
+          there is nothing to review. */}
       {isCdm && canAct && record.cdmVerification?.receiptUploaded && (
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:10 }}>CDM Payment Verification</p>
@@ -860,20 +800,12 @@ const RequestModal: React.FC<{
               : <span style={{ color:T.danger }}>Not assigned</span>} />
             <Row k="Merchant's CDM Reference" v={record.merchantRef || '—'} />
           </div>
-          <Input label="ATM ID" required value={(cdm.atmId as string) || ''}
-            onChange={e=>setCdm(c=>({...c, atmId:e.target.value}))}
-            placeholder="Enter ATM ID" error={cdmAtmId ? undefined : 'Required — the ATM ID printed on the receipt.'}
-            hint="The machine the cash was paid into, as printed on the CDM receipt." />
-          {/* The control that releases the money. NOT the receipt's own transaction number: a
-              receipt cannot evidence itself, and this is the credit as the bank states it. */}
-          <Input label="Bank Credit Reference / UTR" required value={(cdm.bankCreditRef as string) || ''}
-            onChange={e=>setCdm(c=>({...c, bankCreditRef:e.target.value}))}
-            placeholder="Enter actual bank credit reference / UTR"
-            error={cdmCreditRef ? undefined : 'Required — confirm the actual bank credit, then enter its reference.'}
-            hint="The credit entry on the bank statement for the assigned account — this is what confirms the money arrived." />
-          {/* Who recorded this and when is still captured — by the server, from the authenticated
-              session, into the audit trail and the verification record. It is simply not a panel
-              the Admin doing the work needs to read back at themselves. */}
+          <p style={{ fontSize:12,color:T.textMuted,margin:'10px 0 0',lineHeight:1.6 }}>
+            Review the CDM receipt above against these figures, then complete the deposit below.
+          </p>
+          {/* Nothing is typed here. The Admin reviews the receipt the merchant uploaded and makes
+              the call; the completion itself is the authenticated act, recorded against their name
+              with its own timestamp in the audit trail. */}
         </div>
       )}
 
@@ -888,7 +820,7 @@ const RequestModal: React.FC<{
             {/* One action. For a CDM deposit the click records the ATM ID and the credit reference
                 and then completes — the server's gate still decides — so the Admin is never left
                 with a dead button and no way to learn what it is waiting for. */}
-            <Btn onClick={()=>complete(false)} disabled={saving || cdmSaving || (isCdm && !cdmReady)}>{saving || cdmSaving ? 'Saving...' : <><Icon name="approve" size={14} /> Mark Deposited</>}</Btn>
+            <Btn onClick={()=>complete(false)} disabled={saving}>{saving ? 'Saving...' : <><Icon name="approve" size={14} /> Mark Deposited</>}</Btn>
             <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
           </div>
           <div style={{ display:'flex',gap:10,flexWrap:'wrap',marginTop:12,paddingTop:12,borderTop:`1px dashed ${T.border}` }}>
@@ -902,11 +834,6 @@ const RequestModal: React.FC<{
               </>
             )}
           </div>
-          {isCdm && !cdmReady && (
-            <p style={{ fontSize:11.5,color:T.danger,margin:'8px 0 0',fontWeight:600 }}>
-              <Icon name="warning" size={12} /> Enter the <b>ATM ID</b> and the <b>bank credit reference / UTR</b> above to complete this deposit.
-            </p>
-          )}
           <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>Wrong slip? Send it back for re-upload. If payment is still not received after re-upload, mark the member <b>High Risk</b>.</p>
         </div>
       )}

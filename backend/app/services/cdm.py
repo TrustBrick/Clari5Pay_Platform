@@ -45,24 +45,18 @@ from typing import Any
 # out of that tuple is what guarantees it (see create_deposit's `needs_account`).
 CDM_DEPOSIT_TYPE = "CDM"
 
-# What the Admin records, and what the gate requires. Two values, both read off something the
-# Admin is looking at: the ATM ID from the receipt, the credit reference from the bank statement.
-REQUIRED_FIELDS: tuple[tuple[str, str], ...] = (
-    ("atmId", "Enter the ATM ID printed on the CDM receipt."),
-    ("bankCreditRef", "Enter the bank credit reference / UTR that evidences the actual credit."),
-)
-REQUIRED_KEYS = tuple(k for k, _ in REQUIRED_FIELDS)
-
-# The one that is not merely evidence: a credit reference is the Admin saying they have seen the
-# money in the assigned account. Without it nothing completes, however convincing the receipt looks.
+# The credit reference an Admin MAY record against a CDM deposit. Optional: nothing asks for it
+# on screen and nothing requires it to complete (see ``blocking_reasons``), but the route that
+# accepts it is still there and still audits it, so a UTR learned later can be written down rather
+# than lost. It is evidence, not a gate.
 BANK_CREDIT_FIELD = "bankCreditRef"
 # The stored boolean an earlier regime asserted by hand. Still written, now DERIVED from the
 # reference above, so a record keeps one truthful shape for anything reading the history.
 BANK_CREDIT_CONFIRMED_FLAG = "bankCreditConfirmed"
 
-# What the save route writes. Exactly the two required values — nothing else is asked for, so
-# nothing else is written, and a key absent from this tuple can never be blanked by a save.
-TEXT_FIELDS = REQUIRED_KEYS
+# What the save route writes when something is posted to it. Nothing else is written, so a key
+# absent from this tuple can never be blanked by a save.
+TEXT_FIELDS = ("atmId", "bankCreditRef")
 
 # Written by a previous regime and still READ, so an old record keeps rendering everything it
 # recorded. Nothing writes these any more and nothing requires them.
@@ -114,28 +108,26 @@ def blocking_reasons(tx, record: dict[str, Any]) -> list[str]:
     """Everything that still stands between this CDM deposit and completion.
 
     An empty list means an Admin may mark it done. This is the ONLY definition of that; the
-    completion route asks this function rather than re-deriving the rule, so what the Admin is
-    asked for and what the server enforces cannot drift apart.
+    completion route asks this function rather than re-deriving the rule, so what the screen shows
+    and what the server enforces cannot drift apart.
 
-    Ordered the way an operator would work through it — what is missing from the request first,
-    then what the Admin has not yet recorded — so the first reason is the useful one.
+    Both conditions are facts about the REQUEST, not things anyone types: the money has somewhere
+    to have gone, and there is a receipt to look at. The judgement itself is the Admin's, made by
+    reviewing that receipt and clicking Mark Deposited — an authenticated act, recorded against
+    their name. ``record`` is no longer read here: nothing an Admin may optionally write down
+    decides whether a deposit completes.
     """
     reasons: list[str] = []
 
-    # The receiving account. An Admin assigns it; without one there is no account in which a
-    # credit could be confirmed, so there is nothing to verify against.
+    # The receiving account. An Admin assigns it; without one the cash has no destination on the
+    # platform at all and there is nothing to credit against.
     if not (tx.admin_ref or "").strip():
         reasons.append("No receiving account is assigned to this CDM request.")
 
-    # The receipt. The CDM prints one; the payer uploads it. It proves nothing on its own, but its
-    # absence means the Admin has nothing to read the ATM ID from.
+    # The receipt. The CDM prints one; the payer uploads it. It is what the Admin reviews, and
+    # without it there is nothing in front of them to review.
     if not _has_proof(tx):
         reasons.append("No CDM receipt has been uploaded.")
-
-    # The two values the Admin records. Both mandatory, both trimmed: a space is not an ATM ID.
-    for key, reason in REQUIRED_FIELDS:
-        if not field(record, key):
-            reasons.append(reason)
 
     return reasons
 
