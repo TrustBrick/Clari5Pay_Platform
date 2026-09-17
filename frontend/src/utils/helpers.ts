@@ -488,20 +488,6 @@ export const isCdmDeposit = (tx: { type?: string | null; depositType?: string | 
   String(tx.type || '').toUpperCase().startsWith('DEPOSIT') &&
   String(tx.depositType || '').toUpperCase() === CDM_TXN_TYPE;
 
-// The Admin's CDM verification checklist. Each entry is a distinct thing a HUMAN compared — the
-// system never ticks one on the Admin's behalf. Mirrors app.services.cdm.CHECKS, which is what
-// the server actually enforces; this list only decides what the form renders and in what order.
-// `bankCreditConfirmed` is the control that releases the money: a receipt can be edited, an
-// actual credit in the assigned account cannot.
-export const CDM_CHECKS = [
-  { key: 'receiptVerified', label: 'Receipt Verified' },
-  { key: 'amountMatches', label: 'Amount Matches' },
-  { key: 'accountMatches', label: 'Bank / Account Matches' },
-  { key: 'dateChecked', label: 'Date / Time Checked' },
-  { key: 'referenceChecked', label: 'CDM Reference Checked' },
-  { key: 'bankCreditConfirmed', label: 'Actual Bank Credit Confirmed' },
-] as const;
-
 // ── Transaction types temporarily withheld from the operator request forms ─────────────────────
 // Cash and Crypto are not currently offered to the Data / Deposit / Withdrawal Operators on the
 // MERCHANT Deposit Type and Payout Mode selectors — those two move through the Agent Module

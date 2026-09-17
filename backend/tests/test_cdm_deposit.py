@@ -128,11 +128,8 @@ def _payload(amount: float = 50000.0, **kw) -> DepositCreate:
 
 
 def _verification(**kw) -> CdmVerification:
-    """A fully verified checklist, unless a test overrides part of it."""
-    base = dict(receiptVerified=True, amountMatches=True, accountMatches=True, dateChecked=True,
-                referenceChecked=True, bankCreditConfirmed=True, cdmReference="CDM887766",
-                bankCreditRef="HDFCN5512340099", depositedOn="11 Sep 2026, 03:40 PM",
-                verifiedAmount=50000.0, verifiedAccountRef="ACC1")
+    """What an Admin records: the ATM ID off the receipt, the credit reference off the statement."""
+    base = dict(atmId="317110RY", bankCreditRef="HDFCN5512340099")
     base.update(kw)
     return CdmVerification(**base)
 
@@ -423,7 +420,7 @@ async def test_withdrawing_the_bank_credit_confirmation_is_audited_too(db):
     tx_id = await _awaiting_completion(db, merchant, _admin())
     await txr.save_cdm_verification(tx_id, _verification(), None, db, _admin())
 
-    out = await txr.save_cdm_verification(tx_id, _verification(bankCreditConfirmed=False),
+    out = await txr.save_cdm_verification(tx_id, _verification(bankCreditRef=None),
                                           None, db, _admin())
 
     assert out["cdmVerification"]["canComplete"] is False
@@ -466,14 +463,14 @@ async def test_a_fake_receipt_with_no_bank_credit_cannot_be_completed(db):
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _awaiting_completion(db, merchant, _admin())
-    # Everything a forger can influence is ticked; the one thing they cannot is not.
-    await txr.save_cdm_verification(
-        tx_id, _verification(bankCreditConfirmed=False, bankCreditRef=None), None, db, _admin())
+    # Everything a forger can influence is recorded; the one thing they cannot is not. A receipt
+    # can be edited, reused or belong to somebody else's deposit \u2014 the credit on the statement cannot.
+    await txr.save_cdm_verification(tx_id, _verification(bankCreditRef=None), None, db, _admin())
 
     with pytest.raises(HTTPException) as e:
         await txr.mark_done(tx_id, None, None, db, _admin())
     assert e.value.status_code == 400
-    assert "Actual Bank Credit Confirmed" in e.value.detail
+    assert "bank credit reference" in e.value.detail.lower()
 
     tx = await txr._get_tx(tx_id, db)
     assert tx.status == TxStatus.SLIP_SUBMITTED, "left pending, exactly as the workflow says"
@@ -492,95 +489,67 @@ async def test_no_verification_at_all_blocks_completion(db):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("missing", [k for k in cdm.CHECK_KEYS])
-async def test_every_single_check_is_required(db, missing):
-    """Five of six is not enough — each box is a separate thing a person compared."""
+@pytest.mark.parametrize("missing", list(cdm.REQUIRED_KEYS))
+async def test_both_recorded_values_are_required(db, missing):
+    """One of two is not enough. Each names a different thing: the machine, and the credit."""
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _awaiting_completion(db, merchant, _admin())
-    await txr.save_cdm_verification(tx_id, _verification(**{missing: False}), None, db, _admin())
+    await txr.save_cdm_verification(tx_id, _verification(**{missing: None}), None, db, _admin())
 
     with pytest.raises(HTTPException) as e:
         await txr.mark_done(tx_id, None, None, db, _admin())
-    assert cdm.CHECK_LABELS[missing] in e.value.detail
-
-
-# ── The two figures the Admin read off the receipt are MANDATORY ───────────────────────────────
-# Ticking "Amount Matches" / "Bank & Account Matches" is the Admin asserting they compared two
-# things. These fields are the second thing — without them the assertion cannot be checked, and
-# the checkbox alone would be enough to release money. So an omission blocks, exactly as a
-# mismatch does.
-
-@pytest.mark.asyncio
-async def test_a_missing_verified_amount_blocks_completion(db):
-    """Every box ticked, the amount left blank — still refused, and the field is named."""
-    merchant = await _merchant(db)
-    await _account(db, "ACC1")
-    tx_id = await _awaiting_completion(db, merchant, _admin())
-    await txr.save_cdm_verification(tx_id, _verification(verifiedAmount=None), None, db, _admin())
-
-    with pytest.raises(HTTPException) as e:
-        await txr.mark_done(tx_id, None, None, db, _admin())
-    assert e.value.status_code == 400
-    assert "Enter the verified amount" in e.value.detail
+    assert dict(cdm.REQUIRED_FIELDS)[missing] in e.value.detail
 
     tx = await txr._get_tx(tx_id, db)
     assert tx.status == TxStatus.SLIP_SUBMITTED, "nothing moved"
 
 
-@pytest.mark.asyncio
-async def test_a_missing_verified_account_blocks_completion(db):
-    merchant = await _merchant(db)
-    await _account(db, "ACC1")
-    tx_id = await _awaiting_completion(db, merchant, _admin())
-    await txr.save_cdm_verification(tx_id, _verification(verifiedAccountRef=None), None, db, _admin())
-
-    with pytest.raises(HTTPException) as e:
-        await txr.mark_done(tx_id, None, None, db, _admin())
-    assert e.value.status_code == 400
-    assert "Enter the verified receiving account" in e.value.detail
-
+# \u2500\u2500 The two values the Admin records are MANDATORY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# Neither is on the request already. The ATM ID names the machine the cash physically went into;
+# the bank credit reference is the credit as the BANK states it. A blank one is an omission, and
+# an omission blocks \u2014 otherwise a receipt alone would be releasing money.
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blank", ["", "   ", "\t\n "])
-async def test_a_blank_or_whitespace_verified_account_blocks_completion(db, blank):
+async def test_a_blank_or_whitespace_atm_id_blocks_completion(db, blank):
     """Whitespace is not an entry. It is stored as NULL, so "not entered" has exactly one shape."""
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _awaiting_completion(db, merchant, _admin())
 
-    out = await txr.save_cdm_verification(tx_id, _verification(verifiedAccountRef=blank),
-                                          None, db, _admin())
+    out = await txr.save_cdm_verification(tx_id, _verification(atmId=blank), None, db, _admin())
 
-    assert out["cdmVerification"]["verifiedAccountRef"] is None
+    assert out["cdmVerification"]["atmId"] is None
     assert out["cdmVerification"]["canComplete"] is False
     with pytest.raises(HTTPException) as e:
         await txr.mark_done(tx_id, None, None, db, _admin())
-    assert "Enter the verified receiving account" in e.value.detail
+    assert "ATM ID" in e.value.detail
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad", [0.0, -1.0, -50000.0])
-async def test_a_non_positive_verified_amount_blocks_completion(db, bad):
-    """A zero or negative figure is not a monetary amount — and zero must never read as a match."""
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n "])
+async def test_a_blank_or_whitespace_credit_reference_blocks_completion(db, blank):
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _awaiting_completion(db, merchant, _admin())
-    await txr.save_cdm_verification(tx_id, _verification(verifiedAmount=bad), None, db, _admin())
 
+    out = await txr.save_cdm_verification(tx_id, _verification(bankCreditRef=blank), None, db, _admin())
+
+    assert out["cdmVerification"]["bankCreditRef"] is None
+    assert out["cdmVerification"]["bankCreditConfirmed"] is False, "no reference, no confirmation"
     with pytest.raises(HTTPException) as e:
         await txr.mark_done(tx_id, None, None, db, _admin())
-    assert "positive" in e.value.detail.lower() or "does not match" in e.value.detail.lower()
+    assert "bank credit reference" in e.value.detail.lower()
 
 
 @pytest.mark.asyncio
-async def test_both_figures_valid_allows_completion(db):
-    """The positive case for exactly this rule: with both entered and both agreeing, it completes."""
+async def test_both_values_allow_completion(db):
+    """The positive case for exactly this rule: with both recorded, it completes."""
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _awaiting_completion(db, merchant, _admin(), amount=50000.0)
-    out = await txr.save_cdm_verification(
-        tx_id, _verification(verifiedAmount=50000.0, verifiedAccountRef="ACC1"), None, db, _admin())
+    out = await txr.save_cdm_verification(tx_id, _verification(), None, db, _admin())
     assert out["cdmVerification"]["canComplete"] is True
 
     done = await txr.mark_done(tx_id, None, None, db, _admin())
@@ -589,24 +558,25 @@ async def test_both_figures_valid_allows_completion(db):
 
 
 @pytest.mark.asyncio
-async def test_both_figures_are_stored_on_the_record(db):
-    """Requirement 6 — they live in cdm_verification, not only in the request that set them."""
+async def test_both_values_are_stored_on_the_record(db):
+    """They live in cdm_verification, not only in the request that set them \u2014 and trimmed."""
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _awaiting_completion(db, merchant, _admin())
 
     await txr.save_cdm_verification(
-        tx_id, _verification(verifiedAmount=50000.0, verifiedAccountRef="  acc1  ".upper().strip()),
+        tx_id, _verification(atmId="  317110RY  ", bankCreditRef=" HDFCN5512340099 "),
         None, db, _admin())
 
     stored = json.loads((await txr._get_tx(tx_id, db)).cdm_verification)
-    assert stored["verifiedAmount"] == 50000.0
-    assert stored["verifiedAccountRef"] == "ACC1"
+    assert stored["atmId"] == "317110RY"
+    assert stored["bankCreditRef"] == "HDFCN5512340099"
+    assert stored["bankCreditConfirmed"] is True, "derived from the reference, not asserted apart"
 
 
 @pytest.mark.asyncio
-async def test_both_figures_reach_the_audit_trail(db):
-    """Requirement 7 — a reviewer reading the trail must see what was compared against what."""
+async def test_both_values_reach_the_audit_trail(db):
+    """A reviewer reading the trail must see what was recorded, and against which request."""
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _awaiting_completion(db, merchant, _admin())
@@ -615,61 +585,83 @@ async def test_both_figures_reach_the_audit_trail(db):
 
     row = next(r for r in (await db.execute(select(AuditLog))).scalars().all()
                if r.action_type == "CDM_VERIFICATION_UPDATED")
-    assert "50,000.00" in row.reason, "the verified amount is recorded"
-    assert "ACC1" in row.reason, "the verified account is recorded"
-    assert "requested" in row.reason and "assigned" in row.reason, "…alongside what they must match"
+    assert "317110RY" in row.new_value, "the ATM ID is recorded"
+    assert "HDFCN5512340099" in row.new_value, "the credit reference is recorded"
+    assert "50,000.00" in row.reason and "ACC1" in row.reason, "\u2026alongside what it is measured against"
 
 
-def test_the_gate_treats_an_unparseable_amount_as_not_entered():
-    """A corrupt or non-numeric stored value must read as an omission, never as a match."""
-    class _Tx:
-        amount = 50000.0
-        admin_ref = "ACC1"
-        merchant_proofs = None
-        merchant_proof = RECEIPT
-
-    for junk in ({"verifiedAmount": "abc"}, {"verifiedAmount": ""}, {"verifiedAmount": None},
-                 {"verifiedAmount": "  "}, {}):
-        assert cdm.verified_amount(junk) is None
-        record = {k: True for k in cdm.CHECK_KEYS}
-        record.update(junk)
-        record["bankCreditRef"] = "REF"
-        record["verifiedAccountRef"] = "ACC1"
-        assert "Enter the verified amount read from the CDM receipt." in cdm.blocking_reasons(_Tx(), record)
-
-
-def test_the_gate_trims_the_verified_account_before_comparing():
-    """A trailing space must not turn a correct account into a mismatch, nor a blank into an entry."""
-    assert cdm.verified_account_ref({"verifiedAccountRef": "  ACC1 "}) == "ACC1"
-    assert cdm.verified_account_ref({"verifiedAccountRef": "   "}) == ""
-    assert cdm.verified_account_ref({}) == ""
+def test_the_gate_trims_before_deciding():
+    """A trailing space must not pass for evidence, and must not turn an entry into an omission."""
+    assert cdm.field({"atmId": "  317110RY "}, "atmId") == "317110RY"
+    assert cdm.field({"atmId": "   "}, "atmId") == ""
+    assert cdm.field({}, "atmId") == ""
+    assert cdm.bank_credit_confirmed({"bankCreditRef": "  "}) is False
+    assert cdm.bank_credit_confirmed({"bankCreditRef": "HDFCN1"}) is True
 
 
 @pytest.mark.asyncio
-async def test_a_receipt_amount_that_differs_cannot_be_completed(db):
-    """Scenario B — ₹50,000 requested, a ₹5,000 receipt."""
+async def test_the_fields_the_form_no_longer_sends_are_ignored_not_rejected(db):
+    """An older client still posting the six boxes and the figures must not 400 \u2014 those values
+    are simply not part of the payload any more."""
     merchant = await _merchant(db)
     await _account(db, "ACC1")
-    tx_id = await _awaiting_completion(db, merchant, _admin(), amount=50000.0)
-    await txr.save_cdm_verification(tx_id, _verification(verifiedAmount=5000.0), None, db, _admin())
+    tx_id = await _awaiting_completion(db, merchant, _admin())
 
-    with pytest.raises(HTTPException) as e:
-        await txr.mark_done(tx_id, None, None, db, _admin())
-    assert "amount does not match" in e.value.detail
+    out = await txr.save_cdm_verification(
+        tx_id, CdmVerification(atmId="317110RY", bankCreditRef="HDFCN1",
+                               **{"receiptVerified": True, "verifiedAmount": 1.0}),
+        None, db, _admin())
+
+    assert out["cdmVerification"]["canComplete"] is True
+    stored = json.loads((await txr._get_tx(tx_id, db)).cdm_verification)
+    assert "verifiedAmount" not in stored, "an ignored field is not a recorded one"
 
 
 @pytest.mark.asyncio
-async def test_a_receipt_naming_a_different_account_cannot_be_completed(db):
-    """Scenario C — genuine cash, genuine receipt, wrong account: not this merchant's money."""
+async def test_a_historical_record_is_preserved_by_a_new_save(db):
+    """An older record carries a checklist and figures this form no longer writes. Recording the
+    two values today must ADD to it, never erase what an Admin confirmed under the old regime."""
     merchant = await _merchant(db)
     await _account(db, "ACC1")
-    await _account(db, "ACC2", bank="ICICI Bank")
-    tx_id = await _awaiting_completion(db, merchant, _admin(), account_ref="ACC1")
-    await txr.save_cdm_verification(tx_id, _verification(verifiedAccountRef="ACC2"), None, db, _admin())
+    tx_id = await _awaiting_completion(db, merchant, _admin())
+    tx = await txr._get_tx(tx_id, db)
+    tx.cdm_verification = json.dumps({
+        "receiptVerified": True, "amountMatches": True, "accountMatches": True,
+        "dateChecked": True, "referenceChecked": True, "bankCreditConfirmed": True,
+        "cdmReference": "CDM887766", "depositedOn": "11 Sep 2026, 03:40 PM",
+        "verifiedAmount": 50000.0, "verifiedAccountRef": "ACC1",
+        "verifiedBy": "An Earlier Admin",
+    })
+    await db.flush()
+
+    out = await txr.save_cdm_verification(tx_id, _verification(), None, db, _admin())
+
+    stored = json.loads((await txr._get_tx(tx_id, db)).cdm_verification)
+    assert stored["verifiedAmount"] == 50000.0 and stored["verifiedAccountRef"] == "ACC1"
+    assert stored["cdmReference"] == "CDM887766" and stored["depositedOn"] == "11 Sep 2026, 03:40 PM"
+    assert stored["receiptVerified"] is True
+    assert stored["atmId"] == "317110RY", "…and today's values are recorded alongside"
+    # The historical fields are still REPORTED, so an old record keeps showing what it recorded.
+    assert out["cdmVerification"]["verifiedAmount"] == 50000.0
+    assert out["cdmVerification"]["checks"]["dateChecked"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_historical_checklist_alone_no_longer_completes(db):
+    """The rule did not get weaker. A record with all six old boxes ticked and no ATM ID or credit
+    reference is NOT completable: the two values are required of every CDM deposit."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _awaiting_completion(db, merchant, _admin())
+    tx = await txr._get_tx(tx_id, db)
+    tx.cdm_verification = json.dumps({k: True for k in cdm.LEGACY_CHECK_KEYS}
+                                     | {"verifiedAmount": 50000.0, "verifiedAccountRef": "ACC1"})
+    await db.flush()
 
     with pytest.raises(HTTPException) as e:
         await txr.mark_done(tx_id, None, None, db, _admin())
-    assert "not the account assigned" in e.value.detail
+    assert "ATM ID" in e.value.detail
+    assert (await txr._get_tx(tx_id, db)).status == TxStatus.SLIP_SUBMITTED
 
 
 @pytest.mark.asyncio
@@ -710,7 +702,7 @@ async def test_a_cdm_deposit_with_no_receiving_account_cannot_be_completed(db):
     tx.status = TxStatus.SLIP_SUBMITTED
     tx.merchant_proof = RECEIPT
     await db.flush()
-    await txr.save_cdm_verification(out["id"], _verification(verifiedAccountRef=None), None, db, _admin())
+    await txr.save_cdm_verification(out["id"], _verification(), None, db, _admin())
 
     with pytest.raises(HTTPException) as e:
         await txr.mark_done(out["id"], None, None, db, _admin())
@@ -723,7 +715,7 @@ async def test_a_blocked_completion_credits_nothing_and_leaves_the_request_pendi
     merchant = await _merchant(db)
     await _account(db, "ACC1")
     tx_id = await _awaiting_completion(db, merchant, _admin())
-    await txr.save_cdm_verification(tx_id, _verification(bankCreditConfirmed=False), None, db, _admin())
+    await txr.save_cdm_verification(tx_id, _verification(bankCreditRef=None), None, db, _admin())
 
     with pytest.raises(HTTPException):
         await txr.mark_done(tx_id, None, None, db, _admin())
@@ -806,7 +798,7 @@ async def test_a_completed_cdm_deposit_cannot_have_its_verification_rewritten(db
     await txr.mark_done(tx_id, None, None, db, _admin())
 
     with pytest.raises(HTTPException) as e:
-        await txr.save_cdm_verification(tx_id, _verification(bankCreditConfirmed=False),
+        await txr.save_cdm_verification(tx_id, _verification(bankCreditRef=None),
                                         None, db, _admin())
     assert e.value.status_code == 400
 
@@ -814,7 +806,7 @@ async def test_a_completed_cdm_deposit_cannot_have_its_verification_rewritten(db
 # ═══ 7. Nothing else changed ════════════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_a_non_cdm_deposit_is_not_gated_by_the_cdm_checklist(db):
+async def test_a_non_cdm_deposit_is_not_gated_by_the_cdm_rule(db):
     """The gate is CDM-only: an ordinary deposit still completes on the Admin's judgement alone."""
     merchant = await _merchant(db)
     await _account(db, "ACC1", credit=500000.0)
@@ -868,7 +860,9 @@ def test_a_corrupt_verification_record_fails_closed():
     assert cdm.parse('["a list"]') == {}
 
 
-def test_the_checklist_and_the_gate_come_from_one_list():
-    """The form and the server cannot drift: both enumerate cdm.CHECKS."""
-    assert cdm.BANK_CREDIT_CHECK in cdm.CHECK_KEYS
-    assert len(cdm.CHECK_KEYS) == len(cdm.CHECK_LABELS) == 6
+def test_the_form_and_the_gate_come_from_one_list():
+    """The form and the server cannot drift: both enumerate cdm.REQUIRED_FIELDS, and every one of
+    them is a field the save route actually writes."""
+    assert cdm.BANK_CREDIT_FIELD in cdm.REQUIRED_KEYS
+    assert len(cdm.REQUIRED_KEYS) == 2
+    assert set(cdm.REQUIRED_KEYS) <= set(cdm.TEXT_FIELDS)

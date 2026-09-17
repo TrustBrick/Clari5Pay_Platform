@@ -236,7 +236,14 @@ export interface AllocationDecision {
  *  account. `canComplete` is the server's own answer, and `blockingReasons` says what is still
  *  missing; the UI shows them rather than re-deriving the rule. */
 export interface CdmVerification {
-  checks: {
+  // What the Admin records, and what the server requires before a CDM deposit can be completed.
+  atmId?: string | null;              // the ATM / machine ID printed on the receipt
+  bankCreditRef?: string | null;      // the bank credit reference / UTR evidencing the credit
+  remarks?: string | null;
+  bankCreditConfirmed?: boolean;      // derived from bankCreditRef, not asserted separately
+  // ── Historical only. Written by the previous six-box regime, still returned so an old record
+  //    keeps showing everything it recorded. Nothing writes these and nothing requires them. ──
+  checks?: {
     receiptVerified: boolean;
     amountMatches: boolean;
     accountMatches: boolean;
@@ -245,9 +252,7 @@ export interface CdmVerification {
     bankCreditConfirmed: boolean;
   };
   cdmReference?: string | null;
-  bankCreditRef?: string | null;
   depositedOn?: string | null;
-  remarks?: string | null;
   verifiedAmount?: number | null;
   verifiedAccountRef?: string | null;
   verifiedBy?: string | null;
