@@ -4236,13 +4236,13 @@ async def save_cdm_verification(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(get_current_admin),
 ):
-    """Record what an Admin has manually verified about a CDM deposit. Completes nothing.
+    """Record what an Admin read off the CDM receipt and the bank statement. Completes nothing.
 
-    Saving this is the Admin writing down what they compared — the receipt against the request,
-    and above all the actual bank credit against the designated account. It deliberately does NOT
-    move the status, credit the merchant, or complete the deposit: that is a separate, explicit
-    act (Mark as Done), which reads this record as its gate. Keeping the two apart is what stops
-    "the Admin looked at the receipt" from ever becoming "the merchant was paid".
+    Two values: the ATM ID printed on the receipt, and the bank credit reference / UTR for the
+    credit in the assigned account. Recording them deliberately does NOT move the status, credit
+    the merchant, or complete the deposit: that is a separate, explicit act (Mark as Done), which
+    reads this record as its gate. Keeping the two apart is what stops "the Admin looked at the
+    receipt" from ever becoming "the merchant was paid".
 
     Admin-only, and the actor is the authenticated user — never a synthesised identity.
     """
@@ -4253,16 +4253,18 @@ async def save_cdm_verification(
         raise HTTPException(status_code=400, detail="This request is closed — its verification can no longer be changed.")
 
     previous = await _cdm_record(db, tx)
-    record = {k: bool(getattr(data, k)) for k in cdm.CHECK_KEYS}
+    # MERGED onto whatever is already recorded, never replacing it. An older record carries fields
+    # this form no longer writes — the six-box checklist, the verified amount and account, the
+    # transcribed deposit date — and they are history: a save today must not erase what an Admin
+    # confirmed under the previous regime.
+    record = dict(previous)
     for field in cdm.TEXT_FIELDS:
         value = getattr(data, field, None)
-        record[field] = value.strip() if isinstance(value, str) else value
-    # Both are required before the deposit can be completed (see cdm.blocking_reasons). They are
-    # stored as entered-and-normalised — the amount as a number, the account trimmed — so the
-    # record carries the figures the Admin compared and not an approximation of them. A blank or
-    # whitespace-only account is stored as NULL rather than "", so "not entered" has one shape.
-    record["verifiedAmount"] = data.verifiedAmount
-    record["verifiedAccountRef"] = (data.verifiedAccountRef or "").strip() or None
+        record[field] = (value.strip() or None) if isinstance(value, str) else value
+    # The credit reference IS the bank-credit confirmation — there is no separate box to tick, so
+    # the stored flag is derived from it rather than asserted alongside it.
+    confirmed = cdm.bank_credit_confirmed(record)
+    record[cdm.BANK_CREDIT_CONFIRMED_FLAG] = confirmed
     # Who actually did this, from the authenticated session — never taken from the payload.
     now = datetime.utcnow()
     record["verifiedBy"] = actor.name
@@ -4270,7 +4272,7 @@ async def save_cdm_verification(
     record["verifiedAt"] = now.isoformat() + "Z"
     # When the bank credit was confirmed, stamped on the transition into confirmed and preserved
     # afterwards — it is the moment the money became real, and re-saving the form must not move it.
-    if record[cdm.BANK_CREDIT_CHECK]:
+    if confirmed:
         record["bankCreditConfirmedAt"] = previous.get("bankCreditConfirmedAt") or (now.isoformat() + "Z")
     tx.cdm_verification = json.dumps(record)
     await db.flush()
@@ -4278,27 +4280,22 @@ async def save_cdm_verification(
     # Audited as two distinct facts: the verification was updated, and — separately — the bank
     # credit was confirmed or withdrawn, because that one is the control that releases the money.
     ip = _client_ip(request)
-    ticked = ", ".join(cdm.CHECK_LABELS[k] for k in cdm.CHECK_KEYS if record[k]) or "nothing yet"
+    atm_id = cdm.field(record, "atmId") or "—"
+    credit_ref = cdm.field(record, cdm.BANK_CREDIT_FIELD) or "—"
     await log_event(db, "CDM_VERIFICATION_UPDATED",
-                    f"{tx.ref}: CDM verification updated by {actor.name} — confirmed: {ticked} · "
-                    f"amount {record.get('verifiedAmount') if record.get('verifiedAmount') is not None else '—'} · "
-                    f"account {record.get('verifiedAccountRef') or '—'}", actor=actor)
-    # The audit carries the FIGURES the Admin verified, not just which boxes they ticked — a
-    # reviewer reading the trail later has to be able to see what was compared against what.
-    _amount = cdm.verified_amount(record)
+                    f"{tx.ref}: CDM verification updated by {actor.name} — ATM ID {atm_id} · "
+                    f"bank credit ref {credit_ref}", actor=actor)
+    # The audit carries the VALUES the Admin recorded and what they are measured against, so a
+    # reviewer reading the trail later can see what was checked without opening the request.
     await record_audit(db, "CDM_VERIFICATION_UPDATED", actor=actor, entity_type=tx.type.value,
-                       entity_id=tx.ref, new=ticked,
-                       reason=f"Verified amount {_inr(_amount) if _amount is not None else '—'} "
-                              f"(requested {_inr(tx.amount)}) · verified account "
-                              f"{cdm.verified_account_ref(record) or '—'} (assigned {tx.admin_ref or '—'}) · "
-                              f"CDM ref {record.get('cdmReference') or '—'} · bank credit ref "
-                              f"{record.get('bankCreditRef') or '—'}", ip=ip)
-    if record[cdm.BANK_CREDIT_CHECK] != bool(previous.get(cdm.BANK_CREDIT_CHECK)):
-        confirmed = record[cdm.BANK_CREDIT_CHECK]
+                       entity_id=tx.ref, new=f"ATM ID {atm_id} · bank credit ref {credit_ref}",
+                       reason=f"Deposit {_inr(tx.amount)} into {tx.admin_ref or '—'} · merchant CDM "
+                              f"ref {tx.merchant_ref or '—'}", ip=ip)
+    if confirmed != cdm.bank_credit_confirmed(previous):
         await record_audit(db, "CDM_BANK_CREDIT_CONFIRMED" if confirmed else "CDM_BANK_CREDIT_WITHDRAWN",
                            actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
-                           old=str(bool(previous.get(cdm.BANK_CREDIT_CHECK))), new=str(confirmed),
-                           reason=record.get("bankCreditRef") or None, ip=ip)
+                           old=str(cdm.bank_credit_confirmed(previous)), new=str(confirmed),
+                           reason=cdm.field(record, cdm.BANK_CREDIT_FIELD) or None, ip=ip)
         await log_event(db, "CDM_BANK_CREDIT_CONFIRMED" if confirmed else "CDM_BANK_CREDIT_WITHDRAWN",
                         f"{tx.ref}: actual bank credit "
                         f"{'confirmed' if confirmed else 'no longer confirmed'} by {actor.name}", actor=actor)

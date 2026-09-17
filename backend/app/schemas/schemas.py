@@ -280,27 +280,18 @@ class CompleteRequest(BaseModel):
 class CdmVerification(BaseModel):
     """The Admin's manual verification of a CDM (Cash Deposit Machine) deposit.
 
-    Every field records something a HUMAN compared. Nothing here is inferred, and submitting it
-    completes nothing: it saves what the Admin has confirmed so far, and the completion route
-    reads it as a gate. `bankCreditConfirmed` is the one that matters — a receipt can be edited,
-    an actual credit in the designated account cannot.
+    Two values, and both are things the request does NOT already know: the ATM ID printed on the
+    receipt, which names the machine the cash physically went into, and the bank credit reference
+    / UTR, which is the credit as it appears on the statement of the assigned account. The deposit
+    amount, the receiving account and the merchant's CDM reference are on the request already and
+    are shown read-only — asking the Admin to re-type them produced transcription, not verification.
+
+    Both are optional HERE so a partial record can be written; both are required by
+    app.services.cdm.blocking_reasons before the deposit can be completed. Submitting this
+    completes nothing.
     """
-    receiptVerified: bool = False
-    amountMatches: bool = False
-    accountMatches: bool = False
-    dateChecked: bool = False
-    referenceChecked: bool = False
-    bankCreditConfirmed: bool = False
-    # What the Admin read off the receipt and the bank statement, so the confirmation is
-    # auditable rather than a bare assertion.
-    cdmReference: Optional[str] = None       # the CDM machine's transaction/reference number
+    atmId: Optional[str] = None              # the ATM / machine ID printed on the receipt
     bankCreditRef: Optional[str] = None      # the bank credit reference / UTR evidencing the credit
-    depositedOn: Optional[str] = None        # deposit date/time as printed on the receipt
-    remarks: Optional[str] = None
-    # The figures the Admin verified. Checked against the request — a recorded mismatch is a hard
-    # stop, not a warning.
-    verifiedAmount: Optional[float] = None
-    verifiedAccountRef: Optional[str] = None
 
 
 class ProofsAppend(BaseModel):
