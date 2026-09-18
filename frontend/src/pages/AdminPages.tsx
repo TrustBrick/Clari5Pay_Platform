@@ -2434,7 +2434,11 @@ export const AdminAccountsPage: React.FC = () => {
                 {/* Deposits Received, Commission and Manual Adjustment deliberately live in the
                     View popup, not here — the list stays scannable and the money detail sits with
                     the account it belongs to. The underlying data is unchanged. */}
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Used Today','Remaining','Highest Debit','Debit Used','Debit Left','Available','Users','Account Details Image','Status','Details'].map(h=>(
+                {/* Today's POSITION stays in the table — it changes hour by hour and is what an
+                    Admin scans the list for. The CONFIGURATION behind it (Highest Credit, Highest
+                    Debit, both account images, the CDM limit) lives in View: it is set once, read
+                    rarely, and fifteen columns made the figures that do move hard to find. */}
+                {['Account Name','Account Number','IFSC Code','Branch','Used Today','Remaining','Debit Used','Debit Left','Available','Users','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -2450,17 +2454,14 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.accountNumber}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.ifscCode}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.branch}</td>
-                  {/* Highest Credit is the account's HARD DAILY CREDIT LIMIT; the two columns
-                      after it are where it stands against that limit right now. An account with
-                      no remaining capacity is never allocated another deposit today, which is
-                      what the red figure says at a glance. */}
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(a.highestCredit ?? 0)}</td>
+                  {/* Where this account stands against its HARD DAILY CREDIT LIMIT right now. An
+                      account with no remaining capacity is never allocated another deposit today,
+                      which is what the red figure says at a glance. The limit itself is in View. */}
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>
                     {fmt(bal?.creditUsedToday ?? 0)}
                     {(bal?.depositsToday ?? 0) > 0 && <span style={{ fontSize:10,marginLeft:5 }}>({bal?.depositsToday})</span>}
                   </td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color: (bal?.remainingCredit ?? 0) > 0 ? T.success : T.danger }}>{fmt(bal?.remainingCredit ?? 0)}</td>
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestDebit ?? 0)}</td>
                   {/* The debit side of the same daily story: what this account has paid out today
                       and what it may still pay. Both come from the withdrawal allocation engine's
                       own functions, so the screen and the engine cannot disagree. */}
@@ -2471,14 +2472,6 @@ export const AdminAccountsPage: React.FC = () => {
                     {bal && (bal.userCount ?? 0) > 0
                       ? <Btn size="sm" variant="ghost" onClick={()=>openAcctUsers(a)}><Icon name="users" size={14} /> {bal.userCount} user{(bal.userCount ?? 0)>1?'s':''}</Btn>
                       : <span style={{ color:T.textLight }}>0</span>}
-                  </td>
-                  {/* Informational only — whether deposits routed here can send the merchant any
-                      account details at all. It never affects which account a deposit is allocated
-                      to; an account with no image is exactly as eligible as one with an image. */}
-                  <td style={{ padding:'11px 14px' }}>
-                    {a.hasAccountDetailsImage
-                      ? <span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:T.successBg,color:T.success }}>Uploaded</span>
-                      : <span style={{ color:T.textLight }}>—</span>}
                   </td>
                   <td style={{ padding:'11px 14px' }}>
                     <Btn size="sm" variant={a.status==='ACTIVE'?'success':'danger'} onClick={()=>setToggleAcc(a)}>{a.status==='ACTIVE'?'● ACTIVE':'○ INACTIVE'}</Btn>
