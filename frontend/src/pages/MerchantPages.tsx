@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx, isCardDeposit, CDM_TXN_TYPE, isCdmDeposit, PROOF_ACCEPT, PROOF_MAX_BYTES, PROOF_TYPE_MSG, PROOF_SIZE_MSG, isAllowedProof, isPdfProof, proofBatches, proofList, proofFileName, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, DEPOSIT_TYPE_OPTIONS, txnTypeOptionsFor, fileToDataUrl, downloadDataUrl, downloadText, merchantRoleLabel, reviewerRoleCode, auditActionLabel, nameWithRole, clientApproverLabel, isInternalRole, clientRemarkActor, clientAuditActor, formatDate, formatDateTime, formatIndianAmountInput, parseIndianAmount, chatTime, chatDateLabel, formatBytes, isChatImage, chatAttachmentError, readChatAttachment, openDataUrl, CHAT_ACCEPT, COUNTRY_CODES, INDIAN_STATES, isCryptoTx, isCardDeposit, isCreditCardDeposit, CDM_TXN_TYPE, isCdmDeposit, PROOF_ACCEPT, PROOF_MAX_BYTES, PROOF_TYPE_MSG, PROOF_SIZE_MSG, isAllowedProof, isPdfProof, proofBatches, proofList, proofFileName, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, StatusChart, LoadingScreen, Modal, Badge, BankNamesDatalist, CountUp, Skeleton, ReasonModal, Pager, SearchSelect, PhoneField, enterSubmit, CopyButton } from '../components/UI';
 import { Icon } from '../components/Icon';
 import { TxnTimeline, type TlStep } from '../components/TxnTimeline';
@@ -651,7 +651,7 @@ const METHOD_BUCKETS: Array<{ label: string; color: string; match: string[] }> =
   { label: 'UPI', color: T.info, match: ['UPI', 'QR'] },
   { label: 'Cash', color: T.warning, match: ['CASH'] },
   { label: 'Crypto', color: '#f97316', match: ['CRYPTO', 'USDT'] },
-  { label: 'Credit/Debit Card', color: '#8b5cf6', match: ['CARD'] },
+  { label: 'Credit/Debit Card', color: '#8b5cf6', match: ['CARD', 'CREDIT_CARD', 'DEBIT_CARD'] },
 ];
 
 export const MerchantDashboard: React.FC<{ user: User; onNavigate?: (page: string) => void }> = ({ user, onNavigate }) => {
@@ -902,7 +902,13 @@ export const DepositForm: React.FC<{ user: User; onSubmitted?: () => void }> = (
   // rather than chosen here or picked automatically. The form therefore asks for the amount and
   // the member only; the receipt is uploaded later, once the cash has actually been deposited.
   const isCdm = form.depositType === CDM_TXN_TYPE;
-  const isBankLike = !isCash && !isCrypto && !isCdm;   // UPI / BANK / IMPS / NEFT / RTGS / Card collect a bank account
+  // Which types name the account the money is sent FROM. A DEBIT card is paid from a bank
+  // account and still names it; a CREDIT card is not paid from one at all, so asking would be
+  // asking for something that does not exist. This is the whole difference between the two, and
+  // it drives the section, the validation and the payload together — hiding the fields while
+  // still requiring them would just move the dead end.
+  const isCreditCard = isCreditCardDeposit(form.depositType);
+  const isBankLike = !isCash && !isCrypto && !isCdm && !isCreditCard;
   // "Send To Approval" appears on THIS form only for CASH/CRYPTO — the one deposit type whose proof
   // is uploaded here, so the approver is revealed once that proof uploads. UPI/bank deposits carry no
   // proof on this form: their approver is chosen later, at the Pay & Submit Proof step (MerchantSlipModal).

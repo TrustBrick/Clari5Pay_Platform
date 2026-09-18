@@ -212,7 +212,7 @@ const CARD_STATUS_LABELS: Record<string, string> = {
 // or "Manager Approved" on the rung between the review and the operator's Mark Deposit.
 export const statusLabel = (status: string, type?: string, viewerRole?: string, depositType?: string | null, approverRole?: string | null): string => {
   const isDeposit = !!type && type.startsWith('DEPOSIT');
-  if (isDeposit && String(depositType || '').toUpperCase() === CARD_TXN_TYPE) {
+  if (isDeposit && CARD_TXN_TYPES.includes(String(depositType || '').toUpperCase())) {
     const card = CARD_STATUS_LABELS[status];
     if (card) return card;
     // Reviewer-approved, awaiting the operator's Mark Deposit. SLIP_SUBMITTED is the shared
@@ -486,7 +486,11 @@ export const DEPOSIT_TYPE_LABELS: Record<string, string> = {
   RTGS: 'RTGS',
   CASH: 'Cash',
   CRYPTO: 'Crypto (USDT)',
+  // CARD is the value every card deposit raised before Credit and Debit were separated. It is
+  // never rewritten, and it keeps the only label that is true of it: nobody recorded which kind.
   CARD: 'Credit/Debit Card',
+  CREDIT_CARD: 'Credit Card',
+  DEBIT_CARD: 'Debit Card',
   // Shown as the bare code: by the time anyone sees a transaction they know what a CDM is, and
   // the expansion was the widest cell in every table it appeared in. The code IS the label.
   CDM: 'CDM',
@@ -515,7 +519,11 @@ export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'RTGS', label: 'RTGS' },
   { value: 'CASH', label: 'Cash' },
   { value: 'CRYPTO', label: 'Crypto (USDT)' },
-  { value: 'CARD', label: 'Credit/Debit Card' },
+  // Two options, because they are two different things to the person paying: a credit card has
+  // no sending bank account to name, a debit card does. The combined CARD is not offered for a
+  // NEW request — it only exists on rows that predate the split.
+  { value: 'CREDIT_CARD', label: 'Credit Card' },
+  { value: 'DEBIT_CARD', label: 'Debit Card' },
   { value: 'CDM', label: 'CDM' },
 ];
 
@@ -562,19 +570,33 @@ const WITHHELD_TXN_TYPE_ROLES = ['DEO', 'DEPOSIT_OPERATOR', 'WITHDRAWAL_OPERATOR
 // The inverse of the withheld list above: instead of hiding a type from certain roles, CARD is
 // shown to these roles alone and hidden from every other. The backend applies the same rule on
 // create, so this is the selector half of one restriction, not the restriction itself.
-export const CARD_TXN_TYPE = 'CARD';
+export const CARD_TXN_TYPE = 'CARD';                 // pre-split rows; still read, never written
+export const CREDIT_CARD_TXN_TYPE = 'CREDIT_CARD';
+export const DEBIT_CARD_TXN_TYPE = 'DEBIT_CARD';
+/** Every value that means "paid by card". All three share one workflow — the Admin sends a payment
+ *  link, the operator returns with the slip and UTR — so everything card-shaped asks this, and a
+ *  card type that is missing from here silently loses its status labels, its badge and its filter. */
+export const CARD_TXN_TYPES = [CARD_TXN_TYPE, CREDIT_CARD_TXN_TYPE, DEBIT_CARD_TXN_TYPE];
 const CARD_TXN_TYPE_ROLES = ['DEO', 'DEPOSIT_OPERATOR'];
-/** True for a deposit raised with Transaction Type = Card. */
+/** True for a deposit raised with any card type. */
 export const isCardDeposit = (tx: { type?: string | null; depositType?: string | null }): boolean =>
   String(tx.type || '').toUpperCase().startsWith('DEPOSIT') &&
-  String(tx.depositType || '').toUpperCase() === CARD_TXN_TYPE;
+  CARD_TXN_TYPES.includes(String(tx.depositType || '').toUpperCase());
+
+/** A CREDIT card deposit specifically. The one thing that differs between the two: there is no
+ *  sending bank account to collect, so the form does not ask for one and sends none. Debit is
+ *  unchanged — it names the account it is paid from, exactly as it always has. */
+export const isCreditCardDeposit = (depositType?: string | null): boolean =>
+  String(depositType || '').toUpperCase() === CREDIT_CARD_TXN_TYPE;
 
 /** `options` filtered to the transaction types this merchant role may currently pick. */
 export const txnTypeOptionsFor = <O extends { value: string }>(options: O[], merchantRole?: string | null): O[] => {
   const role = String(merchantRole || '').toUpperCase();
   const withheld = WITHHELD_TXN_TYPE_ROLES.includes(role) ? WITHHELD_TXN_TYPES : [];
-  // CARD only exists in the Deposit Type list, so filtering it here is a no-op for payout modes.
-  const cardHidden = CARD_TXN_TYPE_ROLES.includes(role) ? [] : [CARD_TXN_TYPE];
+  // The card types only exist in the Deposit Type list, so filtering them here is a no-op for
+  // payout modes. All of them are gated together: the restriction is about cards, not about one
+  // spelling of them.
+  const cardHidden = CARD_TXN_TYPE_ROLES.includes(role) ? [] : CARD_TXN_TYPES;
   const hide = [...withheld, ...cardHidden];
   return hide.length ? options.filter(o => !hide.includes(String(o.value).toUpperCase())) : options;
 };

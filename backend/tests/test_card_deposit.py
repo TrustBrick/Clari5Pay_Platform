@@ -255,3 +255,97 @@ def test_card_reuses_existing_statuses_only():
                    TxStatus.SLIP_SUBMITTED, TxStatus.RESUBMITTED, TxStatus.DEPOSITED, TxStatus.REJECTED):
         assert not status.value.startswith("CARD")
     assert txr.CARD_PAYABLE_STATUSES == (TxStatus.ACCOUNT_SUBMITTED, TxStatus.RESUBMITTED)
+
+# ═══ 6. Credit and Debit are separate types with one workflow ════════════════════════════
+# They differ in one thing and it is on the form: a CREDIT card deposit has no sending bank account
+# to name. Everything else — the payment link, the payable statuses, the mandatory slip and UTR,
+# the Admin's completion — is shared, so every card behaviour is a membership test rather than an
+# equality check. The pre-split value CARD keeps working because it is a member of that tuple.
+
+
+@pytest.mark.parametrize("dep_type", ["CARD", "CREDIT_CARD", "DEBIT_CARD"])
+def test_every_card_type_is_a_card_deposit(dep_type):
+    tx = _card_tx()
+    tx.deposit_type = dep_type
+    assert txr._is_card_deposit(tx) is True
+
+
+@pytest.mark.parametrize("dep_type", ["UPI", "IMPS", "NEFT", "RTGS", "CDM", "CASH", "CRYPTO"])
+def test_nothing_else_became_a_card_deposit(dep_type):
+    """The split widened the card family by exactly two values and touched no other type."""
+    tx = _card_tx()
+    tx.deposit_type = dep_type
+    assert txr._is_card_deposit(tx) is False
+
+
+def test_the_card_family_is_the_two_new_types_plus_the_original():
+    assert txr.CARD_DEPOSIT_TYPES == ("CARD", "CREDIT_CARD", "DEBIT_CARD")
+    assert txr.CREDIT_CARD_DEPOSIT_TYPE == "CREDIT_CARD"
+    assert txr.DEBIT_CARD_DEPOSIT_TYPE == "DEBIT_CARD"
+    # The original value is still in the family, which is what keeps every pre-split row working.
+    assert txr.CARD_DEPOSIT_TYPE == "CARD"
+
+
+@pytest.mark.parametrize("dep_type", ["CARD", "CREDIT_CARD", "DEBIT_CARD"])
+def test_no_card_type_needs_a_receiving_account(dep_type):
+    """A card deposit is paid through the Admin's payment link, so the allocation engine never
+    places one — and `needs_account` in create_deposit reads exactly this tuple."""
+    from app.services.deposit_allocation import ALLOCATABLE_DEPOSIT_TYPES
+    assert dep_type not in ALLOCATABLE_DEPOSIT_TYPES
+
+
+@pytest.mark.parametrize("dep_type", ["UPI", "IMPS", "NEFT", "RTGS"])
+def test_the_account_backed_types_still_need_one(dep_type):
+    """The other side of the same rule: nothing here was relaxed for anybody else."""
+    from app.services.deposit_allocation import ALLOCATABLE_DEPOSIT_TYPES
+    assert dep_type in ALLOCATABLE_DEPOSIT_TYPES
+
+
+@pytest.mark.parametrize("dep_type", ["CREDIT_CARD", "DEBIT_CARD"])
+def test_both_new_types_are_operator_gated_like_card(dep_type):
+    """Credit and Debit inherit the restriction Card already had — it is about cards, not about
+    one spelling of them."""
+    assert dep_type in txr.CARD_DEPOSIT_TYPES
+    assert txr.CARD_OPERATOR_ROLES == ("DEO", "DEPOSIT_OPERATOR")
+
+
+@pytest.mark.parametrize("dep_type", ["CARD", "CREDIT_CARD", "DEBIT_CARD"])
+@pytest.mark.asyncio
+async def test_every_card_type_takes_the_payment_link_hop(dep_type):
+    """The Admin's link step is reached through _is_card_deposit, so all three get it."""
+    tx = _card_tx(TxStatus.ACCOUNT_REQUESTED)
+    tx.deposit_type = dep_type
+    assert txr._is_card_deposit(tx)
+    assert tx.status in (TxStatus.ACCOUNT_REQUESTED,)
+
+
+@pytest.mark.parametrize("dep_type", ["CARD", "CREDIT_CARD", "DEBIT_CARD"])
+@pytest.mark.asyncio
+async def test_every_card_type_still_demands_the_slip_and_utr(dep_type):
+    """Payment evidence is mandatory for all three: the split changed what the FORM collects up
+    front, never what the server requires as proof of payment."""
+    tx = _card_tx(TxStatus.ACCOUNT_SUBMITTED, link="https://pay.example.com/abc")
+    tx.deposit_type = dep_type
+    with pytest.raises(HTTPException) as e:
+        await _submit_slip(tx, SlipRequest(merchantProofs=[PNG], merchantRef=None))
+    assert e.value.status_code == 400
+    assert "UTR" in e.value.detail
+
+
+@pytest.mark.asyncio
+async def test_a_stored_pre_split_card_row_is_still_treated_as_a_card():
+    """Requirement 12 — nothing rewrote the rows raised before the split.
+
+    Asserted through a Card-SPECIFIC refusal: that message is only reachable inside
+    `if _is_card_deposit(tx)`, so seeing it proves a stored "CARD" row still enters the card branch
+    and still gets the card state machine rather than the ordinary deposit one.
+    """
+    tx = _card_tx(TxStatus.ACCOUNT_REQUESTED, link=None)
+    assert tx.deposit_type == "CARD"
+
+    with pytest.raises(HTTPException) as e:
+        await _submit_slip(tx, SlipRequest(merchantProofs=[PNG], merchantRef="UTR123",
+                                           approverUserId=9))
+
+    assert "Card request is not awaiting a payment slip" in e.value.detail
+    assert tx.status == TxStatus.ACCOUNT_REQUESTED

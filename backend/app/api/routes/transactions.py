@@ -74,7 +74,19 @@ APPROVER_ROLES = {
 # The ONLY Card-specific hop is the Admin's: they submit a payment gateway link where every other
 # deposit type gets an account. Completion is not Card-specific — the Admin's existing /done marks
 # any reviewer-approved deposit (SLIP_SUBMITTED) as DEPOSITED, Card included.
+# Credit and Debit are separate deposit types with one shared workflow. "CARD" is the ORIGINAL
+# value and is kept forever: every card deposit raised before the split carries it, and nothing
+# rewrites a stored row — it still reads as "Credit/Debit Card" because that is genuinely all
+# anyone recorded at the time. New requests name which card it was.
+#
+# The two differ in exactly one thing, and it is on the form rather than here: a CREDIT card
+# deposit has no sending bank account to name. Nothing in this module ever required one — a card
+# deposit is not in ALLOCATABLE_DEPOSIT_TYPES, so `needs_account` is already False for all three —
+# so there is no server-side rule to relax, and none to weaken for Debit by accident.
 CARD_DEPOSIT_TYPE = "CARD"
+CREDIT_CARD_DEPOSIT_TYPE = "CREDIT_CARD"
+DEBIT_CARD_DEPOSIT_TYPE = "DEBIT_CARD"
+CARD_DEPOSIT_TYPES = (CARD_DEPOSIT_TYPE, CREDIT_CARD_DEPOSIT_TYPE, DEBIT_CARD_DEPOSIT_TYPE)
 # Merchant roles allowed to raise a Card deposit and supply its payment evidence (mirrors the
 # frontend selector). Completion is the Admin's, exactly as it is for every other deposit type.
 CARD_OPERATOR_ROLES = ("DEO", "DEPOSIT_OPERATOR")
@@ -105,8 +117,14 @@ def _is_retired_new_deposit_type(deposit_type: str | None) -> bool:
 
 
 def _is_card_deposit(tx: Transaction) -> bool:
-    """True for a deposit raised with Transaction Type = Card."""
-    return tx.type.value.startswith("DEPOSIT") and (tx.deposit_type or "").upper() == CARD_DEPOSIT_TYPE
+    """True for a deposit raised with any of the card types — Credit, Debit, or the pre-split CARD.
+
+    All three run the identical workflow: the Admin submits a payment gateway link where other
+    types get an account, and the operator returns with the slip and UTR. This predicate is what
+    every one of those steps asks, so a new card type is a member of the tuple and nothing else.
+    """
+    return (tx.type.value.startswith("DEPOSIT")
+            and (tx.deposit_type or "").upper() in CARD_DEPOSIT_TYPES)
 
 
 def _validate_payment_link(raw: str | None) -> str:
@@ -3147,7 +3165,7 @@ async def create_deposit(
     # Card is offered to the Data Operator and Deposit Operator only. Enforced here as well as in
     # the selector, so the restriction holds against a request made outside the UI. Only a CARD
     # payload can reach this check — every existing deposit type is unaffected.
-    if dep_type == CARD_DEPOSIT_TYPE and str(current_user.merchant_role or "").upper() not in CARD_OPERATOR_ROLES:
+    if dep_type in CARD_DEPOSIT_TYPES and str(current_user.merchant_role or "").upper() not in CARD_OPERATOR_ROLES:
         raise HTTPException(
             status_code=403,
             detail="A Card deposit can only be raised by a Data Operator or Deposit Operator.")
