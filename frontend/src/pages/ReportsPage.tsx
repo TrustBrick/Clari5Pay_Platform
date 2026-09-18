@@ -540,7 +540,10 @@ const serverRange = (preset: string, from: string, to: string): ReportRange => {
     default: return {};
   }
 };
-const PAYMENT_METHODS = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'CASH', 'CRYPTO', 'CARD'];
+// CARD stays alongside the two it was split into: it is the stored value on every card
+// deposit raised before the split, so dropping it would make those rows unfilterable.
+const PAYMENT_METHODS = ['UPI', 'BANK', 'IMPS', 'NEFT', 'RTGS', 'CASH', 'CRYPTO',
+                         'CARD', 'CREDIT_CARD', 'DEBIT_CARD'];
 
 interface RFilters {
   ref: string; memberId: string; memberName: string; combined: string; agentCode: string;
