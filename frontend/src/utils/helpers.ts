@@ -487,7 +487,9 @@ export const DEPOSIT_TYPE_LABELS: Record<string, string> = {
   CASH: 'Cash',
   CRYPTO: 'Crypto (USDT)',
   CARD: 'Credit/Debit Card',
-  CDM: 'CDM (Cash Deposit Machine)',
+  // Shown as the bare code: by the time anyone sees a transaction they know what a CDM is, and
+  // the expansion was the widest cell in every table it appeared in. The code IS the label.
+  CDM: 'CDM',
 };
 export const depositTypeLabel = (code?: string | null) =>
   code ? (DEPOSIT_TYPE_LABELS[String(code).toUpperCase()] || code) : '';
@@ -514,7 +516,7 @@ export const DEPOSIT_TYPE_OPTIONS = [
   { value: 'CASH', label: 'Cash' },
   { value: 'CRYPTO', label: 'Crypto (USDT)' },
   { value: 'CARD', label: 'Credit/Debit Card' },
-  { value: 'CDM', label: 'CDM (Cash Deposit Machine)' },
+  { value: 'CDM', label: 'CDM' },
 ];
 
 // ── Account Details Image ──────────────────────────────────────────────────────────────────────
