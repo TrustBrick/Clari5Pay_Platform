@@ -710,11 +710,43 @@ const RequestModal: React.FC<{
                   a breach visible before the click, and the warning below names it outright. */}
               <Sel label="Account" value={accountRef} onChange={e=>setAccountRef(e.target.value)}
                 options={[{ value:'', label:'— Select an account —' }, ...accounts.map(a => {
-                  const left = payoutBalances.find(b => b.referenceNumber === a.referenceNumber)?.remainingCredit;
-                  const room = left === undefined ? '' : `  ·  ${fmt(left)} left today`;
+                  const bal = payoutBalances.find(b => b.referenceNumber === a.referenceNumber);
+                  // For a CDM request the number that decides the assignment is the CDM one, so
+                  // that is the number on the option. Showing Highest Credit here would answer a
+                  // question the Admin is not asking and hide the one the server will enforce.
+                  const left = isCdm ? bal?.cdmRemainingToday : bal?.remainingCredit;
+                  const room = isCdm
+                    ? (bal?.cdmLimitConfigured === false ? '  ·  no CDM limit set'
+                       : left === undefined ? '' : `  ·  ${fmt(left)} CDM left today`)
+                    : (left === undefined ? '' : `  ·  ${fmt(left)} left today`);
                   return { value:a.referenceNumber, label:`${a.accountName} — ${a.bankName} (A/C ${a.accountNumber})${room}` };
                 })]} />
-              {(() => {
+              {/* The chosen account's CDM standing, in full. An Admin assigning cash to a machine
+                  has one question — "how much more can go in here today?" — and the server refuses
+                  anything past this figure, so it is stated rather than implied. */}
+              {isCdm && accountRef && (() => {
+                const bal = payoutBalances.find(b => b.referenceNumber === accountRef);
+                const configured = bal ? (bal.cdmLimitConfigured !== false && (bal.cdmDailyLimit || 0) > 0) : true;
+                const left = bal?.cdmRemainingToday ?? 0;
+                const over = configured && tx.amount > left;
+                return (
+                  <div style={{ background:(over || !configured) ? T.dangerBg : T.canvas,borderRadius:10,padding:'10px 14px',margin:'-4px 0 12px' }}>
+                    <Row k="CDM Daily Limit" v={configured ? fmt(bal?.cdmDailyLimit || 0) : <span style={{ color:T.danger }}>Not configured</span>} />
+                    <Row k="CDM Used Today" v={fmt(bal?.cdmUsedToday || 0)} />
+                    <Row k="CDM Remaining Today" v={<b style={{ color:configured && left > 0 ? T.success : T.danger }}>{fmt(left)}</b>} />
+                    {!configured ? (
+                      <p style={{ fontSize:11.5,color:T.danger,margin:'6px 0 0',fontWeight:700 }}>
+                        <Icon name="warning" size={12} /> No CDM daily limit is set for this account, so it can take no CDM deposit. Set one in Account Management first.
+                      </p>
+                    ) : over ? (
+                      <p style={{ fontSize:11.5,color:T.danger,margin:'6px 0 0',fontWeight:700 }}>
+                        <Icon name="warning" size={12} /> {fmt(tx.amount)} is more than this account has left today. Choose another account, or raise its CDM limit.
+                      </p>
+                    ) : null}
+                  </div>
+                );
+              })()}
+              {!isCdm && (() => {
                 const left = payoutBalances.find(b => b.referenceNumber === accountRef)?.remainingCredit;
                 return accountRef && left !== undefined && left < tx.amount ? (
                   <p style={{ fontSize:11,color:T.danger,margin:'-8px 0 10px',fontWeight:700 }}>
