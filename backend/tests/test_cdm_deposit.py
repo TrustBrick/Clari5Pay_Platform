@@ -942,3 +942,173 @@ def test_the_gate_reads_the_request_and_nothing_an_admin_typed():
         assert cdm.blocking_reasons(_Tx(), record) == []
     assert cdm.BANK_CREDIT_FIELD in cdm.TEXT_FIELDS, "it is still recordable, just not required"
     assert not hasattr(cdm, "REQUIRED_KEYS"), "there is no required-field list any more"
+
+# ═══ 8. Pay & Submit Proof — what a CDM merchant is actually asked for ═════════════════════
+# A CDM receipt has no UTR printed on it. The bank's credit reference belongs to a bank transfer and
+# is not something a person standing at a cash machine can know, so this step asks for the two
+# values the MACHINE printed plus the image of the slip — and for nothing else. The screen and the
+# server were briefly out of step here: the UTR input had gone from the form while an unconditional
+# guard in the submit handler still demanded one, so a complete submission was refused for a field
+# that was no longer on screen.
+
+
+@pytest.mark.asyncio
+async def test_a_cdm_proof_submission_needs_only_the_two_values_and_the_receipt(db):
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _accepted(db, merchant, _admin())
+
+    out = await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT],
+                                                   atmId=ATM_ID, txnNo=TXN_NO), None, db, merchant)
+
+    assert out["status"] != TxStatus.ACCOUNT_SUBMITTED, "the slip moved it into review"
+    tx = await txr._get_tx(tx_id, db)
+    assert tx.cdm_atm_id == ATM_ID
+    assert tx.cdm_txn_no == TXN_NO
+
+
+@pytest.mark.asyncio
+async def test_no_bank_reference_is_required_or_invented(db):
+    """Nothing asks for a UTR, and nothing quietly produces one: the machine's number is stored as
+    the machine's number, and the transaction's own `utr` column is left alone."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _accepted(db, merchant, _admin())
+
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo=TXN_NO),
+                          None, db, merchant)
+
+    tx = await txr._get_tx(tx_id, db)
+    assert tx.cdm_txn_no == TXN_NO and tx.cdm_atm_id == ATM_ID
+    assert tx.cdm_atm_id != tx.cdm_txn_no, "two values, not one copied into the other"
+    assert tx.utr is None, "no bank UTR was invented"
+    assert tx.admin_utr is None
+    assert tx.merchant_ref == TXN_NO, "the machine's number, under the name it has always had"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank", [None, "", "   "])
+async def test_the_atm_id_is_required(db, blank):
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _accepted(db, merchant, _admin())
+
+    with pytest.raises(HTTPException) as e:
+        await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=blank,
+                                                 txnNo=TXN_NO), None, db, merchant)
+
+    assert e.value.status_code == 400
+    assert "ATM ID" in e.value.detail
+    assert "UTR" not in e.value.detail.upper(), "and it is not asked for under another name"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank", [None, "", "   "])
+async def test_the_txn_no_is_required(db, blank):
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _accepted(db, merchant, _admin())
+
+    with pytest.raises(HTTPException) as e:
+        await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID,
+                                                 txnNo=blank), None, db, merchant)
+
+    assert e.value.status_code == 400
+    assert "transaction number" in e.value.detail.lower()
+    assert "UTR" not in e.value.detail.upper()
+
+
+@pytest.mark.asyncio
+async def test_the_receipt_is_required_and_the_refusal_says_so(db):
+    """Missing receipt is still refused — and the refusal names the receipt, not a reference number
+    the CDM form has no field for."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _accepted(db, merchant, _admin())
+
+    with pytest.raises(HTTPException) as e:
+        await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[], atmId=ATM_ID, txnNo=TXN_NO),
+                              None, db, merchant)
+
+    assert e.value.status_code == 400
+    assert "receipt" in e.value.detail.lower()
+    assert "UTR" not in e.value.detail.upper()
+
+
+@pytest.mark.asyncio
+async def test_no_refusal_on_the_cdm_slip_path_ever_mentions_a_utr(db):
+    """The requirement stated as a rule rather than as three separate cases: whatever is missing,
+    what comes back never asks a CDM merchant for a bank reference."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    attempts = [
+        SlipRequest(merchantProofs=[], atmId=None, txnNo=None),
+        SlipRequest(merchantProofs=[RECEIPT], atmId=None, txnNo=None),
+        SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo=None),
+        SlipRequest(merchantProofs=[], atmId=ATM_ID, txnNo=TXN_NO),
+    ]
+    for i, attempt in enumerate(attempts):
+        tx_id = await _accepted(db, merchant, _admin())
+        with pytest.raises(HTTPException) as e:
+            await txr.submit_slip(tx_id, attempt, None, db, merchant)
+        detail = e.value.detail.upper()
+        assert "UTR" not in detail and "REFERENCE NUMBER" not in detail, (i, e.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_several_receipts_still_arrive_together_with_the_two_values(db):
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _accepted(db, merchant, _admin())
+    many = ["data:image/png;base64," + base64.b64encode(("r%d" % i).encode()).decode()
+            for i in range(5)]
+
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=many, atmId=ATM_ID, txnNo=TXN_NO),
+                          None, db, merchant)
+
+    tx = await txr._get_tx(tx_id, db)
+    await txr._load_proof_columns(db, tx)
+    assert len(json.loads(tx.merchant_proofs)) == 5
+    assert tx.cdm_atm_id == ATM_ID and tx.cdm_txn_no == TXN_NO
+
+
+@pytest.mark.asyncio
+async def test_the_admin_completes_it_afterwards_without_a_utr(db):
+    """End to end, the way it actually runs: the merchant submits the two values and the receipt,
+    and the Admin reviews and completes. Nobody types a bank reference at any point."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1")
+    tx_id = await _accepted(db, merchant, _admin())
+    await txr.submit_slip(tx_id, SlipRequest(merchantProofs=[RECEIPT], atmId=ATM_ID, txnNo=TXN_NO),
+                          None, db, merchant)
+    tx = await txr._get_tx(tx_id, db)
+    tx.status = TxStatus.SLIP_SUBMITTED          # the reviewer's approval, tested elsewhere
+    await db.flush()
+
+    out = await txr.mark_done(tx_id, None, None, db, _admin())
+
+    assert out["status"] == TxStatus.DEPOSITED
+    assert out["cdmAtmId"] == ATM_ID and out["cdmTxnNo"] == TXN_NO
+    done = await txr._get_tx(tx_id, db)
+    assert done.utr is None and done.admin_utr is None, "still no bank reference anywhere"
+    assert done.cdm_verification is None, "and nothing was recorded to satisfy an old rule"
+
+
+@pytest.mark.asyncio
+async def test_a_non_cdm_deposit_still_requires_its_reference(db):
+    """The rule that changed is the CDM one. A bank-like deposit keeps what it always asked for."""
+    merchant = await _merchant(db)
+    await _account(db, "ACC1", credit=500000.0)
+    out = await txr.create_deposit(
+        DepositCreate(amount=45000.0, depositType="IMPS", memberName="M", memberId="MBR7",
+                      accountHolder="M", accountNumber="999", ifsc="HDFC0001234",
+                      bankName="HDFC Bank", accountType="CURRENT"), db, merchant)
+
+    with pytest.raises(HTTPException) as e:
+        await txr.submit_slip(out["id"], SlipRequest(merchantProofs=[], merchantRef=None),
+                              None, db, merchant)
+    assert "reference number" in e.value.detail.lower()
+
+    ok = await txr.submit_slip(out["id"], SlipRequest(merchantProofs=[RECEIPT], merchantRef="UTR123"),
+                               None, db, merchant)
+    assert ok["merchantRef"] == "UTR123"

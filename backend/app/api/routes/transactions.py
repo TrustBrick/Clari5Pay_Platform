@@ -3802,12 +3802,15 @@ async def submit_slip(
     the payment image AND the UTR are mandatory, a reviewer must be chosen, and the request must
     actually be in a payable phase. Other deposit types keep the existing either/or behaviour."""
     _proofs = _clean_proofs(data.merchantProofs, data.merchantProof)
-    if not (_proofs or data.merchantRef):
+    tx = await _get_own_tx(tx_id, db, current_user)
+    # What counts as evidence depends on the deposit type, so this is decided after the row is
+    # loaded. A CDM deposit has no bank reference to offer INSTEAD of a receipt: the machine's slip
+    # is the evidence, and the two values printed on it are checked below.
+    if not cdm.is_cdm(tx.deposit_type) and not (_proofs or data.merchantRef):
         raise HTTPException(
             status_code=400,
             detail="Upload an image or enter a reference number",
         )
-    tx = await _get_own_tx(tx_id, db, current_user)
     if _is_card_deposit(tx):
         # State gate first: a Card deposit can only take payment evidence while it is awaiting
         # payment (Link Submitted) or has been returned for correction. This is what rejects a
@@ -3834,6 +3837,8 @@ async def submit_slip(
     _atm_id = (data.atmId or "").strip()
     _txn_no = (data.txnNo or "").strip()
     if cdm.is_cdm(tx.deposit_type):
+        if not _proofs:
+            raise HTTPException(status_code=400, detail="Upload the CDM receipt printed by the machine.")
         if not _atm_id:
             raise HTTPException(status_code=400, detail="Enter the ATM ID printed on the CDM receipt.")
         if not _txn_no:

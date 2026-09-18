@@ -411,8 +411,10 @@ export const MerchantSlipModal: React.FC<{
     await copy(paymentLink, 'Payment link');
   };
 
-  // Both the UTR number and at least one payment proof are mandatory when submitting a slip; in demo
-  // the Authorized Approver (revealed after the proof uploads) is required too.
+  // What this step requires: a proof image, plus the reference that identifies the payment — a
+  // bank UTR for every other deposit type, and for CDM the two values printed on the machine's
+  // receipt (ATM ID and TXN NO). In demo the Authorized Approver, revealed once the proof uploads,
+  // is required too. `submit` re-checks all of it, so the two cannot drift.
   const canSubmit = proofs.length > 0
     && (isCdm ? (!!atmId.trim() && !!txnNo.trim()) : !!ref.trim())
     && (!SEND_TO_APPROVAL_ENABLED || !!approverId);
@@ -422,8 +424,16 @@ export const MerchantSlipModal: React.FC<{
   const adminLabel = tx.type.startsWith('DEPOSIT') ? 'Payment Details from Agent' : 'Payment Receipt from Agent';
 
   const submit = async () => {
-    if (!ref.trim()) { showToast('Enter the UTR number', 'error'); return; }
-    if (!proofs.length) { showToast('Upload the payment proof', 'error'); return; }
+    // A CDM receipt has no UTR on it. What the merchant reads off the slip is the machine's ID and
+    // the number that machine printed, so those are what this step requires — the bank's credit
+    // reference belongs to a bank transfer and is not a thing the payer can know at a CDM.
+    if (isCdm) {
+      if (!atmId.trim()) { showToast('Enter the ATM ID from the CDM receipt', 'error'); return; }
+      if (!txnNo.trim()) { showToast('Enter the TXN NO from the CDM receipt', 'error'); return; }
+    } else if (!ref.trim()) {
+      showToast('Enter the UTR number', 'error'); return;
+    }
+    if (!proofs.length) { showToast(isCdm ? 'Upload the CDM receipt' : 'Upload the payment proof', 'error'); return; }
     if (SEND_TO_APPROVAL_ENABLED && !approverId) { showToast('Select an Authorized Approver.', 'error'); return; }
     setLoading(true);
     try {

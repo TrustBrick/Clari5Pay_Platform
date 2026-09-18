@@ -303,6 +303,13 @@ class Transaction(Base):
     # single evidence record read and written as a whole and never queried field-by-field.
     # NULL on every non-CDM row and on any CDM request not yet verified.
     cdm_verification: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # CDM deposits: what the MERCHANT read off the machine's receipt when they uploaded it. The ATM
+    # ID identifies the machine the cash went into; the transaction number is the one that machine
+    # printed for this deposit. Two different lines of the same slip, kept apart on purpose —
+    # neither is derived from the other, and neither is a bank UTR: a CDM receipt has none.
+    # NULL on every non-CDM row and on CDM rows raised before the fields existed.
+    cdm_atm_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    cdm_txn_no: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
