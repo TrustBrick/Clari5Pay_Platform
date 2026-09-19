@@ -588,9 +588,16 @@ export interface AccountLedger {
 export interface AccountPlayer {
   playerId: string;
   playerName: string;
+  /** True for the row holding deposits that carried no Player ID. Kept as its own row so the
+   *  user's total still adds up on screen instead of quietly exceeding the rows beneath it. */
+  unattributed?: boolean;
   status: string;            // Active / Inactive (derived from recent activity)
+  /** Completed deposits/withdrawals only — the same status rule the account totals use. Counts
+   *  are per TRANSACTION, so a split payout with two legs on this account is still one. */
+  depositCount: number;
   deposits: number;
-  withdrawals: number;
+  withdrawalCount: number;
+  withdrawals: number;       // THIS account's share of each payout, never the whole payout
   createdAt?: string | null;  // ISO (UTC) — rendered in IST
 }
 
@@ -599,7 +606,11 @@ export interface AccountUser {
   userName: string;
   userId?: string | null;
   totalPlayers: number;
+  /** Summed from `players` — the rows below are the calculation, not a second opinion on it. */
+  depositCount: number;
   deposited: number;         // deposited through this account
+  withdrawalCount: number;
+  withdrawn: number;
   players: AccountPlayer[];
 }
 
@@ -610,6 +621,10 @@ export interface AccountUsers {
   totalUsers: number;
   totalPlayers: number;
   totalDeposited: number;
+  totalWithdrawn: number;
+  /** Withdrawals out of this account that no User row accounts for, surfaced rather than
+   *  absorbed. Non-zero means a row is missing, not that a total is wrong. */
+  unattributedWithdrawals: { count: number; amount: number };
   users: AccountUser[];
 }
 

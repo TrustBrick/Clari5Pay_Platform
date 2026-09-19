@@ -467,8 +467,20 @@ async def account_users(
 
     Attribution is identical to /balances and /statement so the figures reconcile with the
     account list: deposits route via ``Transaction.admin_ref``; withdrawals attribute back via
-    the member→receiving-account map. Everything here is scoped to this single account, so a
-    User's "deposited through this account" equals the sum of their Players' deposits shown.
+    the member→receiving-account map, taking THIS account's share of a split payout rather than
+    the whole of it. Counts are per transaction, so a payout with two legs here is one withdrawal.
+
+    A User's figures are DERIVED from the Player rows returned beneath them — summed from the same
+    rounded values the table renders. "Deposited Through This Account" is therefore not a second
+    opinion about those rows that might disagree with them; it is those rows, added up.
+
+    Two things are reported rather than absorbed, because a silent difference is what sends
+    somebody hunting for a reconciliation bug that is really a missing row: deposits carrying no
+    Player ID get their own labelled row, and withdrawals out of this account whose creating user
+    never deposited into it are returned as ``unattributedWithdrawals``.
+
+    Note this is ONE account's answer. The same user on a different account is a different number,
+    and comparing the two is not a discrepancy.
     """
     acc = (await db.execute(
         select(AccountMaster).where(AccountMaster.reference_number == ref)
@@ -486,10 +498,19 @@ async def account_users(
     def _pid(t: Transaction) -> str:
         return (t.member_id or "").strip().upper()
 
-    # Per-member money attributed to THIS account (by member id, not creator) — withdrawals
-    # complete as COMPLETED and attribute via the member map. Kept separate from the user→player
-    # deposit hierarchy so a withdrawal made by a different operator still lands on its player.
-    wd_by_member: dict[str, float] = defaultdict(float)
+    # Money that left THIS account, per player. Withdrawals complete as COMPLETED and attribute
+    # back through the member→receiving-account map, exactly as /balances and /statement do.
+    #
+    # Keyed by (creating user, player) — NOT by player alone. A player is very often served by
+    # several operators on the same account (WININ38797 has four on ACC0000031), and keying by
+    # player alone put that player's whole withdrawal history under every one of them, so the
+    # same payout was reported four times over. The withdrawal's own merchant_id is the
+    # authoritative answer to "whose withdrawal was this", exactly as it is for a deposit.
+    wd_by_member: dict[tuple[int, str], float] = defaultdict(float)
+    wd_count_by_member: dict[tuple[int, str], int] = defaultdict(int)
+    # A withdrawal that came out of this account but whose creating user never deposited into it
+    # has no row to sit on. It is NOT dropped — it is reported separately below.
+    orphan_wd = {"count": 0, "amount": 0.0}
     last_activity: dict[str, datetime] = {}   # member id → most recent completed movement here
 
     def _mark_active(pid: str, ts: datetime | None):
@@ -499,8 +520,16 @@ async def account_users(
     for t in txns:
         ty = t.type.value
         if ty.startswith("WITHDRAWAL") and t.status == TxStatus.COMPLETED and t.member_id:
-            if any(acct == ref for acct, _share in _debit_shares(t, funding, payout_legs)):
-                wd_by_member[_pid(t)] += t.amount
+            # THIS ACCOUNT'S SHARE, never the whole payout. A split withdrawal is paid by several
+            # accounts and `_debit_shares` says what each one actually paid; /balances and
+            # /statement have always summed that share. Taking `t.amount` here instead made a
+            # player's withdrawals on one account include money a different account paid — the
+            # same rupee counted on two screens. Summed per account, so a payout with two legs on
+            # THIS account contributes both legs but is still ONE withdrawal in the count.
+            shares = [amt for acct, amt in _debit_shares(t, funding, payout_legs) if acct == ref]
+            if shares:
+                wd_by_member[(t.merchant_id, _pid(t))] += sum(shares)
+                wd_count_by_member[(t.merchant_id, _pid(t))] += 1
                 _mark_active(_pid(t), t.created_at)
 
     # Deposit-derived hierarchy: creating User → Player. Deposits routed to this account define
@@ -518,22 +547,27 @@ async def account_users(
                 "merchant_id": uid,
                 "userName": (t.creator_username or t.merchant_name),
                 "userId": None,
-                "deposited": 0.0,
                 "players": {},   # player id → node
             }
-        u["deposited"] += t.amount
 
         pid = _pid(t)
         players = u["players"]
         p = players.get(pid)
         if p is None:
             p = players[pid] = {
-                "playerId": t.member_id or "—",
-                "playerName": (t.member_name or "").strip() or "—",
+                # A deposit with no Player ID is NOT dropped and NOT folded into another player:
+                # it becomes its own row, named for what it is, so the user's total still adds up
+                # on screen and the gap is visible rather than silent.
+                "playerId": (t.member_id or "").strip() or "—",
+                "playerName": (t.member_name or "").strip() or ("—" if (t.member_id or "").strip()
+                                                                else "Unattributed (no Player ID)"),
+                "unattributed": not (t.member_id or "").strip(),
                 "deposits": 0.0,
+                "depositCount": 0,
                 "createdAt": t.created_at,
             }
         p["deposits"] += t.amount
+        p["depositCount"] += 1
         if t.member_name and (p["playerName"] == "—"):
             p["playerName"] = t.member_name.strip()
         # Earliest deposit into this account = when this player started using it.
@@ -555,29 +589,50 @@ async def account_users(
 
     users_out = []
     total_players = 0
+    consumed: set[tuple[int, str]] = set()      # (user, player) pairs that got a row
     for uid, u in users.items():
         players_out = []
         for pid, p in u["players"].items():
+            consumed.add((uid, pid))
             la = last_activity.get(pid)
             players_out.append({
                 "playerId": p["playerId"],
                 "playerName": p["playerName"],
+                "unattributed": p["unattributed"],
                 "status": "Active" if (la and la >= cutoff) else "Inactive",
+                "depositCount": p["depositCount"],
                 "deposits": round(p["deposits"], 2),
-                "withdrawals": round(wd_by_member.get(pid, 0.0), 2),
+                "withdrawalCount": wd_count_by_member.get((uid, pid), 0),
+                "withdrawals": round(wd_by_member.get((uid, pid), 0.0), 2),
                 "createdAt": (p["createdAt"].isoformat() + "Z") if p["createdAt"] else None,
             })
         players_out.sort(key=lambda r: r["deposits"], reverse=True)
         total_players += len(players_out)
+        # The User's figures are DERIVED from the rows shown beneath them — summed from the same
+        # rounded values the table renders, so "Deposited Through This Account" and the player
+        # rows cannot drift apart by a rounding step or by a row the loop forgot to add. They are
+        # one number presented twice, not two numbers that ought to agree.
         users_out.append({
             "merchantId": uid,
             "userName": u["userName"],
             "userId": u["userId"],
             "totalPlayers": len(players_out),
-            "deposited": round(u["deposited"], 2),
+            "depositCount": sum(r["depositCount"] for r in players_out),
+            "deposited": round(sum(r["deposits"] for r in players_out), 2),
+            "withdrawalCount": sum(r["withdrawalCount"] for r in players_out),
+            "withdrawn": round(sum(r["withdrawals"] for r in players_out), 2),
             "players": players_out,
         })
     users_out.sort(key=lambda r: r["deposited"], reverse=True)
+
+    # Money that left this account for a player whose creating user never deposited into it. The
+    # hierarchy is deposit-derived, so there is no row for them — and rather than let the figure
+    # vanish, it is reported here so the account's withdrawals still add up and anyone comparing
+    # totals can see exactly what is unaccounted for and how much.
+    for key, amt in wd_by_member.items():
+        if key not in consumed:
+            orphan_wd["count"] += wd_count_by_member[key]
+            orphan_wd["amount"] += amt
 
     return {
         "referenceNumber": ref,
@@ -586,6 +641,14 @@ async def account_users(
         "totalUsers": len(users_out),
         "totalPlayers": total_players,
         "totalDeposited": round(sum(u["deposited"] for u in users_out), 2),
+        "totalWithdrawn": round(sum(u["withdrawn"] for u in users_out), 2),
+        # Non-zero means withdrawals left this account that no User row on this screen accounts
+        # for. It is surfaced rather than absorbed: a silent difference is what sends someone
+        # hunting for a reconciliation bug that is really a missing row.
+        "unattributedWithdrawals": {
+            "count": orphan_wd["count"],
+            "amount": round(orphan_wd["amount"], 2),
+        },
         "users": users_out,
     }
 

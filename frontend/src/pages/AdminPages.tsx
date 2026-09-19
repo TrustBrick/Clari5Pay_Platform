@@ -2617,7 +2617,15 @@ export const AdminAccountsPage: React.FC = () => {
                   <div style={{ display:'flex',gap:20,flexWrap:'wrap',marginBottom:14,fontSize:13,color:T.textMuted }}>
                     <span><b style={{ color:T.textMain }}>{acctUsers.totalUsers}</b> User{acctUsers.totalUsers!==1?'s are':' is'} using this account</span>
                     <span>Total Players: <b style={{ color:T.textMain }}>{acctUsers.totalPlayers}</b></span>
-                    <span>Total Deposited Through This Account: <b style={{ color:T.success }}>{fmt(acctUsers.totalDeposited)}</b></span>
+                    {/* Account-wide, across every user listed. The per-user figure is the column
+                        below; naming them apart stops the two being read as the same number. */}
+                    <span>Total Deposited Through This Account (all users): <b style={{ color:T.success }}>{fmt(acctUsers.totalDeposited)}</b></span>
+                    {acctUsers.unattributedWithdrawals?.count > 0 && (
+                      <span title="Withdrawals paid out of this account whose creating user has no deposits here, so they have no row above.">
+                        Unattributed withdrawals: <b style={{ color:T.warning }}>{fmt(acctUsers.unattributedWithdrawals.amount)}</b>
+                        {' '}({acctUsers.unattributedWithdrawals.count})
+                      </span>
+                    )}
                   </div>
                   <div style={{ overflowX:'auto' }}>
                     <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
@@ -2659,21 +2667,23 @@ export const AdminAccountsPage: React.FC = () => {
             <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
               <thead>
                 <tr style={{ background:T.canvas }}>
-                  {['Player ID','Player Name','Status','Total Deposits','Total Withdrawals','Created Date & Time (IST)'].map(h=>(
+                  {['Player ID','Player Name','Status','Deposit Count','Total Deposits','Withdrawal Count','Total Withdrawals','Created Date & Time (IST)'].map(h=>(
                     <th key={h} style={{ padding:'9px 12px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {viewPlayersOf.players.length === 0 && <tr><td colSpan={6} style={{ padding:24,textAlign:'center',color:T.textMuted }}>No players found for this user.</td></tr>}
+                {viewPlayersOf.players.length === 0 && <tr><td colSpan={8} style={{ padding:24,textAlign:'center',color:T.textMuted }}>No players found for this user.</td></tr>}
                 {viewPlayersOf.players.map((p,i)=>{ const active = (p.status||'').toLowerCase()==='active'; return (
                   <tr key={p.playerId+String(i)} style={{ background:i%2===0?T.surface:'#f8faff' }}>
-                    <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700,color:T.blue }}>{p.playerId}</code></td>
+                    <td style={{ padding:'10px 12px' }}><code style={{ background:T.canvas,padding:'2px 6px',borderRadius:4,fontSize:11,fontWeight:700,color:p.unattributed?T.textMuted:T.blue }}>{p.playerId}</code></td>
                     <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{p.playerName}</td>
                     <td style={{ padding:'10px 12px' }}>
                       <span style={{ padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:700,background:active?T.successBg:T.dangerBg,color:active?T.success:T.danger }}>{p.status}</span>
                     </td>
+                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{p.depositCount}</td>
                     <td style={{ padding:'10px 12px',fontWeight:700,color:T.success }}>{fmt(p.deposits)}</td>
+                    <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{p.withdrawalCount}</td>
                     <td style={{ padding:'10px 12px',fontWeight:700,color:T.textMain }}>{fmt(p.withdrawals)}</td>
                     <td style={{ padding:'10px 12px',color:T.textMuted }}>{formatDateTimeIST(p.createdAt)}</td>
                   </tr>
