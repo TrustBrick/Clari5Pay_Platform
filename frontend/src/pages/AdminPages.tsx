@@ -764,14 +764,22 @@ const RequestModal: React.FC<{
                   details, which is what the warning below says before the click. */}
               {(() => {
                 const chosen = accounts.find(a => a.referenceNumber === accountRef);
-                const noImage = !!chosen && chosen.hasAccountDetailsImage === false;
+                // WHICH image this deposit will actually send. A CDM deposit receives the account's
+                // CDM image, which is a SEPARATE upload from the normal one and never a fallback
+                // for it. Checking the normal slot for a CDM request told the Admin the merchant
+                // was covered while the merchant received nothing — the confirmation was about an
+                // image this deposit is never going to send.
+                const label = isCdm ? 'CDM Account Details Image' : 'Account Details Image';
+                const uploaded = isCdm ? chosen?.hasCdmAccountDetailsImage
+                                       : chosen?.hasAccountDetailsImage;
+                const noImage = !!chosen && uploaded === false;
                 return (
                   <p style={{ fontSize:11,color: noImage ? T.danger : T.textMuted,margin:'0 0 12px',fontWeight: noImage ? 700 : 400 }}>
                     {!chosen
-                      ? "The merchant receives the chosen account's Account Details Image — nothing is uploaded or typed here."
+                      ? `The merchant receives the chosen account's ${label} — nothing is uploaded or typed here.`
                       : noImage
-                        ? `No Account Details Image is uploaded for this account, so the merchant will receive no account details at all. Upload one on ${chosen.referenceNumber} in Account Management first.`
-                        : "The merchant receives this account's Account Details Image, and no account details as text."}
+                        ? `No ${label} is uploaded for this account, so the merchant will receive no account details at all. Upload one on ${chosen.referenceNumber} in Account Management → View → ${label}.`
+                        : `The merchant receives this account's ${label}, and no account details as text.`}
                   </p>
                 );
               })()}
