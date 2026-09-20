@@ -2135,6 +2135,18 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         </DetailSection>
       )}
 
+      {/* WHICH account this deposit was paid into, as the image the Admin uploaded on it.
+          Shown here as well as on Pay & Submit Proof, because that step DISAPPEARS the moment the
+          slip is submitted — and the account image was only ever rendered there, so a merchant who
+          had already submitted, or who opened Details instead, could no longer see where their
+          money was sent. For a CDM deposit that image is the only record of which account took
+          the cash, so losing it at the review stage loses the one detail worth keeping. */}
+      {d.accountDetailsImage && (
+        <DetailSection title="Receiving Account">
+          <AccountDetailsImagePanel img={d.accountDetailsImage} txRef={d.ref} />
+        </DetailSection>
+      )}
+
       <DetailSection title="Financial Information">
         {isDeposit && <SlipRow k="Deposit Amount" v={fmt(d.amount)} />}
         {isWithdrawal && <SlipRow k="Withdrawal Amount" v={fmt(d.amount)} />}
