@@ -822,19 +822,21 @@ def _tiers(candidates: list[Candidate], history: MemberHistory, note: NoteReques
         if with_upi and len(with_upi) < len(candidates):
             tiers.append((RULES.UPI_CAPABLE, with_upi))
 
-    if history.is_new:
-        # Rule 1 — a new customer prefers an account that has never been used, determined from
-        # real usage data rather than any flag.
-        unused = [c for c in candidates if c.unused]
-        if unused:
-            tiers.append((RULES.NEW_UNUSED, unused))
-        # The specified fallback: no unused account → eligible SAVINGS accounts, taking the lower
-        # remaining capacity first (which is exactly what rank() already does). The hard credit
-        # limit is untouched by this — the pool only ever contains accounts that passed it.
-        savings = [c for c in candidates if _type_value(c.account.account_type) == AccountType.SAVINGS.value]
-        if savings:
-            tiers.append((RULES.NEW_SAVINGS_FALLBACK, savings))
-    else:
+    # A NEW customer gets no preference pool of its own: nearest suitable capacity decides, which
+    # is the universal fallback added below.
+    #
+    # It used to prefer an account that had never received a deposit, with eligible SAVINGS
+    # accounts as the fallback. That was removed because it contradicts the operating rule this
+    # platform actually wants — FILL THE NEAREST ACCOUNT FIRST, then the next. Preferring an
+    # unused account does the opposite: the moment the smallest account takes its first deposit it
+    # stops being "unused" and is pushed DOWN the order, so the account with the least headroom is
+    # the one least likely to be filled. A ₹500 deposit skipped an account with ₹14,000 left in
+    # favour of one with ₹21,864 for exactly that reason.
+    #
+    # The consequence is deliberate and worth stating: new customers now concentrate on whichever
+    # eligible account has the least remaining capacity until it is full, rather than being spread
+    # across fresh accounts.
+    if not history.is_new:
         # Rule 1 — an existing customer's own account history comes first, most-recently-used
         # account preferred among equally ranked ones.
         order = {ref: i for i, ref in enumerate(history.accounts_used)}

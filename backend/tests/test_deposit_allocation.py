@@ -388,11 +388,14 @@ async def test_own_account_is_preserved_and_recorded_but_is_not_a_priority(db):
 # ═══ Rule 1 — new vs existing customer ══════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_a_new_customer_prefers_an_unused_account(db):
-    """A member with no history goes to an account that has never received a deposit.
+async def test_a_new_customer_takes_the_nearest_capacity_even_when_it_has_been_used(db):
+    """FILL THE NEAREST ACCOUNT FIRST — being "used" does not push an account down the order.
 
-    "Unused" is read off real usage, not a flag: ACC1 has served a deposit and is therefore used,
-    even though it is the nearer capacity and would otherwise win.
+    This reverses the earlier rule, which preferred an account that had never received a deposit.
+    That rule fought the operating intent: the moment the smallest account took its first deposit
+    it stopped being unused and was deprioritised, so the account with the least headroom was the
+    one least likely to be filled. ACC1 has served a deposit AND has the nearer capacity, and it
+    now wins on exactly that.
     """
     await _account(db, "ACC1", name="used", credit=60000.0)
     await _account(db, "ACC2", name="never-used", credit=200000.0)
@@ -400,8 +403,8 @@ async def test_a_new_customer_prefers_an_unused_account(db):
 
     result = await _allocate(db, 45000, member_id="BRANDNEW")
     assert result.customer_type == "NEW"
-    assert result.account.reference_number == "ACC2"
-    assert result.rule == alloc.RULES.NEW_UNUSED
+    assert result.account.reference_number == "ACC1", "ACC1 has 50,000 left; ACC2 has 200,000"
+    assert result.rule == alloc.RULES.NEAREST_CAPACITY
 
 
 @pytest.mark.asyncio
@@ -442,18 +445,24 @@ async def test_an_existing_customers_history_never_beats_the_credit_limit(db):
 # ═══ Section 12 — the new-customer Savings fallback ═════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_a_new_customer_with_no_unused_account_falls_back_to_savings(db):
-    """Every account has been used → eligible SAVINGS accounts are preferred, lower capacity first."""
-    await _account(db, "ACC1", name="current", credit=200000.0, atype=AccountType.CURRENT)
+async def test_a_new_customer_is_not_steered_towards_savings_either(db):
+    """The Savings fallback went with the unused-account rule. Nearest capacity decides, whatever
+    type the account is — here the CURRENT account is nearest and takes it, where the old rule
+    would have reached past it for the smaller of the two Savings accounts.
+
+    The sending account's type is a HARD rule and is unaffected: this test passes no sender type,
+    which is what a request that names no sending account looks like.
+    """
+    await _account(db, "ACC1", name="current", credit=150000.0, atype=AccountType.CURRENT)
     await _account(db, "ACC2", name="savings-big", credit=300000.0, atype=AccountType.SAVINGS)
-    await _account(db, "ACC3", name="savings-small", credit=150000.0, atype=AccountType.SAVINGS)
+    await _account(db, "ACC3", name="savings-small", credit=200000.0, atype=AccountType.SAVINGS)
     for i, ref in enumerate(("ACC1", "ACC2", "ACC3"), start=1):
         await _deposit(db, str(i), 1000, ref, member="OTHER")
 
     result = await _allocate(db, 45000, member_id="BRANDNEW")
     assert result.customer_type == "NEW"
-    assert result.rule == alloc.RULES.NEW_SAVINGS_FALLBACK
-    assert result.account.reference_number == "ACC3"          # the lower-capacity Savings account
+    assert result.account.reference_number == "ACC1", "149,000 left — the nearest of the three"
+    assert result.rule == alloc.RULES.NEAREST_CAPACITY
 
 
 @pytest.mark.asyncio

@@ -161,12 +161,16 @@ async def test_an_account_that_has_never_funded_us_is_a_new_customer(db):
     await _account(db, "FRESH", name="fresh", credit=100000.0)
     await _received(db, merchant, "OLD1", upi=UPI_B, admin_ref="USED")   # a DIFFERENT account
 
-    # UPI_A has funded nothing, so this is a NEW customer and prefers the unused account.
+    # UPI_A has funded nothing, so this is a NEW customer. What this test is ABOUT is that
+    # classification — the account it lands on follows the ordinary nearest-capacity rule.
     out = await txr.create_deposit(_dep(accountType="CURRENT"), db, merchant)
     row = (await db.execute(select(DepositAllocation).where(
         DepositAllocation.transaction_ref == out["ref"]))).scalar_one()
     assert row.customer_type == "NEW"
-    assert out["adminRef"] == "FRESH", "a new customer prefers an unused account"
+    # USED holds a 5,000 deposit so it has 95,000 left against FRESH's 100,000, and the nearest
+    # capacity takes it. Being NEW no longer steers a deposit towards an unused account — that
+    # preference was removed because it pushed the account with the LEAST headroom down the order.
+    assert out["adminRef"] == "USED", "nearest remaining capacity, regardless of prior use"
 
 
 @pytest.mark.asyncio
