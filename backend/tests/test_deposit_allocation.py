@@ -419,6 +419,44 @@ async def test_an_unused_account_is_still_subject_to_every_hard_rule(db):
 
 
 @pytest.mark.asyncio
+async def test_an_account_already_given_to_a_member_is_reused_while_it_fits(db):
+    """Once a member has been sent an account, keep sending them to it.
+
+    Discriminating on purpose: ACC1 is the member's account but has FAR more room (99,000) than
+    the untouched ACC2 (20,000), so nearest-capacity alone would pick ACC2. Reuse wins because the
+    member already has those details.
+
+    The member is NEW here (`sender_account_deposits=0`) and that must not matter. NEW/OLD is about
+    whether the SENDING account has ever funded us, which is a different question from whether we
+    have already handed this member an account — MM01 on demo had been given two accounts while
+    still counting as NEW, and each new deposit was landing somewhere else.
+    """
+    await _account(db, "ACC1", name="theirs", credit=100000.0)
+    await _account(db, "ACC2", name="fresh-and-smaller", credit=20000.0)
+    await _deposit(db, "1", 1000, "ACC1", member="MEMBER1")
+
+    result = await _allocate(db, 500, member_id="MEMBER1", sender_account_deposits=0)
+
+    assert result.account.reference_number == "ACC1"
+    assert result.rule == alloc.RULES.OLD_ACCOUNT_HISTORY
+    assert result.customer_type == "NEW", "reuse does not depend on the NEW/OLD classification"
+
+
+@pytest.mark.asyncio
+async def test_reuse_never_overrides_the_daily_ceiling(db):
+    """"Give them the account we already gave them" holds only WHILE THE AMOUNT FITS. The pool is
+    built from eligible accounts, so an account with no room left is simply not in it."""
+    await _account(db, "ACC1", name="theirs-but-full", credit=5000.0)
+    await _account(db, "ACC2", name="roomy", credit=100000.0)
+    await _deposit(db, "1", 1000, "ACC1", member="MEMBER1")
+
+    result = await _allocate(db, 50000, member_id="MEMBER1", sender_account_deposits=0)
+
+    assert result.account.reference_number == "ACC2", "ACC1 has 4,000 left — it cannot take 50,000"
+    assert result.rule == alloc.RULES.NEAREST_CAPACITY
+
+
+@pytest.mark.asyncio
 async def test_an_existing_customer_returns_to_an_account_they_have_used(db):
     """Account history comes first for a known member — even when another account has less room."""
     await _account(db, "ACC1", name="history", credit=200000.0)

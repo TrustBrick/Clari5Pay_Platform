@@ -836,14 +836,23 @@ def _tiers(candidates: list[Candidate], history: MemberHistory, note: NoteReques
     # The consequence is deliberate and worth stating: new customers now concentrate on whichever
     # eligible account has the least remaining capacity until it is full, rather than being spread
     # across fresh accounts.
-    if not history.is_new:
-        # Rule 1 — an existing customer's own account history comes first, most-recently-used
-        # account preferred among equally ranked ones.
-        order = {ref: i for i, ref in enumerate(history.accounts_used)}
-        seen = [c for c in candidates if c.ref in order]
-        if seen:
-            seen = sorted(rank(seen), key=lambda c: (c.remaining, order.get(c.ref, 10**6)))
-            tiers.append((RULES.OLD_ACCOUNT_HISTORY, seen))
+    # AN ACCOUNT ALREADY GIVEN TO THIS MEMBER ID COMES FIRST, while it can still take the amount.
+    # Keeping a member on the account they were already sent is the point: they have those details
+    # saved, and moving them to a different account for every deposit is what this reorders away.
+    #
+    # NOT gated on is_new. That flag answers a different question — whether the SENDING account has
+    # ever funded us — and a member can plainly have been given an account while their sending
+    # account is still unknown to us. MM01 had been given two accounts and was still classified
+    # NEW, so this pool was skipped and each deposit landed somewhere else.
+    #
+    # `candidates` is already the eligible set, so an account that cannot take this amount is not
+    # in here: "reuse the account we gave them" never overrides the daily ceiling, it only applies
+    # while the amount still fits. Ordered by remaining capacity, then by how recently it was used.
+    order = {ref: i for i, ref in enumerate(history.accounts_used)}
+    seen = [c for c in candidates if c.ref in order]
+    if seen:
+        seen = sorted(rank(seen), key=lambda c: (c.remaining, order.get(c.ref, 10**6)))
+        tiers.append((RULES.OLD_ACCOUNT_HISTORY, seen))
 
     # Everything eligible, nearest capacity — the universal fallback that guarantees an eligible
     # account is never left unused just because no preference matched it.
