@@ -520,6 +520,27 @@ export const riskAPI = {
   },
 };
 
+/** Admin → Settings → Automation Control. The browser only DISPLAYS this: every
+ *  automation decision is taken from the server's own copy of the flag, so a tampered response
+ *  here changes what this screen shows and nothing about how a transaction is handled. */
+export interface AutomationStatus {
+  enabled: boolean;
+  changedBy?: string | null;
+  changedAt?: string | null;   // ISO (UTC)
+  reason?: string | null;
+}
+
+export const automationAPI = {
+  get: async (): Promise<AutomationStatus> => {
+    const res = await api.get<AutomationStatus>('/api/automation');
+    return res.data;
+  },
+  set: async (enabled: boolean, reason?: string): Promise<AutomationStatus> => {
+    const res = await api.put<AutomationStatus>('/api/automation', { enabled, reason });
+    return res.data;
+  },
+};
+
 export const accountAPI = {
   list: async (q?: string) => {
     const res = await api.get<Account[]>('/api/accounts', { params: q ? { q } : undefined });

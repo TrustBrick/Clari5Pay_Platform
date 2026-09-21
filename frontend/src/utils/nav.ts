@@ -58,6 +58,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { key: 'complaints', icon: 'complaints', label: 'Complaint Management' },
     { key: 'news', icon: 'news', label: 'News' },
     { key: 'admin-whatsapp', icon: 'telegram', label: 'Telegram Management' },
+    { key: 'admin-automation', icon: 'settings', label: 'Automation Control' },
     { key: 'profile', icon: 'profile', label: 'Profile' },
   ],
   SUPER_ADMIN: [
@@ -132,6 +133,7 @@ export const PAGE_TITLES: Record<string, string> = {
   'admin-agent-txns': 'Agent Transactions',
   'admin-agents': 'Agents',
   'admin-whatsapp': 'Telegram Management',
+  'admin-automation': 'Automation Control',
   'sa-dashboard': 'Platform Overview',
   'sa-admins': 'Admin Management',
   'sa-active-users': 'Active Users',

@@ -17,8 +17,8 @@ import { AgentLedgerReport } from './ReportsPage';
 import { useAuth } from '../context/AuthContext';
 import { usePoll, PRESENCE_POLL_MS, useActivitySignal } from '../utils/usePoll';
 import { usePresenceStream } from '../utils/sse';
-import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, telegramAPI, demoAPI, activeUsersAPI, fetchAllPages } from '../services/api';
-import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappStats, TelegramStatus } from '../services/api';
+import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLogAPI, newsAPI, whatsappAPI, telegramAPI, demoAPI, activeUsersAPI, automationAPI, fetchAllPages } from '../services/api';
+import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappStats, TelegramStatus, AutomationStatus } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts, MerchantAnalyticsRow } from '../types';
 import { useToast } from '../context/ToastContext';
 import type { Transaction, User, Account, AccountBalance, AccountLedgerEntry, AccountDetailsImage, AllocationDecision, PayoutAllocation, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
@@ -4066,6 +4066,117 @@ export const DemoToolsPage: React.FC = () => {
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
             <Btn variant="ghost" onClick={() => { setConfirming(false); setTyped(''); }}>Cancel</Btn>
             <Btn variant="danger" disabled={typed !== 'RESET' || resetting} onClick={doReset}>{resetting ? 'Resetting…' : 'Reset Everything'}</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
+
+// ─── Admin → Settings → Automation Control ─────────────────────────────────────────────────────
+// One switch, and it is the SERVER's switch. This screen reads and writes it; it does not evaluate
+// it. Every automation decision — which account receives a deposit, which accounts pay a
+// withdrawal — is taken from the backend's own copy on each request, so nothing done in a browser
+// can put a transaction down a path the server has not chosen.
+//
+// Standard Mode is what production ran for months: an Admin picks the receiving account, and an
+// Admin picks who pays. Turning automation off returns to exactly that, on the very next request,
+// with no deploy and no restart.
+export const AutomationControlPage: React.FC = () => {
+  const { showToast } = useToast();
+  const [status, setStatus] = useState<AutomationStatus | null>(null);
+  const [confirm, setConfirm] = useState<boolean | null>(null);   // the state being switched TO
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = () => { automationAPI.get().then(setStatus).catch(() => showToast('Could not read the automation mode', 'error')); };
+  useEffect(load, []);
+
+  const apply = async () => {
+    if (confirm === null) return;
+    setSaving(true);
+    try {
+      setStatus(await automationAPI.set(confirm, reason.trim() || undefined));
+      showToast(confirm ? 'Automation enabled' : 'Switched to Standard Mode');
+      setConfirm(null); setReason('');
+    } catch { showToast('Failed to change the automation mode', 'error'); }
+    finally { setSaving(false); }
+  };
+
+  const on = status?.enabled === true;
+
+  return (
+    <div>
+      <Card>
+        <h3 style={{ margin:'0 0 4px',fontSize:14,fontWeight:800,color:T.textMain }}>Automation Update</h3>
+        <p style={{ margin:'0 0 18px',fontSize:12,color:T.textMuted,lineHeight:1.6,maxWidth:620 }}>
+          Controls whether the platform chooses accounts automatically. The change applies to the
+          next transaction immediately — no deployment or restart is needed.
+        </p>
+
+        {status === null ? <LoadingScreen label="Loading…" /> : (
+          <>
+            <div style={{ display:'flex',alignItems:'center',gap:18,flexWrap:'wrap',
+                          background:T.canvas,borderRadius:12,padding:'16px 18px',
+                          border:`1px solid ${on ? T.success : T.border}` }}>
+              {/* The switch. Its colour is the state, so the mode is readable at a glance. */}
+              <button
+                role="switch" aria-checked={on} aria-label="Automation Update"
+                onClick={()=>setConfirm(!on)} disabled={saving}
+                style={{ position:'relative',width:56,height:30,borderRadius:999,flexShrink:0,
+                         border:'none',cursor:saving?'not-allowed':'pointer',
+                         background:on?T.success:T.border,transition:'background .18s' }}>
+                <span style={{ position:'absolute',top:3,left:on?29:3,width:24,height:24,
+                               borderRadius:'50%',background:'#fff',transition:'left .18s',
+                               boxShadow:'0 1px 3px rgba(0,0,0,0.3)' }} />
+              </button>
+              <div>
+                <div style={{ fontSize:14,fontWeight:800,color:on?T.success:T.textMain }}>
+                  {on ? 'Automation Enabled' : 'Standard Mode'}
+                </div>
+                <div style={{ fontSize:12,color:T.textMuted,marginTop:2 }}>
+                  {on ? 'New automation rules are active.' : 'Existing production workflow is active.'}
+                </div>
+              </div>
+            </div>
+
+            {/* Who last moved it, and why — the question anyone asks before moving it back. */}
+            <div style={{ marginTop:14,fontSize:12,color:T.textMuted,lineHeight:1.7 }}>
+              {status.changedAt ? (
+                <>
+                  Last changed by <b style={{ color:T.textMain }}>{status.changedBy || '—'}</b> on{' '}
+                  <b style={{ color:T.textMain }}>{formatDateTimeIST(status.changedAt)}</b>
+                  {status.reason ? <> · Reason: <i>{status.reason}</i></> : null}
+                </>
+              ) : 'This setting has not been changed yet — the platform is running on its default.'}
+            </div>
+
+            <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.borderLight}`,
+                          fontSize:12,color:T.textMuted,lineHeight:1.7,maxWidth:620 }}>
+              <b style={{ color:T.textMain }}>Standard Mode</b> — an Admin chooses the receiving
+              account for each deposit, and chooses who pays each approved withdrawal.<br />
+              <b style={{ color:T.textMain }}>Automation Enabled</b> — the platform chooses both,
+              within each account's configured daily limits.
+            </div>
+          </>
+        )}
+      </Card>
+
+      {confirm !== null && (
+        <Modal title={confirm ? 'Enable Automation?' : 'Switch to Standard Mode?'} onClose={()=>{ setConfirm(null); setReason(''); }}>
+          <p style={{ margin:'0 0 14px',fontSize:13,color:T.textMain,lineHeight:1.7 }}>
+            {confirm
+              ? 'New automation rules will be applied to eligible transactions.'
+              : 'New automation rules will be disabled. Transactions will use the existing standard workflow.'}
+          </p>
+          <Input label="Reason (optional)" value={reason} onChange={e=>setReason(e.target.value)}
+                 placeholder={confirm ? 'e.g. UAT signed off' : 'e.g. payouts routing to the wrong account'} />
+          <div style={{ display:'flex',gap:10,marginTop:16 }}>
+            <Btn onClick={apply} disabled={saving}>
+              {saving ? 'Saving…' : (confirm ? 'Enable Automation' : 'Switch to Standard Mode')}
+            </Btn>
+            <Btn variant="secondary" onClick={()=>{ setConfirm(null); setReason(''); }}>Cancel</Btn>
           </div>
         </Modal>
       )}

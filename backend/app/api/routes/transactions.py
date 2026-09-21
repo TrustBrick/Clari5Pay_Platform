@@ -23,6 +23,7 @@ from app.services import deposit_allocation as alloc
 from app.services import cdm
 from app.services import account_details_image
 from app.services import cdm_capacity
+from app.services import automation_mode
 from app.services import member_account as macct
 from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cached_json
@@ -2858,7 +2859,14 @@ async def _auto_allocate_deposit_account(
     Everything happens inside the caller's transaction — the row lock the engine takes, the
     account assignment, the usage the assignment consumes and the audit trail all commit together,
     which is what stops two simultaneous requests from spending the same remaining capacity.
+
+    With Automation Update OFF this returns False WITHOUT running the engine, which leaves the
+    request in ACCOUNT_REQUESTED for an Admin to place by hand — the behaviour every deposit had
+    before allocation existed. The check is here, before the engine, so no capacity is read, no
+    row is locked and no journal entry is written while automation is off.
     """
+    if not await automation_mode.is_enabled(db):
+        return False
     sender_type, sender_deposits = await _sender_account_facts(db, tx, merchant)
     result = await alloc.allocate_deposit_account(
         db,
@@ -3032,7 +3040,15 @@ async def _auto_allocate_withdrawal(
     Everything happens inside the caller's transaction — the row locks the engine takes, the legs
     it writes, the capacity those legs consume and the audit trail all commit together, which is
     what stops two simultaneous withdrawals from spending the same remaining capacity.
+
+    With Automation Update OFF this returns False WITHOUT running the engine. Every caller must
+    therefore ask `automation_mode.is_enabled` for ITSELF before reading anything into that False:
+    "the engine placed nothing" and "the engine was never asked" are different facts, and treating
+    the second as the first is what once routed live withdrawals into NO_ELIGIBLE_ACCOUNT, a state
+    they could not leave.
     """
+    if not await automation_mode.is_enabled(db):
+        return False
     result = await walloc.allocate_withdrawal_accounts(
         db,
         amount=tx.amount,
@@ -3689,6 +3705,15 @@ async def retry_allocation(
             status_code=400,
             detail="This deposit type is not paid into a managed bank account.")
 
+    # Automation is the only thing this endpoint does, so with the switch off it refuses
+    # outright rather than reporting "nothing was eligible" — a different fact, and one
+    # that would send somebody hunting through account limits for a problem that is a
+    # switch on the Settings screen.
+    if not await automation_mode.is_enabled(db):
+        raise HTTPException(
+            status_code=409,
+            detail="Automation Update is switched off. Assign the account manually, or enable automation in Admin → Settings → Automation Control.")
+
     allocated = await _auto_allocate_deposit_account(db, tx)
     await _refresh_with_images(db, tx)
     if not allocated:
@@ -3788,6 +3813,15 @@ async def retry_payout_allocation(
     # records where from, and re-running would double-count the accounts that paid it.
     if tx.status in (TxStatus.COMPLETED, TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED):
         raise HTTPException(status_code=400, detail="This withdrawal is already closed.")
+
+    # Automation is the only thing this endpoint does, so with the switch off it refuses
+    # outright rather than reporting "nothing was eligible" — a different fact, and one
+    # that would send somebody hunting through account limits for a problem that is a
+    # switch on the Settings screen.
+    if not await automation_mode.is_enabled(db):
+        raise HTTPException(
+            status_code=409,
+            detail="Automation Update is switched off. Assign the paying account manually, or enable automation in Admin → Settings → Automation Control.")
 
     placed = await _auto_allocate_withdrawal(db, tx, actor=actor)
     # A withdrawal sitting in the exception state moves on the moment it CAN be paid; one still
@@ -4724,8 +4758,20 @@ async def _reviewer_action(
             # Settlements never reach here (they skip the review gate), so this only ever splits
             # deposit vs withdrawal.
             if tx.type.value.startswith("WITHDRAWAL"):
-                placed = await _ensure_withdrawal_allocation(db, tx, actor=reviewer)
-                tx.status = TxStatus.ACCOUNT_SUBMITTED if placed else TxStatus.NO_ELIGIBLE_ACCOUNT
+                # AUTOMATION OFF takes the pre-allocation path verbatim: ACCOUNT_REQUESTED, which
+                # for a withdrawal has always meant "an Admin must now choose which account pays".
+                #
+                # It must NOT reach the line below and read a False as "nothing was eligible". That
+                # is precisely what happened once: with the engine switched off every Manager
+                # approval landed in NO_ELIGIBLE_ACCOUNT — an exception state whose only exit is a
+                # retry endpoint that itself refuses while automation is off — so live withdrawals
+                # were stranded with no way forward, and the release had to be rolled back. The
+                # switch is asked here, before the engine is consulted at all.
+                if not await automation_mode.is_enabled(db):
+                    tx.status = TxStatus.ACCOUNT_REQUESTED
+                else:
+                    placed = await _ensure_withdrawal_allocation(db, tx, actor=reviewer)
+                    tx.status = TxStatus.ACCOUNT_SUBMITTED if placed else TxStatus.NO_ELIGIBLE_ACCOUNT
             else:
                 tx.status = TxStatus.SLIP_SUBMITTED
             _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)

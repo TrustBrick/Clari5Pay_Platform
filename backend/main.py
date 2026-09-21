@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.db.session import engine, Base
 from app.db.migrate import ensure_schema
 from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news, admin_upis, blogs, risk, whatsapp, active_users, support_management, kyc, telegram
+from app.api.routes import automation
 
 
 @asynccontextmanager
@@ -106,6 +107,7 @@ app.include_router(users.router)
 app.include_router(transactions.router)
 app.include_router(accounts.router)
 app.include_router(admin_upis.router)
+app.include_router(automation.router)
 app.include_router(bank_accounts.router)
 app.include_router(support.router)
 app.include_router(notifications.router)

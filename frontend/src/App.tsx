@@ -18,7 +18,7 @@ import { AdminReportsPage } from './pages/ReportsPage';
 import {
   AdminDashboard, AdminMerchantsPage, AdminTransactionsPage, AdminAccountsPage,
   SaDashboard, SaAdminsPage, SystemLogsPage, AuditLogsPage,
-  MerchantAnalyticsPage, WhatsAppSettingsPage, DemoToolsPage,
+  MerchantAnalyticsPage, WhatsAppSettingsPage, AutomationControlPage, DemoToolsPage,
 } from './pages/AdminPages';
 import { AdminAgentDashboardPage, AdminAgentTransactionsPage, AdminAgentsPage } from './pages/AdminAgentPages';
 import { KYCPage } from './pages/KYCPage';
@@ -230,6 +230,7 @@ const App: React.FC = () => {
         'admin-agents': <AdminAgentsPage {...props} />,
       } : {}),
       'admin-whatsapp': <WhatsAppSettingsPage />,
+      'admin-automation': <AutomationControlPage />,
       'sa-dashboard': <SaDashboard onNavigate={navigate} />,
       'sa-active-users': <ActiveUsersPage user={user} />,
       'sa-support': <SupportManagementPage user={user} />,
