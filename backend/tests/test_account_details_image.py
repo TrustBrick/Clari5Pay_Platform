@@ -50,7 +50,7 @@ from app.core import deps, storage
 from app.core.uploads import MAX_UPLOAD_BYTES
 from app.db.session import Base
 from app.models.models import (
-    AccountMaster, AccountDetailsImage, AccountType, AuditLog, Transaction, TxStatus, TxType,
+    AccountMaster, AccountDetailsImage, AccountImageReplacement, AccountType, AuditLog, Transaction, TxStatus, TxType,
     User, UserRole,
 )
 from app.schemas.schemas import AccountDetailsImageUpload, DepositCreate
@@ -181,6 +181,8 @@ async def _account(db: AsyncSession, ref: str, *, name: str, bank: str = "HDFC B
         bank_name=bank, branch="Mumbai", account_type=atype, status=status,
         created_date=date.today(), created_time="10:00:00", highest_credit=credit,
         highest_debit=50000.0, debit_alert_threshold=50000.0, cdm_daily_limit=cdm_limit,
+        # Daily bank ceilings default to the per-transaction caps — the post-split migration state.
+        bank_daily_credit_limit=credit, bank_daily_debit_limit=50000.0,
     )
     db.add(acc)
     await db.flush()
@@ -197,8 +199,15 @@ def _payload(amount: float, **kw) -> DepositCreate:
     return DepositCreate(**base)
 
 
-async def _upload(db, ref: str, image: str):
-    return await acr.put_account_details_image(ref, AccountDetailsImageUpload(image=image), _Req(), db, _admin())
+# A replacement must carry a reason; a first upload ignores it. The helpers always send one so the
+# tests below that replace an image stay about what they test. The reason rule itself is tested
+# explicitly in the "Replacement needs a reason" section.
+REASON = "Bank updated the account details"
+
+
+async def _upload(db, ref: str, image: str, reason: str | None = REASON):
+    return await acr.put_account_details_image(
+        ref, AccountDetailsImageUpload(image=image, reason=reason), _Req(), db, _admin())
 
 
 def _image(ref: str, image: str, content_type: str = "image/png",
@@ -215,9 +224,9 @@ def _no_image(ref: str, kind: str = detimg.ACCOUNT_KIND) -> dict:
             "message": detimg._spec(kind)[3]}
 
 
-async def _upload_cdm(db, ref: str, image: str):
-    return await acr.put_cdm_account_details_image(ref, AccountDetailsImageUpload(image=image),
-                                                   _Req(), db, _admin())
+async def _upload_cdm(db, ref: str, image: str, reason: str | None = REASON):
+    return await acr.put_cdm_account_details_image(
+        ref, AccountDetailsImageUpload(image=image, reason=reason), _Req(), db, _admin())
 
 
 def _no_account_text(payload: dict) -> bool:
@@ -369,7 +378,8 @@ async def test_another_merchant_cannot_open_the_deposit_or_its_image(db):
 @pytest.mark.asyncio
 async def test_the_account_image_routes_are_admin_only(db):
     """Merchants have no route to an account's image — every one depends on get_current_admin."""
-    for fn in (acr.get_account_details_image, acr.put_account_details_image, acr.delete_account_details_image):
+    for fn in (acr.get_account_details_image, acr.put_account_details_image,
+               acr.account_details_image_history):
         gates = [p.default.dependency for p in inspect.signature(fn).parameters.values()
                  if hasattr(p.default, "dependency")]
         assert deps.get_current_admin in gates, fn.__name__
@@ -432,29 +442,19 @@ async def test_replacing_the_image_updates_it_for_every_deposit_on_the_account(d
     assert (await db.execute(select(AuditLog).where(AuditLog.action_type == "ACCOUNT_DETAILS_IMAGE_REPLACED"))).scalars().one()
 
 
-# ── G. Removing works ──────────────────────────────────────────────────────────────────────────
+# ── G. There is no Remove — an image is changed by Replace, with a reason ────────────────────────
 
-@pytest.mark.asyncio
-async def test_removing_the_image_leaves_the_account_eligible_and_the_deposit_explains_it(db):
-    merchant = await _merchant(db)
-    await _account(db, "ACC1", name="Account A")
-    await _upload(db, "ACC1", _png("A"))
-
-    out = await acr.delete_account_details_image("ACC1", _Req(), db, _admin())
-
-    assert out["hasImage"] is False and out["image"] is None
-    assert (await db.execute(select(func.count()).select_from(AccountDetailsImage))).scalar() == 0
-    assert (await db.execute(select(AuditLog).where(AuditLog.action_type == "ACCOUNT_DETAILS_IMAGE_REMOVED"))).scalars().one()
-    # Removing twice is harmless and audits nothing further.
-    await acr.delete_account_details_image("ACC1", _Req(), db, _admin())
-    assert (await db.execute(select(func.count()).select_from(AuditLog).where(
-        AuditLog.action_type == "ACCOUNT_DETAILS_IMAGE_REMOVED"))).scalar() == 1
-
-    dep = await txr.create_deposit(_payload(1000), db, merchant)
-    assert dep["adminRef"] == "ACC1"
-    detail = await txr.get_transaction_detail(dep["id"], db, merchant)
-    assert detail["accountDetailsImage"] == _no_image("ACC1")
-    assert _no_account_text(detail)                 # no fallback text takes the image's place
+def test_neither_image_can_be_removed_or_deleted():
+    """Replace is the only way to change an image, so no DELETE route exists for either kind."""
+    prefix = acr.router.prefix
+    paths = {(m, r.path) for r in acr.router.routes for m in getattr(r, "methods", ())}
+    for tail in ("/{reference_number}/account-details-image",
+                 "/{reference_number}/cdm-account-details-image"):
+        path = prefix + tail
+        assert ("DELETE", path) not in paths, path
+        assert ("PUT", path) in paths and ("GET", path) in paths, path
+    assert not hasattr(acr, "delete_account_details_image")
+    assert not hasattr(acr, "delete_cdm_account_details_image")
 
 
 # ── H. The image never influences allocation ───────────────────────────────────────────────────
@@ -477,7 +477,7 @@ async def test_images_do_not_change_which_account_the_engine_chooses(db):
     await _upload(db, "ACC2", _png("B"))
     after_other = await alloc.allocate_deposit_account(db, amount=45000, member_id="OLDM")
     await _upload(db, "ACC1", _png("A"))
-    await acr.delete_account_details_image("ACC2", _Req(), db, _admin())
+    await _upload(db, "ACC2", _png("B2"))                 # a replacement changes nothing either
     after_swap = await alloc.allocate_deposit_account(db, amount=45000, member_id="OLDM")
 
     refs = {r.account.reference_number for r in (before, after_other, after_swap)}
@@ -571,7 +571,7 @@ async def test_image_changes_never_modify_any_transaction_row(db):
     await _upload(db, "ACC1", _png("v1"))
     await _upload(db, "ACC1", _png("v2"))
     detail = await txr.get_transaction_detail(f"TXN{historical.id:03d}", db, merchant)
-    await acr.delete_account_details_image("ACC1", _Req(), db, _admin())
+    await _upload(db, "ACC1", _png("v3"))
 
     assert await _raw_transactions(db) == snapshot
     # The historical Bank Transfer deposit still reads exactly as it was recorded, and its own
@@ -830,11 +830,12 @@ async def test_an_account_backed_deposit_cannot_be_sent_without_an_account(db):
 
 @pytest.mark.asyncio
 async def test_account_management_is_the_only_place_the_image_is_managed(db):
-    """Upload, replace and remove live on the account — and nowhere on a transaction."""
+    """Upload and replace live on the account — and nowhere on a transaction."""
     await _account(db, "ACC1", name="Account A")
     assert (await _upload(db, "ACC1", _png("A")))["hasImage"] is True
     assert (await _upload(db, "ACC1", _jpeg("B")))["image"] == _jpeg("B")
-    assert (await acr.delete_account_details_image("ACC1", _Req(), db, _admin()))["hasImage"] is False
+    hist = await acr.account_details_image_history("ACC1", db, _admin())
+    assert [e["reason"] for e in hist["entries"]] == [REASON]
     # No transaction route offers an image field of its own.
     submit_fields = set(txr.AccountSubmitRequest.model_fields)
     assert not {f for f in submit_fields if "image" in f.lower()} - {"adminBankImage"}
@@ -1004,28 +1005,68 @@ async def test_replacing_one_image_leaves_the_other_exactly_as_it_was(db):
 
 
 @pytest.mark.asyncio
-async def test_removing_one_image_leaves_the_other_in_place(db):
-    merchant = await _merchant(db)
-    await _receiver(db, "ACC0000017", cdm_limit=100000.0)
-    await _upload(db, "ACC0000017", _png("NORMAL"))
-    await _upload_cdm(db, "ACC0000017", _png("CDM"))
-
-    await acr.delete_cdm_account_details_image("ACC0000017", _Req(), db, _admin())
-
-    assert await detimg.get(db, "ACC0000017", kind=detimg.CDM_KIND) is None
-    assert (await detimg.get(db, "ACC0000017")).image == _png("NORMAL"), "untouched"
-    # ...and the account is exactly as assignable as it was: an image is never a requirement.
-    out = await _cdm(db, merchant)
-    assert (await _send(db, out["id"], "ACC0000017"))["adminRef"] == "ACC0000017"
-
-
-@pytest.mark.asyncio
 async def test_the_cdm_image_routes_are_admin_only(db):
     """A merchant cannot name an account and receive its CDM image: there is no route to try."""
     import inspect
     from app.core.deps import get_current_admin
     for fn in (acr.get_cdm_account_details_image, acr.put_cdm_account_details_image,
-               acr.delete_cdm_account_details_image):
+               acr.cdm_account_details_image_history):
         param = inspect.signature(fn).parameters
         dep = param.get("actor") or param.get("_")
         assert dep.default.dependency is get_current_admin, fn.__name__
+
+
+# ═══ Replacement needs a reason, and is audited ═════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("upload", ["normal", "cdm"])
+@pytest.mark.parametrize("reason", [None, "", "   "])
+async def test_a_replacement_without_a_reason_is_refused_and_changes_nothing(db, upload, reason):
+    await _account(db, "ACC1", name="Account A")
+    put = _upload if upload == "normal" else _upload_cdm
+    kind = detimg.ACCOUNT_KIND if upload == "normal" else detimg.CDM_KIND
+    await put(db, "ACC1", _png("v1"), reason=None)          # a FIRST upload needs no reason
+
+    with pytest.raises(HTTPException) as e:
+        await put(db, "ACC1", _png("v2"), reason=reason)
+    assert e.value.status_code == 400
+    assert e.value.detail == detimg.REPLACE_REASON_REQUIRED_MSG
+    assert (await detimg.get(db, "ACC1", kind=kind)).image == _png("v1")      # untouched
+    assert (await db.execute(select(func.count()).select_from(AccountImageReplacement))).scalar() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("upload", ["normal", "cdm"])
+async def test_a_replacement_records_previous_new_who_when_and_why(db, upload):
+    await _account(db, "ACC1", name="Account A")
+    put = _upload if upload == "normal" else _upload_cdm
+    history = (acr.account_details_image_history if upload == "normal"
+               else acr.cdm_account_details_image_history)
+    kind = detimg.ACCOUNT_KIND if upload == "normal" else detimg.CDM_KIND
+    await put(db, "ACC1", _png("v1"), reason=None)
+    await put(db, "ACC1", _jpeg("v2"), reason="  New branch account  ")
+
+    row = (await db.execute(select(AccountImageReplacement))).scalars().one()
+    assert row.account_ref == "ACC1" and row.kind == kind
+    assert row.previous_image == _png("v1") and row.new_image == _jpeg("v2")
+    assert row.reason == "New branch account"
+    assert row.changed_by == _admin().name and row.changed_at is not None
+
+    out = await history("ACC1", db, _admin())
+    assert out["kind"] == kind and len(out["entries"]) == 1
+    e = out["entries"][0]
+    assert e["previousImage"] == _png("v1") and e["newImage"] == _jpeg("v2")
+    assert e["reason"] == "New branch account" and e["changedBy"] == _admin().name
+    audit = (await db.execute(
+        select(AuditLog).where(AuditLog.action_type.like("%REPLACED")))).scalars().one()
+    assert "New branch account" in audit.reason
+
+
+@pytest.mark.asyncio
+async def test_replacing_one_kind_never_writes_history_for_the_other(db):
+    await _account(db, "ACC1", name="Account A")
+    await _upload(db, "ACC1", _png("n1"))
+    await _upload_cdm(db, "ACC1", _png("c1"))
+    await _upload_cdm(db, "ACC1", _png("c2"))
+    assert (await acr.account_details_image_history("ACC1", db, _admin()))["entries"] == []
+    assert len((await acr.cdm_account_details_image_history("ACC1", db, _admin()))["entries"]) == 1

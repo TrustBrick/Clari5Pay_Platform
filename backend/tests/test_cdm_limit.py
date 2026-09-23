@@ -85,6 +85,7 @@ async def _account(db: AsyncSession, ref: str = "ACC1", *, credit: float = 90000
         ifsc_code="HDFC0001234", bank_name="HDFC Bank", branch="Mumbai",
         account_type=AccountType.CURRENT, status="ACTIVE", created_date=date.today(),
         created_time="10:00:00", highest_credit=credit, highest_debit=50000.0,
+        bank_daily_credit_limit=credit, bank_daily_debit_limit=50000.0,
         cdm_daily_limit=cdm_limit,
     )
     db.add(acc)

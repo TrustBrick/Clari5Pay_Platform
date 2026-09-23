@@ -443,6 +443,10 @@ export interface Account {
   // returned as all four — unconfigured means fully capable, never unusable.
   payoutModes?: string[];
   payoutModesConfigured?: boolean;
+  // Payin Mode — which deposit types this account may RECEIVE (existing deposit_type codes). An
+  // account with none configured is returned as every mode — unconfigured means fully capable.
+  payinModes?: string[];
+  payinModesConfigured?: boolean;
   // Whether an Account Details Image is uploaded on this account. Present on the list / get
   // payloads only (the edit routes omit it) — so treat undefined as "unknown", not as "no image".
   hasAccountDetailsImage?: boolean;
@@ -467,6 +471,17 @@ export interface AccountDetailsImage {
   sizeBytes: number | null;
   uploadedAt: string | null;
   uploadedBy: string | null;
+}
+
+/** One audited REPLACEMENT of an account's Account Details Image / CDM image. */
+export interface AccountImageReplacement {
+  id: number;
+  kind: string;
+  previousImage: string | null;
+  newImage: string | null;
+  reason: string;
+  changedBy: string | null;
+  changedAt: string | null;
 }
 
 /** The Account Details Image of the account a deposit was routed to, on its detail payload.

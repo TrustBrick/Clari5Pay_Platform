@@ -327,6 +327,17 @@ class AccountPayoutModesUpdate(BaseModel):
     reason: Optional[str] = None
 
 
+class AccountPayinModesUpdate(BaseModel):
+    """Admin edit of ONE account's Payin Mode — which deposit types it may receive.
+
+    Values are the platform's existing deposit_type codes (UPI, IMPS, NEFT, RTGS, CDM, CREDIT_CARD,
+    DEBIT_CARD). An EMPTY list means "every mode", the unconfigured default, for the same reason as
+    AccountPayoutModesUpdate.
+    """
+    payinModes: list[str] = []
+    reason: Optional[str] = None
+
+
 class AdjustmentCreate(BaseModel):
     """A manual Credit/Debit adjustment on a managed account (Account Management).
 
@@ -417,6 +428,9 @@ class AccountCreate(BaseModel):
     # Which transaction modes this account can pay out by (UPI / IMPS / NEFT / RTGS). Empty or
     # omitted means every mode — see AccountPayoutModesUpdate.
     payout_modes: Optional[list[str]] = None
+    # Which deposit types this account may receive (Payin Mode). Empty or omitted = every mode —
+    # see AccountPayinModesUpdate.
+    payin_modes: Optional[list[str]] = None
     # The Admin's "Own Account" classification. Recorded on the account and carried into every
     # deposit allocation decision; it is deliberately not a ranking input (see
     # services/deposit_allocation), so setting it cannot change which account receives money.
@@ -488,8 +502,12 @@ class AccountDetailsImageUpload(BaseModel):
 
     ``image`` is a base64 data URL — JPG, JPEG, PNG or WEBP, 5 MB at most, and its bytes must be
     the image type it claims to be (app.core.uploads.validate_image_content).
+
+    ``reason`` is MANDATORY when the account already has an image of this kind (a replacement) and
+    ignored on a first upload. Enforced server-side (services/account_details_image.put).
     """
     image: str
+    reason: Optional[str] = None
 
 
 # ─── Support Chat Schemas ─────────────────────────────────────────────────────

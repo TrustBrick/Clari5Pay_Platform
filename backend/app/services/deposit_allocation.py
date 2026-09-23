@@ -91,6 +91,40 @@ DEPOSIT_TYPES = (TxType.DEPOSIT, TxType.DEPOSIT_REQUEST)
 # through a payment-gateway link the Admin submits, not an account. All three are untouched here.
 ALLOCATABLE_DEPOSIT_TYPES = ("UPI", "BANK", "IMPS", "NEFT", "RTGS")
 
+# ── Payin Mode — which deposit types an account may RECEIVE ─────────────────────────────────────
+# The deposit-side counterpart of ``AccountMaster.payout_modes``, stored the same way: a
+# comma-separated list of the platform's own deposit_type codes. These are the existing canonical
+# values (the merchant form's DEPOSIT_TYPE_OPTIONS) — nothing is invented here. Cash and Crypto are
+# absent because they are never paid into a managed account.
+#
+# NULL / empty means EVERY mode, for the reason payout_modes does: a capability column that
+# started empty and was read as "receives nothing" would disqualify every account on a platform
+# where no Admin has configured one, and send every deposit to the exception queue.
+PAYIN_MODES = ("UPI", "IMPS", "NEFT", "RTGS", "CDM", "CREDIT_CARD", "DEBIT_CARD")
+# The retired generic BANK type (historical rows only) is served by any of the specific rails.
+_BANK_RAILS = ("IMPS", "NEFT", "RTGS")
+
+
+def account_payin_modes(account: AccountMaster) -> Optional[set[str]]:
+    """The account's configured payin modes, or None when unconfigured (= every mode)."""
+    raw = (getattr(account, "payin_modes", None) or "").strip()
+    if not raw:
+        return None
+    modes = {m.strip().upper() for m in raw.split(",") if m.strip()}
+    return modes or None
+
+
+def supports_payin_mode(account: AccountMaster, deposit_type: Optional[str]) -> bool:
+    """Whether this account may receive a deposit of ``deposit_type``. An unconfigured account, or
+    a deposit with no type, is never refused on this ground."""
+    modes = account_payin_modes(account)
+    mode = (deposit_type or "").strip().upper()
+    if modes is None or not mode:
+        return True
+    if mode == "BANK":
+        return bool(modes & set(_BANK_RAILS))
+    return mode in modes
+
 # A UPI deposit is PREFERABLY paid to a linked UPI ID (the platform's existing per-account
 # payment-method capability, AdminUpi.account_ref) — but that is a preference, never a
 # requirement. Every managed account can receive money by bank transfer, so an account without a
@@ -141,6 +175,8 @@ REJECT_LOCKED = "CONCURRENTLY_ALLOCATED"
 # The member is sending from a Savings account and this one is Current, or the reverse. A hard
 # rule, not a preference: money must land in an account of the same kind it was sent from.
 REJECT_ACCOUNT_TYPE = "ACCOUNT_TYPE_MISMATCH"
+# An Admin has narrowed this account's Payin Mode and this deposit's type is not in it.
+REJECT_PAYIN_MODE = "PAYIN_MODE_NOT_SUPPORTED"
 
 # The distinct ways an allocation can find nothing. Recorded on the journal and shown to the Admin,
 # because each one has a different fix: activate an account, raise a limit, add an account, or wait
@@ -151,6 +187,7 @@ FAIL_NO_LIMITS = "NO_CREDIT_LIMITS_CONFIGURED"
 FAIL_LIMIT_REACHED = "ALL_ACCOUNTS_AT_DAILY_LIMIT"
 FAIL_AMOUNT_TOO_LARGE = "AMOUNT_EXCEEDS_EVERY_REMAINING_CAPACITY"
 FAIL_NO_MATCHING_TYPE = "NO_ACCOUNT_OF_THE_REQUIRED_TYPE"
+FAIL_NO_PAYIN_MODE = "NO_ACCOUNT_ACCEPTS_THIS_PAYIN_MODE"
 FAIL_MIXED = "NO_ELIGIBLE_ACCOUNT"
 FAIL_RACE = "CAPACITY_TAKEN_CONCURRENTLY"
 
@@ -193,6 +230,13 @@ def _failure(candidates: list["Candidate"], amount: float) -> tuple[str, str]:
         of_type = f" of the required type ({required})"
     else:
         of_type = ""
+
+    if any(r == REJECT_PAYIN_MODE for r in reasons) and all(
+            r in (REJECT_PAYIN_MODE, REJECT_ACCOUNT_TYPE, REJECT_INACTIVE, REJECT_NO_LIMIT)
+            for r in reasons):
+        return FAIL_NO_PAYIN_MODE, (
+            "No active, configured account has this deposit's payment mode enabled in its Payin "
+            "Mode. Enable the mode on an account in Account Management, or assign one manually.")
 
     if type_blocked and all(
             r in (REJECT_ACCOUNT_TYPE, REJECT_INACTIVE, REJECT_NO_LIMIT) for r in reasons):
@@ -716,7 +760,7 @@ class Candidate:
 def _evaluate(
     account: AccountMaster, amount: float, *, used_today: float, deposits_today: int,
     member_deposits: int, unused: bool, upi_id: Optional[str],
-    sender_account_type: Optional[str] = None,
+    sender_account_type: Optional[str] = None, deposit_type: Optional[str] = None,
 ) -> Candidate:
     """Apply every HARD rule to one account. Cheapest disqualification first.
 
@@ -735,6 +779,12 @@ def _evaluate(
     # Rule 3 — availability. An inactive/disabled account can never be sent to a merchant.
     if (account.status or "").upper() != "ACTIVE":
         cand.reject_reason = REJECT_INACTIVE
+        return cand
+
+    # Payin Mode — an Admin who narrowed this account's receivable modes has excluded this type.
+    # Unconfigured (NULL) accepts every mode, so this never disqualifies an account by default.
+    if not supports_payin_mode(account, deposit_type):
+        cand.reject_reason = REJECT_PAYIN_MODE
         return cand
 
     # Account type must match the account the money is coming FROM. Savings pays into Savings,
@@ -802,6 +852,7 @@ async def evaluate_accounts(
             unused=a.reference_number in unused,
             upi_id=upis.get(a.reference_number),
             sender_account_type=sender_account_type,
+            deposit_type=deposit_type,
         )
         for a in accounts
     ]

@@ -345,21 +345,22 @@ async def test_an_admin_cannot_hand_pick_the_wrong_account_type(db):
 
 
 @pytest.mark.asyncio
-async def test_an_admin_cannot_hand_pick_past_the_highest_credit(db):
+async def test_an_admin_cannot_hand_pick_past_the_bank_daily_credit_limit(db):
     merchant = await _merchant(db)
     admin = await _admin(db)
     await _account(db, "SAV", name="s", credit=100000.0, atype=AccountType.SAVINGS)
     out = await txr.create_deposit(_dep(amount=90000, accountType="SAVINGS"), db, merchant)
     assert out["adminRef"] == "SAV"                       # the engine placed the first one
 
-    # A second 90,000 would take the account to 180,000 against a 100,000 ceiling.
+    # A second 90,000 would take the account to 180,000 against a 100,000 DAILY ceiling (each
+    # 90,000 on its own is within the 100,000 per-transaction Highest Credit).
     second = await txr.create_deposit(_dep(amount=90000, accountType="SAVINGS"), db, merchant)
     assert second["adminRef"] is None
     with pytest.raises(HTTPException) as e:
         await txr.account_submit(
             second["id"], AccountSubmitRequest(adminRef="SAV"), db, admin)
     assert e.value.status_code == 400
-    assert "Highest Credit" in e.value.detail
+    assert "Bank Daily Credit Limit" in e.value.detail
 
 
 @pytest.mark.asyncio

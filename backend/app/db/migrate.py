@@ -88,6 +88,9 @@ _NEW_COLUMNS = [
     # account's live behaviour changes until an Admin sets a tighter per-transaction limit.
     ("account_master", "bank_daily_credit_limit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
     ("account_master", "bank_daily_debit_limit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    # Payin Mode — which deposit types an account may receive. NULL on every existing row, and
+    # NULL means "every mode", so adding it disqualifies no account (same rule as payout_modes).
+    ("account_master", "payin_modes", "VARCHAR(96)"),
     # Reporting: approver / processor / creating-agent tracking.
     ("transactions", "approved_by", "VARCHAR(128)"),
     # WHO approved, as a person. supervisor_name / manager_name hold the merchant BUSINESS name,

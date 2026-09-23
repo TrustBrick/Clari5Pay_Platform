@@ -404,6 +404,13 @@ class AccountMaster(Base):
     # queue — the same failure a hard UPI-link filter caused on the deposit side. An unconfigured
     # account is therefore fully capable until an Admin narrows it.
     payout_modes: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Payin Mode — which deposit types this account may RECEIVE, as a comma-separated list of the
+    # platform's existing deposit_type codes ("UPI,IMPS,NEFT,RTGS,CDM,CREDIT_CARD,DEBIT_CARD").
+    # NULL means EVERY mode, for exactly the reason payout_modes does: an unconfigured account is
+    # fully capable until an Admin narrows it, so adding the column disqualifies nobody. The deposit
+    # allocation engine and the Admin's manual assignment both refuse a type the list excludes
+    # (services/deposit_allocation.supports_payin_mode).
+    payin_modes: Mapped[Optional[str]] = mapped_column(String(96), nullable=True)
 
 
 class AccountTransaction(Base):
@@ -482,6 +489,31 @@ class AccountCdmImage(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     uploaded_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+
+class AccountImageReplacement(Base):
+    """Append-only audit of every REPLACEMENT of an account's Account Details Image or CDM Account
+    Details Image.
+
+    A replacement overwrites the one live image row, so without this the previous image would be
+    unrecoverable. Each row keeps BOTH stored references (``storage://`` keys or data URLs — the
+    objects themselves are never deleted on replace), who changed it, when, and the mandatory
+    reason. Nothing reads it to decide anything; it exists so an image change is fully traceable.
+    """
+    __tablename__ = "account_image_replacement"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    account_ref: Mapped[str] = mapped_column(
+        String(40), ForeignKey("account_master.reference_number"), index=True, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)          # ACCOUNT | CDM
+    previous_image: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    new_image: Mapped[str] = mapped_column(Text, nullable=False)
+    new_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    changed_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    changed_by_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class AdminUpi(Base):

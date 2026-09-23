@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { cachedRef, invalidateRef } from '../utils/refCache';
-import type { Account, AccountBalance, AccountDetailsImage, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MemberAccountView, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
+import type { Account, AccountBalance, AccountDetailsImage, AccountImageReplacement, AccountLedger, AccountLedgerEntry, AccountUsers, ActiveUsersData, AllocationDecision, AdminUpi, Agent, AgentAccount, AgentAssignmentCurrent, AgentAssignmentResult, AgentAuditRow, AgentAssignmentHistoryRow, AgentDashboard, AgentTxRow, AssignableMerchant, AuditLogEntry, BalanceSummary, BlogAnalytics, BlogCategory, BlogPost, BlogStats, GlobalStatusCounts, GlobalSummary, MerchantAnalyticsRow, LoginRequest, LoginResponse, MerchantBalance, MerchantStats, MemberAccountView, MerchantBankAccount, Notification, NewsPost, OtpChallenge, PayoutAllocation, ReportData, ReportRow, RiskOverview, RiskProfile, RiskMemberBanks, Complaint, ComplaintList, SupportMembersData, SupportMemberRow, SupportTeamAvailability, SupportConversationRow, SupportMessage, SystemLogEntry, Transaction, User } from '../types';
 
 // Empty string is a valid value meaning "same origin" (production behind nginx),
 // so use ?? — only fall back to the dev default when the var is truly unset.
@@ -598,6 +598,12 @@ export const accountAPI = {
     const res = await api.patch<Account>(`/api/accounts/${ref}/payout-modes`, { payoutModes, reason });
     return res.data;
   },
+  // Admin edit of an account's Payin Mode — which deposit types it may receive. The deposit
+  // allocation engine and the manual assignment both refuse an excluded type. EMPTY = every mode.
+  updatePayinModes: async (ref: string, payinModes: string[], reason?: string) => {
+    const res = await api.patch<Account>(`/api/accounts/${ref}/payin-modes`, { payinModes, reason });
+    return res.data;
+  },
   // Admin edit of an account's "Own Account" classification. Configuration only: it is recorded
   // on every allocation decision but is not a ranking input, so this moves no money. Admin-gated
   // server-side like every other Account Management route.
@@ -607,36 +613,35 @@ export const accountAPI = {
   },
   // ── Account Details Image (Account Management, Admin-only) ──
   // Uploaded ONCE per receiving account; every deposit routed to the account sends it to the
-  // merchant as the account details. Upload and replace are the same call. The server validates
-  // type, size and content, and these three routes are the ONLY way the image is managed — there
-  // is no per-deposit upload.
+  // merchant as the account details. Upload and replace are the same call, and a REPLACEMENT must
+  // carry a reason (the server refuses one without). There is no remove — Replace is how an image
+  // changes — and no per-deposit upload.
   accountDetailsImage: async (ref: string) => {
     const res = await api.get<AccountDetailsImage>(`/api/accounts/${ref}/account-details-image`);
     return res.data;
   },
-  setAccountDetailsImage: async (ref: string, image: string) => {
-    const res = await api.put<AccountDetailsImage>(`/api/accounts/${ref}/account-details-image`, { image });
+  setAccountDetailsImage: async (ref: string, image: string, reason?: string) => {
+    const res = await api.put<AccountDetailsImage>(`/api/accounts/${ref}/account-details-image`, { image, reason });
     return res.data;
   },
-  removeAccountDetailsImage: async (ref: string) => {
-    const res = await api.delete<AccountDetailsImage>(`/api/accounts/${ref}/account-details-image`);
-    return res.data;
+  accountDetailsImageHistory: async (ref: string) => {
+    const res = await api.get<{ entries: AccountImageReplacement[] }>(`/api/accounts/${ref}/account-details-image/history`);
+    return res.data.entries;
   },
   // ── The SECOND image: the one a CDM deposit's merchant receives ──
-  // Configured independently of the three routes above and never a fallback for them: a CDM
-  // deposit whose account has no CDM image tells the merchant so rather than showing the normal
-  // one, which would point them at the wrong instructions.
+  // Configured independently of the routes above and never a fallback for them: a CDM deposit
+  // whose account has no CDM image tells the merchant so rather than showing the normal one.
   cdmAccountDetailsImage: async (ref: string) => {
     const res = await api.get<AccountDetailsImage>(`/api/accounts/${ref}/cdm-account-details-image`);
     return res.data;
   },
-  setCdmAccountDetailsImage: async (ref: string, image: string) => {
-    const res = await api.put<AccountDetailsImage>(`/api/accounts/${ref}/cdm-account-details-image`, { image });
+  setCdmAccountDetailsImage: async (ref: string, image: string, reason?: string) => {
+    const res = await api.put<AccountDetailsImage>(`/api/accounts/${ref}/cdm-account-details-image`, { image, reason });
     return res.data;
   },
-  removeCdmAccountDetailsImage: async (ref: string) => {
-    const res = await api.delete<AccountDetailsImage>(`/api/accounts/${ref}/cdm-account-details-image`);
-    return res.data;
+  cdmAccountDetailsImageHistory: async (ref: string) => {
+    const res = await api.get<{ entries: AccountImageReplacement[] }>(`/api/accounts/${ref}/cdm-account-details-image/history`);
+    return res.data.entries;
   },
   // The account's HARD DAILY limit for CDM deposits. Its own route because it is its own ceiling:
   // it is never derived from Highest Credit / Highest Debit and setting it changes neither.

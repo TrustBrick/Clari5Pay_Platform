@@ -2796,33 +2796,48 @@ async def _validate_manual_deposit_account(
 ) -> None:
     """Refuse an Admin-chosen deposit account that the engine itself would not choose.
 
-    The four hard rules, in the engine's own order and using its own figures — nothing is
+    The hard rules, in the engine's own order and using its own figures — nothing is
     re-implemented here beyond reading them:
 
       * the account exists and is ACTIVE;
-      * it has a configured Highest Credit;
+      * its Payin Mode accepts this deposit's type (unconfigured = every mode);
+      * it has BOTH a per-transaction Highest Credit and a Bank Daily Credit Limit configured;
       * Savings pays into Savings, Current into Current;
-      * today's credit usage plus this deposit stays within Highest Credit.
+      * PER-TRANSACTION: this deposit's amount <= Highest Credit;
+      * CUMULATIVE DAILY: today's credit usage + this deposit <= Bank Daily Credit Limit.
+
+    The account row is LOCKED (``SELECT … FOR UPDATE`` — the same lock the engine and a manual
+    adjustment take) before today's usage is read, so two concurrent assignments, or an assignment
+    racing an automatic allocation or a manual credit, cannot both pass on the same stale capacity.
 
     Each refusal says which rule stopped it and what the numbers were, because "invalid account"
-    tells an Admin nothing about which of four different fixes to reach for.
+    tells an Admin nothing about which fix to reach for.
 
     Silent on anything the engine is silent on: a deposit that names no sending account carries no
     type constraint, exactly as in :func:`deposit_allocation._evaluate`.
     """
-    acc = (await db.execute(
-        select(AccountMaster).where(AccountMaster.reference_number == ref))).scalar_one_or_none()
+    acc = await ledger.lock_account(db, ref)
     if acc is None:
         raise HTTPException(status_code=400, detail=f"Account {ref} does not exist.")
     if (acc.status or "").upper() != "ACTIVE":
         raise HTTPException(
             status_code=400,
             detail=f"{ref} is {acc.status or 'unavailable'} and cannot receive a deposit.")
-    limit = round(float(acc.highest_credit or 0.0), 2)
-    if limit <= 0:
+    if not alloc.supports_payin_mode(acc, tx.deposit_type):
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{ref} does not accept {tx.deposit_type} deposits — it is not enabled in the "
+                    f"account's Payin Mode."))
+    per_txn = round(float(acc.highest_credit or 0.0), 2)
+    daily = round(float(acc.bank_daily_credit_limit or 0.0), 2)
+    if per_txn <= 0:
         raise HTTPException(
             status_code=400,
             detail=f"{ref} has no Highest Credit configured, so it cannot accept a deposit.")
+    if daily <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{ref} has no Bank Daily Credit Limit configured, so it cannot accept a deposit.")
 
     sender_type, _ = await _sender_account_facts(db, tx)
     acc_type = acc.account_type.value if hasattr(acc.account_type, "value") else str(acc.account_type or "")
@@ -2832,18 +2847,25 @@ async def _validate_manual_deposit_account(
             detail=(f"The member is sending from a {sender_type} and {ref} is a "
                     f"{acc_type or 'different type'}. Select an account of the same type."))
 
-    used = round((await alloc.credit_used_today(db, [ref])).get(ref, 0.0), 2)
     amount = round(float(tx.amount or 0.0), 2)
+    if amount > per_txn:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{ref} cannot take ₹{amount:,.2f} in one deposit: its Highest Credit "
+                    f"(per transaction) is ₹{per_txn:,.2f}."))
+
+    used = round((await alloc.credit_used_today(db, [ref])).get(ref, 0.0), 2)
     # Today's usage already includes THIS deposit whenever it is routed to this account and still
     # live — re-sending the same account, or confirming one the engine chose. Adding the amount
     # again would count it twice and refuse a send that breaches nothing.
     already_counted = (tx.admin_ref or "") == ref and tx.status not in alloc.RELEASED_STATUSES
     projected = round(used + (0.0 if already_counted else amount), 2)
-    if projected > limit:
+    if projected > daily:
         raise HTTPException(
             status_code=400,
             detail=(f"{ref} cannot take ₹{amount:,.2f}: it has used ₹{used:,.2f} of its "
-                    f"₹{limit:,.2f} Highest Credit today, leaving ₹{max(limit - used, 0):,.2f}."))
+                    f"₹{daily:,.2f} Bank Daily Credit Limit today, leaving "
+                    f"₹{max(daily - used, 0):,.2f}."))
 
 
 async def _auto_allocate_deposit_account(
@@ -4260,6 +4282,16 @@ async def _record_withdrawal_payout(
         # An account with NO configured limit has no ceiling to breach, so there is nothing to
         # check — the same allowance the engine makes for an operator-directed payout. The engine
         # will still never CHOOSE such an account on its own.
+        # The PER-TRANSACTION cap, re-checked the same way: this leg alone may not exceed the
+        # account's Highest Debit. An Admin who lowered it after allocation has made this leg
+        # unpayable from here, and it must be re-allocated rather than paid over the cap.
+        per_txn = round(float(acc.highest_debit or 0.0), 2)
+        if per_txn > 0 and leg_amount > per_txn:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"{acc.account_name} cannot pay {_inr(leg_amount)} in one transaction: its "
+                        f"Highest Debit (per transaction) is {_inr(per_txn)}. Re-run the "
+                        f"automatic allocation."))
         used = (await walloc.debit_used_today(db, [leg.account_ref], on=leg.leg_date)).get(
             leg.account_ref, 0.0)
         daily_limit = round(acc.bank_daily_debit_limit or 0.0, 2)

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { T } from '../utils/theme';
-import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, openDataUrl, downloadDataUrl, formatBytes, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount, proofBatches, proofList, isCdmDeposit, CARD_TXN_TYPES, usesAccountDetailsImage, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
+import { fmt, typeLabel, depositTypeLabel, depositDetailLabel, memberLabel, fileToDataUrl, openDataUrl, formatBytes, COUNTRY_CODES, formatDateTime, formatDateTimeIST, merchantRoleLabel, reviewerRoleCode, nameWithRole, rolesForProfile, ROLE_TYPE_OPTIONS, downloadText, passwordPolicyError, PASSWORD_POLICY_TEXT, formatIndianAmountInput, parseIndianAmount, newRequestId, maskAccount, proofBatches, proofList, isCdmDeposit, CARD_TXN_TYPES, usesAccountDetailsImage, attachRemainingProofs, PARTIAL_ATTACH_MSG, formatIstParts } from '../utils/helpers';
 import { Card, StatCard, Btn, Input, Sel, RiskBadge, Badge, MiniBar, StatusChart, LoadingScreen, ReasonModal, Modal, BankNamesDatalist, Pager } from '../components/UI';
 import { Icon, isIconName } from '../components/Icon';
 import { BANK_NAMES } from '../utils/ifsc';
@@ -21,7 +21,7 @@ import { transactionAPI, userAPI, accountAPI, adminUpiAPI, systemLogAPI, auditLo
 import type { TxQuery, TxPagedQuery, WhatsappSettings, WhatsappStats, TelegramStatus, AutomationStatus } from '../services/api';
 import type { SystemLogEntry, AuditLogEntry, NewsPost, GlobalStatusCounts, MerchantAnalyticsRow } from '../types';
 import { useToast } from '../context/ToastContext';
-import type { Transaction, User, Account, AccountBalance, AccountLedgerEntry, AccountDetailsImage, AllocationDecision, PayoutAllocation, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
+import type { Transaction, User, Account, AccountBalance, AccountLedgerEntry, AccountDetailsImage, AccountImageReplacement, AllocationDecision, PayoutAllocation, AccountUsers, AccountUser, MerchantBalance, MerchantStats, GlobalSummary, AdminUpi, ActiveUsersData, ReportRow } from '../types';
 
 // Actual tx.type is always one of the *_REQUEST values, so only these match the exact-type filter.
 const REQUEST_TYPES = ['DEPOSIT_REQUEST', 'WITHDRAWAL_REQUEST', 'SETTLEMENT_REQUEST'];
@@ -2091,6 +2091,161 @@ const AdjustmentModal: React.FC<{
   );
 };
 
+// ── Account Details Image / CDM Account Details Image ──────────────────────────────────────────
+// Shared by both image sections of the Account Details popup. View and Replace only: there is no
+// Remove (Replace covers it) and no Download. A replacement needs a reason, which the server
+// enforces and audits along with the previous image, the new one, who and when.
+// A configured limit, or "Not configured" for the 0 the platform stores for an unset one.
+const limitValue = (v: number | null | undefined): React.ReactNode =>
+  (v ?? 0) > 0 ? fmt(v ?? 0) : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>;
+// The six fixed Payin Summary rows — the buckets GET /accounts/balances reports in payinByMode.
+const PAYIN_SUMMARY_ROWS = ['UPI', 'Bank Transfer', 'CDM', 'Credit Card', 'Debit Card', 'Other'];
+
+const ACCOUNT_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+const ACCOUNT_IMAGE_MAX = 5 * 1024 * 1024;
+const ACCOUNT_IMAGE_ACCEPT = 'image/jpeg,image/jpg,image/png,image/webp,.jpg,.jpeg,.png,.webp';
+const accountImageFileError = (file: File): string | null => {
+  if (!ACCOUNT_IMAGE_TYPES.includes((file.type || '').toLowerCase())) return 'Unsupported file type. Allowed: JPG, JPEG, PNG, WEBP.';
+  if (file.size > ACCOUNT_IMAGE_MAX) return 'The image must be 5 MB or smaller.';
+  return null;
+};
+
+const linkBtn: React.CSSProperties = { background:'none',border:'none',padding:0,cursor:'pointer',fontSize:11.5,fontWeight:700,color:T.blue };
+
+const AccountImagePanel: React.FC<{
+  title: string;
+  img: AccountDetailsImage | null;
+  loading: boolean;
+  busy: boolean;
+  canEdit: boolean;
+  inputRef: React.RefObject<HTMLInputElement>;
+  onFirstFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onReplace: () => void;
+  history: AccountImageReplacement[];
+  emptyText: string;
+  helpText: string;
+}> = ({ title, img, loading, busy, canEdit, inputRef, onFirstFile, onReplace, history, emptyText, helpText }) => {
+  const [showHist, setShowHist] = useState(false);
+  return (
+    <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap' }}>
+        <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>{title}</p>
+        <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
+          {img?.hasImage && img.image && (
+            <Btn size="sm" variant="ghost" onClick={()=>openDataUrl(img.image!)}><Icon name="view" size={13} /> View</Btn>
+          )}
+          {canEdit && (img?.hasImage ? (
+            <Btn size="sm" variant="secondary" disabled={busy || loading} onClick={onReplace}>
+              <Icon name="upload" size={13} /> Replace
+            </Btn>
+          ) : (
+            <>
+              <input ref={inputRef} type="file" accept={ACCOUNT_IMAGE_ACCEPT} onChange={onFirstFile} style={{ display:'none' }} />
+              <Btn size="sm" variant="secondary" disabled={busy || loading} onClick={()=>inputRef.current?.click()}>
+                <Icon name="upload" size={13} /> {busy ? 'Uploading…' : 'Upload Image'}
+              </Btn>
+            </>
+          ))}
+        </div>
+      </div>
+      {loading ? (
+        <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Loading…</p>
+      ) : img?.hasImage ? (
+        <>
+          {img.image
+            ? <div role="button" tabIndex={0} title="Click to view larger" style={{ cursor:'zoom-in' }}
+                onClick={()=>openDataUrl(img.image!)}
+                onKeyDown={e=>{ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDataUrl(img.image!); } }}>
+                <ReceiptImage src={img.image} alt={title} />
+              </div>
+            : <p style={{ fontSize:12,color:T.danger,margin:0 }}>An image is uploaded but could not be loaded right now.</p>}
+          <p style={{ fontSize:11,color:T.textMuted,margin:'6px 0 0' }}>
+            {[img.uploadedBy && `Uploaded by ${img.uploadedBy}`, img.uploadedAt && formatDateTime(img.uploadedAt), img.sizeBytes != null && formatBytes(img.sizeBytes)].filter(Boolean).join(' · ')}
+          </p>
+        </>
+      ) : (
+        <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>{emptyText}</p>
+      )}
+      <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>{helpText}</p>
+      {history.length > 0 && (
+        <div style={{ marginTop:8 }}>
+          <button type="button" style={linkBtn} onClick={()=>setShowHist(v=>!v)}>
+            {showHist ? 'Hide' : 'Show'} replacement history ({history.length})
+          </button>
+          {showHist && history.map(h => (
+            <div key={h.id} style={{ borderLeft:`3px solid ${T.border}`,paddingLeft:10,marginTop:8 }}>
+              <p style={{ margin:0,fontSize:12,color:T.textMain }}><b>Reason:</b> {h.reason}</p>
+              <p style={{ margin:'2px 0 0',fontSize:11,color:T.textMuted }}>
+                {[h.changedBy && `Replaced by ${h.changedBy}`, h.changedAt && formatDateTime(h.changedAt)].filter(Boolean).join(' · ')}
+              </p>
+              <div style={{ display:'flex',gap:12,marginTop:4 }}>
+                {h.previousImage && <button type="button" style={linkBtn} onClick={()=>openDataUrl(h.previousImage!)}>Previous image</button>}
+                {h.newImage && <button type="button" style={linkBtn} onClick={()=>openDataUrl(h.newImage!)}>New image</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ReplaceImageModal: React.FC<{
+  title: string;
+  current: AccountDetailsImage | null;
+  onClose: () => void;
+  onReplace: (file: File, reason: string) => Promise<boolean>;
+}> = ({ title, current, onClose, onReplace }) => {
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+  const [errs, setErrs] = useState<{ file?: string; reason?: string }>({});
+  const [busy, setBusy] = useState(false);
+  const pick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    const err = accountImageFileError(f);
+    if (err) { setErrs(x => ({ ...x, file: err })); return; }
+    setFile(f); setErrs(x => ({ ...x, file: undefined }));
+    setPreview(await fileToDataUrl(f));
+  };
+  const submit = async () => {
+    const next: { file?: string; reason?: string } = {};
+    if (!file) next.file = 'Choose the new image';
+    if (!reason.trim()) next.reason = 'Reason for Replacement is required';
+    setErrs(next);
+    if (next.file || next.reason || !file) return;
+    setBusy(true);
+    const ok = await onReplace(file, reason.trim());
+    setBusy(false);
+    if (ok) onClose();
+  };
+  return (
+    <Modal title={title} icon="upload" onClose={onClose} dirty={!!file || !!reason.trim()}>
+      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 6px' }}>Current Image</p>
+      {current?.image
+        ? <ReceiptImage src={current.image} alt="Current image" />
+        : <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>The current image could not be loaded right now.</p>}
+      <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'14px 0 6px' }}>New Image<span style={{ color:T.danger }}> *</span></p>
+      <label style={{ display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700,color:T.blue,cursor:'pointer' }}>
+        <input type="file" accept={ACCOUNT_IMAGE_ACCEPT} onChange={pick} style={{ display:'none' }} />
+        <Icon name="upload" size={13} /> {file ? `Change file (${file.name})` : 'Upload'}
+      </label>
+      {preview && <div style={{ marginTop:8 }}><ReceiptImage src={preview} alt="New image" /></div>}
+      {errs.file && <p style={{ fontSize:11,color:T.danger,margin:'4px 0 0' }}>{errs.file}</p>}
+      <p style={{ fontSize:11,color:T.textMuted,margin:'4px 0 14px' }}>JPG, JPEG, PNG or WEBP · up to 5 MB.</p>
+      <Input label="Reason for Replacement" required value={reason} error={errs.reason}
+        onChange={e=>{ setReason(e.target.value); setErrs(x => ({ ...x, reason: undefined })); }}
+        placeholder="Why is this image being replaced?" />
+      <div style={{ display:'flex',gap:10 }}>
+        <Btn variant="secondary" onClick={onClose} disabled={busy}>Cancel</Btn>
+        <Btn onClick={submit} disabled={busy || !file || !reason.trim()}>{busy ? 'Replacing…' : 'Replace'}</Btn>
+      </div>
+    </Modal>
+  );
+};
+
 export const AdminAccountsPage: React.FC = () => {
   const { showToast } = useToast();
   const { user } = useAuth();
@@ -2105,29 +2260,35 @@ export const AdminAccountsPage: React.FC = () => {
   // the backend validates every mode against the platform's four and rejects anything else.
   const [editModes, setEditModes] = useState(false);
   const [savingModes, setSavingModes] = useState(false);
+  const [editPayin, setEditPayin] = useState(false);
+  const [payinWindow, setPayinWindow] = useState<'today' | 'month' | 'allTime'>('today');
+  const [savingPayin, setSavingPayin] = useState(false);
 
   // Account Details Image, inside the Details popup. Uploaded ONCE per account, and this is the
   // ONLY place it is uploaded: every deposit routed to this account sends the merchant this image
   // AS the account details, so nothing is uploaded per transaction and no bank name, number, IFSC
   // or branch travels as text. It is never an allocation input — an account with no image is
   // exactly as eligible as one with an image.
+  // There is no Remove and no Download: an image is changed by REPLACING it, and a replacement
+  // needs a reason (the server refuses one without, and audits previous/new/who/when/why).
   // The server re-validates type, size and actual content; the checks here only save a round-trip.
   const [detImg, setDetImg] = useState<AccountDetailsImage | null>(null);
   const [detImgLoading, setDetImgLoading] = useState(false);
   const [detImgBusy, setDetImgBusy] = useState(false);
-  const [confirmRemoveImg, setConfirmRemoveImg] = useState(false);
   const detImgInput = useRef<HTMLInputElement>(null);
   // The SECOND image, for CDM deposits only. Same rules, same limits, its own row on the server:
-  // uploading, replacing or removing either one leaves the other exactly as it was, and neither is
-  // ever shown in place of the other.
+  // replacing either one leaves the other exactly as it was, and neither is ever shown in place
+  // of the other.
   const [cdmImg, setCdmImg] = useState<AccountDetailsImage | null>(null);
   const [cdmImgBusy, setCdmImgBusy] = useState(false);
-  const [confirmRemoveCdmImg, setConfirmRemoveCdmImg] = useState(false);
   const cdmImgInput = useRef<HTMLInputElement>(null);
+  // Replacement audit for each image, and which one (if any) the Replace dialog is open for.
+  const [detImgHist, setDetImgHist] = useState<AccountImageReplacement[]>([]);
+  const [cdmImgHist, setCdmImgHist] = useState<AccountImageReplacement[]>([]);
+  const [replaceKind, setReplaceKind] = useState<'ACCOUNT' | 'CDM' | null>(null);
   const detailRef = detail?.referenceNumber;
   useEffect(() => {
-    setDetImg(null); setConfirmRemoveImg(false);
-    setCdmImg(null); setConfirmRemoveCdmImg(false);
+    setDetImg(null); setCdmImg(null); setDetImgHist([]); setCdmImgHist([]); setReplaceKind(null);
     if (!detailRef) return;
     let alive = true;
     setDetImgLoading(true);
@@ -2137,71 +2298,48 @@ export const AdminAccountsPage: React.FC = () => {
     ])
       .catch(() => { if (alive) showToast('Failed to load the account details images', 'error'); })
       .finally(() => { if (alive) setDetImgLoading(false); });
+    // History is secondary: a failure here leaves the images themselves fully usable.
+    accountAPI.accountDetailsImageHistory(detailRef).then(r => { if (alive) setDetImgHist(r); }).catch(() => {});
+    accountAPI.cdmAccountDetailsImageHistory(detailRef).then(r => { if (alive) setCdmImgHist(r); }).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detailRef]);
-  const DET_IMG_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-  const DET_IMG_MAX = 5 * 1024 * 1024;
-  const onDetImgFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || !detail) return;
-    if (!DET_IMG_TYPES.includes((file.type || '').toLowerCase())) { showToast('Unsupported file type. Allowed: JPG, JPEG, PNG, WEBP.', 'error'); return; }
-    if (file.size > DET_IMG_MAX) { showToast('The image must be 5 MB or smaller.', 'error'); return; }
-    const replacing = !!detImg?.hasImage;
-    setDetImgBusy(true);
-    try {
-      const saved = await accountAPI.setAccountDetailsImage(detail.referenceNumber, await fileToDataUrl(file));
-      setDetImg(saved);
-      reload();                  // the list's Account Details Image column reads the same fact
-      showToast(replacing ? 'Account details image replaced' : 'Account details image uploaded');
-    } catch (err: any) {
-      showToast(err?.response?.data?.detail || 'Failed to upload the account details image', 'error');
-    } finally { setDetImgBusy(false); }
-  };
-  const removeDetImg = async () => {
-    if (!detail) return;
-    setDetImgBusy(true);
-    try {
-      setDetImg(await accountAPI.removeAccountDetailsImage(detail.referenceNumber));
-      setConfirmRemoveImg(false);
-      reload();
-      showToast('Account details image removed');
-    } catch (err: any) {
-      showToast(err?.response?.data?.detail || 'Failed to remove the account details image', 'error');
-    } finally { setDetImgBusy(false); }
-  };
 
-  // The CDM image, managed by the same rules through its own routes. Nothing here reads or writes
-  // the normal image above.
-  const onCdmImgFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // One upload path for both kinds. `reason` is required by the server only when an image already
+  // exists (a replacement); a first upload sends none.
+  const saveAccountImage = async (kind: 'ACCOUNT' | 'CDM', file: File, reason?: string): Promise<boolean> => {
+    if (!detail) return false;
+    const err = accountImageFileError(file);
+    if (err) { showToast(err, 'error'); return false; }
+    const isCdm = kind === 'CDM';
+    const replacing = !!(isCdm ? cdmImg : detImg)?.hasImage;
+    const label = isCdm ? 'CDM account details image' : 'Account details image';
+    (isCdm ? setCdmImgBusy : setDetImgBusy)(true);
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const saved = isCdm
+        ? await accountAPI.setCdmAccountDetailsImage(detail.referenceNumber, dataUrl, reason)
+        : await accountAPI.setAccountDetailsImage(detail.referenceNumber, dataUrl, reason);
+      (isCdm ? setCdmImg : setDetImg)(saved);
+      if (replacing) {
+        const hist = isCdm
+          ? await accountAPI.cdmAccountDetailsImageHistory(detail.referenceNumber).catch(() => null)
+          : await accountAPI.accountDetailsImageHistory(detail.referenceNumber).catch(() => null);
+        if (hist) (isCdm ? setCdmImgHist : setDetImgHist)(hist);
+      }
+      reload();                  // the list's image columns read the same fact
+      showToast(`${label} ${replacing ? 'replaced' : 'uploaded'}`);
+      return true;
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || `Failed to save the ${label.toLowerCase()}`, 'error');
+      return false;
+    } finally { (isCdm ? setCdmImgBusy : setDetImgBusy)(false); }
+  };
+  // First upload only — once an image exists the button opens the Replace dialog instead.
+  const onFirstImageFile = (kind: 'ACCOUNT' | 'CDM') => async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file || !detail) return;
-    if (!DET_IMG_TYPES.includes((file.type || '').toLowerCase())) { showToast('Unsupported file type. Allowed: JPG, JPEG, PNG, WEBP.', 'error'); return; }
-    if (file.size > DET_IMG_MAX) { showToast('The image must be 5 MB or smaller.', 'error'); return; }
-    const replacing = !!cdmImg?.hasImage;
-    setCdmImgBusy(true);
-    try {
-      const saved = await accountAPI.setCdmAccountDetailsImage(detail.referenceNumber, await fileToDataUrl(file));
-      setCdmImg(saved);
-      reload();
-      showToast(replacing ? 'CDM account details image replaced' : 'CDM account details image uploaded');
-    } catch (err: any) {
-      showToast(err?.response?.data?.detail || 'Failed to upload the CDM account details image', 'error');
-    } finally { setCdmImgBusy(false); }
-  };
-  const removeCdmImg = async () => {
-    if (!detail) return;
-    setCdmImgBusy(true);
-    try {
-      setCdmImg(await accountAPI.removeCdmAccountDetailsImage(detail.referenceNumber));
-      setConfirmRemoveCdmImg(false);
-      reload();
-      showToast('CDM account details image removed');
-    } catch (err: any) {
-      showToast(err?.response?.data?.detail || 'Failed to remove the CDM account details image', 'error');
-    } finally { setCdmImgBusy(false); }
+    if (file) await saveAccountImage(kind, file);
   };
 
   // ── The CDM daily limit ──────────────────────────────────────────────────────────────────────
@@ -2397,6 +2535,30 @@ export const AdminAccountsPage: React.FC = () => {
   // deposit side already uses, and the backend validates against its own copy, so a value typed
   // into a request could never widen it.
   const PAYOUT_MODE_OPTIONS = ['UPI', 'IMPS', 'NEFT', 'RTGS'];
+
+  // Payin Mode — the platform's existing deposit_type codes an account may RECEIVE. The backend
+  // validates against its own copy (services/deposit_allocation.PAYIN_MODES).
+  const PAYIN_MODE_OPTIONS = [
+    { value: 'UPI', label: 'UPI' }, { value: 'IMPS', label: 'IMPS' }, { value: 'NEFT', label: 'NEFT' },
+    { value: 'RTGS', label: 'RTGS' }, { value: 'CDM', label: 'CDM' },
+    { value: 'CREDIT_CARD', label: 'Credit Card' }, { value: 'DEBIT_CARD', label: 'Debit Card' },
+  ];
+  const savePayinModes = async (mode: string, enabled: boolean) => {
+    if (!detail) return;
+    const all = PAYIN_MODE_OPTIONS.map(o => o.value);
+    const current = detail.payinModes && detail.payinModesConfigured ? detail.payinModes : all;
+    const next = enabled ? [...new Set([...current, mode])] : current.filter((m: string) => m !== mode);
+    setSavingPayin(true);
+    try {
+      // Empty is stored as "every mode" — the unconfigured state — exactly like Payout Modes.
+      const updated = await accountAPI.updatePayinModes(detail.referenceNumber, next);
+      setDetail(updated);        // the server's value, not the one clicked
+      reload();
+      showToast(next.length ? `Payin modes: ${next.join(', ')}` : 'Payin modes: all');
+    } catch (e: any) {
+      showToast(e?.response?.data?.detail || 'Failed to update the payin modes', 'error');
+    } finally { setSavingPayin(false); }
+  };
 
   const savePayoutModes = async (mode: string, enabled: boolean) => {
     if (!detail) return;
@@ -2724,7 +2886,7 @@ export const AdminAccountsPage: React.FC = () => {
       )}
 
       {detail && (
-        <Modal title="Account Details" onClose={()=>setDetail(null)}>
+        <Modal title="Account Details" onClose={()=>setDetail(null)} closeOnEsc={!replaceKind}>
           {[['Account Name',detail.accountName],['Account Number',detail.accountNumber],['IFSC Code',detail.ifscCode],['Bank Name',detail.bankName],['Branch',detail.branch],['Account Type',detail.accountType],['Reference Number',detail.referenceNumber],['Status',detail.status]].map(([k,v])=>(
             <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'10px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
               <span style={{ fontSize:12,color:T.textMuted }}>{k}</span>
@@ -2737,127 +2899,27 @@ export const AdminAccountsPage: React.FC = () => {
           ))}
 
           {/* ── Account Details Image ─────────────────────────────────
-              Uploaded ONCE against this account, and this is the ONLY place it is uploaded. Every
-              deposit routed here — automatically or by an Admin's assignment — sends the merchant
-              this image AS the account details: no bank name, account number, IFSC or branch
-              travels as text, and nothing is uploaded per transaction. Informational only: it is
-              not an allocation rule, and removing it leaves the account exactly as eligible as
-              before — deposits routed here simply carry no account details until one is uploaded. */}
-          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
-            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap' }}>
-              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>Account Details Image</p>
-              {canEditLimits && (
-                <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
-                  <input ref={detImgInput} type="file" accept="image/jpeg,image/jpg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={onDetImgFile} style={{ display:'none' }} />
-                  <Btn size="sm" variant="secondary" disabled={detImgBusy || detImgLoading} onClick={()=>detImgInput.current?.click()}>
-                    <Icon name="upload" size={13} /> {detImg?.hasImage ? 'Replace Image' : 'Upload Image'}
-                  </Btn>
-                  {detImg?.hasImage && !confirmRemoveImg && (
-                    <Btn size="sm" variant="ghost" disabled={detImgBusy} onClick={()=>setConfirmRemoveImg(true)}>Remove</Btn>
-                  )}
-                </div>
-              )}
-            </div>
-            {detImgLoading ? (
-              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Loading…</p>
-            ) : detImg?.hasImage ? (
-              <>
-                {detImg.image
-                  ? <div role="button" tabIndex={0} title="Click to view larger" style={{ cursor:'zoom-in' }}
-                      onClick={()=>openDataUrl(detImg.image!)}
-                      onKeyDown={e=>{ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDataUrl(detImg.image!); } }}>
-                      <ReceiptImage src={detImg.image} alt="Account Details Image" />
-                    </div>
-                  : <p style={{ fontSize:12,color:T.danger,margin:0 }}>An image is uploaded but could not be loaded right now.</p>}
-                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginTop:6 }}>
-                  <span style={{ fontSize:11,color:T.textMuted }}>
-                    {[detImg.uploadedBy && `Uploaded by ${detImg.uploadedBy}`, detImg.uploadedAt && formatDateTime(detImg.uploadedAt), detImg.sizeBytes != null && formatBytes(detImg.sizeBytes)].filter(Boolean).join(' · ')}
-                  </span>
-                  {detImg.image && (
-                    <div style={{ display:'flex',gap:6 }}>
-                      <Btn size="sm" variant="ghost" onClick={()=>openDataUrl(detImg.image!)}><Icon name="view" size={13} /> View</Btn>
-                      <Btn size="sm" variant="ghost" onClick={()=>downloadDataUrl(detImg.image!, `account-details-${detail.referenceNumber}.${(detImg.contentType || '').includes('png') ? 'png' : (detImg.contentType || '').includes('webp') ? 'webp' : 'jpg'}`)}><Icon name="download" size={13} /> Download</Btn>
-                    </div>
-                  )}
-                </div>
-                {confirmRemoveImg && (
-                  <div style={{ marginTop:10,background:T.dangerBg,borderRadius:10,padding:'10px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap' }}>
-                    <span style={{ fontSize:12,color:T.textMain }}>Remove this image? The image IS the account details, so deposits routed here will send the merchant no account details at all. The account stays eligible for deposits.</span>
-                    <div style={{ display:'flex',gap:6 }}>
-                      <Btn size="sm" variant="danger" disabled={detImgBusy} onClick={removeDetImg}>{detImgBusy ? 'Removing…' : 'Remove Image'}</Btn>
-                      <Btn size="sm" variant="ghost" disabled={detImgBusy} onClick={()=>setConfirmRemoveImg(false)}>Cancel</Btn>
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>
-                Account details image is not configured for this account. Deposits routed here send the merchant no account details until one is uploaded — the account stays eligible either way.
-              </p>
-            )}
-            <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>Upload the account details image that will be shown to the merchant when this account is assigned to a deposit. JPG, JPEG, PNG or WEBP · up to 5 MB.</p>
-          </div>
+              Uploaded ONCE against this account, and this is the ONLY place it is managed. Every
+              deposit routed here sends the merchant this image AS the account details. Not an
+              allocation rule: an account with no image is exactly as eligible as one with one.
+              View + Replace only — a replacement needs a reason and is audited. */}
+          <AccountImagePanel title="Account Details Image" img={detImg} loading={detImgLoading}
+            busy={detImgBusy} canEdit={canEditLimits} inputRef={detImgInput}
+            onFirstFile={onFirstImageFile('ACCOUNT')} onReplace={()=>setReplaceKind('ACCOUNT')}
+            history={detImgHist}
+            emptyText="Account details image is not configured for this account. Deposits routed here send the merchant no account details until one is uploaded — the account stays eligible either way."
+            helpText="Shown to the merchant when this account is assigned to a deposit. JPG, JPEG, PNG or WEBP · up to 5 MB." />
 
           {/* ── CDM Account Details Image ──────────────────────────────
               The SECOND image, shown to a merchant depositing CASH into a machine. Separate from
-              the one above in every way: separate upload, separate row, separate removal — and
-              never a substitute for it. A CDM deposit whose account has no CDM image tells the
-              merchant so rather than showing them the normal one, which would send someone
-              standing at a cash machine the wrong instructions. */}
-          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
-            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap' }}>
-              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>CDM Account Details Image</p>
-              {canEditLimits && (
-                <div style={{ display:'flex',gap:6,flexWrap:'wrap' }}>
-                  <input ref={cdmImgInput} type="file" accept="image/jpeg,image/jpg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={onCdmImgFile} style={{ display:'none' }} />
-                  <Btn size="sm" variant="secondary" disabled={cdmImgBusy || detImgLoading} onClick={()=>cdmImgInput.current?.click()}>
-                    <Icon name="upload" size={13} /> {cdmImg?.hasImage ? 'Replace CDM Image' : 'Upload CDM Image'}
-                  </Btn>
-                  {cdmImg?.hasImage && !confirmRemoveCdmImg && (
-                    <Btn size="sm" variant="ghost" disabled={cdmImgBusy} onClick={()=>setConfirmRemoveCdmImg(true)}>Remove</Btn>
-                  )}
-                </div>
-              )}
-            </div>
-            {detImgLoading ? (
-              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>Loading…</p>
-            ) : cdmImg?.hasImage ? (
-              <>
-                {cdmImg.image
-                  ? <div role="button" tabIndex={0} title="Click to view larger" style={{ cursor:'zoom-in' }}
-                      onClick={()=>openDataUrl(cdmImg.image!)}
-                      onKeyDown={e=>{ if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDataUrl(cdmImg.image!); } }}>
-                      <ReceiptImage src={cdmImg.image} alt="CDM Account Details Image" />
-                    </div>
-                  : <p style={{ fontSize:12,color:T.danger,margin:0 }}>A CDM image is uploaded but could not be loaded right now.</p>}
-                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginTop:6 }}>
-                  <span style={{ fontSize:11,color:T.textMuted }}>
-                    {[cdmImg.uploadedBy && `Uploaded by ${cdmImg.uploadedBy}`, cdmImg.uploadedAt && formatDateTime(cdmImg.uploadedAt), cdmImg.sizeBytes != null && formatBytes(cdmImg.sizeBytes)].filter(Boolean).join(' · ')}
-                  </span>
-                  {cdmImg.image && (
-                    <div style={{ display:'flex',gap:6 }}>
-                      <Btn size="sm" variant="ghost" onClick={()=>openDataUrl(cdmImg.image!)}><Icon name="view" size={13} /> View</Btn>
-                      <Btn size="sm" variant="ghost" onClick={()=>downloadDataUrl(cdmImg.image!, `cdm-account-details-${detail.referenceNumber}.${(cdmImg.contentType || '').includes('png') ? 'png' : (cdmImg.contentType || '').includes('webp') ? 'webp' : 'jpg'}`)}><Icon name="download" size={13} /> Download</Btn>
-                    </div>
-                  )}
-                </div>
-                {confirmRemoveCdmImg && (
-                  <div style={{ marginTop:10,background:T.dangerBg,borderRadius:10,padding:'10px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap' }}>
-                    <span style={{ fontSize:12,color:T.textMain }}>Remove the CDM image? CDM deposits routed here will tell the merchant it is not configured — they are never shown the normal Account Details Image instead. The account stays eligible for deposits.</span>
-                    <div style={{ display:'flex',gap:6 }}>
-                      <Btn size="sm" variant="danger" disabled={cdmImgBusy} onClick={removeCdmImg}>{cdmImgBusy ? 'Removing…' : 'Remove CDM Image'}</Btn>
-                      <Btn size="sm" variant="ghost" disabled={cdmImgBusy} onClick={()=>setConfirmRemoveCdmImg(false)}>Cancel</Btn>
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>
-                CDM account details image is not configured for this account. CDM deposits routed here tell the merchant exactly that — the normal Account Details Image is never shown in its place.
-              </p>
-            )}
-            <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>Shown only to merchants depositing cash into a machine (Deposit Type = CDM). Separate from the image above. JPG, JPEG, PNG or WEBP · up to 5 MB.</p>
-          </div>
+              the one above in every way and never a substitute for it: a CDM deposit whose
+              account has no CDM image tells the merchant so rather than showing the normal one. */}
+          <AccountImagePanel title="CDM Account Details Image" img={cdmImg} loading={detImgLoading}
+            busy={cdmImgBusy} canEdit={canEditLimits} inputRef={cdmImgInput}
+            onFirstFile={onFirstImageFile('CDM')} onReplace={()=>setReplaceKind('CDM')}
+            history={cdmImgHist}
+            emptyText="CDM account details image is not configured for this account. CDM deposits routed here tell the merchant exactly that — the normal Account Details Image is never shown in its place."
+            helpText="Shown only to merchants depositing cash into a machine (Deposit Type = CDM). Separate from the image above. JPG, JPEG, PNG or WEBP · up to 5 MB." />
 
           {/* ── CDM Daily Limit ─────────────────────────────────────
               How much CASH this account may take through a machine in a day. A hard ceiling and a
@@ -2922,36 +2984,42 @@ export const AdminAccountsPage: React.FC = () => {
             </div>
             {!editLimits ? (
               <>
-                {/* Per-transaction caps and cumulative daily ceilings, each with the description the
-                    brief specifies so the two kinds of limit are never confused on screen. */}
-                <Row k="Highest Credit" v={fmt(detail.highestCredit ?? 0)} />
-                <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>Maximum amount allowed per deposit transaction</p>
-                <Row k="Bank Daily Credit Limit" v={fmt(detail.bankDailyCreditLimit ?? 0)} />
-                <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>Maximum total amount this account can receive per day</p>
-                <Row k="Highest Debit" v={fmt(detail.highestDebit ?? 0)} />
-                <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>Maximum amount allowed per withdrawal transaction</p>
-                <Row k="Bank Daily Debit Limit" v={fmt(detail.bankDailyDebitLimit ?? 0)} />
-                <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>Maximum total amount this account can send per day</p>
-                {/* The Admin's "Own Account" classification. Recorded on every deposit allocation
-                    decision; it is not a ranking input, so toggling it moves no money and changes
-                    no account's eligibility. */}
+                {/* Per-transaction caps and cumulative daily ceilings, each with its description so
+                    the two kinds of limit are never confused on screen. 0 is how the platform
+                    stores "unconfigured" (never auto-allocated), so it reads "Not configured"
+                    rather than a ₹0.00 an Admin might take for a deliberate figure. */}
+                {([
+                  ['Highest Credit', detail.highestCredit, 'Maximum amount allowed per deposit transaction'],
+                  ['Bank Daily Credit Limit', detail.bankDailyCreditLimit, 'Maximum total amount this account can receive per day'],
+                  ['Highest Debit', detail.highestDebit, 'Maximum amount allowed per withdrawal transaction'],
+                  ['Bank Daily Debit Limit', detail.bankDailyDebitLimit, 'Maximum total amount this account can send per day'],
+                ] as [string, number | undefined, string][]).map(([k, v, hint]) => (
+                  <React.Fragment key={k}>
+                    <Row k={k} v={limitValue(v)} />
+                    <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>{hint}</p>
+                  </React.Fragment>
+                ))}
+                {/* The Admin's "Own Account" classification — an explicit Yes / No. Recorded on
+                    every deposit allocation decision; it is not a ranking input, so changing it
+                    moves no money and changes no account's eligibility. */}
                 <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
-                  <span style={{ fontSize:12,color:T.textMuted }}>Own Account</span>
+                  <span style={{ fontSize:12,color:T.textMuted }}>Own Account{canEditLimits && <span style={{ color:T.danger }}> *</span>}</span>
                   {canEditLimits ? (
-                    <label style={{ display:'inline-flex',alignItems:'center',gap:8,fontSize:13,fontWeight:700,color:T.textMain,cursor:savingOwn?'wait':'pointer' }}>
-                      <input type="checkbox" checked={!!detail.isOwnAccount} disabled={savingOwn}
-                        onChange={e=>saveOwnAccount(e.target.checked)} />
-                      {detail.isOwnAccount ? 'Yes' : 'No'}
-                    </label>
+                    <select aria-label="Own Account" value={detail.isOwnAccount ? 'YES' : 'NO'} disabled={savingOwn}
+                      onChange={e=>saveOwnAccount(e.target.value === 'YES')}
+                      style={{ padding:'6px 10px',borderRadius:8,border:`1px solid ${T.border}`,background:T.surface,color:T.textMain,fontSize:13,fontWeight:700,cursor:savingOwn?'wait':'pointer' }}>
+                      <option value="YES">Yes</option>
+                      <option value="NO">No</option>
+                    </select>
                   ) : (
                     <span style={{ fontSize:13,fontWeight:700,color:T.textMain }}>{detail.isOwnAccount ? 'Yes' : 'No'}</span>
                   )}
                 </div>
-                {/* ── Today's position against the daily credit limit ──
-                    Highest Credit is a HARD DAILY CEILING: a deposit is only routed here while
-                    Used Today + the deposit stays within it. These three are DISPLAY figures —
-                    the backend recomputes all of them from the transaction data, under a row
-                    lock, before it allocates anything. */}
+                {/* ── Today's position against the Bank Daily Credit Limit ──
+                    Credit Remaining Today = Bank Daily Credit Limit − Credit Used Today, and
+                    nothing else: Highest Credit is a per-transaction cap and has no "remaining".
+                    Used Today includes manual credits. DISPLAY figures only — the backend
+                    recomputes all of them under a row lock before it allocates anything. */}
                 {(() => {
                   const b = balMap[detail.referenceNumber];
                   // Used / Remaining are measured against the CUMULATIVE daily credit ceiling, not
@@ -2971,7 +3039,9 @@ export const AdminAccountsPage: React.FC = () => {
                         <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.success,transition:'width .3s' }} />
                       </div>
                       <Row k="Credit Used Today" v={fmt(used)} />
-                      <Row k="Credit Remaining Today" v={<span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>} />
+                      <Row k="Credit Remaining Today" v={limit > 0
+                        ? <span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>
+                        : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
                       {limit <= 0 && (
                         <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
                           No Bank Daily Credit Limit configured — this account is never allocated a deposit. Set one above.
@@ -2986,13 +3056,12 @@ export const AdminAccountsPage: React.FC = () => {
                   );
                 })()}
 
-                {/* ── Today's position against the daily DEBIT limit ──
-                    Highest Debit is a HARD DAILY CEILING on the way out, exactly as Highest
-                    Credit is on the way in: a withdrawal is only paid from here while Used Today
-                    plus the payout stays within it. Capacity is consumed the moment a withdrawal
-                    is ALLOCATED, not when it is paid, which is what stops two requests being
-                    given the same headroom. Display only — the backend recomputes every figure
-                    under a row lock before it allocates anything. */}
+                {/* ── Today's position against the Bank Daily Debit Limit ──
+                    Debit Remaining Today = Bank Daily Debit Limit − Debit Used Today; Highest
+                    Debit is a per-transaction cap with no "remaining". Capacity is consumed the
+                    moment a withdrawal is ALLOCATED (and by manual debits), which is what stops
+                    two requests being given the same headroom. Display only — the backend
+                    recomputes every figure under a row lock before it allocates anything. */}
                 {(() => {
                   const b = balMap[detail.referenceNumber];
                   // Used / Remaining are measured against the CUMULATIVE daily debit ceiling, not
@@ -3013,7 +3082,9 @@ export const AdminAccountsPage: React.FC = () => {
                         <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.blue,transition:'width .3s' }} />
                       </div>
                       <Row k="Debit Used Today" v={fmt(used)} />
-                      <Row k="Debit Remaining Today" v={<span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>} />
+                      <Row k="Debit Remaining Today" v={limit > 0
+                        ? <span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>
+                        : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
                       {reserved > 0 && (
                         <Row k="Reserved for Payouts" v={<span title="Allocated to withdrawals that have not been paid yet. No money has moved, so it is not deducted from the balance.">{fmt(reserved)}</span>} />
                       )}
@@ -3030,6 +3101,48 @@ export const AdminAccountsPage: React.FC = () => {
                     </div>
                   );
                 })()}
+
+                {/* ── Payin Mode ──
+                    Which deposit types this account may RECEIVE. The deposit allocation engine and
+                    the Admin's manual assignment both refuse a type left out here, and the API
+                    audits every change. Unconfigured = every mode, so nothing is disqualified
+                    until an Admin narrows it. CDM keeps its own image and daily limit below/above. */}
+                <div style={{ marginTop:12,background:T.canvas,borderRadius:10,padding:'12px 14px' }}>
+                  <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:8 }}>
+                    <span style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Payin Mode</span>
+                    {canEditLimits && (
+                      <Btn size="sm" variant="ghost" disabled={savingPayin}
+                        onClick={()=>setEditPayin(m=>!m)}>
+                        <Icon name="edit" size={12} /> {editPayin ? 'Done' : 'Edit'}
+                      </Btn>
+                    )}
+                  </div>
+                  <div style={{ display:'flex',gap:8,flexWrap:'wrap' }}>
+                    {PAYIN_MODE_OPTIONS.map(({ value: mode, label }) => {
+                      const on = (detail.payinModes || PAYIN_MODE_OPTIONS.map(o => o.value)).includes(mode);
+                      return editPayin ? (
+                        <label key={mode} style={{ display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700,color:T.textMain,cursor:savingPayin?'wait':'pointer' }}>
+                          <input type="checkbox" checked={on} disabled={savingPayin}
+                            onChange={e=>savePayinModes(mode, e.target.checked)} />
+                          {label}
+                        </label>
+                      ) : (
+                        <span key={mode} style={{
+                          padding:'3px 9px',borderRadius:7,fontSize:11,fontWeight:800,
+                          color: on ? T.blue : T.textMuted,
+                          background: on ? T.infoBg : 'transparent',
+                          border: `1px solid ${on ? 'transparent' : T.border}`,
+                          opacity: on ? 1 : 0.6,
+                        }}>{label}</span>
+                      );
+                    })}
+                  </div>
+                  <p style={{ margin:'8px 0 0',fontSize:11,color:T.textMuted }}>
+                    {detail.payinModesConfigured
+                      ? 'A deposit in a mode this account does not accept is never routed here.'
+                      : 'Not configured — this account can receive every mode. Narrow it above if it should not.'}
+                  </p>
+                </div>
 
                 {/* ── Payout capability ──
                     Which transaction modes this account can SEND by. The withdrawal allocation
@@ -3159,58 +3272,40 @@ export const AdminAccountsPage: React.FC = () => {
             );
           })()}
 
-          {/* ── Pay-In by Payment Mode (§15) ────────────────────────────────────────────────
-              How much this account has actually RECEIVED, split by mode, for Today / This Month /
-              All Time. Derived server-side from the completed deposit rows — the same source as
-              every other figure here — so it can never drift from a separate counter. "Today" and
-              "This Month" roll over with the IST calendar; "All Time" never resets. */}
+          {/* ── Payin Summary ──────────────────────────────────────────────────────────────
+              How much this account has actually RECEIVED, by payment mode, for Today / This Month
+              / All Time. Derived server-side from completed deposit rows — never a separate
+              counter — so it cannot drift. "Today" and "This Month" roll over with the IST
+              calendar; "All Time" never resets. Total is the sum of the rows shown. */}
           {(() => {
             const pm = balMap[detail.referenceNumber]?.payinByMode;
-            const windows: { key: 'today' | 'month' | 'allTime'; label: string }[] = [
-              { key: 'today', label: 'Today' },
-              { key: 'month', label: 'This Month' },
-              { key: 'allTime', label: 'All Time' },
-            ];
-            // Every mode seen across any window, so each window's column lines up.
-            const modes = Array.from(new Set(
-              windows.flatMap(w => Object.keys(pm?.[w.key] || {}))
-            )).sort();
+            const win = pm?.[payinWindow] || {};
+            const total = PAYIN_SUMMARY_ROWS.reduce((sum, m) => sum + (win[m] || 0), 0);
             return (
               <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
-                <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 10px' }}>Pay-In by Payment Mode</p>
-                {modes.length === 0 ? (
-                  <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>No deposits received into this account yet.</p>
-                ) : (
-                  <div style={{ overflowX:'auto' }}>
-                    <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
-                      <thead>
-                        <tr style={{ background:T.canvas }}>
-                          {['Mode', ...windows.map(w => w.label)].map(h => (
-                            <th key={h} style={{ padding:'8px 12px',textAlign: h==='Mode'?'left':'right',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {modes.map(m => (
-                          <tr key={m}>
-                            <td style={{ padding:'8px 12px',fontWeight:700,color:T.textMain }}>{m}</td>
-                            {windows.map(w => (
-                              <td key={w.key} style={{ padding:'8px 12px',textAlign:'right',color:T.textMuted }}>{fmt(pm?.[w.key]?.[m] ?? 0)}</td>
-                            ))}
-                          </tr>
-                        ))}
-                        <tr style={{ borderTop:`2px solid ${T.border}` }}>
-                          <td style={{ padding:'8px 12px',fontWeight:800,color:T.textMain }}>Total</td>
-                          {windows.map(w => (
-                            <td key={w.key} style={{ padding:'8px 12px',textAlign:'right',fontWeight:800,color:T.textMain }}>
-                              {fmt(Object.values(pm?.[w.key] || {}).reduce((s, v) => s + (v || 0), 0))}
-                            </td>
-                          ))}
-                        </tr>
-                      </tbody>
-                    </table>
+                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:10 }}>
+                  <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>Payin Summary</p>
+                  <div role="tablist" style={{ display:'flex',gap:4 }}>
+                    {([['today','Today'],['month','This Month'],['allTime','All Time']] as const).map(([key, label]) => (
+                      <Btn key={key} size="sm" variant={payinWindow === key ? 'primary' : 'ghost'}
+                        onClick={()=>setPayinWindow(key)}>{label}</Btn>
+                    ))}
                   </div>
-                )}
+                </div>
+                <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+                  <tbody>
+                    {PAYIN_SUMMARY_ROWS.map(m => (
+                      <tr key={m} style={{ borderBottom:`1px solid ${T.borderLight}` }}>
+                        <td style={{ padding:'8px 4px',fontWeight:700,color:T.textMain }}>{m}</td>
+                        <td style={{ padding:'8px 4px',textAlign:'right',color:T.textMuted }}>{fmt(win[m] || 0)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ borderTop:`2px solid ${T.border}` }}>
+                      <td style={{ padding:'8px 4px',fontWeight:800,color:T.textMain }}>Total Payins</td>
+                      <td style={{ padding:'8px 4px',textAlign:'right',fontWeight:800,color:T.textMain }}>{fmt(total)}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             );
           })()}
@@ -3305,10 +3400,9 @@ export const AdminAccountsPage: React.FC = () => {
           </div>
           {/* Own Account is recorded on the account and carried into every allocation decision.
               It is not a ranking input, so setting it here changes no account's eligibility. */}
-          <label style={{ display:'flex',alignItems:'center',gap:8,fontSize:13,color:T.textMain,margin:'2px 0 16px',cursor:'pointer' }}>
-            <input type="checkbox" checked={form.is_own_account} onChange={e=>setForm(f=>({...f,is_own_account:e.target.checked}))}/>
-            Own Account
-          </label>
+          <Sel label="Own Account" required value={form.is_own_account ? 'YES' : 'NO'}
+            onChange={e=>setForm(f=>({...f,is_own_account:e.target.value === 'YES'}))}
+            options={[{ value:'YES', label:'Yes' }, { value:'NO', label:'No' }]} />
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>
             <Btn variant="secondary" onClick={closeCreate}>Cancel</Btn>
@@ -3321,6 +3415,14 @@ export const AdminAccountsPage: React.FC = () => {
           label={toggleAcc.status==='ACTIVE' ? 'Reason for Deactivation' : 'Reason for Activation'}
           confirmLabel={toggleAcc.status==='ACTIVE' ? 'Deactivate' : 'Activate'}
           busy={busy} onSubmit={doToggle} onClose={()=>setToggleAcc(null)}
+        />
+      )}
+      {detail && replaceKind && (
+        <ReplaceImageModal
+          title={replaceKind === 'CDM' ? 'Replace CDM Account Details Image' : 'Replace Account Details Image'}
+          current={replaceKind === 'CDM' ? cdmImg : detImg}
+          onClose={()=>setReplaceKind(null)}
+          onReplace={(file, reason)=>saveAccountImage(replaceKind, file, reason)}
         />
       )}
       {adjustAcc && (

@@ -20,7 +20,7 @@ from app.core.cache import cache_delete, cache_get, cache_set
 from app.schemas.schemas import (
     AccountCreate, AccountLimitsUpdate, AccountOwnFlagUpdate, AccountDetailsImageUpload,
     AccountCdmLimitUpdate,
-    AccountPayoutModesUpdate, AdjustmentCreate, ReasonRequest,
+    AccountPayoutModesUpdate, AccountPayinModesUpdate, AdjustmentCreate, ReasonRequest,
 )
 from app.api.routes.system_logs import log_event, record_audit
 from app.api.routes.transactions import (
@@ -271,15 +271,17 @@ async def account_balances(
     _month_start = _today.replace(day=1)
 
     def _payin_mode(dtype: str | None) -> str:
-        """One of the reportable payment-mode buckets for a deposit's ``deposit_type``."""
+        """One of the six fixed Payin Summary buckets for a deposit's ``deposit_type``: UPI, Bank
+        Transfer (BANK/IMPS/NEFT/RTGS), CDM, Credit Card, Debit Card — and Other for anything else
+        (the pre-split combined CARD, Cash, Crypto, or an unknown type), so Total always equals the
+        sum of the rows shown."""
         return {
             "UPI": "UPI",
             "BANK": "Bank Transfer", "IMPS": "Bank Transfer",
             "NEFT": "Bank Transfer", "RTGS": "Bank Transfer",
             "CDM": "CDM",
-            "CREDIT_CARD": "Credit Card", "DEBIT_CARD": "Debit Card", "CARD": "Card",
-            "CASH": "Cash", "CRYPTO": "Crypto",
-        }.get((dtype or "").upper(), "Other")
+            "CREDIT_CARD": "Credit Card", "DEBIT_CARD": "Debit Card",
+        }.get((dtype or "").strip().upper(), "Other")
 
     # account -> window ("today"/"month"/"allTime") -> mode -> amount
     payin_modes: dict[str, dict[str, dict[str, float]]] = defaultdict(
@@ -404,6 +406,8 @@ async def account_balances(
             "reservedForPayouts": round(reserved_now.get(ref, 0.0), 2),
             "payoutModes": sorted(walloc.account_modes(a) or walloc.TRANSACTION_MODES),
             "payoutModesConfigured": walloc.account_modes(a) is not None,
+            "payinModes": sorted(alloc.account_payin_modes(a) or alloc.PAYIN_MODES),
+            "payinModesConfigured": alloc.account_payin_modes(a) is not None,
             "withdrawals": round(wd, 2),
             "settlements": round(st, 2),
             "adjustments": round(adj_by_acct.get(ref, 0.0), 2),   # net of manual credits/debits
@@ -743,6 +747,8 @@ def _a(a: AccountMaster, merchant_name: str | None = None, has_account_details_i
         # screen shows what the engine will actually do.
         "payoutModes": sorted(walloc.account_modes(a) or walloc.TRANSACTION_MODES),
         "payoutModesConfigured": walloc.account_modes(a) is not None,
+        "payinModes": sorted(alloc.account_payin_modes(a) or alloc.PAYIN_MODES),
+        "payinModesConfigured": alloc.account_payin_modes(a) is not None,
         "merchantName": merchant_name or a.account_name,
     }
     # Whether an Admin has configured this account's account details image. Only the list/get routes know
@@ -972,6 +978,11 @@ async def create_account(
         payout_modes=(",".join(sorted({
             str(m).strip().upper() for m in (data.payout_modes or [])
             if str(m).strip().upper() in walloc.TRANSACTION_MODES
+        })) or None),
+        # Which deposit types this account may receive. NULL (nothing sent) = every mode.
+        payin_modes=(",".join(sorted({
+            str(m).strip().upper() for m in (data.payin_modes or [])
+            if str(m).strip().upper() in alloc.PAYIN_MODES
         })) or None),
     )
     db.add(acc)
@@ -1232,6 +1243,67 @@ async def update_account_payout_modes(
     return _a(acc, name_map.get(acc.reference_number))
 
 
+@router.patch("/{reference_number}/payin-modes")
+async def update_account_payin_modes(
+    reference_number: str,
+    data: AccountPayinModesUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """Admin edit of ONE account's Payin Mode — the deposit types it may receive.
+
+    The deposit allocation engine and the Admin's manual assignment both refuse a deposit whose
+    type this account has excluded, so it is audited like every other account control. An EMPTY
+    list stores NULL = every mode (the unconfigured default). Each value is validated against the
+    platform's own deposit_type codes (services/deposit_allocation.PAYIN_MODES).
+    """
+    modes: list[str] = []
+    for raw in (data.payinModes or []):
+        value = str(raw or "").strip().upper()
+        if not value:
+            continue
+        if value not in alloc.PAYIN_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{value} is not a supported payin mode ({', '.join(alloc.PAYIN_MODES)}).")
+        if value not in modes:
+            modes.append(value)
+
+    acc = await _account_or_404(db, reference_number)
+    name_map = await _merchant_name_map(db)
+    previous = acc.payin_modes or ""
+    stored = ",".join(sorted(modes)) or None
+    if (previous or None) == stored:
+        return _a(acc, name_map.get(acc.reference_number))    # nothing changed — nothing to audit
+
+    acc.payin_modes = stored
+    await db.flush()
+
+    def _label(value):
+        return value.replace(",", ", ") if value else "All modes"
+
+    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
+    ip = request.client.host if request and request.client else None
+    note = (data.reason or "").strip() or "Payin modes updated by Admin"
+    await log_event(
+        db, "ACCOUNT_PAYIN_MODES_UPDATED",
+        f"{acc.reference_number} ({acc.account_name}) payin modes updated by {actor.name} — "
+        f"{_label(previous)} → {_label(stored)}",
+        actor=actor,
+    )
+    await record_audit(
+        db, "ACCOUNT_PAYIN_MODES_UPDATED", actor=actor,
+        entity_type="account", entity_id=acc.reference_number,
+        old=_label(previous), new=_label(stored),
+        reason=f"{acc.account_name} · {note} · {ts}", ip=ip,
+    )
+    await cache_delete("c:accounts:balances")
+    await cache_delete("c:accounts:list")
+    await db.refresh(acc)
+    return _a(acc, name_map.get(acc.reference_number))
+
+
 @router.patch("/{reference_number}/own-account")
 async def update_own_account_flag(
     reference_number: str,
@@ -1291,7 +1363,7 @@ async def update_own_account_flag(
 # admin_ref — see services/account_details_image), so nothing is uploaded per transaction.
 #
 # Configuration, not money, and not eligibility: no balance, limit or allocation rule reads it.
-# All three routes sit behind the module's existing gate, ``get_current_admin`` — merchants have no
+# Every route here sits behind the module's existing gate, ``get_current_admin`` — merchants have no
 # route here at all, so they cannot browse or fetch an account's image by its reference. Each
 # change writes the same SystemLog + AuditLog pair every other account edit writes.
 
@@ -1330,54 +1402,46 @@ async def put_account_details_image(
     second one, and every deposit routed to the account shows the new image from then on.
     """
     acc = await _account_or_404(db, reference_number)
-    row, previous = await detimg.put(db, acc.reference_number, data.image, uploaded_by=actor.name)
+    try:
+        row, previous = await detimg.put(db, acc.reference_number, data.image, uploaded_by=actor.name,
+                                         reason=data.reason, uploaded_by_id=actor.id)
+    except detimg.ReplaceReasonRequired as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     action = "ACCOUNT_DETAILS_IMAGE_REPLACED" if previous else "ACCOUNT_DETAILS_IMAGE_UPLOADED"
     verb = "replaced" if previous else "uploaded"
+    note = (data.reason or "").strip()
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
     ip = request.client.host if request and request.client else None
     await log_event(
         db, action,
-        f"{acc.reference_number} ({acc.account_name}) account details image {verb} by {actor.name}", actor=actor,
+        f"{acc.reference_number} ({acc.account_name}) account details image {verb} by {actor.name}"
+        + (f" — reason: {note}" if previous else ""), actor=actor,
     )
     await record_audit(
         db, action, actor=actor, entity_type="account", entity_id=acc.reference_number,
         old=(f"sha256 {previous[:12]}" if previous else "No image"),
         new=f"sha256 {row.sha256[:12]} · {row.content_type} · {row.size_bytes} bytes",
-        reason=f"{acc.account_name} · {ts}", ip=ip,
+        reason=(f"{note} · " if previous else "") + f"{acc.account_name} · {ts}", ip=ip,
     )
     await cache_delete("c:accounts:list")
     return detimg.serialize(row, acc.reference_number)
 
 
-@router.delete("/{reference_number}/account-details-image")
-async def delete_account_details_image(
+@router.get("/{reference_number}/account-details-image/history")
+async def account_details_image_history(
     reference_number: str,
-    request: Request,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_admin),
+    _: User = Depends(get_current_admin),
 ):
-    """Remove the account's account details image (Admin-only).
+    """Replacement audit for the account's Account Details Image (Admin-only), newest first:
+    previous image, new image, who, when and the mandatory reason.
 
-    The account stays exactly as eligible for deposits as it was — an image is never an allocation
-    requirement. Deposits routed to it send the merchant no account details until one is uploaded.
+    There is deliberately no DELETE route for either image: an image is changed by REPLACING it,
+    with a reason, so the account is never left without one by accident and every change is traced.
     """
     acc = await _account_or_404(db, reference_number)
-    removed = await detimg.remove(db, acc.reference_number)
-    if removed is None:
-        return detimg.serialize(None, acc.reference_number)     # nothing there — nothing to audit
-    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
-    ip = request.client.host if request and request.client else None
-    await log_event(
-        db, "ACCOUNT_DETAILS_IMAGE_REMOVED",
-        f"{acc.reference_number} ({acc.account_name}) account details image removed by {actor.name}", actor=actor,
-    )
-    await record_audit(
-        db, "ACCOUNT_DETAILS_IMAGE_REMOVED", actor=actor, entity_type="account",
-        entity_id=acc.reference_number, old=f"sha256 {removed[:12]}", new="No image",
-        reason=f"{acc.account_name} · {ts}", ip=ip,
-    )
-    await cache_delete("c:accounts:list")
-    return detimg.serialize(None, acc.reference_number)
+    return {"referenceNumber": acc.reference_number, "kind": detimg.ACCOUNT_KIND,
+            "entries": await detimg.replacement_history(db, acc.reference_number)}
 
 
 # ═══ Manual balance adjustment (Feature 3) ═══════════════════════════════════════
@@ -1472,6 +1536,29 @@ async def create_adjustment(
     if str(acc.status or "").upper() != "ACTIVE":
         raise HTTPException(status_code=400, detail="This account is not active and cannot be adjusted.")
 
+    # A manual adjustment moves real money in or out of the account, so it spends the SAME
+    # cumulative Bank Daily Credit/Debit capacity automated deposits and payouts do — never a
+    # separate counter, never a bypass. Read under the row lock taken above (the same lock the
+    # allocation engines take), so an adjustment and a concurrent allocation cannot both spend one
+    # remaining figure. An account with no daily limit configured (0) has no ceiling to measure
+    # against; it is also never chosen by automation, so nothing is double-spent there.
+    daily_limit = round(float((acc.bank_daily_credit_limit if kind == ledger.CREDIT
+                                else acc.bank_daily_debit_limit) or 0.0), 2)
+    if daily_limit > 0:
+        if kind == ledger.CREDIT:
+            used = (await alloc.credit_used_today(db, [ref])).get(ref, 0.0)
+            label = "Bank Daily Credit Limit"
+        else:
+            used = (await walloc.debit_used_today(db, [ref])).get(ref, 0.0)
+            label = "Bank Daily Debit Limit"
+        used = round(float(used or 0.0), 2)
+        if round(used + amount, 2) > daily_limit:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"This {kind.lower()} of ₹{amount:,.2f} would exceed the account's {label}: "
+                        f"₹{used:,.2f} of ₹{daily_limit:,.2f} is already used today, leaving "
+                        f"₹{max(daily_limit - used, 0):,.2f}."))
+
     before = await ledger.account_balance(db, ref)
     after = round(before + amount if kind == ledger.CREDIT else before - amount, 2)
     # A debit may not drive the account negative — the same rule the payout path enforces.
@@ -1547,58 +1634,44 @@ async def put_cdm_account_details_image(
     can carry both, either, or neither.
     """
     acc = await _account_or_404(db, reference_number)
-    row, previous = await detimg.put(db, acc.reference_number, data.image,
-                                     uploaded_by=actor.name, kind=detimg.CDM_KIND)
+    try:
+        row, previous = await detimg.put(db, acc.reference_number, data.image,
+                                         uploaded_by=actor.name, kind=detimg.CDM_KIND,
+                                         reason=data.reason, uploaded_by_id=actor.id)
+    except detimg.ReplaceReasonRequired as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     action = "CDM_ACCOUNT_IMAGE_REPLACED" if previous else "CDM_ACCOUNT_IMAGE_UPLOADED"
     verb = "replaced" if previous else "uploaded"
+    note = (data.reason or "").strip()
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
     ip = request.client.host if request and request.client else None
     await log_event(
         db, action,
-        f"{acc.reference_number} ({acc.account_name}) CDM account details image {verb} by {actor.name}",
+        f"{acc.reference_number} ({acc.account_name}) CDM account details image {verb} by {actor.name}"
+        + (f" — reason: {note}" if previous else ""),
         actor=actor,
     )
     await record_audit(
         db, action, actor=actor, entity_type="account", entity_id=acc.reference_number,
         old=(f"sha256 {previous[:12]}" if previous else "No CDM image"),
         new=f"sha256 {row.sha256[:12]} · {row.content_type} · {row.size_bytes} bytes",
-        reason=f"{acc.account_name} · {ts}", ip=ip,
+        reason=(f"{note} · " if previous else "") + f"{acc.account_name} · {ts}", ip=ip,
     )
     await cache_delete("c:accounts:list")
     return detimg.serialize(row, acc.reference_number, kind=detimg.CDM_KIND)
 
 
-@router.delete("/{reference_number}/cdm-account-details-image")
-async def delete_cdm_account_details_image(
+@router.get("/{reference_number}/cdm-account-details-image/history")
+async def cdm_account_details_image_history(
     reference_number: str,
-    request: Request,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_admin),
+    _: User = Depends(get_current_admin),
 ):
-    """Remove the account's CDM account details image (Admin-only).
-
-    The normal Account Details Image is untouched, and the account stays exactly as eligible for
-    deposits as it was — an image is never an allocation requirement. CDM deposits routed here
-    tell the merchant the CDM image is not configured until one is uploaded.
-    """
+    """Replacement audit for the account's CDM Account Details Image (Admin-only), newest first."""
     acc = await _account_or_404(db, reference_number)
-    removed = await detimg.remove(db, acc.reference_number, kind=detimg.CDM_KIND)
-    if removed is None:
-        return detimg.serialize(None, acc.reference_number, kind=detimg.CDM_KIND)
-    ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
-    ip = request.client.host if request and request.client else None
-    await log_event(
-        db, "CDM_ACCOUNT_IMAGE_REMOVED",
-        f"{acc.reference_number} ({acc.account_name}) CDM account details image removed by {actor.name}",
-        actor=actor,
-    )
-    await record_audit(
-        db, "CDM_ACCOUNT_IMAGE_REMOVED", actor=actor, entity_type="account",
-        entity_id=acc.reference_number, old=f"sha256 {removed[:12]}", new="No CDM image",
-        reason=f"{acc.account_name} · {ts}", ip=ip,
-    )
-    await cache_delete("c:accounts:list")
-    return detimg.serialize(None, acc.reference_number, kind=detimg.CDM_KIND)
+    return {"referenceNumber": acc.reference_number, "kind": detimg.CDM_KIND,
+            "entries": await detimg.replacement_history(db, acc.reference_number,
+                                                        kind=detimg.CDM_KIND)}
 
 
 # ═══ CDM daily limit ═════════════════════════════════════════════════════════════

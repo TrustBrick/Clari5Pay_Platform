@@ -112,6 +112,7 @@ async def _account(db: AsyncSession, ref: str = "ACC1", *, credit: float = 10000
         account_type=AccountType.CURRENT, status="ACTIVE",
         created_date=date.today(), created_time="10:00:00",
         highest_credit=credit, highest_debit=debit, debit_alert_threshold=0.0,
+        bank_daily_credit_limit=credit, bank_daily_debit_limit=debit,
     )
     db.add(acc)
     await db.flush()

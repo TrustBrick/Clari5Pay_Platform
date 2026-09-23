@@ -45,7 +45,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import storage
 from app.core.proofs import store
 from app.core.uploads import validate_image_content
-from app.models.models import AccountCdmImage, AccountDetailsImage, Transaction
+from app.models.models import (
+    AccountCdmImage, AccountDetailsImage, AccountImageReplacement, Transaction,
+)
 from app.services.cdm import CDM_DEPOSIT_TYPE
 from app.services.deposit_allocation import ALLOCATABLE_DEPOSIT_TYPES
 
@@ -115,23 +117,51 @@ async def refs_with_image(db: AsyncSession, *, kind: str = ACCOUNT_KIND) -> set[
     return set((await db.execute(select(model.account_ref))).scalars().all())
 
 
+# A replacement must say why. Checked BEFORE any upload is validated or stored, so a refused
+# replacement leaves no orphan object behind.
+REPLACE_REASON_REQUIRED_MSG = "A reason for replacing the image is required."
+REPLACE_REASON_MAX = 500
+
+
+class ReplaceReasonRequired(ValueError):
+    """Raised when an existing image is replaced without a reason."""
+
+
 async def put(db: AsyncSession, account_ref: str, data_url: str, *, uploaded_by: str | None,
-              kind: str = ACCOUNT_KIND) -> tuple[object, Optional[str]]:
+              kind: str = ACCOUNT_KIND, reason: Optional[str] = None,
+              uploaded_by_id: Optional[int] = None) -> tuple[object, Optional[str]]:
     """Validate, store and set (or REPLACE) one of the account's images.
 
-    Returns ``(row, previous_sha256)`` — the previous digest is None on a first upload, and is
-    what the audit trail records so a replacement is traceable. One row per account PER KIND: a
-    replacement updates that row, it never adds a second image, and it never touches the other kind.
+    Returns ``(row, previous_sha256)`` — the previous digest is None on a first upload. One row per
+    account PER KIND: a replacement updates that row, it never adds a second image, and it never
+    touches the other kind.
+
+    A REPLACEMENT requires a non-blank ``reason`` (:class:`ReplaceReasonRequired` otherwise) and
+    appends an :class:`AccountImageReplacement` row carrying the previous and new stored image,
+    who, when and why — so the image that was overwritten stays recoverable. A first upload needs
+    no reason: nothing is being replaced.
     """
     model, storage_field, label, _ = _spec(kind)
+    row = await get(db, account_ref, kind=kind)
+    note = (reason or "").strip()
+    if row is not None and not note:
+        raise ReplaceReasonRequired(REPLACE_REASON_REQUIRED_MSG)
     value, content_type, raw = validate_image_content(data_url, label=label)
     stored = store(value, field=storage_field)
     digest = hashlib.sha256(raw).hexdigest()
-    row = await get(db, account_ref, kind=kind)
     previous = row.sha256 if row else None
     if row is None:
         row = model(account_ref=account_ref)
         db.add(row)
+    else:
+        db.add(AccountImageReplacement(
+            account_ref=account_ref, kind=kind,
+            previous_image=row.image, previous_sha256=row.sha256,
+            new_image=stored, new_sha256=digest,
+            reason=note[:REPLACE_REASON_MAX],
+            changed_by=uploaded_by, changed_by_id=uploaded_by_id,
+            changed_at=datetime.utcnow(),
+        ))
     row.image = stored
     row.content_type = content_type
     row.size_bytes = len(raw)
@@ -142,16 +172,27 @@ async def put(db: AsyncSession, account_ref: str, data_url: str, *, uploaded_by:
     return row, previous
 
 
-async def remove(db: AsyncSession, account_ref: str, *, kind: str = ACCOUNT_KIND) -> Optional[str]:
-    """Remove one of the account's images, leaving the other kind untouched. Returns the removed
-    digest, or None when there was none."""
-    row = await get(db, account_ref, kind=kind)
-    if row is None:
-        return None
-    digest = row.sha256
-    await db.delete(row)
-    await db.flush()
-    return digest
+async def replacement_history(db: AsyncSession, account_ref: str, *, kind: str = ACCOUNT_KIND,
+                              limit: int = 20) -> list[dict]:
+    """The replacement audit for one account's image of one kind, newest first. Both images are
+    resolved for display (a presigned URL or the data URL)."""
+    _spec(kind)
+    rows = (await db.execute(
+        select(AccountImageReplacement)
+        .where(AccountImageReplacement.account_ref == account_ref,
+               AccountImageReplacement.kind == kind)
+        .order_by(AccountImageReplacement.id.desc())
+        .limit(max(1, min(limit, 100)))
+    )).scalars().all()
+    return [{
+        "id": r.id,
+        "kind": r.kind,
+        "previousImage": storage.resolve_value(r.previous_image),
+        "newImage": storage.resolve_value(r.new_image),
+        "reason": r.reason,
+        "changedBy": r.changed_by,
+        "changedAt": r.changed_at.isoformat() + "Z" if r.changed_at else None,
+    } for r in rows]
 
 
 def serialize(row, account_ref: str, *, kind: str = ACCOUNT_KIND) -> dict:
