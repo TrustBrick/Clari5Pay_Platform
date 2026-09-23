@@ -95,12 +95,20 @@ async def _account(
     db: AsyncSession, ref: str, *, name: str, bank: str = "HDFC Bank", credit: float = 100000.0,
     debit: float = 50000.0, atype: AccountType = AccountType.CURRENT, status: str = "ACTIVE",
     own: bool = False, ifsc: str = "HDFC0001234",
+    daily_credit: float | None = None, daily_debit: float | None = None,
 ) -> AccountMaster:
+    # `credit`/`debit` are the PER-TRANSACTION Highest Credit / Highest Debit. The CUMULATIVE daily
+    # bank limits default to the same figures, which reproduces the platform's pre-split behaviour
+    # (one ceiling did both jobs) and so keeps every test that predates the split meaningful: the
+    # binding constraint on a cumulative sequence is still `credit`, and a single txn is still
+    # bounded by it. A test exercising the per-transaction vs daily distinction passes them apart.
     acc = AccountMaster(
         reference_number=ref, account_name=name, account_number=f"AC{ref}",
         ifsc_code=ifsc, bank_name=bank, branch="Mumbai", account_type=atype, status=status,
         created_date=date.today(), created_time="10:00:00",
         highest_credit=credit, highest_debit=debit, debit_alert_threshold=debit,
+        bank_daily_credit_limit=(credit if daily_credit is None else daily_credit),
+        bank_daily_debit_limit=(debit if daily_debit is None else daily_debit),
         is_own_account=own,
     )
     db.add(acc)
@@ -293,23 +301,27 @@ async def test_the_failure_reason_names_the_problem_the_admin_has_to_fix(db):
     # (c) available but no limit set → configure one
     off.status = "ACTIVE"
     off.highest_credit = 0.0
+    off.bank_daily_credit_limit = 0.0
     await db.flush()
     r = await _allocate(db, 1000)
     assert r.detail["failure"] == alloc.FAIL_NO_LIMITS
     assert "Highest Credit" in r.reason
 
-    # (d) limit set but used up today → it frees itself at midnight
+    # (d) daily limit set but used up today → it frees itself at midnight. The per-transaction cap
+    # is generous, so ₹10,000 clears it; what it fails is the ₹50,000 cumulative daily limit with
+    # only ₹2,000 left after ₹48,000 already taken today.
     off.highest_credit = 50000.0
+    off.bank_daily_credit_limit = 50000.0
     await db.flush()
     await _deposit(db, "1", 48000, "ACC1", member="OTHER")
     r = await _allocate(db, 10000)
     assert r.detail["failure"] == alloc.FAIL_LIMIT_REACHED
     assert "midnight IST" in r.reason and "2,000.00" in r.reason
 
-    # (e) the deposit is bigger than any ceiling → no amount of waiting helps
+    # (e) the deposit is bigger than any per-transaction cap → no amount of waiting helps
     r = await _allocate(db, 500000)
     assert r.detail["failure"] == alloc.FAIL_AMOUNT_TOO_LARGE
-    assert "larger than the Highest Credit of every account" in r.reason
+    assert "larger than the per-transaction Highest Credit of every account" in r.reason
 
 
 @pytest.mark.asyncio
@@ -866,7 +878,9 @@ async def test_a_deposit_with_no_eligible_account_lands_in_the_exception_state(d
     journal = (await db.execute(select(DepositAllocation))).scalars().one()
     assert journal.outcome == alloc.OUTCOME_NO_ACCOUNT
     assert journal.account_ref is None
-    assert journal.reason and "Raise a limit" in journal.reason
+    # ₹45,000 exceeds the account's per-transaction Highest Credit (₹10,000), so the exception names
+    # that specific fix rather than a generic "no eligible account".
+    assert journal.reason and "Highest Credit" in journal.reason
 
 
 @pytest.mark.asyncio
@@ -889,7 +903,8 @@ async def test_the_admin_resolves_the_exception_by_retrying_not_by_choosing(db):
         await txr.retry_allocation(out["id"], db, admin)
     assert exc.value.status_code == 409
 
-    acc.highest_credit = 100000.0          # the Admin raises the limit
+    acc.highest_credit = 100000.0            # the Admin raises the per-transaction cap
+    acc.bank_daily_credit_limit = 100000.0   # …and the daily bank limit — a ₹45,000 deposit needs both
     await db.flush()
 
     retried = await txr.retry_allocation(out["id"], db, admin)
@@ -1007,10 +1022,11 @@ async def test_a_failed_allocation_is_recorded_too(db):
     row = (await db.execute(select(DepositAllocation))).scalars().one()
     assert row.outcome == alloc.OUTCOME_NO_ACCOUNT
     assert row.candidates_considered == 1 and row.candidates_eligible == 0
-    # The stored reason names the fix, not just the symptom.
-    assert "larger than the Highest Credit of every account" in row.reason
-    assert "Raise a limit" in row.reason
-    assert alloc.REJECT_NO_CAPACITY in row.detail
+    # The stored reason names the fix, not just the symptom. ₹45,000 exceeds the per-transaction
+    # Highest Credit (₹10,000), so the reason points at that specific cap.
+    assert "larger than the per-transaction Highest Credit of every account" in row.reason
+    assert "Raise a Highest Credit" in row.reason
+    assert alloc.REJECT_OVER_PER_TXN in row.detail
 
 
 @pytest.mark.asyncio

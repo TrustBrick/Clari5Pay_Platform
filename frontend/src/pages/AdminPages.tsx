@@ -757,7 +757,7 @@ const RequestModal: React.FC<{
                 const left = payoutBalances.find(b => b.referenceNumber === accountRef)?.remainingCredit;
                 return accountRef && left !== undefined && left < tx.amount ? (
                   <p style={{ fontSize:11,color:T.danger,margin:'-8px 0 10px',fontWeight:700 }}>
-                    <Icon name="warning" size={12} /> This account has only {fmt(left)} left against today's Highest Credit — sending {fmt(tx.amount)} here exceeds its daily limit.
+                    <Icon name="warning" size={12} /> This account has only {fmt(left)} left against its Bank Daily Credit Limit — sending {fmt(tx.amount)} here exceeds today's remaining capacity.
                   </p>
                 ) : null;
               })()}
@@ -2096,8 +2096,8 @@ export const AdminAccountsPage: React.FC = () => {
   // hidden button is never the security control.
   const canEditLimits = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
   const [editLimits, setEditLimits] = useState(false);
-  const [limitForm, setLimitForm] = useState({ credit:'', debit:'' });
-  const [limitErr, setLimitErr] = useState<{ credit?: string; debit?: string }>({});
+  const [limitForm, setLimitForm] = useState({ credit:'', debit:'', dailyCredit:'', dailyDebit:'' });
+  const [limitErr, setLimitErr] = useState<{ credit?: string; debit?: string; dailyCredit?: string; dailyDebit?: string }>({});
   const [savingLimits, setSavingLimits] = useState(false);
   const [savingOwn, setSavingOwn] = useState(false);
   useEffect(() => {
@@ -2120,7 +2120,7 @@ export const AdminAccountsPage: React.FC = () => {
     finally { setStmtLoading(false); }
   };
   const [showCreate, setShowCreate] = useState(false);
-  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0',highest_debit:'0',is_own_account:false };
+  const empty = { account_name:'',account_number:'',ifsc_code:'',bank_name:'',branch:'',account_type:'Savings Account',status:'ACTIVE',upiId:'',highest_credit:'0',highest_debit:'0',bank_daily_credit_limit:'0',bank_daily_debit_limit:'0',is_own_account:false };
   const [form, setForm] = useState(empty);
   const set = (k: keyof typeof empty, v: string) => setForm(f => ({...f,[k]:v}));
   // Standard IFSC capture — the same hook and field every bank form in the platform uses.
@@ -2196,6 +2196,8 @@ export const AdminAccountsPage: React.FC = () => {
     setLimitForm({
       credit: formatIndianAmountInput(String(detail.highestCredit ?? 0)),
       debit: formatIndianAmountInput(String(detail.highestDebit ?? 0)),
+      dailyCredit: formatIndianAmountInput(String(detail.bankDailyCreditLimit ?? 0)),
+      dailyDebit: formatIndianAmountInput(String(detail.bankDailyDebitLimit ?? 0)),
     });
     setLimitErr({});
     setEditLimits(true);
@@ -2206,17 +2208,26 @@ export const AdminAccountsPage: React.FC = () => {
   const saveLimits = async () => {
     if (!detail) return;
     const rawC = parseIndianAmount(limitForm.credit), rawD = parseIndianAmount(limitForm.debit);
+    const rawDC = parseIndianAmount(limitForm.dailyCredit), rawDD = parseIndianAmount(limitForm.dailyDebit);
     const credit = parseFloat(rawC), debit = parseFloat(rawD);
-    const errs: { credit?: string; debit?: string } = {};
+    const dailyCredit = parseFloat(rawDC), dailyDebit = parseFloat(rawDD);
+    const errs: { credit?: string; debit?: string; dailyCredit?: string; dailyDebit?: string } = {};
     if (!rawC) errs.credit = 'Highest Credit is required';
     else if (!Number.isFinite(credit) || credit <= 0) errs.credit = 'Enter an amount greater than 0';
     if (!rawD) errs.debit = 'Highest Debit is required';
     else if (!Number.isFinite(debit) || debit <= 0) errs.debit = 'Enter an amount greater than 0';
+    if (!rawDC) errs.dailyCredit = 'Bank Daily Credit Limit is required';
+    else if (!Number.isFinite(dailyCredit) || dailyCredit <= 0) errs.dailyCredit = 'Enter an amount greater than 0';
+    if (!rawDD) errs.dailyDebit = 'Bank Daily Debit Limit is required';
+    else if (!Number.isFinite(dailyDebit) || dailyDebit <= 0) errs.dailyDebit = 'Enter an amount greater than 0';
     setLimitErr(errs);
-    if (errs.credit || errs.debit) return;
+    if (errs.credit || errs.debit || errs.dailyCredit || errs.dailyDebit) return;
     setSavingLimits(true);
     try {
-      const updated = await accountAPI.updateLimits(detail.referenceNumber, { highest_credit: credit, highest_debit: debit });
+      const updated = await accountAPI.updateLimits(detail.referenceNumber, {
+        highest_credit: credit, highest_debit: debit,
+        bank_daily_credit_limit: dailyCredit, bank_daily_debit_limit: dailyDebit,
+      });
       setDetail(updated);          // the server's values, not the ones typed
       reload();                    // the main table reads the same figures
       showToast('Account limits updated successfully');
@@ -2268,7 +2279,14 @@ export const AdminAccountsPage: React.FC = () => {
   const create = async () => {
     if(!form.account_name||!form.account_number||!form.ifsc_code||!form.bank_name||!form.branch){ showToast('Fill all fields','error'); return; }
     try {
-      await accountAPI.create({ ...form, highest_credit: parseFloat(parseIndianAmount(form.highest_credit)) || 0, highest_debit: parseFloat(parseIndianAmount(form.highest_debit)) || 0 });
+      await accountAPI.create({ ...form,
+        highest_credit: parseFloat(parseIndianAmount(form.highest_credit)) || 0,
+        highest_debit: parseFloat(parseIndianAmount(form.highest_debit)) || 0,
+        // Left blank/0 → send undefined so the backend defaults each daily ceiling to its
+        // per-transaction cap, rather than storing 0 (which would make the account unallocatable).
+        bank_daily_credit_limit: parseFloat(parseIndianAmount(form.bank_daily_credit_limit)) || undefined,
+        bank_daily_debit_limit: parseFloat(parseIndianAmount(form.bank_daily_debit_limit)) || undefined,
+      });
       await reload();
       setShowCreate(false);
       setForm(empty);
@@ -2300,13 +2318,13 @@ export const AdminAccountsPage: React.FC = () => {
                 {/* Deposits Received, Commission and Manual Adjustment deliberately live in the
                     View popup, not here — the list stays scannable and the money detail sits with
                     the account it belongs to. The underlying data is unchanged. */}
-                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit','Used Today','Remaining','Highest Debit','Debit Used','Debit Left','Available','Users','Status','Details'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Highest Credit / Txn','Daily Credit Limit','Used Today','Remaining','Highest Debit / Txn','Daily Debit Limit','Debit Used','Debit Left','Available','Users','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={12} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={16} style={{ padding:32,textAlign:'center',color:T.textMuted }}>No accounts found</td></tr>}
               {filtered.map((a,i)=>{ const bal = balMap[a.referenceNumber]; return (
                 <tr key={a.id} style={{ background:i%2===0?T.surface:'#f8faff' }}>
                   <td style={{ padding:'11px 14px' }}>
@@ -2316,20 +2334,23 @@ export const AdminAccountsPage: React.FC = () => {
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.accountNumber}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.ifscCode}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>{a.branch}</td>
-                  {/* Highest Credit is the account's HARD DAILY CREDIT LIMIT; the two columns
-                      after it are where it stands against that limit right now. An account with
-                      no remaining capacity is never allocated another deposit today, which is
-                      what the red figure says at a glance. */}
+                  {/* Highest Credit is the PER-TRANSACTION cap (the most one deposit may be); Daily
+                      Credit Limit is the cumulative daily ceiling that Used Today / Remaining are
+                      measured against. An account with no remaining daily capacity is never
+                      allocated another deposit today, which is what the red figure says at a glance. */}
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.textMain }}>{fmt(a.highestCredit ?? 0)}</td>
+                  <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMuted }}>{fmt(a.bankDailyCreditLimit ?? bal?.bankDailyCreditLimit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',color:T.textMuted }}>
                     {fmt(bal?.creditUsedToday ?? 0)}
                     {(bal?.depositsToday ?? 0) > 0 && <span style={{ fontSize:10,marginLeft:5 }}>({bal?.depositsToday})</span>}
                   </td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color: (bal?.remainingCredit ?? 0) > 0 ? T.success : T.danger }}>{fmt(bal?.remainingCredit ?? 0)}</td>
-                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestDebit ?? 0)}</td>
-                  {/* The debit side of the same daily story: what this account has paid out today
-                      and what it may still pay. Both come from the withdrawal allocation engine's
-                      own functions, so the screen and the engine cannot disagree. */}
+                  <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.highestDebit ?? a.highestDebit ?? 0)}</td>
+                  {/* The debit side of the same story: the per-transaction Highest Debit, the daily
+                      ceiling, then what this account has paid out today and what it may still pay.
+                      Every figure comes from the withdrawal allocation engine's own functions, so
+                      the screen and the engine cannot disagree. */}
+                  <td style={{ padding:'11px 14px',fontWeight:700,color:T.textMuted }}>{fmt(a.bankDailyDebitLimit ?? bal?.bankDailyDebitLimit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:700 }}>{fmt(bal?.debitUsedToday ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color: (bal?.remainingDebit ?? 0) > 0 ? T.blue : T.danger }}>{fmt(bal?.remainingDebit ?? 0)}</td>
                   <td style={{ padding:'11px 14px',fontWeight:800,color:T.success }}>{fmt(bal?.available ?? 0)}</td>
@@ -2580,8 +2601,16 @@ export const AdminAccountsPage: React.FC = () => {
             </div>
             {!editLimits ? (
               <>
+                {/* Per-transaction caps and cumulative daily ceilings, each with the description the
+                    brief specifies so the two kinds of limit are never confused on screen. */}
                 <Row k="Highest Credit" v={fmt(detail.highestCredit ?? 0)} />
+                <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>Maximum amount allowed per deposit transaction</p>
+                <Row k="Bank Daily Credit Limit" v={fmt(detail.bankDailyCreditLimit ?? 0)} />
+                <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>Maximum total amount this account can receive per day</p>
                 <Row k="Highest Debit" v={fmt(detail.highestDebit ?? 0)} />
+                <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>Maximum amount allowed per withdrawal transaction</p>
+                <Row k="Bank Daily Debit Limit" v={fmt(detail.bankDailyDebitLimit ?? 0)} />
+                <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>Maximum total amount this account can send per day</p>
                 {/* The Admin's "Own Account" classification. Recorded on every deposit allocation
                     decision; it is not a ranking input, so toggling it moves no money and changes
                     no account's eligibility. */}
@@ -2604,7 +2633,9 @@ export const AdminAccountsPage: React.FC = () => {
                     lock, before it allocates anything. */}
                 {(() => {
                   const b = balMap[detail.referenceNumber];
-                  const limit = detail.highestCredit ?? 0;
+                  // Used / Remaining are measured against the CUMULATIVE daily credit ceiling, not
+                  // the per-transaction Highest Credit.
+                  const limit = detail.bankDailyCreditLimit ?? 0;
                   const used = b?.creditUsedToday ?? 0;
                   const left = b?.remainingCredit ?? Math.max(0, limit - used);
                   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
@@ -2619,10 +2650,10 @@ export const AdminAccountsPage: React.FC = () => {
                         <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.success,transition:'width .3s' }} />
                       </div>
                       <Row k="Credit Used Today" v={fmt(used)} />
-                      <Row k="Remaining Capacity" v={<span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>} />
+                      <Row k="Credit Remaining Today" v={<span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>} />
                       {limit <= 0 && (
                         <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
-                          No Highest Credit configured — this account is never allocated a deposit. Set a limit above.
+                          No Bank Daily Credit Limit configured — this account is never allocated a deposit. Set one above.
                         </p>
                       )}
                       {full && (
@@ -2643,7 +2674,9 @@ export const AdminAccountsPage: React.FC = () => {
                     under a row lock before it allocates anything. */}
                 {(() => {
                   const b = balMap[detail.referenceNumber];
-                  const limit = detail.highestDebit ?? 0;
+                  // Used / Remaining are measured against the CUMULATIVE daily debit ceiling, not
+                  // the per-transaction Highest Debit.
+                  const limit = detail.bankDailyDebitLimit ?? 0;
                   const used = b?.debitUsedToday ?? 0;
                   const left = b?.remainingDebit ?? Math.max(0, limit - used);
                   const reserved = b?.reservedForPayouts ?? 0;
@@ -2659,13 +2692,13 @@ export const AdminAccountsPage: React.FC = () => {
                         <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.blue,transition:'width .3s' }} />
                       </div>
                       <Row k="Debit Used Today" v={fmt(used)} />
-                      <Row k="Remaining Debit" v={<span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>} />
+                      <Row k="Debit Remaining Today" v={<span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>} />
                       {reserved > 0 && (
                         <Row k="Reserved for Payouts" v={<span title="Allocated to withdrawals that have not been paid yet. No money has moved, so it is not deducted from the balance.">{fmt(reserved)}</span>} />
                       )}
                       {limit <= 0 && (
                         <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
-                          No Highest Debit configured — this account is never allocated a withdrawal. Set a limit above.
+                          No Bank Daily Debit Limit configured — this account is never allocated a withdrawal. Set one above.
                         </p>
                       )}
                       {full && (
@@ -2722,13 +2755,21 @@ export const AdminAccountsPage: React.FC = () => {
               </>
             ) : (
               <>
-                <Input label="Highest Credit (₹)" required type="text" inputMode="decimal"
+                <Input label="Highest Credit (₹) — per deposit transaction" required type="text" inputMode="decimal"
                   value={limitForm.credit} error={limitErr.credit}
                   onChange={e=>{ setLimitForm(f=>({...f,credit:formatIndianAmountInput(e.target.value)})); setLimitErr(x=>({...x,credit:undefined})); }}
                   onEnter={saveLimits}/>
-                <Input label="Highest Debit (₹)" required type="text" inputMode="decimal"
+                <Input label="Bank Daily Credit Limit (₹) — total received per day" required type="text" inputMode="decimal"
+                  value={limitForm.dailyCredit} error={limitErr.dailyCredit}
+                  onChange={e=>{ setLimitForm(f=>({...f,dailyCredit:formatIndianAmountInput(e.target.value)})); setLimitErr(x=>({...x,dailyCredit:undefined})); }}
+                  onEnter={saveLimits}/>
+                <Input label="Highest Debit (₹) — per withdrawal transaction" required type="text" inputMode="decimal"
                   value={limitForm.debit} error={limitErr.debit}
                   onChange={e=>{ setLimitForm(f=>({...f,debit:formatIndianAmountInput(e.target.value)})); setLimitErr(x=>({...x,debit:undefined})); }}
+                  onEnter={saveLimits}/>
+                <Input label="Bank Daily Debit Limit (₹) — total sent per day" required type="text" inputMode="decimal"
+                  value={limitForm.dailyDebit} error={limitErr.dailyDebit}
+                  onChange={e=>{ setLimitForm(f=>({...f,dailyDebit:formatIndianAmountInput(e.target.value)})); setLimitErr(x=>({...x,dailyDebit:undefined})); }}
                   onEnter={saveLimits}/>
                 {/* The old high-water figure, preserved when Highest Debit became a daily limit.
                     Shown here because it is the one piece of evidence an Admin has for what this
@@ -2793,6 +2834,62 @@ export const AdminAccountsPage: React.FC = () => {
                     <Icon name="amount" size={13} /> Make an Adjustment
                   </Btn>
                 </div>
+              </div>
+            );
+          })()}
+
+          {/* ── Pay-In by Payment Mode (§15) ────────────────────────────────────────────────
+              How much this account has actually RECEIVED, split by mode, for Today / This Month /
+              All Time. Derived server-side from the completed deposit rows — the same source as
+              every other figure here — so it can never drift from a separate counter. "Today" and
+              "This Month" roll over with the IST calendar; "All Time" never resets. */}
+          {(() => {
+            const pm = balMap[detail.referenceNumber]?.payinByMode;
+            const windows: { key: 'today' | 'month' | 'allTime'; label: string }[] = [
+              { key: 'today', label: 'Today' },
+              { key: 'month', label: 'This Month' },
+              { key: 'allTime', label: 'All Time' },
+            ];
+            // Every mode seen across any window, so each window's column lines up.
+            const modes = Array.from(new Set(
+              windows.flatMap(w => Object.keys(pm?.[w.key] || {}))
+            )).sort();
+            return (
+              <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+                <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 10px' }}>Pay-In by Payment Mode</p>
+                {modes.length === 0 ? (
+                  <p style={{ fontSize:12,color:T.textMuted,margin:0 }}>No deposits received into this account yet.</p>
+                ) : (
+                  <div style={{ overflowX:'auto' }}>
+                    <table style={{ width:'100%',borderCollapse:'collapse',fontSize:12 }}>
+                      <thead>
+                        <tr style={{ background:T.canvas }}>
+                          {['Mode', ...windows.map(w => w.label)].map(h => (
+                            <th key={h} style={{ padding:'8px 12px',textAlign: h==='Mode'?'left':'right',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {modes.map(m => (
+                          <tr key={m}>
+                            <td style={{ padding:'8px 12px',fontWeight:700,color:T.textMain }}>{m}</td>
+                            {windows.map(w => (
+                              <td key={w.key} style={{ padding:'8px 12px',textAlign:'right',color:T.textMuted }}>{fmt(pm?.[w.key]?.[m] ?? 0)}</td>
+                            ))}
+                          </tr>
+                        ))}
+                        <tr style={{ borderTop:`2px solid ${T.border}` }}>
+                          <td style={{ padding:'8px 12px',fontWeight:800,color:T.textMain }}>Total</td>
+                          {windows.map(w => (
+                            <td key={w.key} style={{ padding:'8px 12px',textAlign:'right',fontWeight:800,color:T.textMain }}>
+                              {fmt(Object.values(pm?.[w.key] || {}).reduce((s, v) => s + (v || 0), 0))}
+                            </td>
+                          ))}
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -2877,11 +2974,13 @@ export const AdminAccountsPage: React.FC = () => {
             <Sel label="Account Type" value={form.account_type} onChange={e=>set('account_type',e.target.value)} options={['Savings Account','Current Account'].map(v=>({value:v,label:v}))}/>
             <Sel label="Status" value={form.status} onChange={e=>set('status',e.target.value)} options={['ACTIVE','INACTIVE'].map(v=>({value:v,label:v}))}/>
             <Input label="UPI ID (optional)" value={form.upiId} onChange={e=>set('upiId',e.target.value)} placeholder="e.g. satish@ybl — links to this account"/>
-            <Input label="Highest Credit (₹)" type="text" inputMode="decimal" value={form.highest_credit} onChange={e=>set('highest_credit',formatIndianAmountInput(e.target.value))} hint="Hard DAILY credit limit — leave at 0 and no deposit is ever routed here"/>
+            <Input label="Highest Credit (₹)" type="text" inputMode="decimal" value={form.highest_credit} onChange={e=>set('highest_credit',formatIndianAmountInput(e.target.value))} hint="Max amount per DEPOSIT transaction — leave at 0 and no deposit is ever routed here"/>
+            <Input label="Bank Daily Credit Limit (₹)" type="text" inputMode="decimal" value={form.bank_daily_credit_limit} onChange={e=>set('bank_daily_credit_limit',formatIndianAmountInput(e.target.value))} hint="Max TOTAL received per day. Leave at 0 to default to the per-transaction Highest Credit."/>
             {/* Required for an ACTIVE account, and enforced server-side: 0 means UNCONFIGURED,
                 and the withdrawal engine never allocates an unconfigured account — so an active
                 account created without a limit is one the platform silently cannot pay from. */}
-            <Input label="Highest Debit (₹)" required={form.status === 'ACTIVE'} type="text" inputMode="decimal" value={form.highest_debit} onChange={e=>set('highest_debit',formatIndianAmountInput(e.target.value))} hint="Hard DAILY limit on what this account may pay out. Required while the account is Active — at 0 no withdrawal is ever routed here."/>
+            <Input label="Highest Debit (₹)" required={form.status === 'ACTIVE'} type="text" inputMode="decimal" value={form.highest_debit} onChange={e=>set('highest_debit',formatIndianAmountInput(e.target.value))} hint="Max amount per WITHDRAWAL transaction. Required while Active — at 0 no withdrawal is ever routed here."/>
+            <Input label="Bank Daily Debit Limit (₹)" type="text" inputMode="decimal" value={form.bank_daily_debit_limit} onChange={e=>set('bank_daily_debit_limit',formatIndianAmountInput(e.target.value))} hint="Max TOTAL sent per day. Leave at 0 to default to the per-transaction Highest Debit."/>
           </div>
           {/* Own Account is recorded on the account and carried into every allocation decision.
               It is not a ranking input, so setting it here changes no account's eligibility. */}

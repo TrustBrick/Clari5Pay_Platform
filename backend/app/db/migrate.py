@@ -81,6 +81,13 @@ _NEW_COLUMNS = [
     ("account_master", "observed_max_debit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
     ("account_master", "highest_debit_configured_at", "TIMESTAMP"),
     ("account_master", "highest_debit_configured_by", "VARCHAR(128)"),
+    # 2026-09-23 — Highest Credit / Highest Debit are now PER-TRANSACTION caps, and the CUMULATIVE
+    # daily ceilings moved into their own columns. Default 0 = "unconfigured" (never auto-selected),
+    # exactly like the per-transaction fields; the backfill below seeds them behaviour-preservingly
+    # from what highest_credit/highest_debit meant BEFORE the split (a daily ceiling), so no
+    # account's live behaviour changes until an Admin sets a tighter per-transaction limit.
+    ("account_master", "bank_daily_credit_limit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    ("account_master", "bank_daily_debit_limit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
     # Reporting: approver / processor / creating-agent tracking.
     ("transactions", "approved_by", "VARCHAR(128)"),
     ("transactions", "processed_by", "VARCHAR(128)"),
@@ -702,6 +709,25 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         await conn.execute(text(
             "UPDATE account_master SET observed_max_debit = highest_debit "
             "WHERE COALESCE(observed_max_debit, 0) < COALESCE(highest_debit, 0)"
+        ))
+        # ── 2026-09-23: split the daily ceiling out of Highest Credit / Highest Debit ──
+        # Before this, `highest_credit` / `highest_debit` WERE the cumulative daily ceilings the
+        # engines enforced. They are now PER-TRANSACTION caps, and the daily ceiling lives in
+        # `bank_daily_credit_limit` / `bank_daily_debit_limit`. To change no account's behaviour on
+        # deploy, seed the new daily column from the value the old column already held — so daily =
+        # per-transaction initially, which reproduces the previous single-ceiling arithmetic exactly
+        # (a single txn was already bounded by the daily figure under the old cumulative test).
+        #
+        # Only rows still at the 0 default are touched, so this never overwrites an Admin's later
+        # choice and is a no-op on every subsequent startup. An Admin then lowers the per-transaction
+        # Highest Credit/Debit in Account Management while the daily ceiling stays where it was.
+        await conn.execute(text(
+            "UPDATE account_master SET bank_daily_credit_limit = highest_credit "
+            "WHERE COALESCE(bank_daily_credit_limit, 0) = 0 AND COALESCE(highest_credit, 0) > 0"
+        ))
+        await conn.execute(text(
+            "UPDATE account_master SET bank_daily_debit_limit = highest_debit "
+            "WHERE COALESCE(bank_daily_debit_limit, 0) = 0 AND COALESCE(highest_debit, 0) > 0"
         ))
         # The former Lowest Credit column is superseded by Highest Debit — drop it once (idempotent).
         await conn.execute(text("ALTER TABLE account_master DROP COLUMN IF EXISTS lowest_credit"))

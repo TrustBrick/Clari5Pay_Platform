@@ -5,27 +5,39 @@ never picks one and the Admin never picks one per request — the Admin configur
 their limits in Account Management, and this service decides. The frontend renders the result; it
 never re-implements any of the rules below.
 
-WHAT MAKES A LIMIT A LIMIT
-──────────────────────────
-``AccountMaster.highest_credit`` is a HARD DAILY CREDIT CEILING. The test is never
-``amount <= highest_credit``; it is always
+WHAT MAKES A LIMIT A LIMIT — TWO KINDS, NEVER CONFUSED
+──────────────────────────────────────────────────────
+A deposit must clear BOTH of an account's credit limits, and they answer different questions:
 
-    credit_used_today(account) + amount  <=  highest_credit
+  • ``AccountMaster.highest_credit`` is the PER-TRANSACTION cap — the most ONE deposit may be.
+    The test is ``amount <= highest_credit`` and nothing else: a ₹75,000 ceiling accepts ₹75,000
+    and refuses ₹75,000.01, whatever capacity the day has left. Earlier deposits do NOT eat into
+    it — three requests of ₹70,000, ₹20,000 and ₹30,000 are each individually fine.
 
-so an account with a ₹1,00,000 ceiling that has already taken ₹70,000 today can accept ₹30,000
-and cannot accept ₹30,001. Equality passes — reaching the ceiling exactly is allowed; exceeding it
-by a single paisa is not.
+  • ``AccountMaster.bank_daily_credit_limit`` is the CUMULATIVE daily ceiling — the most the
+    account may RECEIVE in TOTAL across one IST calendar day. The test is
+
+        credit_used_today(account) + amount  <=  bank_daily_credit_limit
+
+    so a ₹2,00,000 daily limit that has taken ₹1,50,000 today can still accept ₹50,000 and cannot
+    accept ₹50,001. Equality passes; a single paisa over does not.
+
+An account with EITHER limit at 0 is "unconfigured" — it has no configured capacity and is never
+chosen automatically. 0 is never read as "unlimited".
 
 WHAT "USED TODAY" COUNTS — AND WHY IT ISN'T ONLY COMPLETED DEPOSITS
 ──────────────────────────────────────────────────────────────────
-A deposit consumes capacity from the moment an account is allocated to it, not from the moment the
-money lands. If only completed deposits counted, two requests arriving seconds apart would both
-read "₹0 used", both be allocated the same account, and together breach the ceiling — the exact
-failure this service exists to prevent. So today's usage is every deposit routed to the account
-today that is still LIVE, plus every completed one:
+A deposit consumes daily bank capacity from the moment an account is allocated to it, not from the
+moment the money lands. If only completed deposits counted, two requests arriving seconds apart
+would both read "₹0 used", both be allocated the same account, and together breach the daily limit
+— the exact failure this service exists to prevent. So today's usage is every deposit routed to the
+account today that is still LIVE, plus every completed one, PLUS manual Account-Management CREDIT
+adjustments dated today (they add real money to the account and must consume the same daily bank
+capacity, never bypass it):
 
     type LIKE 'DEPOSIT%'  AND  admin_ref = <account>  AND  tx_date = <today, IST>
     AND  status NOT IN (REJECTED, SA_REJECTED, CANCELLED)
+  + MANUAL_ADJUSTMENT CREDIT entries on <account> whose IST day is <today>
 
 Rejecting or cancelling a request therefore RELEASES its capacity, automatically, with no separate
 reservation record to keep in step. This is the platform's existing state machine doing the work:
@@ -62,8 +74,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import (
-    AccountMaster, AccountTransaction, AccountType, AdminUpi, DepositAllocation, Transaction,
-    TxStatus, TxType,
+    AccountLedgerEntry, AccountMaster, AccountTransaction, AccountType, AdminUpi, DepositAllocation,
+    Transaction, TxStatus, TxType,
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -120,6 +132,10 @@ _RULE_TEXT = {
 # has since moved on.
 REJECT_INACTIVE = "ACCOUNT_NOT_AVAILABLE"
 REJECT_NO_LIMIT = "NO_CREDIT_LIMIT_CONFIGURED"
+# The deposit is larger than this account's PER-TRANSACTION Highest Credit — a different failure
+# from the cumulative daily one, and fixed differently (raise the single-transaction cap, or split
+# the deposit), so it is recorded distinctly.
+REJECT_OVER_PER_TXN = "AMOUNT_EXCEEDS_HIGHEST_CREDIT"
 REJECT_NO_CAPACITY = "DAILY_CREDIT_LIMIT_REACHED"
 REJECT_LOCKED = "CONCURRENTLY_ALLOCATED"
 # The member is sending from a Savings account and this one is Current, or the reverse. A hard
@@ -159,8 +175,8 @@ def _failure(candidates: list["Candidate"], amount: float) -> tuple[str, str]:
             f"Activate an account in Account Management.")
     if all(r == REJECT_NO_LIMIT for r in reasons):
         return FAIL_NO_LIMITS, (
-            f"No account has a Highest Credit configured, so none can accept a deposit. "
-            f"Set a daily credit limit in Account Management.")
+            f"No account has both a per-transaction Highest Credit and a daily bank credit limit "
+            f"configured, so none can accept a deposit. Set both in Account Management.")
     # Named explicitly, because the fix is completely different from every other refusal: the
     # money is coming from a Savings (or Current) account and the platform has no ACTIVE account
     # of that kind with room. Reporting this as "at the daily limit" would send an Admin to raise
@@ -185,25 +201,34 @@ def _failure(candidates: list["Candidate"], amount: float) -> tuple[str, str]:
             f"available. Add or activate a {required} in Account Management, or assign an account "
             f"manually.")
 
-    # Only accounts that were otherwise usable say anything about capacity.
+    # Only accounts that were otherwise usable say anything about capacity, and there are now two
+    # distinct capacity failures with different fixes.
+    pertxn_blocked = [c for c in candidates if c.reject_reason == REJECT_OVER_PER_TXN]
     capacity_blocked = [c for c in candidates if c.reject_reason == REJECT_NO_CAPACITY]
+
     if capacity_blocked:
-        # Distinguish "used up today" from "this deposit is bigger than the account has ever held":
-        # the first clears at midnight IST, the second needs a larger limit.
-        biggest_ceiling = max(_money(c.account.highest_credit) for c in capacity_blocked)
-        if _money(amount) > biggest_ceiling:
-            # ``of_type`` matters here: with a Savings sender, an account of ₹2,00,000 may well
-            # exist and be useless. Saying "every account" would send an Admin to raise a limit on
-            # an account this deposit can never use.
+        # A deposit that exceeds even the daily LIMIT (not just today's remainder) of every account
+        # cannot be helped by waiting for midnight — say so, and point at the daily limit.
+        biggest_daily = max(_money(c.account.bank_daily_credit_limit) for c in capacity_blocked)
+        if _money(amount) > biggest_daily:
             return FAIL_AMOUNT_TOO_LARGE, (
-                f"{money} is larger than the Highest Credit of every account{of_type} "
-                f"(the largest is ₹{biggest_ceiling:,.2f}). Raise a limit or add an account"
-                f"{' of that type' if required else ''}.")
+                f"{money} is larger than the daily credit limit of every account{of_type} "
+                f"(the largest is ₹{biggest_daily:,.2f}). Raise a daily credit limit or add an "
+                f"account{' of that type' if required else ''}.")
         left = max(c.remaining for c in capacity_blocked)
         return FAIL_LIMIT_REACHED, (
             f"Every eligible account{of_type} has reached its daily credit limit for {money} — "
             f"the most any has left today is ₹{left:,.2f}. Capacity resets at midnight IST, or "
             f"raise a limit.")
+
+    if pertxn_blocked:
+        # The deposit is bigger than any single account's PER-TRANSACTION Highest Credit — waiting
+        # for tomorrow never helps; the single-transaction cap has to rise (or the deposit split).
+        biggest_pertxn = max(_money(c.account.highest_credit) for c in pertxn_blocked)
+        return FAIL_AMOUNT_TOO_LARGE, (
+            f"{money} is larger than the per-transaction Highest Credit of every account{of_type} "
+            f"(the largest is ₹{biggest_pertxn:,.2f}). Raise a Highest Credit or add an account"
+            f"{' of that type' if required else ''}.")
 
     return FAIL_MIXED, (
         f"No account can accept {money} — all {n} are unavailable or out of daily credit capacity.")
@@ -217,6 +242,20 @@ OUTCOME_NO_ACCOUNT = "NO_ACCOUNT"
 def ist_today(now: Optional[datetime] = None) -> date:
     """The current business date in IST — the boundary the daily credit limit resets on."""
     return (now or datetime.now(IST)).astimezone(IST).date()
+
+
+def ist_day_utc_bounds(day: date) -> tuple[datetime, datetime]:
+    """The [start, end) UTC datetimes spanning one IST calendar ``day``.
+
+    Deposit rows carry an IST-dated ``tx_date`` column and filter on a plain equality, but manual
+    ledger adjustments only carry a UTC ``created_at``. Converting that column per-row inside SQL is
+    both DB-specific and un-indexable, so instead the IST day is turned into the UTC window it
+    occupies once, here, and the query stays a simple indexed range. Naive (tz-stripped) datetimes,
+    to match how ``created_at`` is stored (``datetime.utcnow()``).
+    """
+    start_ist = datetime(day.year, day.month, day.day, tzinfo=IST)
+    start_utc = start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+    return start_utc, start_utc + timedelta(days=1)
 
 
 def ist_stamp(now: Optional[datetime] = None) -> str:
@@ -264,7 +303,31 @@ async def credit_used_today(
         if not refs:
             return {}
         stmt = stmt.where(Transaction.admin_ref.in_(refs))
-    return {ref: _money(total) for ref, total in (await db.execute(stmt)).all() if ref}
+    out = {ref: _money(total) for ref, total in (await db.execute(stmt)).all() if ref}
+
+    # Manual Account-Management CREDIT adjustments dated today also add money to the account, so
+    # they consume the same daily bank credit capacity and are added here rather than kept in a
+    # separate counter the engine could evaluate around. Filtered by the UTC window of the IST day
+    # (manual entries carry only created_at), summed per account, and folded in.
+    start_utc, end_utc = ist_day_utc_bounds(day)
+    adj_stmt = (
+        select(AccountLedgerEntry.account_ref,
+               func.coalesce(func.sum(AccountLedgerEntry.amount), 0.0))
+        .where(
+            AccountLedgerEntry.entry_type == "MANUAL_ADJUSTMENT",
+            AccountLedgerEntry.direction == "CREDIT",
+            AccountLedgerEntry.account_ref.isnot(None),
+            AccountLedgerEntry.created_at >= start_utc,
+            AccountLedgerEntry.created_at < end_utc,
+        )
+        .group_by(AccountLedgerEntry.account_ref)
+    )
+    if refs is not None:
+        adj_stmt = adj_stmt.where(AccountLedgerEntry.account_ref.in_(refs))
+    for ref, total in (await db.execute(adj_stmt)).all():
+        if ref:
+            out[ref] = _money(out.get(ref, 0.0) + _money(total))
+    return out
 
 
 async def deposit_counts_today(
@@ -292,22 +355,17 @@ async def deposit_counts_today(
 
 
 def remaining_credit(account: AccountMaster, used_today: float) -> float:
-    """Rupees this account may still receive today. Never negative: an account already at or past
-    its ceiling has zero capacity, not a debt."""
-    return max(0.0, _money(_money(account.highest_credit) - _money(used_today)))
+    """Rupees this account may still receive today, against its CUMULATIVE daily bank credit limit.
+    Never negative: an account already at or past its ceiling has zero capacity, not a debt."""
+    return max(0.0, _money(_money(account.bank_daily_credit_limit) - _money(used_today)))
 
 
 def remaining_debit(account: AccountMaster, used_today: float) -> float:
-    """The debit-side counterpart of :func:`remaining_credit`, against ``highest_debit``.
-
-    Provided so the same "remaining capacity, never the raw amount" arithmetic is available to the
-    payout side when that work is specified. It is deliberately NOT wired into any workflow: this
-    task covers the deposit allocation flow, and no withdrawal path calls it. Note that
-    ``highest_debit`` is still auto-raised by a larger completed debit (the existing high-water
-    behaviour in ``transactions._track_account_debit``, left untouched), so a caller enforcing it
-    as a ceiling has to settle that question first.
+    """The debit-side counterpart of :func:`remaining_credit`, against the CUMULATIVE daily bank
+    debit limit. Kept here so the deposit module's callers (e.g. the balances endpoint) have one
+    import site; the withdrawal engine has its own copy against the same field.
     """
-    return max(0.0, _money(_money(account.highest_debit) - _money(used_today)))
+    return max(0.0, _money(_money(account.bank_daily_debit_limit) - _money(used_today)))
 
 
 # ═══ 2. Merchant note interpretation ════════════════════════════════════════════════════════════
@@ -641,7 +699,10 @@ class Candidate:
             "accountType": _type_value(self.account.account_type),
             "isOwnAccount": bool(self.account.is_own_account),
             "status": self.account.status,
+            # highestCredit is the PER-TRANSACTION cap; bankDailyCreditLimit is the cumulative daily
+            # ceiling that remainingCapacity is measured against.
             "highestCredit": _money(self.account.highest_credit),
+            "bankDailyCreditLimit": _money(self.account.bank_daily_credit_limit),
             "creditUsedToday": _money(self.used_today),
             "remainingCapacity": _money(self.remaining),
             "depositsToday": self.deposits_today,
@@ -659,9 +720,10 @@ def _evaluate(
 ) -> Candidate:
     """Apply every HARD rule to one account. Cheapest disqualification first.
 
-    The capacity test is the whole point of the exercise and is written as the rule reads:
-    projected usage must not exceed the ceiling. Both sides are rounded to paise first, so an
-    exact match is accepted and a one-paisa overshoot is not.
+    The two capacity tests are the whole point of the exercise and are written exactly as the rules
+    read: one deposit must not exceed the PER-TRANSACTION Highest Credit, and projected daily usage
+    must not exceed the CUMULATIVE daily bank credit limit. Every side is rounded to paise first, so
+    an exact match is accepted and a one-paisa overshoot is not.
     """
     remaining = remaining_credit(account, used_today)
     cand = Candidate(
@@ -687,14 +749,20 @@ def _evaluate(
         cand.reject_reason = REJECT_ACCOUNT_TYPE
         return cand
 
-    # An account with no configured ceiling has no capacity to give. Treated as not eligible
-    # rather than as unlimited — an unconfigured limit must never read as permission.
-    if _money(account.highest_credit) <= 0:
+    # An account needs BOTH a per-transaction Highest Credit AND a daily bank credit limit to be
+    # chosen. Either at 0 is "unconfigured" and has no capacity to give — never read as unlimited.
+    if _money(account.highest_credit) <= 0 or _money(account.bank_daily_credit_limit) <= 0:
         cand.reject_reason = REJECT_NO_LIMIT
         return cand
 
-    # Rule 5 — the hard daily credit limit.
-    if _money(_money(used_today) + _money(amount)) > _money(account.highest_credit):
+    # PER-TRANSACTION limit — this single deposit may not exceed Highest Credit, regardless of how
+    # much of the day's bank capacity remains.
+    if _money(amount) > _money(account.highest_credit):
+        cand.reject_reason = REJECT_OVER_PER_TXN
+        return cand
+
+    # CUMULATIVE daily limit — today's total plus this deposit may not exceed the daily bank limit.
+    if _money(_money(used_today) + _money(amount)) > _money(account.bank_daily_credit_limit):
         cand.reject_reason = REJECT_NO_CAPACITY
         return cand
 
@@ -764,9 +832,10 @@ class AllocationResult:
     rule: Optional[str] = None
     reason: str = ""
     customer_type: str = "NEW"
-    highest_credit: Optional[float] = None
+    highest_credit: Optional[float] = None          # per-transaction cap
+    bank_daily_credit_limit: Optional[float] = None # cumulative daily ceiling
     credit_used: Optional[float] = None
-    remaining: Optional[float] = None
+    remaining: Optional[float] = None               # remaining against the daily ceiling
     note: NoteRequest = field(default_factory=NoteRequest)
     requested_unavailable: bool = False          # the note named a bank/account nothing eligible matched
     candidates: list[Candidate] = field(default_factory=list)
@@ -882,8 +951,12 @@ async def _claim(
                 continue
             if (locked.status or "").upper() != "ACTIVE":
                 continue        # toggled inactive between the read and the lock
+            # Both limits re-checked under the lock: the per-transaction cap cannot move, but the
+            # daily figure can (another request may have consumed the headroom since the ranking).
+            if _money(amount) > _money(locked.highest_credit):
+                continue        # per-transaction cap (only reachable if the limit was edited down)
             used = (await credit_used_today(db, [cand.ref], on=on)).get(cand.ref, 0.0)
-            if _money(_money(used) + _money(amount)) > _money(locked.highest_credit):
+            if _money(_money(used) + _money(amount)) > _money(locked.bank_daily_credit_limit):
                 continue        # someone else took the room; try the next account
             cand.account = locked
             cand.used_today = _money(used)
@@ -980,6 +1053,7 @@ async def allocate_deposit_account(
         result.rule = rule
         result.reason = _RULE_TEXT.get(rule, rule) + (f" ({extra})" if extra else "")
         result.highest_credit = _money(cand.account.highest_credit)
+        result.bank_daily_credit_limit = _money(cand.account.bank_daily_credit_limit)
         result.credit_used = _money(cand.used_today)
         result.remaining = _money(cand.remaining)
         result.detail["selected"] = cand.snapshot()

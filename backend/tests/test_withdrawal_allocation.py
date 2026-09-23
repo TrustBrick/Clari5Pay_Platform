@@ -119,13 +119,20 @@ async def _account(
     db: AsyncSession, ref: str, *, name: str | None = None, bank: str = "HDFC Bank",
     debit: float = 100000.0, credit: float = 1000000.0, modes: str | None = None,
     status: str = "ACTIVE", atype: AccountType = AccountType.CURRENT, number: str | None = None,
+    daily_debit: float | None = None, daily_credit: float | None = None,
 ) -> AccountMaster:
+    # `debit`/`credit` are the PER-TRANSACTION Highest Debit / Highest Credit. The CUMULATIVE daily
+    # bank limits default to the same figures, reproducing the platform's pre-split single-ceiling
+    # behaviour so tests that predate the split stay meaningful; a test exercising the
+    # per-transaction vs daily distinction passes ``daily_debit`` / ``daily_credit`` apart.
     acc = AccountMaster(
         reference_number=ref, account_name=name or f"ACC-{ref}",
         account_number=number or f"9000{ref}", ifsc_code="HDFC0001234", bank_name=bank,
         branch="Mumbai", account_type=atype, status=status,
         created_date=date.today(), created_time="10:00:00",
         highest_credit=credit, highest_debit=debit, debit_alert_threshold=0.0,
+        bank_daily_credit_limit=(credit if daily_credit is None else daily_credit),
+        bank_daily_debit_limit=(debit if daily_debit is None else daily_debit),
         payout_modes=modes,
     )
     db.add(acc)
@@ -288,8 +295,11 @@ async def test_headroom_without_money_is_not_enough(db):
 
 @pytest.mark.asyncio
 async def test_money_without_headroom_is_not_enough(db):
-    """Negative scenario D — plenty of balance, insufficient Highest Debit remaining."""
-    await _account(db, "ACC1", debit=30000.0)
+    """Negative scenario D — plenty of balance, insufficient daily debit headroom remaining.
+
+    The per-transaction Highest Debit is generous (₹1,00,000), so ₹50,000 clears it; what it fails
+    is the cumulative daily bank debit limit of ₹30,000, which is the ceiling under test here."""
+    await _account(db, "ACC1", debit=100000.0, daily_debit=30000.0)
     await _fund(db, "D1", "ACC1", 1000000.0)
 
     result = await _allocate(db, 50000)
@@ -1028,7 +1038,10 @@ async def test_an_admin_retry_places_a_withdrawal_once_capacity_exists(db):
     created = await _create(db, merchant, 45000)
     await txr.manager_approve(created["id"], RemarkRequest(remark="ok"), None, db, manager)
 
-    acc.highest_debit = 100000.0                    # the Admin raises the limit
+    # The Admin raises BOTH the per-transaction Highest Debit and the cumulative daily limit — a
+    # ₹45,000 payout needs each to clear, so raising only one would leave the request stuck.
+    acc.highest_debit = 100000.0
+    acc.bank_daily_debit_limit = 100000.0
     await db.flush()
     out = await txr.retry_payout_allocation(created["id"], None, db, admin)
 
@@ -1313,7 +1326,9 @@ async def test_the_admin_journal_endpoint_explains_the_decision(db):
     merchant = await _merchant(db)
     admin = await _admin(db)
     await _account(db, "ACC1", debit=100000.0)
-    await _account(db, "ACC2", debit=1000.0)
+    # ACC2's per-transaction cap is generous but its cumulative daily debit limit (₹1,000) cannot
+    # take ₹45,000, so it is rejected on the daily ceiling — the case this test documents.
+    await _account(db, "ACC2", debit=100000.0, daily_debit=1000.0)
     await _fund(db, "D1", "ACC1", 500000.0)
     await _fund(db, "D2", "ACC2", 500000.0)
     created = await _create(db, merchant, 45000)
