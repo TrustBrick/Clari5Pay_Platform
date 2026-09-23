@@ -116,6 +116,9 @@ async def _account(db: AsyncSession, ref: str = "ACC1", *, bank: str = "HDFC Ban
         account_type=AccountType.CURRENT, status="ACTIVE", created_date=date.today(),
         created_time="10:00:00", highest_credit=credit, highest_debit=50000.0,
         cdm_daily_limit=cdm_limit,
+        # Per-transaction caps double as the cumulative daily ceilings here (pre-split behaviour),
+        # so the account is eligible for allocation exactly as before the limit split.
+        bank_daily_credit_limit=credit, bank_daily_debit_limit=50000.0,
     )
     db.add(acc)
     await db.flush()

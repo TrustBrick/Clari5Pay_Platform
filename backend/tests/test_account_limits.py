@@ -89,6 +89,9 @@ async def _account(db: AsyncSession, ref="ACC0000001", *, name="sindu",
         account_type=AccountType.CURRENT, status="ACTIVE",
         created_date=date.today(), created_time="10:00:00",
         highest_credit=credit, highest_debit=debit, debit_alert_threshold=debit,
+        # The cumulative daily bank limits start equal to the per-transaction caps, exactly as the
+        # split migration seeds them, so an edit's audited "before" values match.
+        bank_daily_credit_limit=credit, bank_daily_debit_limit=debit,
     )
     db.add(acc)
     await db.flush()
@@ -282,8 +285,10 @@ async def test_an_edit_records_both_before_and_after_values(db):
     assert "sindu" in entry.reason                          # Account Name
     assert "Limit review" in entry.reason                   # Reason / description
     assert "IST" in entry.reason                            # Changed At, in IST
-    assert entry.old_value == "Highest Credit ₹800,000.00 · Highest Debit ₹100,000.00"
-    assert entry.new_value == "Highest Credit ₹1,000,000.00 · Highest Debit ₹200,000.00"
+    assert entry.old_value == ("Highest Credit ₹800,000.00 · Highest Debit ₹100,000.00 · "
+                               "Daily Credit ₹800,000.00 · Daily Debit ₹100,000.00")
+    assert entry.new_value == ("Highest Credit ₹1,000,000.00 · Highest Debit ₹200,000.00 · "
+                               "Daily Credit ₹800,000.00 · Daily Debit ₹100,000.00")
     assert entry.username == "Admin One"                    # Changed By
     assert entry.role == "ADMIN"
     assert entry.created_at is not None                     # Changed At

@@ -341,16 +341,31 @@ class AccountMaster(Base):
     created_time: Mapped[str] = mapped_column(String(16), nullable=False)
     last_maintenance_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     last_maintenance_time: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
-    # Account daily limits / thresholds:
-    #  • highest_credit — the account's HARD DAILY CREDIT limit, enforced by the deposit
-    #    allocation engine. Admin-configured; never auto-raised.
-    #  • highest_debit  — the account's HARD DAILY DEBIT limit, enforced by the withdrawal
-    #    allocation engine. Admin-configured; never auto-raised. An account at 0 has no configured
-    #    capacity and is never chosen automatically, so 0 is "unconfigured", NOT "unlimited".
+    # Account limits / thresholds. There are TWO KINDS, and confusing them was the whole point of
+    # the 2026-09-23 correction, so the distinction is spelled out here once:
+    #
+    #  PER-TRANSACTION limits — the cap on ONE individual transaction.
+    #  • highest_credit — the maximum amount allowed in a SINGLE deposit. A ₹75,000 request is
+    #    accepted and a ₹75,000.01 request refused, whatever the day's remaining bank capacity.
+    #  • highest_debit  — the maximum amount allowed in a SINGLE withdrawal/debit (and, for a split
+    #    payout, in ONE account's leg). Never a daily figure.
+    #
+    #  CUMULATIVE DAILY limits — the cap on the account's TOTAL for a calendar day (IST).
+    #  • bank_daily_credit_limit — the most the account may RECEIVE in total across one day. The
+    #    deposit allocation engine enforces `credit_used_today + amount <= bank_daily_credit_limit`.
+    #  • bank_daily_debit_limit  — the most the account may SEND in total across one day. The
+    #    withdrawal allocation engine enforces `debit_used_today + amount <= bank_daily_debit_limit`.
+    #
+    #  A deposit/withdrawal is eligible only when BOTH its per-transaction limit AND the cumulative
+    #  daily limit pass. An account with either at 0 has no configured capacity and is never chosen
+    #  automatically, so 0 is "unconfigured", NOT "unlimited".
+    #
     #  • debit_alert_threshold — the "Highest Debit" value the admin sets at creation, kept FIXED.
     #    When >0, a completed debit BELOW it raises a low-debit alert.
     highest_credit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     highest_debit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    bank_daily_credit_limit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    bank_daily_debit_limit: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     debit_alert_threshold: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     #  • cdm_daily_limit — the account's HARD DAILY limit for CDM deposits ONLY, and a separate
     #    ceiling from highest_credit in both directions: it is never derived from it, and reaching

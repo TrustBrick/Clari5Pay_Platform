@@ -400,12 +400,20 @@ class AccountCreate(BaseModel):
     status: str = "ACTIVE"
     merchant_id: Optional[int] = None
     upiId: Optional[str] = None   # optional UPI to link to this account on creation
-    # The account's daily Highest Credit / Highest Debit limits (₹). Neither is auto-raised: both
-    # are HARD daily ceilings the allocation engines pay within, changed only by an Admin. The
-    # Highest Debit value also seeds the FIXED low-debit alert threshold. It is REQUIRED for an
-    # ACTIVE account — 0 means "unconfigured", and an unconfigured account is never chosen to pay.
+    # The account's PER-TRANSACTION Highest Credit / Highest Debit (₹): the cap on ONE deposit and
+    # ONE withdrawal respectively. The Highest Debit value also seeds the FIXED low-debit alert
+    # threshold. Highest Debit is REQUIRED for an ACTIVE account — 0 means "unconfigured", and an
+    # unconfigured account is never chosen to pay.
     highest_credit: Optional[float] = 0.0
     highest_debit: Optional[float] = 0.0
+    # The account's CUMULATIVE daily bank limits (₹): the most it may RECEIVE / SEND in total across
+    # one IST calendar day. Separate from the per-transaction caps above and enforced independently
+    # by the allocation engines. 0 = "unconfigured"; the daily credit limit is required for an
+    # account to be auto-allocated a deposit, the daily debit limit for it to be auto-allocated a
+    # payout. Omitted defaults to the per-transaction value at creation (a one-transaction/day
+    # account) so a caller that only sends the old two fields still produces a usable account.
+    bank_daily_credit_limit: Optional[float] = None
+    bank_daily_debit_limit: Optional[float] = None
     # Which transaction modes this account can pay out by (UPI / IMPS / NEFT / RTGS). Empty or
     # omitted means every mode — see AccountPayoutModesUpdate.
     payout_modes: Optional[list[str]] = None
@@ -416,14 +424,23 @@ class AccountCreate(BaseModel):
 
 
 class AccountLimitsUpdate(BaseModel):
-    """Admin edit of one account's configured Highest Credit / Highest Debit.
+    """Admin edit of one account's configured limits.
 
-    Both are required and re-validated server-side (see accounts.update_account_limits) — the
-    browser's copy of them is never trusted. Declaring them as ``float`` is the first gate:
-    anything non-numeric is rejected before the route runs.
+    Two kinds, all re-validated server-side (see accounts.update_account_limits) — the browser's
+    copy of them is never trusted. Declaring them as ``float`` is the first gate: anything
+    non-numeric is rejected before the route runs.
+
+      • highest_credit / highest_debit — PER-TRANSACTION caps (one deposit / one withdrawal).
+      • bank_daily_credit_limit / bank_daily_debit_limit — CUMULATIVE daily bank ceilings.
+
+    The two daily fields are optional for backward compatibility: a caller sending only the
+    original two fields (an older client) is treated as leaving the daily ceilings unchanged, so an
+    existing integration never silently zeroes an account's daily capacity.
     """
     highest_credit: float
     highest_debit: float
+    bank_daily_credit_limit: Optional[float] = None
+    bank_daily_debit_limit: Optional[float] = None
     reason: Optional[str] = None       # optional note carried into the audit trail
 
 

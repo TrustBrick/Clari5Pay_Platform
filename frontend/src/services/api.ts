@@ -579,10 +579,15 @@ export const accountAPI = {
     const res = await api.patch<Account>(`/api/accounts/${ref}/toggle`, { reason });
     return res.data;
   },
-  // Admin edit of an account's configured Highest Credit / Highest Debit. Limits only — the
-  // balance is derived server-side and is untouched by this call. The backend re-validates both
-  // values and rejects any caller that is not an Admin, so hiding the button is not the control.
-  updateLimits: async (ref: string, data: { highest_credit: number; highest_debit: number; reason?: string }) => {
+  // Admin edit of an account's configured limits: the PER-TRANSACTION Highest Credit / Highest
+  // Debit and the CUMULATIVE Bank Daily Credit / Debit ceilings. Limits only — the balance is
+  // derived server-side and is untouched by this call. The backend re-validates every value and
+  // rejects any caller that is not an Admin, so hiding the button is not the control. The two daily
+  // fields are optional on the wire (omitting them leaves those ceilings unchanged).
+  updateLimits: async (ref: string, data: {
+    highest_credit: number; highest_debit: number;
+    bank_daily_credit_limit?: number; bank_daily_debit_limit?: number; reason?: string;
+  }) => {
     const res = await api.patch<Account>(`/api/accounts/${ref}/limits`, data);
     return res.data;
   },

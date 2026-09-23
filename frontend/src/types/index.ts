@@ -415,13 +415,15 @@ export interface Account {
   lastMaintenanceTime?: string | null;
   // Configured account limits (also returned by /balances). Admin-editable from the account's
   // Details popup; they are configuration, never part of any balance calculation.
-  // highestCredit is the account's HARD DAILY CREDIT LIMIT — the ceiling the deposit allocation
-  // engine enforces server-side on every request.
+  // highestCredit / highestDebit are the PER-TRANSACTION caps — the most ONE deposit / ONE
+  // withdrawal may be. The allocation engines enforce them per request, server-side.
   highestCredit?: number;
-  // highestDebit is the account's HARD DAILY DEBIT LIMIT — the ceiling the withdrawal allocation
-  // engine enforces server-side on every payout. It is no longer a high-water mark that a larger
-  // completed debit raises.
   highestDebit?: number;
+  // bankDailyCreditLimit / bankDailyDebitLimit are the CUMULATIVE daily ceilings — the most the
+  // account may RECEIVE / SEND in total across one IST day. Enforced independently of the
+  // per-transaction caps above; 0 = unconfigured (never auto-allocated).
+  bankDailyCreditLimit?: number;
+  bankDailyDebitLimit?: number;
   // The largest single debit ever seen leaving this account — what highestDebit used to mean
   // before it became a daily ceiling. Preserved so the change of meaning loses no history, and
   // shown so an Admin choosing a daily limit can see what the account has handled. It never
@@ -504,7 +506,10 @@ export interface AccountBalance {
   totalDeposited: number;
   highestDeposit?: number;
   lowestDeposit?: number;
-  highestCredit?: number;   // configured HARD DAILY CREDIT LIMIT (Admin-editable)
+  highestCredit?: number;        // PER-TRANSACTION cap on one deposit (Admin-editable)
+  highestDebit?: number;         // PER-TRANSACTION cap on one withdrawal (Admin-editable)
+  bankDailyCreditLimit?: number; // CUMULATIVE daily bank credit ceiling (Admin-editable)
+  bankDailyDebitLimit?: number;  // CUMULATIVE daily bank debit ceiling (Admin-editable)
   // The account's CDM ceiling and where today stands against it. Independent of the credit figures
   // in both directions: only CDM deposits consume it, and consuming it never touches Highest
   // Credit. `cdmLimitConfigured` distinguishes "nothing left today" from "no limit ever granted",
@@ -513,7 +518,6 @@ export interface AccountBalance {
   cdmUsedToday?: number;
   cdmRemainingToday?: number;
   cdmLimitConfigured?: boolean;
-  highestDebit?: number;    // configured HARD DAILY DEBIT LIMIT (Admin-editable)
   isOwnAccount?: boolean;
   // Which transaction modes this account can PAY OUT by. An account with none configured is
   // reported as all four — unconfigured means fully capable, so it is never disqualified.
@@ -545,6 +549,14 @@ export interface AccountBalance {
   available: number;        // deposits − withdrawals − settlements + net manual adjustments
   linkedUpis?: { id: number; label: string; upiId: string; status: string }[];
   userCount?: number;       // distinct users (operators) who deposited into this account
+  // Pay-in received by payment mode (UPI / Bank Transfer / CDM / Credit Card / Debit Card / …), for
+  // Today / This Month / All Time. Empty modes are absent from each window's map. "Today" and "This
+  // Month" roll over with the IST calendar; "All Time" never resets.
+  payinByMode?: {
+    today: Record<string, number>;
+    month: Record<string, number>;
+    allTime: Record<string, number>;
+  };
   merchants: AccountMerchantBalance[];
 }
 

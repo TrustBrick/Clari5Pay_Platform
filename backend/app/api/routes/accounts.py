@@ -262,6 +262,30 @@ async def account_balances(
     comm_in: dict[str, float] = defaultdict(float)    # account — pay-in commission (deposits)
     comm_out: dict[str, float] = defaultdict(float)   # account — pay-out + settlement commission
 
+    # Pay-in received per account, split by PAYMENT MODE and by time window (Today / This Month /
+    # All Time). Computed from the actual completed deposit rows — the same source as every other
+    # figure on this screen — never a separate counter that could drift. "Today" is the current IST
+    # date and "This Month" the first of the current IST month, so both roll over on their own with
+    # the calendar; "All Time" never resets. (§15 Account Management reporting.)
+    _today = alloc.ist_today()
+    _month_start = _today.replace(day=1)
+
+    def _payin_mode(dtype: str | None) -> str:
+        """One of the reportable payment-mode buckets for a deposit's ``deposit_type``."""
+        return {
+            "UPI": "UPI",
+            "BANK": "Bank Transfer", "IMPS": "Bank Transfer",
+            "NEFT": "Bank Transfer", "RTGS": "Bank Transfer",
+            "CDM": "CDM",
+            "CREDIT_CARD": "Credit Card", "DEBIT_CARD": "Debit Card", "CARD": "Card",
+            "CASH": "Cash", "CRYPTO": "Crypto",
+        }.get((dtype or "").upper(), "Other")
+
+    # account -> window ("today"/"month"/"allTime") -> mode -> amount
+    payin_modes: dict[str, dict[str, dict[str, float]]] = defaultdict(
+        lambda: {"today": defaultdict(float), "month": defaultdict(float),
+                 "allTime": defaultdict(float)})
+
     def _fee(merchant_name: str, leg: str) -> float:
         """The business's fee rate for one leg, as a fraction. An unset fee reads as 0."""
         rep = rep_by_name.get(merchant_name)
@@ -284,6 +308,14 @@ async def account_balances(
                 if t.admin_ref not in dep_low or t.amount < dep_low[t.admin_ref]:
                     dep_low[t.admin_ref] = t.amount
                 comm_in[t.admin_ref] += t.amount * _fee(t.merchant_name, "in")
+                # Pay-in by mode / window (§15). tx_date is the IST business date.
+                _mode = _payin_mode(t.deposit_type)
+                _pm = payin_modes[t.admin_ref]
+                _pm["allTime"][_mode] += t.amount
+                if t.tx_date and t.tx_date >= _month_start:
+                    _pm["month"][_mode] += t.amount
+                if t.tx_date == _today:
+                    _pm["today"][_mode] += t.amount
         elif ty.startswith("WITHDRAWAL") or ty.startswith("SETTLEMENT"):
             # A debit attributes to the account it was ACTUALLY paid from when the payout step
             # recorded one; otherwise it falls back to the member's most-recent receiving account
@@ -335,10 +367,13 @@ async def account_balances(
             "totalDeposited": round(total_d, 2),
             "highestDeposit": round(dep_high.get(ref, 0.0), 2),
             "lowestDeposit": round(dep_low.get(ref, 0.0), 2),
-            # Highest Credit is the account's configured HARD DAILY CREDIT LIMIT; Highest Debit
-            # remains the recorded high-water mark, auto-raised by a larger completed debit.
+            # Highest Credit / Highest Debit are the PER-TRANSACTION caps (one deposit / one
+            # withdrawal); Bank Daily Credit/Debit Limit are the CUMULATIVE daily ceilings the
+            # "Used Today" / "Remaining" figures below are measured against.
             "highestCredit": round(a.highest_credit or 0.0, 2),
             "highestDebit": round(a.highest_debit or 0.0, 2),
+            "bankDailyCreditLimit": round(a.bank_daily_credit_limit or 0.0, 2),
+            "bankDailyDebitLimit": round(a.bank_daily_debit_limit or 0.0, 2),
             "isOwnAccount": bool(a.is_own_account),
             # Where this account stands against its daily credit limit RIGHT NOW. "Used" counts
             # every deposit routed here today that has not been rejected or cancelled — an
@@ -381,6 +416,15 @@ async def account_balances(
             "available": round(total_d - wd - st + adj_by_acct.get(ref, 0.0), 2),
             "linkedUpis": upis_by_acct.get(ref, []),
             "userCount": len(acct_users.get(ref, set())),   # distinct depositing users (operators)
+            # Pay-in received by payment mode, for Today / This Month / All Time (§15). Empty modes
+            # are simply absent from each window's map; "Today" and "This Month" roll over with the
+            # IST calendar and "All Time" never resets, because all three are derived from the
+            # deposit rows here rather than a stored counter.
+            "payinByMode": {
+                w: ({k: round(v, 2) for k, v in payin_modes[ref][w].items()}
+                    if ref in payin_modes else {})
+                for w in ("today", "month", "allTime")
+            },
             "merchants": rows,
         })
     await cache_set("c:accounts:balances", out, 5)
@@ -669,13 +713,16 @@ def _a(a: AccountMaster, merchant_name: str | None = None, has_account_details_i
         "createdTime": a.created_time,
         "lastMaintenanceDate": str(a.last_maintenance_date) if a.last_maintenance_date else None,
         "lastMaintenanceTime": a.last_maintenance_time,
-        # Highest Credit is the account's HARD DAILY CREDIT LIMIT — the ceiling the deposit
-        # allocation engine enforces on every request (services/deposit_allocation).
+        # Highest Credit / Highest Debit are the PER-TRANSACTION caps — the most ONE deposit / ONE
+        # withdrawal may be. The deposit and withdrawal allocation engines enforce them per request
+        # (services/deposit_allocation, services/withdrawal_allocation).
         "highestCredit": round(a.highest_credit or 0.0, 2),
-        # Highest Debit is the account's HARD DAILY DEBIT LIMIT — the ceiling the withdrawal
-        # allocation engine enforces on every payout (services/withdrawal_allocation). It is no
-        # longer a high-water mark that a larger completed debit raises.
         "highestDebit": round(a.highest_debit or 0.0, 2),
+        # Bank Daily Credit/Debit Limit are the CUMULATIVE daily ceilings — the most the account may
+        # RECEIVE / SEND in total across one IST day. Enforced independently of the per-transaction
+        # caps above; 0 = unconfigured (never auto-allocated).
+        "bankDailyCreditLimit": round(a.bank_daily_credit_limit or 0.0, 2),
+        "bankDailyDebitLimit": round(a.bank_daily_debit_limit or 0.0, 2),
         # The largest single debit ever seen leaving this account — what Highest Debit USED to
         # mean. Shown so an Admin choosing a daily limit can see what the account has handled;
         # nothing reads it to authorise a payout.
@@ -877,9 +924,18 @@ async def create_account(
         raise HTTPException(status_code=400, detail="Reference number already exists")
 
     now = datetime.now()
-    # Validated once, up front: it raises for an ACTIVE account with no daily limit, so the row is
-    # never built at all in that case.
+    # Validated once, up front: it raises for an ACTIVE account with no per-transaction Highest
+    # Debit, so the row is never built at all in that case.
     debit_limit = _created_debit_limit(data)
+    credit_limit = max(0.0, round(float(data.highest_credit or 0.0), 2))
+    # The CUMULATIVE daily bank limits. When the form omits them (an older client that only knows
+    # the two per-transaction fields), each defaults to its per-transaction value — a
+    # one-transaction-per-day account — so an existing integration still creates a usable account
+    # rather than one with zero daily capacity. An Admin widens the daily limit afterwards.
+    daily_credit = (max(0.0, round(float(data.bank_daily_credit_limit), 2))
+                    if data.bank_daily_credit_limit is not None else credit_limit)
+    daily_debit = (max(0.0, round(float(data.bank_daily_debit_limit), 2))
+                   if data.bank_daily_debit_limit is not None else debit_limit)
     acc = AccountMaster(
         reference_number=ref,
         account_name=data.account_name,
@@ -893,12 +949,15 @@ async def create_account(
         created_time=now.strftime("%H:%M:%S"),
         last_maintenance_date=date.today(),
         last_maintenance_time=now.strftime("%H:%M:%S"),
-        highest_credit=max(0.0, data.highest_credit or 0.0),
-        # The entered Highest Debit is the account's HARD DAILY DEBIT LIMIT, and it seeds the
-        # FIXED low-debit alert threshold as well. Neither drifts: the limit is changed only by an
-        # Admin editing it, and the threshold stays put so "debit below the set amount" alerts
-        # remain stable.
+        # PER-TRANSACTION caps (one deposit / one withdrawal).
+        highest_credit=credit_limit,
+        # The entered Highest Debit is the PER-TRANSACTION cap, and it seeds the FIXED low-debit
+        # alert threshold as well. Neither drifts: the limit is changed only by an Admin editing it,
+        # and the threshold stays put so "debit below the set amount" alerts remain stable.
         highest_debit=debit_limit,
+        # CUMULATIVE daily bank ceilings (per IST day), enforced independently of the caps above.
+        bank_daily_credit_limit=daily_credit,
+        bank_daily_debit_limit=daily_debit,
         debit_alert_threshold=debit_limit,
         observed_max_debit=0.0,
         # A limit entered at creation IS an explicit decision, so it is stamped as one. An account
@@ -1030,6 +1089,14 @@ async def update_account_limits(
     """
     credit = _limit(data.highest_credit, "Highest Credit")
     debit = _limit(data.highest_debit, "Highest Debit")
+    # The CUMULATIVE daily bank limits are optional on the wire: an older client that only sends the
+    # two per-transaction fields leaves them unchanged rather than zeroing an account's daily
+    # capacity. When sent, each is validated exactly like a per-transaction limit (numeric, finite,
+    # > 0).
+    daily_credit = (_limit(data.bank_daily_credit_limit, "Bank Daily Credit Limit")
+                    if data.bank_daily_credit_limit is not None else None)
+    daily_debit = (_limit(data.bank_daily_debit_limit, "Bank Daily Debit Limit")
+                   if data.bank_daily_debit_limit is not None else None)
 
     acc = (await db.execute(
         select(AccountMaster).where(AccountMaster.reference_number == reference_number)
@@ -1039,12 +1106,19 @@ async def update_account_limits(
 
     prev_credit = round(acc.highest_credit or 0.0, 2)
     prev_debit = round(acc.highest_debit or 0.0, 2)
+    prev_daily_credit = round(acc.bank_daily_credit_limit or 0.0, 2)
+    prev_daily_debit = round(acc.bank_daily_debit_limit or 0.0, 2)
+    new_daily_credit = daily_credit if daily_credit is not None else prev_daily_credit
+    new_daily_debit = daily_debit if daily_debit is not None else prev_daily_debit
     name_map = await _merchant_name_map(db)
-    if (prev_credit, prev_debit) == (credit, debit):
+    if ((prev_credit, prev_debit, prev_daily_credit, prev_daily_debit)
+            == (credit, debit, new_daily_credit, new_daily_debit)):
         return _a(acc, name_map.get(acc.reference_number))   # nothing changed — nothing to audit
 
     acc.highest_credit = credit
     acc.highest_debit = debit
+    acc.bank_daily_credit_limit = new_daily_credit
+    acc.bank_daily_debit_limit = new_daily_debit
     # This is the ONE place a daily debit limit is chosen, so it is the one place the choice is
     # stamped. The stamp is what separates a limit a person decided from one inherited by an
     # account that predates the daily-limit rule; the readiness report reads exactly this.
@@ -1059,7 +1133,9 @@ async def update_account_limits(
         db, "ACCOUNT_LIMITS_UPDATED",
         f"{acc.reference_number} ({acc.account_name}) limits updated by {actor.name} — "
         f"Highest Credit {_inr(prev_credit)} → {_inr(credit)}, "
-        f"Highest Debit {_inr(prev_debit)} → {_inr(debit)}",
+        f"Highest Debit {_inr(prev_debit)} → {_inr(debit)}, "
+        f"Daily Credit {_inr(prev_daily_credit)} → {_inr(new_daily_credit)}, "
+        f"Daily Debit {_inr(prev_daily_debit)} → {_inr(new_daily_debit)}",
         actor=actor,
     )
     # Account ID + Name, both before/after pairs, who changed it, when (created_at, rendered IST
@@ -1067,8 +1143,10 @@ async def update_account_limits(
     await record_audit(
         db, "ACCOUNT_LIMITS_UPDATED", actor=actor,
         entity_type="account", entity_id=acc.reference_number,
-        old=f"Highest Credit {_inr(prev_credit)} · Highest Debit {_inr(prev_debit)}",
-        new=f"Highest Credit {_inr(credit)} · Highest Debit {_inr(debit)}",
+        old=(f"Highest Credit {_inr(prev_credit)} · Highest Debit {_inr(prev_debit)} · "
+             f"Daily Credit {_inr(prev_daily_credit)} · Daily Debit {_inr(prev_daily_debit)}"),
+        new=(f"Highest Credit {_inr(credit)} · Highest Debit {_inr(debit)} · "
+             f"Daily Credit {_inr(new_daily_credit)} · Daily Debit {_inr(new_daily_debit)}"),
         reason=f"{acc.account_name} · {note} · {ts}", ip=ip,
     )
     # The account list and balances are served from a short-lived cache; drop both so the updated

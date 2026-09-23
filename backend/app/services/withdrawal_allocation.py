@@ -13,33 +13,39 @@ would mean one set of rules pretending to be two. What IS shared is the pure not
 (``deposit_allocation.parse_note`` and friends), because "Use Bank of Baroda" means the same thing
 whichever direction the money is going.
 
-WHAT MAKES A LIMIT A LIMIT
+WHAT MAKES A LIMIT A LIMIT — TWO KINDS, NEVER CONFUSED
+──────────────────────────────────────────────────────
+  • ``AccountMaster.highest_debit`` is the PER-TRANSACTION cap — the most ONE withdrawal (or, in a
+    split, ONE account's leg) may be. The test is ``amount <= highest_debit``: a ₹75,000 ceiling
+    pays ₹75,000 and refuses ₹75,000.01, whatever the day's remaining capacity. Earlier payouts do
+    NOT eat into it.
+
+  • ``AccountMaster.bank_daily_debit_limit`` is the CUMULATIVE daily ceiling — the most the account
+    may SEND in TOTAL across one IST calendar day. The test is
+
+        debit_used_today(account) + amount  <=  bank_daily_debit_limit
+
+    so a ₹2,00,000 daily limit that has paid ₹1,50,000 today can still pay ₹50,000 and cannot pay
+    ₹50,001. Equality passes; a single paisa over does not.
+
+Neither is a high-water mark: ``transactions._track_account_debit`` no longer raises anything, so a
+larger completed debit never moves a ceiling. The configured values change in exactly one place: an
+Admin editing them, which is audited.
+
+THREE INDEPENDENT CEILINGS
 ──────────────────────────
-``AccountMaster.highest_debit`` is a HARD DAILY DEBIT CEILING. The test is never
-``amount <= highest_debit``; it is always
+A single-account withdrawal must clear ALL THREE, and they fail for different reasons and are fixed
+differently:
 
-    debit_used_today(account) + amount  <=  highest_debit
-
-so an account with a ₹1,00,000 ceiling that has already paid out ₹70,000 today can pay ₹30,000 and
-cannot pay ₹30,001. Equality passes — reaching the ceiling exactly is allowed; exceeding it by a
-single paisa is not.
-
-``highest_debit`` used to be a high-water MARK that ``transactions._track_account_debit`` raised to
-match any larger completed debit. A ceiling that moves up to accommodate whatever arrives is not a
-ceiling, so that write is gone (the same correction ``highest_credit`` received). The configured
-value now changes in exactly one place: an Admin editing it, which is audited.
-
-TWO INDEPENDENT CEILINGS
-────────────────────────
-A withdrawal must clear BOTH, and they fail for different reasons and are fixed differently:
-
+  • **Per-transaction Highest Debit** — the cap on this one payout (above).
+  • **Remaining daily debit capacity** — ``bank_daily_debit_limit − debit_used_today``, a policy
+    limit that resets at midnight IST.
   • **Available balance** — the money really in the account, from the existing accounting ledger
     (``services/account_ledger.account_balance``). No second balance store is introduced.
-  • **Remaining debit capacity** — ``highest_debit − debit_used_today``, a policy limit that
-    resets at midnight IST.
 
-An account's USABLE CAPACITY for one withdrawal is the smaller of the two. An account with plenty
-of money and no headroom is excluded, and so is one with headroom and no money.
+An account's USABLE CAPACITY for one payout leg is the SMALLEST of the three: the per-transaction
+cap, the remaining daily headroom, and the balance. So no leg is ever larger than Highest Debit, no
+account is ever taken past its daily limit, and none pays money it does not hold.
 
 WHAT "USED TODAY" COUNTS — AND WHY IT ISN'T ONLY COMPLETED PAYOUTS
 ─────────────────────────────────────────────────────────────────
@@ -48,7 +54,9 @@ from the moment the payment is made. If only completed payouts counted, two requ
 seconds apart would both read "₹0 used", both be allocated the same account, and together breach
 the ceiling — the exact failure this service exists to prevent. So today's usage is every payout
 leg dated today that is still LIVE (``ALLOCATED``) or settled (``PAID``), plus any legacy debit
-recorded straight onto a transaction before payout legs existed.
+recorded straight onto a transaction before payout legs existed, PLUS manual Account-Management
+DEBIT adjustments dated today — money that really left the account and must consume the same daily
+bank capacity rather than bypass it.
 
 Rejecting or cancelling a withdrawal RELEASES its legs, and with them their capacity. There is no
 separate reservation record to keep in step: the leg IS the reservation, and it becomes the debit.
@@ -81,13 +89,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import (
-    AccountMaster, AccountType, MerchantBankAccount, Transaction, TxStatus, TxType,
-    WithdrawalAllocation, WithdrawalPayoutLeg,
+    AccountLedgerEntry, AccountMaster, AccountType, MerchantBankAccount, Transaction, TxStatus,
+    TxType, WithdrawalAllocation, WithdrawalPayoutLeg,
 )
 from app.services import account_ledger as ledger
-# Pure, direction-agnostic note reading, reused rather than re-written. Nothing in the deposit
-# engine is called that touches deposit data or deposit limits.
-from app.services.deposit_allocation import NoteRequest, parse_note
+# Pure, direction-agnostic helpers, reused rather than re-written. Nothing that touches deposit data
+# or deposit limits is called: note parsing means the same thing whichever way the money flows, and
+# the IST-day → UTC window is the same calendar-day arithmetic both sides need.
+from app.services.deposit_allocation import NoteRequest, ist_day_utc_bounds, parse_note
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -136,6 +145,10 @@ _RULE_TEXT = {
 REJECT_INACTIVE = "ACCOUNT_NOT_AVAILABLE"
 REJECT_NO_LIMIT = "NO_DEBIT_LIMIT_CONFIGURED"
 REJECT_MODE = "TRANSACTION_MODE_NOT_SUPPORTED"
+# The withdrawal is larger than this account's PER-TRANSACTION Highest Debit — distinct from the
+# cumulative daily failure, and fixed differently (raise the single-transaction cap, or let the
+# split spread it), so it is recorded on its own.
+REJECT_OVER_PER_TXN = "AMOUNT_EXCEEDS_HIGHEST_DEBIT"
 REJECT_NO_CAPACITY = "DAILY_DEBIT_LIMIT_REACHED"
 REJECT_NO_BALANCE = "INSUFFICIENT_AVAILABLE_BALANCE"
 REJECT_LOCKED = "CONCURRENTLY_ALLOCATED"
@@ -301,6 +314,30 @@ async def debit_used_today(
     for ref, total in (await db.execute(legacy_stmt)).all():
         if ref:
             out[ref] = _money(out.get(ref, 0.0) + _money(total))
+
+    # Manual Account-Management DEBIT adjustments dated today take real money OUT of the account, so
+    # they consume the same daily bank debit capacity as a payout and are added here rather than
+    # kept in a separate counter the engine could evaluate around. Filtered by the UTC window of the
+    # IST day (manual entries carry only created_at). No overlap with the two sources above — a
+    # manual adjustment has no transaction_ref and is never a payout leg.
+    start_utc, end_utc = ist_day_utc_bounds(day)
+    adj_stmt = (
+        select(AccountLedgerEntry.account_ref,
+               func.coalesce(func.sum(AccountLedgerEntry.amount), 0.0))
+        .where(
+            AccountLedgerEntry.entry_type == ledger.MANUAL_ADJUSTMENT,
+            AccountLedgerEntry.direction == ledger.DEBIT,
+            AccountLedgerEntry.account_ref.isnot(None),
+            AccountLedgerEntry.created_at >= start_utc,
+            AccountLedgerEntry.created_at < end_utc,
+        )
+        .group_by(AccountLedgerEntry.account_ref)
+    )
+    if refs is not None:
+        adj_stmt = adj_stmt.where(AccountLedgerEntry.account_ref.in_(refs))
+    for ref, total in (await db.execute(adj_stmt)).all():
+        if ref:
+            out[ref] = _money(out.get(ref, 0.0) + _money(total))
     return out
 
 
@@ -327,9 +364,10 @@ async def withdrawal_counts_today(
 
 
 def remaining_debit(account: AccountMaster, used_today: float) -> float:
-    """Rupees this account may still pay out today. Never negative: an account already at or past
-    its ceiling has zero capacity, not a licence to go further."""
-    return max(0.0, _money(_money(account.highest_debit) - _money(used_today)))
+    """Rupees this account may still pay out today, against its CUMULATIVE daily bank debit limit.
+    Never negative: an account already at or past its ceiling has zero capacity, not a licence to go
+    further."""
+    return max(0.0, _money(_money(account.bank_daily_debit_limit) - _money(used_today)))
 
 
 # ═══ 3. Beneficiary ═════════════════════════════════════════════════════════════════════════════
@@ -544,18 +582,23 @@ class Candidate:
     @property
     def usable(self) -> float:
         """Rule 17's usable capacity: the most this account could contribute to this withdrawal —
-        the smaller of the money it holds and the headroom it has left today.
+        the SMALLEST of the three ceilings, so a split leg can never breach any of them: the money
+        it holds, the daily headroom it has left, and its PER-TRANSACTION Highest Debit (one leg is
+        one transaction, so it may never exceed that cap).
 
-        An account with NO configured daily limit is bounded only by its balance. It is never
-        chosen automatically (see :func:`_evaluate`), but it can be paid from when an operator
-        names it, and reporting its capacity as zero would make the audit record of that payout
-        read as impossible.
+        An account with NO configured limits is bounded only by its balance. It is never chosen
+        automatically (see :func:`_evaluate`), but it can be paid from when an operator names it,
+        and reporting its capacity as zero would make the audit record of that payout read as
+        impossible.
         """
         if not self.eligible:
             return 0.0
-        if _money(self.account.highest_debit) <= 0:
+        per_txn = _money(self.account.highest_debit)
+        daily = _money(self.account.bank_daily_debit_limit)
+        if per_txn <= 0 or daily <= 0:
+            # Operator-directed on an unconfigured account: no policy ceiling to apply, only balance.
             return _money(self.balance)
-        return _money(min(self.balance, self.remaining))
+        return _money(min(self.balance, self.remaining, per_txn))
 
     def snapshot(self) -> dict:
         """The point-in-time record of this account's position, for the audit journal."""
@@ -567,7 +610,10 @@ class Candidate:
             "isOwnAccount": bool(self.account.is_own_account),
             "status": self.account.status,
             "payoutModes": sorted(account_modes(self.account) or TRANSACTION_MODES),
+            # highestDebit is the PER-TRANSACTION cap; bankDailyDebitLimit is the cumulative daily
+            # ceiling that remainingCapacity is measured against.
             "highestDebit": _money(self.account.highest_debit),
+            "bankDailyDebitLimit": _money(self.account.bank_daily_debit_limit),
             "debitUsedToday": _money(self.used_today),
             "remainingCapacity": _money(self.remaining),
             "availableBalance": _money(self.balance),
@@ -588,10 +634,11 @@ def _evaluate(
     """Apply every HARD rule to one account. Cheapest disqualification first.
 
     ``require_full`` distinguishes the two questions the engine asks. Choosing a SINGLE account
-    demands it carry the whole withdrawal, so both ceilings are tested against the full amount.
-    Assembling a SPLIT only needs an account able to contribute something, so the tests become
-    "has any headroom" and "has any money" — each leg is then capped at that account's own usable
-    capacity, so no individual account is ever taken past either ceiling.
+    demands it carry the whole withdrawal, so all three ceilings — per-transaction, daily and
+    balance — are tested against the full amount. Assembling a SPLIT only needs an account able to
+    contribute something, so the tests become "has any daily headroom" and "has any money"; each
+    leg is then capped at that account's own usable capacity (the smallest of Highest Debit,
+    remaining daily headroom and balance), so no individual account is ever taken past any ceiling.
     """
     remaining = remaining_debit(account, used_today)
     cand = Candidate(
@@ -611,30 +658,41 @@ def _evaluate(
         cand.reject_reason = REJECT_MODE
         return cand
 
-    # An account with no configured ceiling has no capacity to give, so the engine will not CHOOSE
-    # it: an unconfigured limit must never read as permission to pay any amount.
+    # An account needs BOTH a per-transaction Highest Debit AND a daily bank debit limit to be
+    # chosen: either at 0 is "unconfigured" and has no capacity to give — never read as unlimited.
     #
     # An operator naming that account explicitly is a different act. They are not asking the engine
     # to decide how much is safe — they are recording a payment against an account for which no
-    # daily policy exists, so there is no configured ceiling to breach. Refusing it would strand
-    # real money on every account whose limit an Admin has not got round to setting. Every other
-    # rule — active, supports the mode, holds the balance — still applies, and those are the ones
-    # an explicit reference could otherwise be used to skip.
-    unlimited = _money(account.highest_debit) <= 0
-    if unlimited and not operator_directed:
+    # policy exists, so there is no configured ceiling to breach. Refusing it would strand real
+    # money on every account whose limits an Admin has not got round to setting. Every other rule —
+    # active, supports the mode, holds the balance — still applies, and those are the ones an
+    # explicit reference could otherwise be used to skip.
+    per_txn = _money(account.highest_debit)
+    daily = _money(account.bank_daily_debit_limit)
+    unconfigured = per_txn <= 0 or daily <= 0
+    if unconfigured and not operator_directed:
         cand.reject_reason = REJECT_NO_LIMIT
         return cand
 
-    # Rule 10 — the hard daily debit limit, always measured as used + amount vs the ceiling.
-    if unlimited:
+    if unconfigured:
+        # Operator-directed on an unconfigured account: no policy ceilings, only balance below.
         pass
-    elif require_full:
-        if _money(_money(used_today) + _money(amount)) > _money(account.highest_debit):
+    else:
+        # PER-TRANSACTION Highest Debit — one payout (or one leg) may not exceed it. For a single
+        # account this is the whole amount; for a split, `usable` caps each leg at per_txn, so an
+        # account with SOME per-transaction room can still contribute and only the "no daily
+        # headroom at all" case fails here.
+        if require_full and _money(amount) > per_txn:
+            cand.reject_reason = REJECT_OVER_PER_TXN
+            return cand
+        # CUMULATIVE daily debit limit — today's total plus this payout may not exceed it.
+        if require_full:
+            if _money(_money(used_today) + _money(amount)) > daily:
+                cand.reject_reason = REJECT_NO_CAPACITY
+                return cand
+        elif remaining <= 0:
             cand.reject_reason = REJECT_NO_CAPACITY
             return cand
-    elif remaining <= 0:
-        cand.reject_reason = REJECT_NO_CAPACITY
-        return cand
 
     # Rule 9 — the money has to actually be there.
     if require_full:
@@ -721,7 +779,7 @@ def _shortfall_text(amount: float, combined: Optional[float], contributors: int)
              if contributors else "across the eligible accounts")
     return (f"{money} cannot be paid: automatic allocation combined every eligible account, "
             f"across all banks, and they can cover ₹{combined:,.2f} in total {where} — short by "
-            f"₹{short:,.2f}. Fund an account, raise a daily Highest Debit, or add an account.")
+            f"₹{short:,.2f}. Fund an account, raise a daily debit limit, or add an account.")
 
 
 def _failure(candidates: list[Candidate], amount: float, mode: str,
@@ -749,13 +807,21 @@ def _failure(candidates: list[Candidate], amount: float, mode: str,
             f"Management, or use a different transaction mode.")
     if all(r in (REJECT_INACTIVE, REJECT_MODE, REJECT_NO_LIMIT) for r in reasons):
         return FAIL_NO_LIMITS, (
-            "No account has a Highest Debit configured, so none can pay out. "
-            "Set a daily debit limit in Account Management.")
+            "No account has both a per-transaction Highest Debit and a daily bank debit limit "
+            "configured, so none can pay out. Set both in Account Management.")
 
-    capacity_blocked = [c for c in candidates if c.reject_reason == REJECT_NO_CAPACITY]
+    # A per-transaction over-limit and a daily over-limit are both "capacity" failures here: by the
+    # time this runs the split has already tried and failed, so what matters is that no combination
+    # could cover the amount, whichever single-account ceiling each account tripped.
+    capacity_blocked = [c for c in candidates
+                        if c.reject_reason in (REJECT_NO_CAPACITY, REJECT_OVER_PER_TXN)]
     balance_blocked = [c for c in candidates if c.reject_reason == REJECT_NO_BALANCE]
 
     if capacity_blocked and not balance_blocked:
+        # `highest_debit` is the per-transaction cap; an account rejected only for the daily limit
+        # has a per-transaction cap >= amount, so the max here is >= amount whenever any daily-only
+        # rejection exists. It drops below amount only when EVERY blocker is per-transaction and
+        # none is large enough — the true "too big for any one account, and the split fell short".
         biggest_ceiling = max(_money(c.account.highest_debit) for c in capacity_blocked)
         if _money(amount) > biggest_ceiling:
             # Being larger than every SINGLE ceiling is not by itself a reason to fail — the
@@ -999,9 +1065,16 @@ async def _verify_under_lock(
             return False
         used_today = _money(used.get(leg.ref, 0.0))
         balance = _money(_money(balances.get(leg.ref, 0.0)) - _money(reserved.get(leg.ref, 0.0)))
-        if (_money(acc.highest_debit) > 0
-                and _money(used_today + _money(leg.amount)) > _money(acc.highest_debit)):
-            return False
+        per_txn = _money(acc.highest_debit)
+        daily = _money(acc.bank_daily_debit_limit)
+        # Both policy ceilings re-checked under the lock. Applied only to a configured account; an
+        # operator-directed unconfigured one (per_txn or daily at 0) is bounded by balance alone,
+        # exactly as :meth:`Candidate.usable` and :func:`_evaluate` treat it.
+        if per_txn > 0 and daily > 0:
+            if _money(leg.amount) > per_txn:
+                return False            # per-transaction Highest Debit
+            if _money(used_today + _money(leg.amount)) > daily:
+                return False            # cumulative daily debit limit
         if balance < _money(leg.amount):
             return False
         # Refresh the snapshot the journal and the legs record, so what is stored is what was
@@ -1614,8 +1687,9 @@ READY_SUSPICIOUS = "SUSPICIOUS"    # the limit looks inherited from the old high
 _READY_ORDER = (READY_MISSING, READY_SUSPICIOUS, READY_UNCONFIRMED, READY_OK)
 
 _READY_TEXT = {
-    READY_MISSING: ("No daily Highest Debit is configured, so this account is never chosen "
-                    "automatically and can only be paid from when an Admin names it explicitly."),
+    READY_MISSING: ("A per-transaction Highest Debit and a daily bank debit limit are not both "
+                    "configured, so this account is never chosen automatically and can only be "
+                    "paid from when an Admin names it explicitly."),
     READY_SUSPICIOUS: ("The daily limit equals the largest single debit this account has ever "
                        "made, which is what the value meant before it became a daily limit. It is "
                        "almost certainly an inherited figure rather than a chosen daily policy."),
@@ -1631,17 +1705,22 @@ def classify_debit_limit(account: AccountMaster) -> str:
     The distinction that matters is not "is there a number" but "did a person choose it". A value
     inherited from the auto-raising era is a record of one past payout, not a policy, and it is
     reported as such rather than being quietly relied upon.
+
+    The engine needs BOTH a per-transaction Highest Debit and a daily bank debit limit, so either
+    at 0 reads as NOT CONFIGURED — an account missing one is as un-payable as one missing both.
     """
-    limit = _money(account.highest_debit)
-    if limit <= 0:
+    per_txn = _money(account.highest_debit)
+    daily = _money(account.bank_daily_debit_limit)
+    if per_txn <= 0 or daily <= 0:
         return READY_MISSING
     if account.highest_debit_configured_at is not None:
         return READY_OK
     observed = _money(getattr(account, "observed_max_debit", 0.0) or 0.0)
-    # Equal to the largest debit ever seen — the signature of the old high-water mark. Or BELOW it,
-    # which is worse: a daily ceiling under a single payout the account has already made means it
-    # would now refuse a withdrawal it has demonstrably handled.
-    if observed > 0 and limit <= observed:
+    # The DAILY ceiling equal to the largest single debit ever seen is the signature of the old
+    # high-water mark (the split migration seeded the daily limit from it). Or BELOW it, which is
+    # worse: a daily ceiling under a single payout the account has already made would now refuse a
+    # withdrawal it has demonstrably handled.
+    if observed > 0 and daily <= observed:
         return READY_SUSPICIOUS
     return READY_UNCONFIRMED
 
@@ -1695,6 +1774,7 @@ async def payout_readiness(
             "status": a.status,
             "active": active,
             "highestDebit": _money(a.highest_debit),
+            "bankDailyDebitLimit": _money(a.bank_daily_debit_limit),
             "observedMaxDebit": _money(getattr(a, "observed_max_debit", 0.0) or 0.0),
             "configuredAt": (a.highest_debit_configured_at.isoformat() + "Z")
                             if a.highest_debit_configured_at else None,

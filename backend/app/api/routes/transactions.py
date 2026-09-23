@@ -704,20 +704,18 @@ def _inr(n: float | None) -> str:
 
 
 async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, request: Request | None) -> None:
-    """After a deposit is approved & credited to an account, check that account's Highest Credit.
+    """After a deposit is approved & credited to an account, check that account's daily credit total.
 
-    Highest Credit is the account's HARD DAILY CREDIT LIMIT — the ceiling the Admin configures in
-    Account Management and the allocation engine enforces on every request. This function used to
-    RAISE it to match any larger deposit, which is precisely what a ceiling must never do: a limit
-    that moves up to accommodate whatever arrives is not a limit, and one manual send above it
-    would have silently re-configured the account for every request that followed. It no longer
-    writes the value. The configured limit is now changed in exactly one place — an Admin editing
-    it (PATCH /api/accounts/{ref}/limits), which is audited.
+    The CUMULATIVE daily ceiling is ``bank_daily_credit_limit`` (Highest Credit is the
+    PER-TRANSACTION cap, a different limit); the allocation engine enforces both on every request.
+    This function used to RAISE the limit to match any larger deposit, which is precisely what a
+    ceiling must never do, and it no longer writes any value — the configured limits change in
+    exactly one place, an Admin editing them (PATCH /api/accounts/{ref}/limits), which is audited.
 
-    What it does instead is report a breach. The engine cannot cause one; only a manually sent
-    account or a row that predates this rule can, so a breach is worth an Admin's attention. The
-    notification, the system log and the "system" audit entry are the same plumbing as before, and
-    nothing here touches the deposit, its status, or any workflow.
+    What it does instead is report a breach of the DAILY limit. The engine cannot cause one; only a
+    manually sent account or a row that predates this rule can, so a breach is worth an Admin's
+    attention. The notification, system log and "system" audit entry are the same plumbing as
+    before, and nothing here touches the deposit, its status, or any workflow.
 
     The account's largest single deposit is still reported — it is derived from the transactions
     themselves and served as `highestDeposit` by /api/accounts/balances, so no stored high-water
@@ -730,9 +728,9 @@ async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, 
     )).scalar_one_or_none()
     if acc is None:
         return
-    limit = round(acc.highest_credit or 0.0, 2)
+    limit = round(acc.bank_daily_credit_limit or 0.0, 2)
     if limit <= 0:
-        return                                  # no ceiling configured — nothing to measure against
+        return                                  # no daily ceiling configured — nothing to measure
     used = (await alloc.credit_used_today(db, [acc.reference_number], on=tx.tx_date)).get(
         acc.reference_number, 0.0)
     if round(used, 2) <= limit:
@@ -740,7 +738,7 @@ async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, 
     ts = _ist_now().strftime("%d %b %Y, %I:%M %p") + " IST"
     ip = _client_ip(request)
     msg = (f"Daily Credit Limit Exceeded — {acc.account_name} · Credited today {_inr(used)} "
-           f"against a Highest Credit of {_inr(limit)} · {tx.ref} · {ts}")
+           f"against a Bank Daily Credit Limit of {_inr(limit)} · {tx.ref} · {ts}")
     for uid in await _all_admin_ids(db):
         db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
     # Audit: Account ID, Holder, configured limit vs the day's credited total, Deposit Ref,
@@ -751,7 +749,7 @@ async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, 
                        reason=f"{acc.account_name} · Deposit {tx.ref} · {ts}", ip=ip)
     await log_event(db, "ACCOUNT_CREDIT_LIMIT_EXCEEDED",
                     f"{acc.reference_number} ({acc.account_name}) credited {_inr(used)} today "
-                    f"against a Highest Credit of {_inr(limit)} via {tx.ref}", actor=None)
+                    f"against a Bank Daily Credit Limit of {_inr(limit)} via {tx.ref}", actor=None)
     await db.flush()
 
 
@@ -827,13 +825,13 @@ async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, r
     # (A) Daily debit limit exceeded. Measured the way the limit is defined — the day's TOTAL
     # against the ceiling, never this one debit against it — so it agrees exactly with what the
     # allocation engine enforces. Nothing is written to the limit itself.
-    limit = round(acc.highest_debit or 0.0, 2)
+    limit = round(acc.bank_daily_debit_limit or 0.0, 2)
     if limit > 0:
         used = (await walloc.debit_used_today(db, [acc.reference_number], on=tx.tx_date)).get(
             acc.reference_number, 0.0)
         if round(used, 2) > limit:
             msg = (f"Daily Debit Limit Exceeded — {acc.account_name} · Debited today {_inr(used)} "
-                   f"against a Highest Debit of {_inr(limit)} · {tx.ref} · {ts}")
+                   f"against a Bank Daily Debit Limit of {_inr(limit)} · {tx.ref} · {ts}")
             for uid in recipient_ids:
                 db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
             await record_audit(db, "ACCOUNT_DEBIT_LIMIT_EXCEEDED", actor=None,
@@ -842,7 +840,7 @@ async def _track_account_debit(db: AsyncSession, tx: Transaction, actor: User, r
                                reason=f"{acc.account_name} · {tx.ref} · {ts}", ip=ip)
             await log_event(db, "ACCOUNT_DEBIT_LIMIT_EXCEEDED",
                             f"{acc.reference_number} ({acc.account_name}) debited {_inr(used)} today "
-                            f"against a Highest Debit of {_inr(limit)} via {tx.ref}", actor=None)
+                            f"against a Bank Daily Debit Limit of {_inr(limit)} via {tx.ref}", actor=None)
             changed = True
 
     # (B) Low-debit alert — debit below the account's set Highest Debit threshold.
@@ -2957,7 +2955,8 @@ async def _auto_allocate_deposit_account(
     await record_audit(
         db, "DEPOSIT_ACCOUNT_AUTO_ALLOCATED", actor=None, entity_type=tx.type.value,
         entity_id=tx.ref, old="NO ACCOUNT", new=f"{acc.reference_number} · {acc.account_name}",
-        reason=(f"{result.reason} · Highest Credit {_inr(result.highest_credit)} · "
+        reason=(f"{result.reason} · Highest Credit/txn {_inr(result.highest_credit)} · "
+                f"Daily Credit Limit {_inr(result.bank_daily_credit_limit)} · "
                 f"used today {_inr(result.credit_used)} · remaining {_inr(result.remaining)} · "
                 f"{_ist_now().strftime('%d %b %Y, %I:%M %p')} IST"),
     )
@@ -4263,12 +4262,13 @@ async def _record_withdrawal_payout(
         # will still never CHOOSE such an account on its own.
         used = (await walloc.debit_used_today(db, [leg.account_ref], on=leg.leg_date)).get(
             leg.account_ref, 0.0)
-        if round(acc.highest_debit or 0.0, 2) > 0 and round(used, 2) > round(acc.highest_debit, 2):
+        daily_limit = round(acc.bank_daily_debit_limit or 0.0, 2)
+        if daily_limit > 0 and round(used, 2) > daily_limit:
             raise HTTPException(
                 status_code=400,
-                detail=(f"{acc.account_name} is over its Highest Debit for "
+                detail=(f"{acc.account_name} is over its Bank Daily Debit Limit for "
                         f"{leg.leg_date:%d %b %Y}: {_inr(used)} against a limit of "
-                        f"{_inr(acc.highest_debit)}."))
+                        f"{_inr(daily_limit)}."))
 
         entry = await ledger.post_entry(
             db,
