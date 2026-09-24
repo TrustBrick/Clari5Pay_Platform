@@ -12,11 +12,12 @@ that would cost money if they broke:
   3. **A merchant note is a preference, never an override.** "Use Bank of Baroda" narrows the
      pool and every Bank of Baroda account is evaluated — but if none can take the money, none is
      used.
-  4. **Nearest suitable capacity wins**, and ties break deterministically.
-  5. **A no-account outcome is an EXCEPTION, not a queue.** Nothing is assigned and the request
-     goes to NO_ELIGIBLE_ACCOUNT with the reason journalled — never back to ACCOUNT_REQUESTED,
-     which used to mean "waiting for an Admin to pick an account" and is no longer a normal
-     waiting state for a deposit.
+  4. **A NEW customer goes to the account that has served the fewest other customers**; an
+     existing customer keeps the existing rules (their account, then nearest capacity). Ties
+     break deterministically.
+  5. **A no-account outcome goes to the Admin.** Nothing is assigned and the request waits in
+     ACCOUNT_REQUESTED — the Admin's manual queue — with the reason journalled (Admin-only). See
+     test_account_request_workflow.py for the full priority and the explicit-request rules.
   6. **The existing workflow is untouched.** An allocated deposit lands in ACCOUNT_SUBMITTED —
      the same state the Admin's manual send has always produced — and Cash/Crypto/Card requests
      never go near the engine.
@@ -335,7 +336,8 @@ async def test_a_failed_note_request_is_named_in_the_reason(db):
 
     r = await _allocate(db, 45000, member_id="OLDM", note="Use Bank of Baroda")
     assert r.allocated is False
-    assert "Bank of Baroda" in r.reason and "unavailable" in r.reason
+    assert "Bank of Baroda" in r.reason and "Highest Credit" in r.reason
+    assert r.failure_code == alloc.FAIL_REQUESTED_BANK_NOT_ELIGIBLE
     assert r.requested_unavailable is True
 
 
@@ -400,23 +402,18 @@ async def test_own_account_is_preserved_and_recorded_but_is_not_a_priority(db):
 # ═══ Rule 1 — new vs existing customer ══════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_a_new_customer_takes_the_nearest_capacity_even_when_it_has_been_used(db):
-    """FILL THE NEAREST ACCOUNT FIRST — being "used" does not push an account down the order.
-
-    This reverses the earlier rule, which preferred an account that had never received a deposit.
-    That rule fought the operating intent: the moment the smallest account took its first deposit
-    it stopped being unused and was deprioritised, so the account with the least headroom was the
-    one least likely to be filled. ACC1 has served a deposit AND has the nearer capacity, and it
-    now wins on exactly that.
-    """
+async def test_a_new_customer_goes_to_the_account_that_has_served_fewer_customers(db):
+    """NEW customers are SPREAD: the account that has served the fewest other customers wins, not
+    the nearest remaining capacity. ACC1 has the nearer capacity but has already served a
+    customer; ACC2 has served none, and takes the new one."""
     await _account(db, "ACC1", name="used", credit=60000.0)
     await _account(db, "ACC2", name="never-used", credit=200000.0)
     await _deposit(db, "1", 10000, "ACC1", member="OTHER")
 
     result = await _allocate(db, 45000, member_id="BRANDNEW")
     assert result.customer_type == "NEW"
-    assert result.account.reference_number == "ACC1", "ACC1 has 50,000 left; ACC2 has 200,000"
-    assert result.rule == alloc.RULES.NEAREST_CAPACITY
+    assert result.account.reference_number == "ACC2", "ACC1 has served 1 customer; ACC2 none"
+    assert result.rule == alloc.RULES.NEW_FEWEST_SERVED
 
 
 @pytest.mark.asyncio
@@ -435,8 +432,9 @@ async def test_an_account_already_given_to_a_member_is_reused_while_it_fits(db):
     """Once a member has been sent an account, keep sending them to it.
 
     Discriminating on purpose: ACC1 is the member's account but has FAR more room (99,000) than
-    the untouched ACC2 (20,000), so nearest-capacity alone would pick ACC2. Reuse wins because the
-    member already has those details.
+    the untouched ACC2 (20,000), so nearest-capacity alone would pick ACC2. Neither has served any
+    OTHER customer, so the NEW-customer spread ties — and the tie goes to the account this member
+    already has: placing them there again adds no customer to any account.
 
     The member is NEW here (`sender_account_deposits=0`) and that must not matter. NEW/OLD is about
     whether the SENDING account has ever funded us, which is a different question from whether we
@@ -450,7 +448,7 @@ async def test_an_account_already_given_to_a_member_is_reused_while_it_fits(db):
     result = await _allocate(db, 500, member_id="MEMBER1", sender_account_deposits=0)
 
     assert result.account.reference_number == "ACC1"
-    assert result.rule == alloc.RULES.OLD_ACCOUNT_HISTORY
+    assert result.rule == alloc.RULES.NEW_FEWEST_SERVED
     assert result.customer_type == "NEW", "reuse does not depend on the NEW/OLD classification"
 
 
@@ -465,7 +463,7 @@ async def test_reuse_never_overrides_the_daily_ceiling(db):
     result = await _allocate(db, 50000, member_id="MEMBER1", sender_account_deposits=0)
 
     assert result.account.reference_number == "ACC2", "ACC1 has 4,000 left — it cannot take 50,000"
-    assert result.rule == alloc.RULES.NEAREST_CAPACITY
+    assert result.rule == alloc.RULES.NEW_FEWEST_SERVED
 
 
 @pytest.mark.asyncio
@@ -496,9 +494,10 @@ async def test_an_existing_customers_history_never_beats_the_credit_limit(db):
 
 @pytest.mark.asyncio
 async def test_a_new_customer_is_not_steered_towards_savings_either(db):
-    """The Savings fallback went with the unused-account rule. Nearest capacity decides, whatever
-    type the account is — here the CURRENT account is nearest and takes it, where the old rule
-    would have reached past it for the smaller of the two Savings accounts.
+    """The Savings fallback went with the unused-account rule. All three accounts have served one
+    other customer, so the NEW-customer spread ties and nearest capacity breaks it, whatever type
+    the account is — here the CURRENT account is nearest and takes it, where the old rule would
+    have reached past it for the smaller of the two Savings accounts.
 
     The sending account's type is a HARD rule and is unaffected: this test passes no sender type,
     which is what a request that names no sending account looks like.
@@ -512,7 +511,7 @@ async def test_a_new_customer_is_not_steered_towards_savings_either(db):
     result = await _allocate(db, 45000, member_id="BRANDNEW")
     assert result.customer_type == "NEW"
     assert result.account.reference_number == "ACC1", "149,000 left — the nearest of the three"
-    assert result.rule == alloc.RULES.NEAREST_CAPACITY
+    assert result.rule == alloc.RULES.NEW_FEWEST_SERVED
 
 
 @pytest.mark.asyncio
@@ -546,13 +545,15 @@ async def test_same_account_returns_the_members_previous_account(db):
 
 @pytest.mark.asyncio
 async def test_same_account_is_refused_when_that_account_is_unavailable(db):
-    """Negative scenario 5 — an unavailable previous account is NOT used, and the reason is kept."""
+    """Negative scenario 5 — an unavailable previous account is NOT used, and NOTHING is put in
+    its place: the request goes to the Admin with the reason kept."""
     await _account(db, "ACC1", name="previous", credit=200000.0, status="INACTIVE")
     await _account(db, "ACC2", name="fallback", credit=100000.0)
     await _deposit(db, "1", 1000, "ACC1", member="MBR1")
 
     result = await _allocate(db, 45000, member_id="MBR1", note="use the same account")
-    assert result.account.reference_number == "ACC2"
+    assert result.allocated is False, "no silent fallback to ACC2"
+    assert result.failure_code == alloc.FAIL_SAME_ACCOUNT_NOT_ELIGIBLE
     assert result.requested_unavailable is True
     assert result.detail["sameAccountRejected"] == {
         "accountRef": "ACC1", "reason": alloc.REJECT_INACTIVE}
@@ -566,7 +567,7 @@ async def test_same_account_is_refused_when_that_account_is_out_of_capacity(db):
     await _deposit(db, "1", 40000, "ACC1", member="MBR1")
 
     result = await _allocate(db, 45000, member_id="MBR1", note="same a/c please")
-    assert result.account.reference_number == "ACC2"
+    assert result.allocated is False, "no silent fallback to ACC2"
     assert result.detail["sameAccountRejected"]["reason"] == alloc.REJECT_NO_CAPACITY
 
 
@@ -604,14 +605,16 @@ async def test_four_accounts_at_the_requested_bank_are_all_evaluated(db):
 
 @pytest.mark.asyncio
 async def test_a_note_never_bypasses_the_credit_limit(db):
-    """Negative scenario 3 — no eligible account at the requested bank → the note is not honoured."""
+    """Negative scenario 3 — no eligible account at the requested bank → nothing is allocated. The
+    limit is never bypassed for the request, and another bank is never substituted for it."""
     await _account(db, "ACC1", name="bob-1", bank="Bank of Baroda", credit=50000.0)
     await _account(db, "ACC2", name="bob-2", bank="Bank of Baroda", credit=200000.0, status="INACTIVE")
     await _account(db, "ACC3", name="hdfc", bank="HDFC Bank", credit=100000.0)
     await _deposit(db, "1", 40000, "ACC1", member="OTHER")
 
     result = await _allocate(db, 45000, member_id="OLDM", note="Use Bank of Baroda")
-    assert result.account.reference_number == "ACC3"          # the defined fallback
+    assert result.allocated is False, "HDFC (ACC3) is NOT substituted for Bank of Baroda"
+    assert result.failure_code == alloc.FAIL_REQUESTED_BANK_NOT_ELIGIBLE
     assert result.requested_unavailable is True
     assert result.detail["requestedBankUnavailable"] == "Bank of Baroda"
 
@@ -668,26 +671,27 @@ async def test_note_parsing_recognises_the_phrasings_operators_actually_type(db)
 # ═══ Rule 9 — the 5+ deposit condition ══════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_the_deposit_count_and_the_five_plus_flag_are_calculated_and_carried(db):
-    """The count is available to the decision and stored on the journal.
-
-    The platform defines no action for the 5+ condition, so none is invented — what is guaranteed
-    is that the number is correct and present, ready for whatever prioritisation is specified.
-    """
+async def test_the_successful_count_and_the_own_account_flag_are_calculated_and_carried(db):
+    """The count the Own Account rule reads is available to the decision and stored on the
+    journal. It counts SUCCESSFUL deposits and switches on above 5 — the full rule is pinned in
+    test_own_account_preference.py."""
     await _account(db, "ACC1", name="a", credit=1000000.0)
-    for i in range(4):
-        await _deposit(db, str(i + 1), 1000, "ACC1", member="MBR1")
+    for i in range(5):
+        await _deposit(db, str(i + 1), 1000, "ACC1", member="MBR1")          # DEPOSITED
+    await _deposit(db, "p", 1000, "ACC1", member="MBR1", status=TxStatus.ACCOUNT_SUBMITTED)
 
     hist = await alloc.member_history(db, "MBR1")
-    assert (hist.deposit_count, hist.is_five_plus, hist.is_new) == (4, False, False)
+    assert (hist.deposit_count, hist.successful_count, hist.prefers_own_account, hist.is_new) \
+        == (6, 5, False, False), "the pending one is a row, not a successful deposit"
 
-    await _deposit(db, "5", 1000, "ACC1", member="MBR1")
+    await _deposit(db, "6", 1000, "ACC1", member="MBR1")
     hist = await alloc.member_history(db, "MBR1")
-    assert (hist.deposit_count, hist.is_five_plus) == (5, True)
+    assert (hist.successful_count, hist.prefers_own_account) == (6, True)
 
     result = await _allocate(db, 1000, member_id="MBR1")
-    assert result.detail["memberDepositCount"] == 5
-    assert result.detail["fivePlusDeposits"] is True
+    assert result.detail["memberDepositCount"] == 7
+    assert result.detail["successfulDeposits"] == 6
+    assert result.detail["ownAccountPreference"] is True
 
 
 @pytest.mark.asyncio
@@ -762,7 +766,10 @@ async def test_a_upi_deposit_prefers_an_account_with_a_linked_upi(db):
                     created_date=date.today(), created_time="10:00:00"))
     await db.flush()
 
-    result = await _allocate(db, 45000, deposit_type="UPI", member_id="OLDM")
+    # An EXISTING customer (a received deposit from their sending account), so the existing-customer
+    # rules apply and the UPI-capable pool is what is being tested.
+    result = await _allocate(db, 45000, deposit_type="UPI", member_id="OLDM",
+                             sender_account_deposits=3)
     assert result.account.reference_number == "ACC2"
     assert result.rule == alloc.RULES.UPI_CAPABLE
     assert result.upi_id == "sindu@ybl"
@@ -897,7 +904,7 @@ async def test_concurrent_route_level_deposits_never_oversubscribe_one_account(d
     assert used <= 50000.0
     rows = (await db.execute(select(Transaction).order_by(Transaction.id))).scalars().all()
     assert [t.admin_ref for t in rows] == ["ACC1", None]
-    assert [t.status for t in rows] == [TxStatus.ACCOUNT_SUBMITTED, TxStatus.NO_ELIGIBLE_ACCOUNT]
+    assert [t.status for t in rows] == [TxStatus.ACCOUNT_SUBMITTED, TxStatus.ACCOUNT_REQUESTED]
 
 
 # ═══ The deposit endpoint — the existing workflow, automated ════════════════════════════════════
@@ -933,18 +940,15 @@ async def test_a_deposit_request_is_allocated_and_lands_in_account_submitted(db)
 
 @pytest.mark.asyncio
 async def test_a_deposit_with_no_eligible_account_lands_in_the_exception_state(db):
-    """Negative scenario 2 — nothing is assigned, and the request goes to NO_ELIGIBLE_ACCOUNT.
-
-    NOT back to ACCOUNT_REQUESTED. That state used to mean "waiting for an Admin to choose an
-    account", and with allocation automatic it is no longer a normal waiting state for a deposit:
-    a request sitting here is a configuration problem, not a queue item.
+    """Negative scenario 2 — nothing is assigned, and the request waits in ACCOUNT_REQUESTED,
+    the Admin's manual queue, with the reason on the (Admin-only) allocation journal.
     """
     merchant = await _merchant(db)
     await _account(db, "ACC1", name="sindu", credit=10000.0)
 
     out = await txr.create_deposit(_payload(45000), db, merchant)
 
-    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+    assert out["status"] == TxStatus.ACCOUNT_REQUESTED
     assert out["adminRef"] is None
     assert out["allocationSnapshot"] is None
     journal = (await db.execute(select(DepositAllocation))).scalars().one()
@@ -968,7 +972,7 @@ async def test_the_admin_resolves_the_exception_by_retrying_not_by_choosing(db):
     await db.flush()
 
     out = await txr.create_deposit(_payload(45000), db, merchant)
-    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+    assert out["status"] == TxStatus.ACCOUNT_REQUESTED
 
     # Retrying while still misconfigured changes nothing, and says so rather than pretending.
     with pytest.raises(HTTPException) as exc:
@@ -1022,7 +1026,7 @@ async def test_allocation_consumes_capacity_immediately_for_the_next_request(db)
 
     second = await txr.create_deposit(_payload(10000, memberId="M2"), db, merchant)
     assert second["adminRef"] is None
-    assert second["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+    assert second["status"] == TxStatus.ACCOUNT_REQUESTED
 
 
 @pytest.mark.asyncio

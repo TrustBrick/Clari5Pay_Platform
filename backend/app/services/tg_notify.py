@@ -129,31 +129,93 @@ async def notify(db: AsyncSession, tx: Transaction, target: str, event: str,
         creator = (await db.execute(select(User).where(User.id == tx.merchant_id))).scalar_one_or_none()
         requested_by = (getattr(creator, "full_name", None) or getattr(creator, "username", None)) if creator else None
         body = _build(tx, event, actor=actor, reason=reason, requested_by=requested_by)
-        seen: set[str] = set()
-        for u in users:
-            role_str = str(u.merchant_role or getattr(u.role, "value", u.role))
-            chat = getattr(u, "telegram_chat_id", None)
-            if not chat:
-                # Per spec: record the delivery failure without affecting the workflow.
-                db.add(WhatsAppLog(
-                    user_id=u.id, username=u.username, role=role_str, phone=None,
-                    notification_type=event, message=body, status="FAILED", provider="telegram",
-                    delivery_status="failed", failure_reason="no telegram linked",
-                ))
-                continue
-            if chat in seen:
-                continue  # one person holding several target-role accounts → send once
-            seen.add(chat)
-            ok, mid, resp = False, None, None
-            try:
-                ok, mid, resp = await _send_telegram(chat, body)
-            except Exception as e:
-                resp = repr(e)
-            db.add(WhatsAppLog(
-                user_id=u.id, username=u.username, role=role_str, phone=chat,
-                notification_type=event, message=body, status="SENT" if ok else "FAILED",
-                provider="telegram", message_id=mid, delivery_status="sent" if ok else "failed",
-                provider_response=resp, failure_reason=None if ok else resp,
-            ))
+        await _deliver(db, users, event, body)
     except Exception:
         log.exception("tg_notify failed for %s target=%s", getattr(tx, "ref", "?"), target)
+
+
+async def _deliver(db: AsyncSession, users: list[User], event: str, body: str) -> None:
+    """Send ``body`` to each user's linked Telegram chat and log every attempt to
+    ``whatsapp_logs`` (SENT / FAILED / no telegram linked). One person holding several target-role
+    accounts is messaged once. The single delivery path every notification here goes through."""
+    seen: set[str] = set()
+    for u in users:
+        role_str = str(u.merchant_role or getattr(u.role, "value", u.role))
+        chat = getattr(u, "telegram_chat_id", None)
+        if not chat:
+            # Per spec: record the delivery failure without affecting the workflow.
+            db.add(WhatsAppLog(
+                user_id=u.id, username=u.username, role=role_str, phone=None,
+                notification_type=event, message=body, status="FAILED", provider="telegram",
+                delivery_status="failed", failure_reason="no telegram linked",
+            ))
+            continue
+        if chat in seen:
+            continue  # one person holding several target-role accounts → send once
+        seen.add(chat)
+        ok, mid, resp = False, None, None
+        try:
+            ok, mid, resp = await _send_telegram(chat, body)
+        except Exception as e:
+            resp = repr(e)
+        db.add(WhatsAppLog(
+            user_id=u.id, username=u.username, role=role_str, phone=chat,
+            notification_type=event, message=body, status="SENT" if ok else "FAILED",
+            provider="telegram", message_id=mid, delivery_status="sent" if ok else "failed",
+            provider_response=resp, failure_reason=None if ok else resp,
+        ))
+
+
+# ── The ACCOUNT_REQUESTED exception alert ─────────────────────────────────────────────────────────
+# Sent to every active Admin when automation could not place a deposit or a withdrawal and it is
+# waiting in ACCOUNT_REQUESTED for them. Unlike the one-line workflow template above it carries what
+# an Admin needs in order to act — amount, what the note asked for, the note, a concise reason —
+# because the point of the message is a decision, not a hand-off. Account numbers are never sent in
+# full: the platform's own reference plus the last four digits (``XXXXXX7890``). The full internal
+# reason (limits, capacity, every account's position) stays in the Admin Portal.
+#
+# The CALLER makes it once-only (transactions._alert_account_request_once claims
+# ``Transaction.account_request_alerted_at`` before calling this), so a retry never repeats it.
+
+ACCOUNT_REQUEST_EVENT = "account_request"
+
+
+def _build_account_request(tx: Transaction, *, requested: str | None, reason: str | None,
+                           kind: str) -> str:
+    amount = f"₹{float(tx.amount or 0):,.2f}"
+    customer = " - ".join(p for p in (tx.member_id, tx.member_name) if p) or "-"
+    note = (tx.notes or "").strip()
+    if len(note) > 200:
+        note = note[:197] + "..."
+    lines = [
+        "⚠️ ACCOUNT REQUEST REQUIRES ADMIN ACTION", "",
+        f"{kind}:", tx.ref or "-", "",
+        "Customer:", customer, "",
+        "Amount:", amount, "",
+    ]
+    if requested:
+        lines += ["Requested:", requested, ""]
+    if note:
+        lines += ["Note:", f"\"{note}\"", ""]
+    lines += [
+        "Reason:", reason or "The request could not be automatically assigned an account.", "",
+        "Status:", "ACCOUNT_REQUESTED", "",
+        "Action:", "Admin review required — assign an account in the Admin Portal.", "",
+        "Date & Time:", _fmt_ist(getattr(tx, "created_at", None)), "",
+        "Please login to Clari5Pay.",
+    ]
+    return "\n".join(lines)
+
+
+async def notify_account_request(db: AsyncSession, tx: Transaction, *, requested: str | None,
+                                 reason: str | None) -> None:
+    """Alert every active Admin that ``tx`` is in ACCOUNT_REQUESTED because automation could not
+    place it. Same delivery, logging and error handling as :func:`notify`; never raises."""
+    if not settings.telegram_configured:
+        return
+    try:
+        kind = "Withdrawal" if (tx.type and tx.type.value.startswith("WITHDRAWAL")) else "Transaction"
+        body = _build_account_request(tx, requested=requested, reason=reason, kind=kind)
+        await _deliver(db, await _recipients(db, tx, "ADMIN"), ACCOUNT_REQUEST_EVENT, body)
+    except Exception:
+        log.exception("tg account-request alert failed for %s", getattr(tx, "ref", "?"))

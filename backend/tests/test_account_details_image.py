@@ -419,7 +419,7 @@ async def test_an_unplaced_deposit_has_no_account_and_no_image(db):
     await _account(db, "ACC1", name="Account A", credit=1000.0)
     await _upload(db, "ACC1", _png("A"))
     out = await txr.create_deposit(_payload(5000), db, merchant)      # over the ceiling
-    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+    assert out["status"] == TxStatus.ACCOUNT_REQUESTED
     detail = await txr.get_transaction_detail(out["id"], db, merchant)
     assert detail["accountDetailsImage"] is None
 
@@ -593,7 +593,7 @@ async def test_image_changes_never_modify_any_transaction_row(db):
 async def _unplaced(db, merchant, member_id: str) -> dict:
     """A deposit the engine could not place (no accounts exist yet) — the manual-send case."""
     out = await txr.create_deposit(_payload(40000, memberId=member_id), db, merchant)
-    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT and out["adminRef"] is None
+    assert out["status"] == TxStatus.ACCOUNT_REQUESTED and out["adminRef"] is None
     return out
 
 

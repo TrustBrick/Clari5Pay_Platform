@@ -35,7 +35,8 @@ account today that is still LIVE, plus every completed one, PLUS manual Account-
 adjustments dated today (they add real money to the account and must consume the same daily bank
 capacity, never bypass it):
 
-    type LIKE 'DEPOSIT%'  AND  admin_ref = <account>  AND  tx_date = <today, IST>
+    type LIKE 'DEPOSIT%'  AND  admin_ref = <account>
+    AND  COALESCE(account_assigned_on, tx_date) = <today, IST>
     AND  status NOT IN (REJECTED, SA_REJECTED, CANCELLED)
   + MANUAL_ADJUSTMENT CREDIT entries on <account> whose IST day is <today>
 
@@ -44,9 +45,12 @@ reservation record to keep in step. This is the platform's existing state machin
 "available", "temporarily assigned", "limit reached" and "unavailable" are all read off states and
 data that already exist. No second balance store, no reservation table, no new status.
 
-The day boundary is IST (``tx_date`` is already written IST-dated by the deposit flow), so usage
-resets naturally at midnight IST. Nothing is reset, recalculated or written at the boundary —
-tomorrow's query simply selects a different ``tx_date``. Historical rows are never touched.
+A deposit belongs to the IST day its receiving account was ASSIGNED (``account_assigned_on``,
+written by the engine and by the Admin's manual send) — the day it starts consuming capacity —
+not the day the request was raised, so a request raised yesterday and placed today counts against
+TODAY. Rows assigned before that column existed fall back to ``tx_date``, as they always were.
+Usage resets naturally at midnight IST: nothing is reset, recalculated or written at the boundary —
+tomorrow's query simply selects a different day. Historical rows are never touched.
 
 CONCURRENCY
 ───────────
@@ -77,12 +81,21 @@ from app.models.models import (
     AccountLedgerEntry, AccountMaster, AccountTransaction, AccountType, AdminUpi, DepositAllocation,
     Transaction, TxStatus, TxType,
 )
+from app.services.account_ledger import _COMPLETED_DEPOSIT
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Deposit rows in these states have been abandoned, so they release the capacity they held. Every
 # other state — from ACCOUNT_SUBMITTED through DEPOSITED — still consumes it.
 RELEASED_STATUSES = (TxStatus.REJECTED, TxStatus.SA_REJECTED, TxStatus.CANCELLED)
+
+# The Own Account rule switches on AFTER this many successful deposits: 1-5 → the normal rules;
+# the 6th onward → an eligible Own Account is preferred (see MemberHistory.prefers_own_account).
+OWN_ACCOUNT_THRESHOLD = 5
+
+# A SUCCESSFUL deposit — the money arrived. The platform's one definition of "received"
+# (services/account_ledger, shared with the member Profile), not a second one.
+SUCCESSFUL_STATUSES = _COMPLETED_DEPOSIT
 
 DEPOSIT_TYPES = (TxType.DEPOSIT, TxType.DEPOSIT_REQUEST)
 
@@ -141,17 +154,25 @@ UPI_DEPOSIT_TYPE = "UPI"
 
 # ── Allocation rules (machine-readable; each maps to one human sentence) ────────────────────────
 class RULES:
+    EXACT_ACCOUNT = "EXACT_ACCOUNT_REQUEST"
     SAME_ACCOUNT = "SAME_ACCOUNT_REQUEST"
     NOTE_BANK = "MERCHANT_NOTE_BANK_PREFERENCE"
     NEW_UNUSED = "NEW_CUSTOMER_UNUSED_ACCOUNT"
     NEW_SAVINGS_FALLBACK = "NEW_CUSTOMER_SAVINGS_FALLBACK"
+    NEW_FEWEST_SERVED = "NEW_CUSTOMER_FEWEST_CUSTOMERS_SERVED"
+    OWN_ACCOUNT = "OWN_ACCOUNT_PREFERENCE"
     OLD_ACCOUNT_HISTORY = "EXISTING_CUSTOMER_ACCOUNT_HISTORY"
     NEAREST_CAPACITY = "NEAREST_SUITABLE_CAPACITY"
     UPI_CAPABLE = "UPI_DEPOSIT_UPI_ENABLED_ACCOUNT"
 
 
 _RULE_TEXT = {
+    RULES.EXACT_ACCOUNT: "Exact account requested by merchant note + eligible",
     RULES.SAME_ACCOUNT: "Same account requested by merchant note + eligible",
+    RULES.NEW_FEWEST_SERVED: (
+        "New customer + eligible account that has served the fewest other customers"),
+    RULES.OWN_ACCOUNT: (
+        "Customer with more than 5 successful deposits + eligible Own Account"),
     RULES.NOTE_BANK: "Bank requested by merchant note + eligible + nearest remaining credit capacity",
     RULES.NEW_UNUSED: "New customer + unused account + nearest suitable credit capacity",
     RULES.NEW_SAVINGS_FALLBACK: (
@@ -190,6 +211,14 @@ FAIL_NO_MATCHING_TYPE = "NO_ACCOUNT_OF_THE_REQUIRED_TYPE"
 FAIL_NO_PAYIN_MODE = "NO_ACCOUNT_ACCEPTS_THIS_PAYIN_MODE"
 FAIL_MIXED = "NO_ELIGIBLE_ACCOUNT"
 FAIL_RACE = "CAPACITY_TAKEN_CONCURRENTLY"
+# An EXPLICIT request in the note that cannot be met automatically. Each is an Admin decision, never
+# a reason to place the deposit somewhere the merchant did not ask for.
+FAIL_REQUESTED_ACCOUNT_NOT_ELIGIBLE = "REQUESTED_ACCOUNT_NOT_ELIGIBLE"
+FAIL_REQUESTED_ACCOUNT_NOT_FOUND = "REQUESTED_ACCOUNT_NOT_FOUND"
+FAIL_REQUESTED_ACCOUNT_AMBIGUOUS = "REQUESTED_ACCOUNT_AMBIGUOUS"
+FAIL_SAME_ACCOUNT_NOT_ELIGIBLE = "SAME_ACCOUNT_NOT_ELIGIBLE"
+FAIL_NO_PREVIOUS_ACCOUNT = "NO_PREVIOUS_SUCCESSFUL_ACCOUNT"
+FAIL_REQUESTED_BANK_NOT_ELIGIBLE = "REQUESTED_BANK_NOT_ELIGIBLE"
 
 
 def _failure(candidates: list["Candidate"], amount: float) -> tuple[str, str]:
@@ -322,6 +351,21 @@ def _type_value(account_type) -> str:
 
 # ═══ 1. Daily credit usage ══════════════════════════════════════════════════════════════════════
 
+def usage_date():
+    """The IST date a deposit's daily credit usage belongs to: the day its receiving account was
+    ASSIGNED (``account_assigned_on``), which is when it starts consuming the account's Bank Daily
+    Credit Limit — automatically or by an Admin. ``tx_date`` (the day the request was raised) is
+    only the fallback, for rows assigned before the assignment date was recorded; those were always
+    counted that way, so no historical figure moves.
+
+    Using ``tx_date`` alone was wrong for any request placed on a later day than it was raised — a
+    retry, or a manual send from the queue the next morning. Its amount was charged to a day that
+    had already ended, so today's total never saw it and the account could take more than its
+    limit today.
+    """
+    return func.coalesce(Transaction.account_assigned_on, Transaction.tx_date)
+
+
 async def credit_used_today(
     db: AsyncSession, refs: Optional[Sequence[str]] = None, *, on: Optional[date] = None,
 ) -> dict[str, float]:
@@ -337,7 +381,7 @@ async def credit_used_today(
         .where(
             Transaction.type.in_(DEPOSIT_TYPES),
             Transaction.admin_ref.isnot(None),
-            Transaction.tx_date == day,
+            usage_date() == day,
             Transaction.status.notin_(RELEASED_STATUSES),
         )
         .group_by(Transaction.admin_ref)
@@ -385,7 +429,7 @@ async def deposit_counts_today(
         .where(
             Transaction.type.in_(DEPOSIT_TYPES),
             Transaction.admin_ref.isnot(None),
-            Transaction.tx_date == day,
+            usage_date() == day,
             Transaction.status.notin_(RELEASED_STATUSES),
         )
         .group_by(Transaction.admin_ref)
@@ -479,31 +523,164 @@ def _name_keys(value: Optional[str]) -> list[str]:
     return list(keys)
 
 
+# Request types, in the order the engine honours them (see allocate_deposit_account).
+REQUEST_EXACT_ACCOUNT = "EXACT_ACCOUNT"
+REQUEST_SAME_ACCOUNT = "SAME_ACCOUNT"
+REQUEST_BANK = "BANK"
+
+# How an exact account was identified.
+MATCH_ACCOUNT_ID = "ACCOUNT_ID"            # "Use ACC000123" — the platform's own reference
+MATCH_ACCOUNT_NUMBER = "ACCOUNT_NUMBER"    # "Use account 1234567890"
+MATCH_ACCOUNT_ENDING = "ACCOUNT_ENDING"    # "Give account ending 7890"
+MATCH_ACCOUNT_NAME = "ACCOUNT_NAME"        # "Use SINDU"
+MATCH_UNSPECIFIED = "UNSPECIFIED"          # "Use this account" — a request with no identifier
+
+# An exact-account request that names nothing resolvable is still a request: it is handed to the
+# Admin rather than ignored, because ignoring it is exactly the silent substitution it forbids.
+ACCOUNT_RESOLVED = "RESOLVED"
+ACCOUNT_NOT_FOUND = "NOT_FOUND"
+ACCOUNT_AMBIGUOUS = "AMBIGUOUS"
+
+# "ACC000123" — the platform's canonical account reference (AccountMaster.reference_number).
+_ACCOUNT_ID_RE = re.compile(r"\b(acc\d{3,})\b", re.IGNORECASE)
+# "ending 7890", "ending with 7890", "ends in 7890", "last 4 digits 7890".
+_ACCOUNT_ENDING_RE = re.compile(
+    r"\b(?:ending|ends?)\s*(?:with|in)?\s*(?:no\.?|number|digits?)?\s*[:#-]?\s*(\d{3,})\b"
+    r"|\blast\s*(?:\d+\s*)?digits?\s*(?:are|is|of)?\s*[:#-]?\s*(\d{3,})\b",
+    re.IGNORECASE,
+)
+# "account 1234567890", "a/c no 1234567890", "acct: 1234567890" — a number the note explicitly
+# presents AS an account number. A bare digit run is only treated as an account when it equals a
+# real account number: notes carry UTRs, amounts and phone numbers too.
+#
+# The keyword must end at a word boundary, so "ACC0000123" (an account ID) is never read as the cue
+# "acc" followed by the number "0000123"; likewise a digit run must stand alone, not sit inside an
+# identifier.
+_ACCOUNT_NUMBER_CUE_RE = re.compile(
+    r"\b(?:a/?c|acc(?:ount)?|acct)\b\s*(?:no\.?|number|num|#)?\s*[:#-]?\s*(\d{6,})\b",
+    re.IGNORECASE)
+_DIGIT_RUN_RE = re.compile(r"(?<![A-Za-z0-9])\d{6,}(?![A-Za-z0-9])")
+# "use this account" — explicitly an account request, but one that identifies nothing.
+_THIS_ACCOUNT_RE = re.compile(r"\b(?:this|that)\s+(?:bank\s+)?(?:a/?c|acc|acct|account)\b",
+                              re.IGNORECASE)
+
+
+def _digits(value: Optional[str]) -> str:
+    """An account number as bare digits (account_master rows can carry stray spaces)."""
+    return re.sub(r"\D+", "", value or "")
+
+
+def mask_account_number(value: Optional[str]) -> Optional[str]:
+    """``XXXXXX7890`` — the last four digits only: the platform's convention for an account number
+    shown outside the Admin Portal (a Telegram message, a log line)."""
+    digits = _digits(value) or (value or "").strip()
+    if not digits:
+        return None
+    return ("X" * max(len(digits) - 4, 0)) + digits[-4:]
+
+
 @dataclass
 class NoteRequest:
-    """What the merchant's free-text note asked for. A PREFERENCE — never permission to skip a
-    rule. Every account it points at still faces the full eligibility pipeline."""
+    """What the merchant's free-text note asked for. It decides WHICH account is wanted, never
+    whether an account may be used: every account it points at still faces the full eligibility
+    pipeline, and an explicit request that cannot pass it goes to the Admin — not elsewhere."""
     same_account: bool = False
     bank_name: Optional[str] = None          # the stored bank name the note matched
     account_ref: Optional[str] = None        # a specific account, when the note named one
     matched_text: Optional[str] = None       # what in the note produced the match
+    # ── Exact account request ── set whenever the note asks for ONE account, resolved or not.
+    account_requested: bool = False
+    account_match: Optional[str] = None      # MATCH_* — how it was identified
+    account_status: Optional[str] = None     # ACCOUNT_RESOLVED / _NOT_FOUND / _AMBIGUOUS
+    account_identifier: Optional[str] = None # the identifier as typed ("ending 7890", "ACC000123")
+    account_candidates: list[str] = field(default_factory=list)   # the refs an ambiguous one fits
 
     @property
     def has_preference(self) -> bool:
         return bool(self.same_account or self.bank_name or self.account_ref)
 
+    @property
+    def request_type(self) -> Optional[str]:
+        """The ONE request the engine acts on — the most specific the note contains."""
+        if self.account_requested:
+            return REQUEST_EXACT_ACCOUNT
+        if self.same_account:
+            return REQUEST_SAME_ACCOUNT
+        if self.bank_name:
+            return REQUEST_BANK
+        return None
 
-def parse_note(note: Optional[str], accounts: Iterable[AccountMaster]) -> NoteRequest:
+
+def _identify_exact_account(
+    note: str, accounts: list[AccountMaster],
+) -> Optional[tuple[str, str, str, list[str]]]:
+    """(match kind, identifier text, status, matching refs) for an exact-account identifier in the
+    note, or None when the note contains none.
+
+    Identified only from the platform's own canonical data — the reference number and the stored
+    account number — and never by guessing: an identifier that fits no account is NOT_FOUND, and
+    one that fits several (or two identifiers pointing at different accounts) is AMBIGUOUS. Neither
+    is resolved to "the likeliest" account.
+    """
+    by_ref = {(a.reference_number or "").strip().upper(): a.reference_number for a in accounts}
+    by_number: dict[str, list[str]] = {}
+    for a in accounts:
+        d = _digits(a.account_number)
+        if d:
+            by_number.setdefault(d, []).append(a.reference_number)
+
+    found: list[tuple[str, str, set[str]]] = []      # (kind, identifier, matching refs)
+    for m in _ACCOUNT_ID_RE.finditer(note):
+        ident = m.group(1).upper()
+        found.append((MATCH_ACCOUNT_ID, ident, {by_ref[ident]} if ident in by_ref else set()))
+    tails: set[str] = set()
+    for m in _ACCOUNT_ENDING_RE.finditer(note):
+        tail = m.group(1) or m.group(2)
+        tails.add(tail)
+        refs = {ref for d, rs in by_number.items() if d.endswith(tail) for ref in rs}
+        found.append((MATCH_ACCOUNT_ENDING, f"ending {tail}", refs))
+    cued = {m.group(1) for m in _ACCOUNT_NUMBER_CUE_RE.finditer(note)}
+    for run in sorted({m.group(0) for m in _DIGIT_RUN_RE.finditer(note)}):
+        if run in tails:
+            continue            # the digits of an "ending …" phrase, already handled
+        refs = set(by_number.get(run, []))
+        # A digit run that is no account number is only a request when the note presented it as
+        # one ("account 1234567890"); otherwise it is a UTR, an amount or a phone number.
+        if refs or run in cued:
+            found.append((MATCH_ACCOUNT_NUMBER, run, refs))
+
+    if not found:
+        this = _THIS_ACCOUNT_RE.search(note)
+        if this:
+            return MATCH_UNSPECIFIED, this.group(0), ACCOUNT_NOT_FOUND, []
+        return None
+
+    every: set[str] = set().union(*(refs for _, _, refs in found))
+    kind, ident = found[0][0], ", ".join(i for _, i, _ in found)
+    if any(not refs for _, _, refs in found):
+        # Something the note names does not exist. Alone, that is NOT_FOUND; beside another
+        # identifier that does resolve, the note contradicts itself — AMBIGUOUS, never a pick.
+        return kind, ident, (ACCOUNT_AMBIGUOUS if every else ACCOUNT_NOT_FOUND), sorted(every)
+    if len(every) == 1:
+        return kind, ident, ACCOUNT_RESOLVED, sorted(every)
+    return kind, ident, ACCOUNT_AMBIGUOUS, sorted(every)
+
+
+def parse_note(note: Optional[str], accounts: Iterable[AccountMaster], *,
+               identifiers: bool = True) -> NoteRequest:
     """Read a merchant note against the real account catalogue.
 
-    Matching is data-driven: the keys come from the Admin's own accounts — their bank names and
-    their account names (e.g. "SINDU") — so a bank is recognised precisely when the platform has
-    an account at it. A note naming a bank that does not exist matches nothing and is reported as
-    such; it is not an error and it never raises.
+    Matching is data-driven: the keys come from the Admin's own accounts — their reference numbers,
+    account numbers, account names (e.g. "SINDU") and bank names — so an account or bank is
+    recognised precisely when the platform has it. Nothing here raises.
 
-    An account-name match wins over a bank match: naming "SINDU" is more specific than naming the
-    bank SINDU happens to be at. Among equals the longest key wins, so "Bank of India" is not
-    mistaken for "Bank of Baroda" on the shared word "bank".
+    Most specific first: an exact account (by reference, full number, trailing digits or name)
+    wins over a bank, and among names the longest key wins, so "Bank of India" is not mistaken for
+    "Bank of Baroda" on the shared word "bank".
+
+    ``identifiers=False`` skips the reference / number / trailing-digit identification and keeps
+    the original first-match name lookup. That is the withdrawal engine's reading: digits in a
+    withdrawal note usually describe the BENEFICIARY, not one of the platform's paying accounts.
     """
     req = NoteRequest()
     text = _norm_text(note)
@@ -535,21 +712,59 @@ def parse_note(note: Optional[str], accounts: Iterable[AccountMaster]) -> NoteRe
         return None, None
 
     accounts = list(accounts)
+    by_ref = {a.reference_number: a for a in accounts}
 
-    # A specific account by name first ("Use SINDU").
-    acct_keys: dict[str, str] = {}
-    for acc in accounts:
-        for key in _name_keys(acc.account_name):
-            acct_keys.setdefault(key, acc.reference_number)
-    ref, matched = _find(acct_keys)
-    if ref:
+    def _resolve(ref: str, matched: str, kind: str) -> None:
         req.account_ref, req.matched_text = ref, matched
-        acc = next((a for a in accounts if a.reference_number == ref), None)
-        if acc:
-            req.bank_name = acc.bank_name
-        return req
+        req.account_requested, req.account_match = True, kind
+        req.account_status, req.account_identifier = ACCOUNT_RESOLVED, matched
+        req.account_candidates = [ref]
+        if ref in by_ref:
+            req.bank_name = by_ref[ref].bank_name
 
-    # Then the bank ("Use Bank of Baroda" — every Bank of Baroda account is then evaluated).
+    def _unresolved(kind: str, ident: str, status: str, refs: list[str]) -> None:
+        req.account_requested, req.account_match = True, kind
+        req.account_status, req.account_identifier = status, ident
+        req.account_candidates, req.matched_text = refs, ident
+
+    if identifiers:
+        # 1. An exact account by its canonical identifiers ("Use ACC000123", "ending 7890").
+        hit = _identify_exact_account(note or "", accounts)
+        if hit is not None:
+            kind, ident, status, refs = hit
+            if status == ACCOUNT_RESOLVED:
+                _resolve(refs[0], ident, kind)
+            else:
+                _unresolved(kind, ident, status, refs)
+            return req
+
+        # 2. An exact account by name ("Use SINDU"). Two accounts answering to the same name is a
+        # note that does not say which — handed to the Admin, never settled by picking one.
+        acct_keys: dict[str, set[str]] = {}
+        for acc in accounts:
+            for key in _name_keys(acc.account_name):
+                acct_keys.setdefault(key, set()).add(acc.reference_number)
+        for key in sorted(acct_keys, key=len, reverse=True):
+            if len(key) >= 3 and f" {key} " in padded and _is_request_for(key):
+                refs = sorted(acct_keys[key])
+                if len(refs) == 1:
+                    _resolve(refs[0], key, MATCH_ACCOUNT_NAME)
+                else:
+                    _unresolved(MATCH_ACCOUNT_NAME, key, ACCOUNT_AMBIGUOUS, refs)
+                return req
+    else:
+        name_keys: dict[str, str] = {}
+        for acc in accounts:
+            for key in _name_keys(acc.account_name):
+                name_keys.setdefault(key, acc.reference_number)
+        ref, matched = _find(name_keys)
+        if ref:
+            req.account_ref, req.matched_text = ref, matched
+            if ref in by_ref:
+                req.bank_name = by_ref[ref].bank_name
+            return req
+
+    # 3. The bank ("Use Bank of Baroda" — every Bank of Baroda account is then evaluated).
     bank_keys: dict[str, str] = {}
     for acc in accounts:
         for key in _name_keys(acc.bank_name):
@@ -565,6 +780,12 @@ def parse_note(note: Optional[str], accounts: Iterable[AccountMaster]) -> NoteRe
     return req
 
 
+def same_bank(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two stored bank names are the same bank, ignoring case, spacing and punctuation
+    ("HDFC Bank" and "HDFC BANK" are one bank)."""
+    return bool(a and b) and _norm_text(a) == _norm_text(b)
+
+
 # ═══ 3. Customer & account history ══════════════════════════════════════════════════════════════
 
 @dataclass
@@ -573,6 +794,7 @@ class MemberHistory:
     deposit rows — there is no member master table on this platform, and no frontend flag is
     trusted (the request form's Profile OLD/NEW selector is the operator's opinion, not a fact)."""
     deposit_count: int = 0
+    successful_deposits: int = 0     # the member's COMPLETED/DEPOSITED deposits (any sending account)
     accounts_used: list[str] = field(default_factory=list)     # most recently used first
     per_account_deposits: dict[str, int] = field(default_factory=dict)
     # How many deposits the platform has actually RECEIVED from the exact account this request is
@@ -605,14 +827,24 @@ class MemberHistory:
         return self.deposit_count == 0
 
     @property
-    def is_five_plus(self) -> bool:
-        """The business's "number of deposits = 5+" condition.
+    def successful_count(self) -> int:
+        """The customer's SUCCESSFUL deposits — what the Own Account rule counts.
 
-        Computed and carried into the decision and the audit journal. The platform defines no
-        action for it, so none is invented here — this is the value that rule needs, ready for
-        whatever prioritisation is specified for it.
+        The same count NEW/OLD is decided on, so the two rules can never disagree about who the
+        customer is: the deposits RECEIVED from the sending account when it is known (supplied by
+        services/member_account.successful_deposit_count), otherwise the member's received deposits.
+        Received means COMPLETED or DEPOSITED — pending, account-requested, rejected, cancelled
+        and every other state count for nothing.
         """
-        return self.deposit_count >= 5
+        if self.sender_account_deposits is not None:
+            return self.sender_account_deposits
+        return self.successful_deposits
+
+    @property
+    def prefers_own_account(self) -> bool:
+        """The Own Account rule: from the customer's 6th successful deposit onward (MORE than
+        OWN_ACCOUNT_THRESHOLD), an eligible Own Account is preferred. Exactly 5 is still normal."""
+        return self.successful_count > OWN_ACCOUNT_THRESHOLD
 
     @property
     def last_account(self) -> Optional[str]:
@@ -639,7 +871,7 @@ async def member_history(
         return hist
 
     stmt = (
-        select(Transaction.admin_ref, Transaction.id)
+        select(Transaction.admin_ref, Transaction.id, Transaction.status)
         .where(
             Transaction.type.in_(DEPOSIT_TYPES),
             func.upper(func.trim(func.coalesce(Transaction.member_id, ""))) == mid,
@@ -650,7 +882,9 @@ async def member_history(
         stmt = stmt.where(Transaction.id != exclude_tx_id)
     rows = (await db.execute(stmt)).all()
     hist.deposit_count = len(rows)
-    for ref, _id in rows:
+    # Only money that ARRIVED — the platform's one definition of a successful deposit.
+    hist.successful_deposits = sum(1 for _ref, _id, st in rows if st in SUCCESSFUL_STATUSES)
+    for ref, _id, _st in rows:
         if not ref:
             continue
         if ref not in hist.per_account_deposits:
@@ -696,6 +930,70 @@ async def unused_account_refs(db: AsyncSession, refs: Sequence[str]) -> set[str]
     return {ref for ref in refs if ref not in used}
 
 
+async def last_successful_account(
+    db: AsyncSession, member_id: Optional[str], *, exclude_tx_id: Optional[int] = None,
+) -> Optional[str]:
+    """The account this member's most recent SUCCESSFUL deposit was received into — what "same
+    account" / "last account" in a note refers to.
+
+    Successful means the money arrived: COMPLETED or DEPOSITED, the platform's one definition of a
+    received deposit (services/account_ledger._COMPLETED_DEPOSIT, shared with the member Profile).
+    A pending, rejected or cancelled request never names the "last account" — the member never
+    actually paid into it. Most recent by when it completed, then by row id.
+    """
+    mid = _norm_member(member_id)
+    if not mid:
+        return None
+    stmt = (
+        select(Transaction.admin_ref)
+        .where(
+            Transaction.type.in_(DEPOSIT_TYPES),
+            Transaction.status.in_(SUCCESSFUL_STATUSES),
+            Transaction.admin_ref.isnot(None),
+            func.upper(func.trim(func.coalesce(Transaction.member_id, ""))) == mid,
+        )
+        .order_by(func.coalesce(Transaction.admin_action_at, Transaction.created_at).desc(),
+                  Transaction.id.desc())
+        .limit(1)
+    )
+    if exclude_tx_id is not None:
+        stmt = stmt.where(Transaction.id != exclude_tx_id)
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+async def customers_served(
+    db: AsyncSession, refs: Sequence[str], *, exclude_member: Optional[str] = None,
+) -> dict[str, int]:
+    """{account reference → how many DISTINCT other customers it has served}.
+
+    The measure a NEW customer is spread by. A customer is a Member ID; an account has served them
+    once any deposit of theirs has been routed to it and not abandoned (every state except
+    rejected/cancelled — an allocated deposit is already that customer's account, which is what
+    keeps simultaneous new customers from all landing on the same one). ``exclude_member`` leaves
+    out the customer being placed, so the count is of OTHER customers. Accounts that have served
+    nobody are absent (read as 0).
+    """
+    refs = list(refs)
+    if not refs:
+        return {}
+    member = func.upper(func.trim(Transaction.member_id))
+    stmt = (
+        select(Transaction.admin_ref, func.count(func.distinct(member)))
+        .where(
+            Transaction.type.in_(DEPOSIT_TYPES),
+            Transaction.admin_ref.in_(refs),
+            Transaction.status.notin_(RELEASED_STATUSES),
+            Transaction.member_id.isnot(None),
+            func.trim(Transaction.member_id) != "",
+        )
+        .group_by(Transaction.admin_ref)
+    )
+    mid = _norm_member(exclude_member)
+    if mid:
+        stmt = stmt.where(member != mid)
+    return {ref: int(n or 0) for ref, n in (await db.execute(stmt)).all() if ref}
+
+
 async def upi_by_account(db: AsyncSession, refs: Sequence[str]) -> dict[str, str]:
     """{account reference → one ACTIVE linked UPI ID}. An account's UPI capability, read from the
     existing AdminUpi records rather than a new field. The lowest id wins so the same account
@@ -729,6 +1027,7 @@ class Candidate:
     upi_id: Optional[str]         # the account's active linked UPI, when it has one
     eligible: bool
     reject_reason: Optional[str] = None
+    served: int = 0               # distinct OTHER customers this account has served (NEW spread)
 
     @property
     def ref(self) -> str:
@@ -751,6 +1050,7 @@ class Candidate:
             "remainingCapacity": _money(self.remaining),
             "depositsToday": self.deposits_today,
             "memberDeposits": self.member_deposits,
+            "customersServed": self.served,
             "unused": self.unused,
             "eligible": self.eligible,
             "rejectReason": self.reject_reason,
@@ -843,7 +1143,8 @@ async def evaluate_accounts(
     upis = await upi_by_account(db, refs)
     if history is None:
         history = await member_history(db, member_id, exclude_tx_id=exclude_tx_id)
-    return [
+    served = await customers_served(db, refs, exclude_member=member_id)
+    out = [
         _evaluate(
             a, amount,
             used_today=used.get(a.reference_number, 0.0),
@@ -856,6 +1157,9 @@ async def evaluate_accounts(
         )
         for a in accounts
     ]
+    for cand in out:
+        cand.served = served.get(cand.ref, 0)
+    return out
 
 
 # ═══ 5. Ranking ═════════════════════════════════════════════════════════════════════════════════
@@ -896,6 +1200,16 @@ class AllocationResult:
     def allocated(self) -> bool:
         return self.account is not None
 
+    @property
+    def failure_code(self) -> Optional[str]:
+        """Why nothing was allocated (a FAIL_* code), or None on success."""
+        return None if self.allocated else (self.detail or {}).get("failure")
+
+    @property
+    def request(self) -> dict:
+        """What the note asked for and whether it was met (see allocate_deposit_account)."""
+        return (self.detail or {}).get("request") or {}
+
     def snapshot(self) -> Optional[dict]:
         """The immutable account card stored on the deposit and shown to the merchant. Deliberately
         limited to what the merchant needs in order to pay: no capacity, no ranking, no other
@@ -925,49 +1239,46 @@ class AllocationResult:
         return out
 
 
-def _tiers(candidates: list[Candidate], history: MemberHistory, note: NoteRequest,
-           *, deposit_type: Optional[str] = None) -> list[tuple[str, list[Candidate]]]:
-    """The ordered preference pools, most preferred first. Every pool is already hard-filtered, so
-    a rule can only ever change WHICH eligible account is picked — never whether an ineligible one
-    becomes acceptable. Each pool is a subset of the eligible set, and the last pool is always the
-    full eligible set, so a preference can narrow the choice but can never empty it.
-    """
+def _customer_tiers(candidates: list[Candidate], history: MemberHistory,
+                    *, deposit_type: Optional[str] = None,
+                    is_new: bool = False) -> list[tuple[str, list[Candidate]]]:
+    """The customer rules (NEW spread, or the existing-customer rules) as ORDERED pools over
+    ``candidates``, most preferred first. Used on its own, and again — over the Own Account subset
+    only — for the Own Account preference, so both rank by exactly the same rules."""
+    is_upi = (deposit_type or "").upper() == UPI_DEPOSIT_TYPE
+
+    # ── 4. A NEW customer is SPREAD across accounts ──
+    # The eligible account that has served the FEWEST OTHER customers comes first. A distribution
+    # rule: not "an account nobody has used", and not "the nearest remaining capacity" — an account
+    # that has served 2 customers beats one that has served 10 whatever either has left today.
+    # Ties are broken first by an account this member has ALREADY been given (placing them there
+    # again adds no customer to any account, so it never works against the spread — and moving a
+    # member between equally-loaded accounts is what left MM01 with a different account every
+    # time), then by the ordinary ranking: a UPI request prefers an account with a linked UPI, then
+    # nearest capacity, fewer deposits today, reference. Fully deterministic. The whole eligible
+    # set is in the one ordered list, so if the first account's capacity is taken concurrently the
+    # claim moves on to the next-least-served, not to some other rule.
+    if is_new:
+        theirs = set(history.accounts_used)
+        ordered = sorted(candidates, key=lambda c: (
+            c.served, 0 if c.ref in theirs else 1, 0 if (is_upi and c.upi_id) else 1,
+            c.remaining, c.deposits_today, c.ref))
+        return [(RULES.NEW_FEWEST_SERVED, ordered)]
+
+    # ── 5 / 6. An EXISTING customer — the existing rules, unchanged ──
     tiers: list[tuple[str, list[Candidate]]] = []
 
     # A UPI request prefers an account that can actually be paid by UPI, when one is eligible.
     # A PREFERENCE, expressed as a pool — not a filter: if no eligible account has a linked UPI the
     # later pools still cover every eligible account and the merchant is sent bank details instead.
-    if (deposit_type or "").upper() == UPI_DEPOSIT_TYPE:
+    if is_upi:
         with_upi = [c for c in candidates if c.upi_id]
         if with_upi and len(with_upi) < len(candidates):
-            tiers.append((RULES.UPI_CAPABLE, with_upi))
+            tiers.append((RULES.UPI_CAPABLE, rank(with_upi)))
 
-    # A NEW customer gets no preference pool of its own: nearest suitable capacity decides, which
-    # is the universal fallback added below.
-    #
-    # It used to prefer an account that had never received a deposit, with eligible SAVINGS
-    # accounts as the fallback. That was removed because it contradicts the operating rule this
-    # platform actually wants — FILL THE NEAREST ACCOUNT FIRST, then the next. Preferring an
-    # unused account does the opposite: the moment the smallest account takes its first deposit it
-    # stops being "unused" and is pushed DOWN the order, so the account with the least headroom is
-    # the one least likely to be filled. A ₹500 deposit skipped an account with ₹14,000 left in
-    # favour of one with ₹21,864 for exactly that reason.
-    #
-    # The consequence is deliberate and worth stating: new customers now concentrate on whichever
-    # eligible account has the least remaining capacity until it is full, rather than being spread
-    # across fresh accounts.
-    # AN ACCOUNT ALREADY GIVEN TO THIS MEMBER ID COMES FIRST, while it can still take the amount.
-    # Keeping a member on the account they were already sent is the point: they have those details
-    # saved, and moving them to a different account for every deposit is what this reorders away.
-    #
-    # NOT gated on is_new. That flag answers a different question — whether the SENDING account has
-    # ever funded us — and a member can plainly have been given an account while their sending
-    # account is still unknown to us. MM01 had been given two accounts and was still classified
-    # NEW, so this pool was skipped and each deposit landed somewhere else.
-    #
-    # `candidates` is already the eligible set, so an account that cannot take this amount is not
-    # in here: "reuse the account we gave them" never overrides the daily ceiling, it only applies
-    # while the amount still fits. Ordered by remaining capacity, then by how recently it was used.
+    # An account already given to this Member ID comes first, while it can still take the amount:
+    # they have those details saved. `candidates` is already the eligible set, so this never
+    # overrides a limit. Ordered by remaining capacity, then by how recently it was used.
     order = {ref: i for i, ref in enumerate(history.accounts_used)}
     seen = [c for c in candidates if c.ref in order]
     if seen:
@@ -976,8 +1287,77 @@ def _tiers(candidates: list[Candidate], history: MemberHistory, note: NoteReques
 
     # Everything eligible, nearest capacity — the universal fallback that guarantees an eligible
     # account is never left unused just because no preference matched it.
-    tiers.append((RULES.NOTE_BANK if note.has_preference else RULES.NEAREST_CAPACITY, candidates))
+    tiers.append((RULES.NEAREST_CAPACITY, rank(candidates)))
     return tiers
+
+
+def _tiers(candidates: list[Candidate], history: MemberHistory, note: NoteRequest,
+           *, deposit_type: Optional[str] = None, is_new: bool = False,
+           own_preference: bool = False) -> list[tuple[str, list[Candidate], str]]:
+    """The ordered preference pools for steps 4-7 of the priority, most preferred first, as
+    ``(rule, ordered pool, detail)``. Every pool is already hard-filtered, so a rule can only ever
+    change WHICH eligible account is picked — never whether an ineligible one becomes acceptable.
+    The last pool always covers the whole eligible set, so a preference can narrow the choice but
+    never empty it.
+
+    Explicit requests in the note (exact account, same account, bank) are NOT handled here: they
+    are decided before this runs and never fall through to it (see allocate_deposit_account). A
+    bank request calls this with only that bank's eligible accounts, which is how the Own Account
+    preference applies WITHIN the requested bank and never outside it.
+    """
+    base = [(rule, pool, "") for rule, pool in
+            _customer_tiers(candidates, history, deposit_type=deposit_type, is_new=is_new)]
+    if not own_preference:
+        return base
+
+    # ── 4. OWN ACCOUNT preference (the customer's 6th successful deposit onward) ──
+    # The eligible Own Accounts come first, ranked among themselves by exactly the customer rules
+    # above (the same NEW spread / UPI / account-history / nearest-capacity order) — never "the
+    # first row". It is a PREFERENCE: `candidates` is already the eligible set, so an Own Account
+    # that fails any limit is simply not here, and when no Own Account is eligible (or every one
+    # loses its capacity to a concurrent request) the full eligible set follows unchanged, so a
+    # non-own account that can take the money is used rather than the request going to the Admin.
+    own = [c for c in candidates if c.account.is_own_account]
+    if not own:
+        return base
+    own_tiers = [(RULES.OWN_ACCOUNT, pool, _RULE_TEXT.get(rule, rule)) for rule, pool in
+                 _customer_tiers(own, history, deposit_type=deposit_type, is_new=is_new)]
+    return own_tiers + base
+
+
+def _why_not(cand: Candidate, amount: float, *, deposit_type: Optional[str],
+             sender_account_type: Optional[str]) -> str:
+    """One Admin-facing sentence for why this account cannot take this deposit. Internal — it
+    names limits and capacity, so it only ever reaches the Admin (journal, Admin panel, audit)."""
+    a = cand.account
+    money = f"₹{_money(amount):,.2f}"
+    r = cand.reject_reason
+    if r == REJECT_INACTIVE:
+        return f"it is {a.status or 'not active'}"
+    if r == REJECT_PAYIN_MODE:
+        return f"its Payin Mode does not include {deposit_type}"
+    if r == REJECT_ACCOUNT_TYPE:
+        return (f"it is a {_type_value(a.account_type)} and the member is sending from a "
+                f"{sender_account_type}")
+    if r == REJECT_NO_LIMIT:
+        return "it has no Highest Credit and/or Bank Daily Credit Limit configured"
+    if r == REJECT_OVER_PER_TXN:
+        return (f"{money} is above its Highest Credit (per transaction) of "
+                f"₹{_money(a.highest_credit):,.2f}")
+    if r == REJECT_NO_CAPACITY:
+        return (f"it has ₹{cand.remaining:,.2f} left of its ₹{_money(a.bank_daily_credit_limit):,.2f}"
+                f" Bank Daily Credit Limit today (₹{cand.used_today:,.2f} used)")
+    if r == REJECT_LOCKED:
+        return "its remaining capacity was taken by a concurrent request"
+    return r or "it is not eligible"
+
+
+def _label(cand: Optional[Candidate], ref: Optional[str] = None) -> str:
+    """How the Admin sees one account in a reason sentence."""
+    if cand is None:
+        return ref or "—"
+    a = cand.account
+    return f"{a.account_name} ({a.bank_name}, {a.reference_number})"
 
 
 async def _lock(db: AsyncSession, ref: str, *, skip_locked: bool) -> Optional[AccountMaster]:
@@ -1051,6 +1431,24 @@ async def allocate_deposit_account(
     The caller supplies only the deposit's own facts. Every rule, every figure and the final
     choice are decided here, under a row lock, from data in the database.
 
+    PRIORITY — the first that applies decides, and an EXPLICIT request (1-3) is either met exactly
+    or refused; it never falls through to the rules below it:
+
+      1. EXACT ACCOUNT the note names (reference, full number, unique trailing digits, name).
+      2. SAME / LAST ACCOUNT — the account of the member's last SUCCESSFUL deposit.
+      3. SPECIFIC BANK — the best eligible account AT that bank (by rules 4-6 within it).
+      4. OWN ACCOUNT — from the customer's 6th SUCCESSFUL deposit (count > 5), an eligible Own
+         Account first; when none is eligible, every other eligible account (a preference only).
+      5. NEW customer — the eligible account that has served the fewest OTHER customers.
+      6. EXISTING customer — the existing rules: UPI-capable (UPI deposits), an account already
+         given to this member, then nearest remaining daily credit capacity.
+      7. Nothing eligible, or an explicit request refused → no account (``failure_code`` says
+         why); the caller puts the deposit in ACCOUNT_REQUESTED for an Admin.
+
+    Every step chooses only among accounts that passed every HARD rule (availability, Payin Mode,
+    account type, configured limits, Highest Credit per transaction, Bank Daily Credit Limit). A
+    request can decide WHICH eligible account is used; it can never make an ineligible one usable.
+
     Nothing is written by this function except the lock it holds: assigning the account to the
     deposit is the caller's job, inside the caller's transaction, so the allocation and the
     deposit row land together or not at all.
@@ -1071,7 +1469,9 @@ async def allocate_deposit_account(
         # explains the classification rather than leaving it to be re-derived later.
         "senderAccountDeposits": sender_account_deposits,
         "senderAccountType": sender_account_type,
-        "fivePlusDeposits": history.is_five_plus,           # Rule 9 — computed and carried
+        # The count the Own Account rule reads (successful deposits only), and whether it is on.
+        "successfulDeposits": history.successful_count,
+        "ownAccountPreference": history.prefers_own_account,
         "depositType": deposit_type,
         "noteSameAccount": parsed.same_account,
         "noteBank": parsed.bank_name,
@@ -1091,19 +1491,46 @@ async def allocate_deposit_account(
     eligible = [c for c in candidates if c.eligible]
     result.detail["accounts"] = [c.snapshot() for c in candidates]
 
-    if not eligible:
-        code, sentence = _failure(candidates, amount)
-        result.detail["failure"] = code
-        # A note that named a bank or an account is worth repeating back: "no eligible account" and
-        # "the bank you asked for has no eligible account" send an Admin looking in different places.
-        wanted = parsed.bank_name or parsed.account_ref
-        if wanted:
-            sentence = f"{sentence} (requested: {wanted} — unavailable)"
-            result.requested_unavailable = True
-        result.reason = sentence
-        return result
-
     is_upi_request = (deposit_type or "").upper() == UPI_DEPOSIT_TYPE
+    by_ref = {c.ref: c for c in candidates}
+    money = f"₹{amount:,.2f}"
+    request = parsed.request_type
+    why = lambda c: _why_not(c, amount, deposit_type=deposit_type,  # noqa: E731
+                             sender_account_type=sender_account_type)
+
+    # ── The Own Account preference (step 4) — recorded whether or not it is active, so the Admin
+    # can see if it was involved and why an Own Account was or was not used. Internal only.
+    own_preference = history.prefers_own_account
+    own_all = [c for c in candidates if c.account.is_own_account]
+    result.detail["ownAccount"] = {
+        "successfulDeposits": history.successful_count,
+        "threshold": OWN_ACCOUNT_THRESHOLD,
+        "triggered": own_preference,
+        "candidates": len(own_all),
+        "eligible": sum(1 for c in own_all if c.eligible),
+        "fallbackEligible": sum(1 for c in eligible if not c.account.is_own_account),
+        "accounts": [{
+            "accountRef": c.ref, "accountName": c.account.account_name,
+            "bankName": c.account.bank_name, "eligible": c.eligible,
+            "rejectReason": c.reject_reason, "why": None if c.eligible else why(c),
+        } for c in own_all],
+        "selectedIsOwn": None,
+    }
+
+    # What the note asked for, recorded whether or not it is met — the Admin panel, the audit trail
+    # and the Telegram alert all read it from here.
+    result.detail["request"] = {
+        "type": request,
+        "matchedText": parsed.matched_text,
+        "match": parsed.account_match,
+        "identifier": parsed.account_identifier,
+        "accountStatus": parsed.account_status,
+        "candidates": parsed.account_candidates,
+        "accountRef": parsed.account_ref,
+        "bankName": parsed.bank_name,
+        "sameAccountRef": None,
+        "fulfilled": None,
+    }
 
     def _finish(cand: Candidate, rule: str, extra: str = "") -> AllocationResult:
         result.account = cand.account
@@ -1119,66 +1546,129 @@ async def allocate_deposit_account(
         result.credit_used = _money(cand.used_today)
         result.remaining = _money(cand.remaining)
         result.detail["selected"] = cand.snapshot()
+        result.detail["ownAccount"]["selectedIsOwn"] = bool(cand.account.is_own_account)
+        if request:
+            result.detail["request"]["fulfilled"] = True
         return result
 
-    # ── Rule 7 — an explicit "same account" request ──
-    # Checked against every mandatory rule like any other candidate. A previous account that is
-    # unavailable or out of capacity is NOT used, and the reason is recorded.
-    if parsed.same_account:
-        previous = history.last_account
-        target = next((c for c in eligible if c.ref == previous), None) if previous else None
-        if target:
-            claimed, _ = await _claim(db, [target], amount, on=on)
-            if claimed:
-                return _finish(claimed, RULES.SAME_ACCOUNT)
-        # Record WHY the request could not be honoured. An account that failed a hard rule carries
-        # its own reason; one that passed every rule and still could not be claimed lost the race
-        # to a concurrent allocation.
-        blocked = next((c for c in candidates if c.ref == previous), None) if previous else None
-        if not previous:
-            why = "NO_PREVIOUS_ACCOUNT"
-        elif blocked is None:
-            why = "ACCOUNT_NO_LONGER_EXISTS"
-        else:
-            why = blocked.reject_reason or REJECT_LOCKED
+    def _refuse(code: str, sentence: str) -> AllocationResult:
+        """An EXPLICIT request that cannot be met automatically. Nothing is allocated — the deposit
+        goes to the Admin with this reason — and nothing is substituted for what was asked."""
         result.requested_unavailable = True
-        result.detail["sameAccountRejected"] = {"accountRef": previous, "reason": why}
+        result.detail["failure"] = code
+        result.detail["request"]["fulfilled"] = False
+        result.reason = sentence
+        return result
 
-    # ── Rule 8 — a bank/account named in the note ──
-    # A preference, not an override: the pool is narrowed to the requested bank and EVERY account
-    # in it is evaluated (four Bank of Baroda accounts means four evaluations, not the first one).
-    # If none of them is eligible, the note is reported as unfulfilled and the normal rules run.
-    pool = eligible
-    if parsed.account_ref:
-        preferred = [c for c in eligible if c.ref == parsed.account_ref]
-    elif parsed.bank_name:
-        preferred = [c for c in eligible if c.account.bank_name == parsed.bank_name]
-    else:
-        preferred = []
-    if (parsed.account_ref or parsed.bank_name):
-        if preferred:
-            pool = preferred
-        else:
-            result.requested_unavailable = True
-            result.detail["requestedBankUnavailable"] = parsed.bank_name or parsed.account_ref
+    async def _take(target: Candidate, rule: str, fail_code: str, asked: str) -> AllocationResult:
+        """Honour a request for ONE specific account, or refuse it. Never another account."""
+        result.detail["request"]["account"] = target.snapshot()
+        if not target.eligible:
+            return _refuse(fail_code, f"The note asks for {asked}, {_label(target)}, and it cannot "
+                                      f"take {money}: {why(target)}.")
+        claimed, _ = await _claim(db, [target], amount, on=on)
+        if claimed:
+            return _finish(claimed, rule)
+        target.reject_reason = REJECT_LOCKED
+        return _refuse(FAIL_RACE, f"The note asks for {asked}, {_label(target)}, and its remaining "
+                                  f"capacity was taken by a concurrent request before {money} "
+                                  f"could be placed.")
 
-    # ── Rules 1 / 12 / 6 — preference tiers, then nearest suitable capacity ──
-    for rule, tier in _tiers(pool, history, parsed, deposit_type=deposit_type):
-        ordered = tier if rule == RULES.OLD_ACCOUNT_HISTORY else rank(tier)
+    # ── 1. EXACT ACCOUNT ── ("Use ACC000123", "account ending 7890", "Use SINDU")
+    if request == REQUEST_EXACT_ACCOUNT:
+        ident = parsed.account_identifier or parsed.matched_text or "an account"
+        if parsed.account_status == ACCOUNT_AMBIGUOUS:
+            refs = ", ".join(_label(by_ref.get(r), r) for r in parsed.account_candidates)
+            return _refuse(FAIL_REQUESTED_ACCOUNT_AMBIGUOUS, (
+                f"The note asks for one specific account (\"{ident}\") but does not identify which: "
+                f"it fits {len(parsed.account_candidates)} accounts — {refs}. Confirm the account "
+                f"with the merchant and assign it manually."))
+        target = by_ref.get(parsed.account_ref) if parsed.account_status == ACCOUNT_RESOLVED else None
+        if target is None:
+            if parsed.account_match == MATCH_UNSPECIFIED:
+                sentence = (f"The note asks for a specific account (\"{ident}\") but does not say "
+                            f"which. Confirm the account with the merchant and assign it manually.")
+            else:
+                sentence = (f"The note asks for account \"{ident}\", which does not exist in "
+                            f"Account Management. Confirm the account with the merchant and assign "
+                            f"it manually.")
+            return _refuse(FAIL_REQUESTED_ACCOUNT_NOT_FOUND, sentence)
+        return await _take(target, RULES.EXACT_ACCOUNT, FAIL_REQUESTED_ACCOUNT_NOT_ELIGIBLE,
+                           "a specific account")
+
+    # ── 2. SAME / LAST ACCOUNT ── the account the member's last SUCCESSFUL deposit was received into
+    if request == REQUEST_SAME_ACCOUNT:
+        last = await last_successful_account(db, member_id, exclude_tx_id=exclude_tx_id)
+        result.detail["request"]["sameAccountRef"] = last
+        if not last:
+            result.detail["sameAccountRejected"] = {"accountRef": None, "reason": "NO_PREVIOUS_ACCOUNT"}
+            return _refuse(FAIL_NO_PREVIOUS_ACCOUNT, (
+                "The note asks for the same / last account, but this member has no previous "
+                "successful deposit, so there is no account to reuse. Assign an account manually."))
+        target = by_ref.get(last)
+        if target is None:
+            result.detail["sameAccountRejected"] = {"accountRef": last, "reason": "ACCOUNT_NO_LONGER_EXISTS"}
+            return _refuse(FAIL_SAME_ACCOUNT_NOT_ELIGIBLE, (
+                f"The note asks for the same / last account, {last}, which no longer exists in "
+                f"Account Management. Assign an account manually."))
+        out = await _take(target, RULES.SAME_ACCOUNT, FAIL_SAME_ACCOUNT_NOT_ELIGIBLE,
+                          "the same / last account")
+        if not out.allocated:
+            result.detail["sameAccountRejected"] = {
+                "accountRef": last, "reason": target.reject_reason or REJECT_LOCKED}
+        return out
+
+    # ── 3. SPECIFIC BANK ── every account at that bank is evaluated; no other bank is considered.
+    if request == REQUEST_BANK:
+        bank = parsed.bank_name
+        at_bank = [c for c in candidates if same_bank(c.account.bank_name, bank)]
+        result.detail["request"]["bankAccounts"] = [c.snapshot() for c in at_bank]
+        pool = [c for c in at_bank if c.eligible]
+        if not pool:
+            reasons = "; ".join(f"{_label(c)} — {why(c)}" for c in at_bank) or "it has no accounts"
+            result.detail["requestedBankUnavailable"] = bank
+            return _refuse(FAIL_REQUESTED_BANK_NOT_ELIGIBLE, (
+                f"The note asks for {bank}, and none of its {len(at_bank)} account(s) can take "
+                f"{money}: {reasons}. Another bank was NOT substituted."))
+        for rule, ordered, sub in _tiers(pool, history, parsed, deposit_type=deposit_type,
+                                         is_new=history.is_new, own_preference=own_preference):
+            claimed, skipped = await _claim(db, ordered, amount, on=on)
+            if skipped:
+                result.detail.setdefault("concurrentlyLocked", []).extend(skipped)
+            if claimed:
+                why = _RULE_TEXT.get(rule, rule) + (f" · {sub}" if sub else "")
+                return _finish(claimed, RULES.NOTE_BANK, f"requested bank {bank} · {why}")
+        return _refuse(FAIL_RACE, (
+            f"The note asks for {bank}, and the remaining capacity of its eligible account(s) was "
+            f"taken by concurrent requests before {money} could be placed. Another bank was NOT "
+            f"substituted."))
+
+    # ── No explicit request: nothing eligible at all ──
+    if not eligible:
+        code, sentence = _failure(candidates, amount)
+        result.detail["failure"] = code
+        if own_preference and own_all:
+            # Say that the Own Account preference was in play and why none of them could be used —
+            # an Admin who configured Own Accounts for exactly this customer looks there first.
+            sentence = (f"{sentence} Own Account preference applied ({history.successful_count} "
+                        f"successful deposits): none of the {len(own_all)} Own Account(s) can take "
+                        f"it — " + "; ".join(f"{_label(c)} — {why(c)}" for c in own_all) + ".")
+        result.reason = sentence
+        return result
+
+    # ── 4. >5 successful deposits → an eligible Own Account first (then everything eligible);
+    # ── 5 / 6. NEW customer → fewest other customers served; EXISTING → the existing rules ──
+    for rule, ordered, sub in _tiers(eligible, history, parsed, deposit_type=deposit_type,
+                                     is_new=history.is_new, own_preference=own_preference):
         claimed, skipped = await _claim(db, ordered, amount, on=on)
         if skipped:
             result.detail.setdefault("concurrentlyLocked", []).extend(skipped)
         if claimed:
-            extra = ""
-            if result.requested_unavailable and parsed.has_preference:
-                extra = "requested account unavailable — fallback applied"
-            elif pool is preferred and parsed.bank_name:
-                extra = f"requested bank {parsed.bank_name}"
-            return _finish(claimed, rule, extra)
+            return _finish(claimed, rule, sub)
 
     # Every eligible account lost its capacity to a concurrent request between the read and the
     # lock. No account is assigned — the deposit stays unallocated rather than breaching a limit.
-    result.reason = (f"No account could be reserved for ₹{amount:,.2f} — the remaining capacity was "
+    result.reason = (f"No account could be reserved for {money} — the remaining capacity was "
                      f"taken by concurrent requests. Retry the allocation.")
     result.detail["failure"] = FAIL_RACE
     return result
@@ -1231,7 +1721,17 @@ async def record_allocation(
 
 
 def serialize(row: DepositAllocation) -> dict:
-    """API shape for one journal row (camelCase, matching the rest of the API)."""
+    """API shape for one journal row (camelCase, matching the rest of the API).
+
+    ADMIN-ONLY. Besides the decision it carries what the Admin needs to act on a request the engine
+    could not place: the failure code, what the note asked for (type, identifier, requested
+    account / bank / last account, whether it was met) and the requested account's own limit
+    position at the moment of the decision.
+    """
+    try:
+        detail = json.loads(row.detail) if row.detail else {}
+    except (ValueError, TypeError):
+        detail = {}
     return {
         "id": row.id,
         "transactionRef": row.transaction_ref,
@@ -1256,6 +1756,11 @@ def serialize(row: DepositAllocation) -> dict:
         "candidatesConsidered": row.candidates_considered,
         "candidatesEligible": row.candidates_eligible,
         "memberDepositCount": row.member_deposit_count,
+        "failure": detail.get("failure"),
+        "request": detail.get("request"),
+        # Whether the Own Account preference (>5 successful deposits) was in play, and each Own
+        # Account's position — so the Admin can see why one was or was not used.
+        "ownAccount": detail.get("ownAccount"),
         "createdAt": (row.created_at.isoformat() + "Z") if row.created_at else None,
         "createdAtIst": row.created_at_ist,
     }

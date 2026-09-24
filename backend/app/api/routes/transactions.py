@@ -1,9 +1,10 @@
 import json
+import re
 from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, case, func, text, literal, union_all
+from sqlalchemy import select, or_, and_, case, func, text, literal, union_all, update
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction, DepositAllocation, WithdrawalAllocation, WithdrawalPayoutLeg
 from app.core.deps import (
@@ -731,7 +732,7 @@ async def _track_account_credit(db: AsyncSession, tx: Transaction, actor: User, 
     limit = round(acc.bank_daily_credit_limit or 0.0, 2)
     if limit <= 0:
         return                                  # no daily ceiling configured — nothing to measure
-    used = (await alloc.credit_used_today(db, [acc.reference_number], on=tx.tx_date)).get(
+    used = (await alloc.credit_used_today(db, [acc.reference_number], on=tx.account_assigned_on or tx.tx_date)).get(
         acc.reference_number, 0.0)
     if round(used, 2) <= limit:
         return                                  # within the configured daily limit
@@ -953,6 +954,14 @@ async def _get_business_tx(tx_id: str, db: AsyncSession, reviewer: User) -> Tran
     return tx
 
 
+def _workflow_status(status: TxStatus) -> TxStatus:
+    """The status a payload reports. NO_ELIGIBLE_ACCOUNT is a retired internal exception state: a
+    request automation could not place is in ACCOUNT_REQUESTED, and that is what every viewer is
+    told. The startup migration moves any such row; this keeps one that slipped through from ever
+    reaching a merchant as "No Eligible Account"."""
+    return TxStatus.ACCOUNT_REQUESTED if status == TxStatus.NO_ELIGIBLE_ACCOUNT else status
+
+
 def _t(t: Transaction, full: bool = True) -> dict:
     # In list mode (full=False) the heavy base64 image fields are omitted to keep
     # responses small/fast; they're fetched on demand via GET /transactions/{id}.
@@ -961,7 +970,7 @@ def _t(t: Transaction, full: bool = True) -> dict:
         "ref": t.ref,
         "type": t.type,
         "amount": t.amount,
-        "status": t.status,
+        "status": _workflow_status(t.status),
         "merchantId": t.merchant_id,
         "merchant": t.merchant_name,
         # Permanent creator snapshot (who created the request — name/code/username/role).
@@ -2868,13 +2877,151 @@ async def _validate_manual_deposit_account(
                     f"₹{max(daily - used, 0):,.2f}."))
 
 
-async def _auto_allocate_deposit_account(
-    db: AsyncSession, tx: Transaction, merchant: Optional[User] = None,
+# ─── ACCOUNT_REQUESTED: the one exception state, and its Admin alert ──────────────────────────────
+# When automation cannot place a request — nothing eligible, or an explicit request in the note
+# (exact account, same account, bank) that cannot be met — the request waits in ACCOUNT_REQUESTED,
+# the Admin's existing manual queue. The merchant sees only "Account Requested"; WHY is Admin-only:
+# the allocation journal (GET /{id}/allocation, /{id}/payout-allocation), the Admin in-app
+# notification, the audit log and one Telegram alert.
+
+# A concise, Admin-facing reason per failure code, for the Telegram alert. The full sentence (with
+# every account's figures) stays in the Admin Portal.
+_ACCOUNT_REQUEST_SHORT_REASON = {
+    alloc.FAIL_NO_ACCOUNTS: "No accounts are configured in Account Management.",
+    alloc.FAIL_ALL_UNAVAILABLE: "Every account is inactive.",
+    alloc.FAIL_NO_LIMITS: "No account has its credit limits configured.",
+    alloc.FAIL_LIMIT_REACHED: "Every eligible account has reached its Bank Daily Credit Limit.",
+    alloc.FAIL_AMOUNT_TOO_LARGE: "The amount is above every eligible account's limit.",
+    alloc.FAIL_NO_MATCHING_TYPE: "No eligible account of the member's account type (Savings/Current).",
+    alloc.FAIL_NO_PAYIN_MODE: "No eligible account accepts this payment mode.",
+    alloc.FAIL_MIXED: "No eligible account for this amount.",
+    alloc.FAIL_RACE: "The remaining capacity was taken by a concurrent request.",
+    alloc.FAIL_REQUESTED_ACCOUNT_NOT_ELIGIBLE: "Requested account could not be automatically assigned.",
+    alloc.FAIL_REQUESTED_ACCOUNT_NOT_FOUND: "Requested account was not found in Account Management.",
+    alloc.FAIL_REQUESTED_ACCOUNT_AMBIGUOUS: "Requested account is ambiguous — it matches more than one account.",
+    alloc.FAIL_SAME_ACCOUNT_NOT_ELIGIBLE: "Requested same / last account could not be automatically assigned.",
+    alloc.FAIL_NO_PREVIOUS_ACCOUNT: "Same / last account requested, but the member has no previous successful deposit.",
+    alloc.FAIL_REQUESTED_BANK_NOT_ELIGIBLE: "No account at the requested bank can take this amount.",
+    walloc.FAIL_NO_LIMITS: "No account has its debit limits configured.",
+    walloc.FAIL_MODE_UNAVAILABLE: "No eligible account supports this payout mode.",
+    walloc.FAIL_LIMIT_REACHED: "Every eligible account has reached its Bank Daily Debit Limit.",
+    walloc.FAIL_NO_BALANCE: "Not enough balance in the eligible payout accounts.",
+    walloc.FAIL_CAPACITY: "Not enough payout capacity across the eligible accounts.",
+    walloc.FAIL_BENEFICIARY: "The beneficiary details are invalid.",
+    walloc.FAIL_MIXED: "No eligible payout account for this amount.",
+}
+
+
+def _masked_account(acc: Optional[AccountMaster]) -> str:
+    """``HDFC Bank / sindu (ACC000001) · A/C XXXXXX1234`` — a managed account as an alert shows it:
+    the platform's own reference and the last four digits only, never the full number."""
+    if acc is None:
+        return "—"
+    masked = alloc.mask_account_number(acc.account_number)
+    return (f"{acc.bank_name} / {acc.account_name} ({acc.reference_number})"
+            + (f" · A/C {masked}" if masked else ""))
+
+
+def _mask_identifier(value: Optional[str]) -> str:
+    """An identifier as typed in the note, with any long digit run (a full account number) masked."""
+    return re.sub(r"\d{6,}", lambda m: alloc.mask_account_number(m.group(0)) or "", value or "")
+
+
+def _deposit_requested_line(result) -> Optional[str]:
+    """What the note asked for, for the Admin alert. None when the note asked for nothing."""
+    req = result.request
+    kind = req.get("type")
+    accounts = {c.ref: c.account for c in result.candidates}
+    if kind == alloc.REQUEST_EXACT_ACCOUNT:
+        ref = req.get("accountRef")
+        if req.get("accountStatus") == alloc.ACCOUNT_RESOLVED and ref in accounts:
+            return f"Exact account — {_masked_account(accounts[ref])}"
+        status = (req.get("accountStatus") or "").replace("_", " ").lower()
+        return f"Exact account \"{_mask_identifier(req.get('identifier'))}\" ({status})"
+    if kind == alloc.REQUEST_SAME_ACCOUNT:
+        ref = req.get("sameAccountRef")
+        if ref in accounts:
+            return f"Same / last account — {_masked_account(accounts[ref])}"
+        return "Same / last account (none on record)"
+    if kind == alloc.REQUEST_BANK:
+        return f"Bank — {req.get('bankName')}"
+    return None
+
+
+async def _alert_withdrawal_account_request(db: AsyncSession, tx: Transaction) -> bool:
+    """The ACCOUNT_REQUESTED alert for a withdrawal, built from its latest payout-allocation journal
+    row — the engine's own record of why nothing could be placed and what the note asked for."""
+    row = (await db.execute(
+        select(WithdrawalAllocation)
+        .where(WithdrawalAllocation.transaction_ref == tx.ref)
+        .order_by(WithdrawalAllocation.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    detail: dict = {}
+    if row is not None and row.detail:
+        try:
+            detail = json.loads(row.detail) or {}
+        except (ValueError, TypeError):
+            detail = {}
+    requested = None
+    if detail.get("noteAccountRef"):
+        requested = f"Account — {detail['noteAccountRef']}"
+    elif detail.get("noteSameAccount"):
+        requested = "Same / last payout account"
+    elif detail.get("noteBank"):
+        requested = f"Bank — {detail['noteBank']}"
+    return await _alert_account_request_once(
+        db, tx, requested=requested, code=(row.failure_code if row is not None else None))
+
+
+async def _alert_account_request_once(
+    db: AsyncSession, tx: Transaction, *, requested: Optional[str], code: Optional[str],
 ) -> bool:
-    """Run the allocation engine for one freshly created deposit and apply its decision.
+    """Telegram the Admins that ``tx`` is waiting in ACCOUNT_REQUESTED because automation could not
+    place it — ONCE per entry into that state.
+
+    Idempotent by a conditional UPDATE on ``account_request_alerted_at``: only the call that moves
+    it from NULL claims the alert, so a retry, a re-check or two concurrent attempts can never send
+    it twice. The marker is cleared when the request is placed (:func:`_clear_account_request_alert`),
+    so a later, genuinely new entry into ACCOUNT_REQUESTED alerts again. Returns True when this call
+    sent the alert.
+    """
+    now = datetime.utcnow()
+    claimed = (await db.execute(
+        update(Transaction)
+        .where(Transaction.id == tx.id, Transaction.account_request_alerted_at.is_(None))
+        .values(account_request_alerted_at=now)
+        .execution_options(synchronize_session=False)
+    )).rowcount
+    if not claimed:
+        return False
+    tx.account_request_alerted_at = now
+    reason = _ACCOUNT_REQUEST_SHORT_REASON.get(code or "") or \
+        "The request could not be automatically assigned an account."
+    await tgn.notify_account_request(db, tx, requested=requested, reason=reason)
+    await record_audit(db, "ACCOUNT_REQUEST_ALERTED", actor=None, entity_type=tx.type.value,
+                       entity_id=tx.ref, new="ACCOUNT_REQUESTED",
+                       reason=f"Admin alerted — {code or 'NO_ACCOUNT'}"
+                              + (f" · requested: {requested}" if requested else ""))
+    return True
+
+
+def _clear_account_request_alert(tx: Transaction) -> None:
+    """The request has been placed: a later re-entry into ACCOUNT_REQUESTED is a new event."""
+    tx.account_request_alerted_at = None
+
+
+async def _auto_allocate_deposit_account(
+    db: AsyncSession, tx: Transaction, merchant: Optional[User] = None, *, announce: bool = True,
+) -> bool:
+    """Run the allocation engine for one deposit and apply its decision.
 
     Returns True when an account was allocated (the request is now ACCOUNT_SUBMITTED and the
-    merchant can pay), False when none was eligible (the request stays ACCOUNT_REQUESTED).
+    merchant can pay), False when it could not be placed automatically — nothing eligible, or an
+    explicit request in the note that cannot be met — and the request is in ACCOUNT_REQUESTED.
+
+    ``announce`` raises the Admin in-app notification and the (once-only) Telegram alert for a
+    request that could not be placed. The Admin's own Retry passes False: they are looking at the
+    request and get the reason in the response, so telling every Admin again is noise.
 
     Everything happens inside the caller's transaction — the row lock the engine takes, the
     account assignment, the usage the assignment consumes and the audit trail all commit together,
@@ -2903,33 +3050,41 @@ async def _auto_allocate_deposit_account(
     await alloc.record_allocation(db, result, transaction=tx)
 
     if not result.allocated:
-        # Nothing eligible. No account is assigned — a limit is never crossed to satisfy a request,
-        # and a merchant is never sent an account that cannot take the money.
+        # Not placed. No account is assigned — a limit is never crossed to satisfy a request, a
+        # requested account/bank is never swapped for another, and a merchant is never sent an
+        # account that cannot take the money.
         #
-        # The request goes to NO_ELIGIBLE_ACCOUNT, an explicit EXCEPTION state, NOT back to
-        # ACCOUNT_REQUESTED. That distinction is the point: ACCOUNT_REQUESTED used to mean "waiting
-        # for an Admin to choose an account", and with allocation automatic it is no longer a
-        # normal waiting state for a deposit. A request sitting here is a configuration problem an
-        # Admin must look at — every account full, unavailable, or none configured — and it is the
-        # only deposit case that still needs one. The reason is on the allocation journal.
-        tx.status = TxStatus.NO_ELIGIBLE_ACCOUNT
-        msg = (f"{tx.ref}: NO ELIGIBLE ACCOUNT for {_inr(tx.amount)} — {result.reason} "
-               f"Free up capacity or add an account, then retry the allocation.")
-        for uid in await _all_admin_ids(db):
-            db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
-        await log_event(db, "DEPOSIT_NO_ELIGIBLE_ACCOUNT",
-                        f"{tx.ref}: automatic account allocation found no eligible account "
-                        f"({_inr(tx.amount)}) — {result.reason}", actor=None)
-        await record_audit(db, "DEPOSIT_NO_ELIGIBLE_ACCOUNT", actor=None, entity_type=tx.type.value,
-                           entity_id=tx.ref, old="ACCOUNT_REQUESTED", new="NO_ELIGIBLE_ACCOUNT",
-                           reason=result.reason)
+        # The request is in ACCOUNT_REQUESTED: the Admin's existing manual queue (assign an account,
+        # Retry allocation, or reject). That is also all the merchant sees — "Account Requested".
+        # WHY it could not be placed is Admin-only: the allocation journal written above (served by
+        # the Admin-only GET /{id}/allocation), the Admin notification, the audit trail and the
+        # Telegram alert. It is never written anywhere the merchant's payload reads.
+        tx.status = TxStatus.ACCOUNT_REQUESTED
+        if announce:
+            msg = (f"{tx.ref}: ACCOUNT REQUESTED — automatic allocation could not place "
+                   f"{_inr(tx.amount)}. {result.reason} Assign an account or retry the allocation.")
+            for uid in await _all_admin_ids(db):
+                db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
+        await log_event(db, "DEPOSIT_ACCOUNT_REQUESTED",
+                        f"{tx.ref}: automatic account allocation could not place "
+                        f"{_inr(tx.amount)} — {result.reason}", actor=None)
+        await record_audit(db, "DEPOSIT_ACCOUNT_REQUESTED", actor=None, entity_type=tx.type.value,
+                           entity_id=tx.ref, new="ACCOUNT_REQUESTED",
+                           reason=f"{result.failure_code or 'NO_ACCOUNT'} — {result.reason}")
         await db.flush()
-        return False   # the caller raises the Admin's Telegram — one notification, one place
+        if announce:
+            await _alert_account_request_once(
+                db, tx, requested=_deposit_requested_line(result), code=result.failure_code)
+        return False
 
     snapshot = result.snapshot() or {}
     acc = result.account
     tx.allocation_snapshot = json.dumps(snapshot)
     tx.admin_ref = acc.reference_number
+    # From today the deposit consumes THIS account's Bank Daily Credit Limit — dated by the day it
+    # was placed, not the day it was raised (a retry can place yesterday's request today).
+    tx.account_assigned_on = _ist_now().date()
+    _clear_account_request_alert(tx)
     if result.upi_id:
         # A UPI deposit is routed to the account's linked UPI (recorded for the Admin); the deposit
         # still credits the parent account, so bank + UPI traffic rolls up together exactly as the
@@ -3000,8 +3155,8 @@ async def _auto_allocate_deposit_account(
 # ACCOUNT_REQUESTED, which for a withdrawal meant "an Admin must now choose which account pays
 # this" — the manual step this feature removes. It now lands in ACCOUNT_SUBMITTED, the platform's
 # existing "the account is assigned" state, with the paying account(s) already attached; or, when
-# nothing is eligible, in NO_ELIGIBLE_ACCOUNT, the existing EXCEPTION state the deposit engine
-# already uses. No new state, and no new workflow.
+# nothing can be placed, it stays with the Admin in ACCOUNT_REQUESTED exactly as before, with the
+# reason on the journal and one ACCOUNT_REQUESTED alert. No new state, and no new workflow.
 #
 # The Admin's "Pay & Complete" step is untouched: it still pays, still uploads the receipt and
 # still completes. It simply no longer chooses.
@@ -3050,6 +3205,7 @@ def _payout_summary(legs) -> str:
 
 async def _auto_allocate_withdrawal(
     db: AsyncSession, tx: Transaction, *, actor: User | None = None, announce: bool = True,
+    announce_failure: bool = True,
 ) -> bool:
     """Run the allocation engine for one withdrawal and apply its decision.
 
@@ -3091,20 +3247,24 @@ async def _auto_allocate_withdrawal(
         await walloc.release_legs(db, tx.ref, reason=walloc.RELEASE_REALLOCATED)
         tx.payout_account_ref = None
         await db.flush()
-        if announce:
-            msg = (f"{tx.ref}: NO ELIGIBLE PAYOUT ACCOUNT for {_inr(tx.amount)} — {result.reason}")
+        if announce and announce_failure:
+            msg = (f"{tx.ref}: NO PAYOUT ACCOUNT could be allocated automatically for "
+                   f"{_inr(tx.amount)} — {result.reason}")
             for uid in await _all_admin_ids(db):
                 db.add(Notification(user_id=uid, message=msg, icon="⚠️"))
-            await log_event(db, "WITHDRAWAL_NO_ELIGIBLE_ACCOUNT",
-                            f"{tx.ref}: automatic payout allocation found no eligible account "
-                            f"({_inr(tx.amount)}) — {result.reason}", actor=actor)
-            await record_audit(db, "WITHDRAWAL_NO_ELIGIBLE_ACCOUNT", actor=actor,
-                               entity_type=tx.type.value, entity_id=tx.ref, new="NO_ELIGIBLE_ACCOUNT",
-                               reason=result.reason)
+            await log_event(db, "WITHDRAWAL_PAYOUT_NOT_ALLOCATED",
+                            f"{tx.ref}: automatic payout allocation could not place "
+                            f"{_inr(tx.amount)} — {result.reason}", actor=actor)
+            # The STATUS is the caller's to set (ACCOUNT_REQUESTED once the Manager has approved);
+            # this records only that no paying account could be allocated, and why.
+            await record_audit(db, "WITHDRAWAL_PAYOUT_NOT_ALLOCATED", actor=actor,
+                               entity_type=tx.type.value, entity_id=tx.ref, new="NO PAYOUT ACCOUNT",
+                               reason=f"{result.failure_code or 'NO_ACCOUNT'} — {result.reason}")
         return False
 
     legs = await walloc.write_legs(
         db, result, transaction=tx, allocated_by=(actor.name if actor else AUTO_PAYOUT_ACTOR))
+    _clear_account_request_alert(tx)
     # The single paying account is ALSO recorded on the existing `payout_account_ref` column, so
     # every screen, balance view and report that already reads it keeps working unchanged. A SPLIT
     # cannot be expressed by one column — each account paid only its own share — so it stays NULL
@@ -3267,10 +3427,11 @@ async def create_deposit(
     await _remember_member_account_type(db, current_user, _ident, tx.sender_account_type)
     await db.flush()
     # Automatic account allocation. The engine evaluates every managed account against this
-    # request — availability, payment-method capability and, above all, the account's REMAINING
-    # daily credit capacity — and assigns the best eligible one, moving the request straight to
-    # ACCOUNT_SUBMITTED so the merchant can pay. When nothing is eligible it assigns nothing and
-    # the request waits in ACCOUNT_REQUESTED for the Admin, exactly as it did before.
+    # request — availability, payment-method capability and, above all, the account's limits —
+    # honours an explicit request in the note (exact account, same account, bank) or refuses it,
+    # and otherwise assigns by the customer rules, moving the request straight to ACCOUNT_SUBMITTED
+    # so the merchant can pay. When it cannot place it, it assigns nothing and the request waits in
+    # ACCOUNT_REQUESTED for the Admin, exactly as it did before allocation existed.
     allocated = await _auto_allocate_deposit_account(db, tx, current_user) if needs_account else False
     await notify_tx(db, tx, f"Deposit {tx.ref} requested by {tx.merchant_name}", "↓")
     # Telegram (demo, next-step only): route to whoever owns the NEXT step. A Cash/Crypto deposit
@@ -3280,7 +3441,10 @@ async def create_deposit(
     # (allocation found none, or the type is not account-based) calls the Admin in.
     if direct_review:
         await tgn.notify(db, tx, "SUPERVISOR", "deposit_request_review")
-    elif not allocated:
+    elif not allocated and tx.account_request_alerted_at is None:
+        # Automation off, or a type never auto-allocated (CDM, Card): the ordinary Admin request.
+        # When automation ran and could not place it, the Admin already has the ACCOUNT_REQUESTED
+        # alert — with the amount, the note and the reason — so this one would be a duplicate.
         await tgn.notify(db, tx, "ADMIN", "deposit_request")
     # Cash / Crypto get their own audit action + a rich detail line (membership, member, type, amount).
     if direct_review:
@@ -3394,7 +3558,8 @@ async def create_withdrawal(
     # what is missing is payout capacity, which is an operational problem an Admin resolves (and is
     # told about). Blocking creation would make the merchant carry a configuration failure, and the
     # Manager's approval retries the allocation anyway.
-    allocated = await _auto_allocate_withdrawal(db, tx) if _needs_payout_account(tx) else True
+    if _needs_payout_account(tx):
+        await _auto_allocate_withdrawal(db, tx)
     # Route to the chosen Authorized Approver only (demo) — else the whole Manager queue (prod).
     await _notify_approver_or_role(db, tx, "MANAGER", f"Withdrawal {tx.ref} from {tx.merchant_name} — awaiting your review", "↑")
     await notify_tx(db, tx, f"Withdrawal {tx.ref} requested by {tx.merchant_name}", "↑")
@@ -3404,10 +3569,12 @@ async def create_withdrawal(
     await record_audit(db, "MERCHANT_CREATED_REQUEST", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=str(tx.amount), ip=_client_ip(request))
     if tx.approver_name:
         await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type="withdrawal", entity_id=tx.ref, new=tx.approver_name, ip=_client_ip(request))
-    if not allocated:
-        # Telegram (demo): the Admin owns the next step — free up payout capacity, then the
-        # allocation is retried. The in-app notification and the journal entry are already written.
-        await tgn.notify(db, tx, "ADMIN", "withdrawal_request")
+    # No Admin Telegram here, whether or not a paying account was allocated. The next step is the
+    # MANAGER's (notified above); the Admin has nothing to do until the withdrawal is approved. If
+    # it is approved with no account, it enters ACCOUNT_REQUESTED THEN and the Admin gets the one
+    # ACCOUNT_REQUESTED alert at that point. (This used to fire on every creation with automation
+    # OFF — where "not allocated" is simply "the engine was never asked" — and duplicate the
+    # approval alert with automation ON.) The in-app notification and journal are already written.
     await _refresh_with_images(db, tx)
     return await _with_payout_legs(db, tx)
 
@@ -3648,7 +3815,14 @@ async def account_submit(
     if ref:
         await _validate_manual_deposit_account(db, tx, ref)
 
+    # The deposit consumes the account's daily credit capacity from the day it is ASSIGNED — so a
+    # request raised yesterday and sent today counts against today. Re-sending the SAME account
+    # keeps the day it was first assigned: its capacity was already taken then, and moving it would
+    # count it twice (_validate_manual_deposit_account treats that case as already counted).
+    if ref and (tx.admin_ref or "") != ref:
+        tx.account_assigned_on = _ist_now().date()
     tx.admin_ref = ref
+    _clear_account_request_alert(tx)
     # Remember which managed account served this Member ID (drives reuse + per-account reporting).
     if ref and tx.member_id and ref.startswith("ACC"):
         db.add(AccountTransaction(
@@ -3695,6 +3869,23 @@ async def get_allocation_decision(
     return {"decision": alloc.serialize(row)}
 
 
+async def _recover_to_account_requested(db: AsyncSession, tx: Transaction, actor: User) -> dict:
+    """Move a request out of the retired NO_ELIGIBLE_ACCOUNT state into ACCOUNT_REQUESTED, the
+    Admin's manual queue, and return the Admin's view of it. Used when automation is OFF, where a
+    retry cannot run: without this, the old state's only exit was closed and the request stranded.
+    Nothing else about the request changes; the startup migration does the same for every such row.
+    """
+    tx.status = TxStatus.ACCOUNT_REQUESTED
+    await db.flush()
+    await record_audit(db, "ACCOUNT_REQUESTED_RECOVERED", actor=actor, entity_type=tx.type.value,
+                       entity_id=tx.ref, old="NO_ELIGIBLE_ACCOUNT", new="ACCOUNT_REQUESTED",
+                       reason="Automation is off — moved to the manual queue for an Admin to assign.")
+    await _refresh_with_images(db, tx)
+    if tx.type.value.startswith("WITHDRAWAL"):
+        return await _with_payout_legs(db, tx, unmask=True)
+    return _with_admin_account_record(tx, _t(tx))
+
+
 @router.post("/{tx_id}/retry-allocation")
 async def retry_allocation(
     tx_id: str,
@@ -3703,11 +3894,11 @@ async def retry_allocation(
 ):
     """Re-run the allocation engine for a deposit that could not be placed.
 
-    This is how the ONE remaining Admin task on a deposit is meant to be done. A request lands in
-    NO_ELIGIBLE_ACCOUNT because of configuration — every account at its daily limit, all of them
-    inactive, or none carrying a Highest Credit — so the Admin fixes the configuration (raise a
-    limit, activate an account, add one) and presses retry. The engine then picks the account, by
-    the same rules as every other deposit. The Admin still never chooses WHICH account.
+    A request the engine could not place waits in ACCOUNT_REQUESTED — because of configuration
+    (every account at its daily limit, all inactive, none with limits) or because the note asked for
+    an account or bank that could not take it. The Admin either assigns an account by hand (the
+    existing manual send) or fixes the cause and presses retry, and the engine then places it by
+    the same rules as every other deposit — including the note's request, which is never dropped.
 
     Re-running is safe to repeat: the engine re-reads today's usage under a row lock every time, so
     a retry cannot allocate capacity that has since been taken, and a retry that still finds
@@ -3731,18 +3922,26 @@ async def retry_allocation(
     # that would send somebody hunting through account limits for a problem that is a
     # switch on the Settings screen.
     if not await automation_mode.is_enabled(db):
+        if tx.status == TxStatus.NO_ELIGIBLE_ACCOUNT:
+            # A request parked in the retired exception state is never left behind a switch: it is
+            # moved into the manual queue, where it can be assigned by hand with automation off.
+            return await _recover_to_account_requested(db, tx, actor)
         raise HTTPException(
             status_code=409,
             detail="Automation Update is switched off. Assign the account manually, or enable automation in Admin → Settings → Automation Control.")
 
-    allocated = await _auto_allocate_deposit_account(db, tx)
+    allocated = await _auto_allocate_deposit_account(db, tx, announce=False)
     await _refresh_with_images(db, tx)
     if not allocated:
-        # Still nothing. Report it plainly rather than pretending something changed.
+        # Still not placeable. Say why — this is the Admin's own route, so the internal reason is
+        # theirs to see — rather than pretending something changed.
+        row = (await db.execute(
+            select(DepositAllocation).where(DepositAllocation.transaction_ref == tx.ref)
+            .order_by(DepositAllocation.id.desc()).limit(1))).scalar_one_or_none()
         raise HTTPException(
             status_code=409,
-            detail="Still no eligible account — every account is unavailable or has reached its "
-                   "daily credit limit for this amount.")
+            detail=(f"Still could not be placed automatically — {row.reason if row else 'no account is eligible.'} "
+                    f"Fix the cause, or assign an account manually."))
     await log_event(db, "DEPOSIT_ALLOCATION_RETRIED",
                     f"{tx.ref}: allocation retried by {actor.name} — {tx.admin_ref} assigned",
                     actor=actor)
@@ -3812,11 +4011,11 @@ async def retry_payout_allocation(
 ):
     """Re-run the allocation engine for a withdrawal that could not be placed.
 
-    This is how the ONE remaining Admin task on a withdrawal is meant to be done. A request lands
-    in NO_ELIGIBLE_ACCOUNT because of configuration or capacity — every account at its daily debit
-    limit, all of them inactive, none supporting the mode, or not enough money across them — so the
-    Admin fixes that (raise a limit, activate an account, enable a mode, fund an account) and
-    presses retry. The engine then picks the account(s), by the same rules as every other
+    An approved withdrawal the engine could not place waits in ACCOUNT_REQUESTED — every account at
+    its daily debit limit, all inactive, none supporting the mode, or not enough money across them.
+    The Admin either pays it from a named account (the existing payout step, which the engine still
+    validates) or fixes the cause (raise a limit, activate an account, enable a mode, fund an
+    account) and presses retry. The engine then picks the account(s), by the same rules as every other
     withdrawal. The Admin still never chooses WHICH account.
 
     Re-running is safe to repeat: the engine re-reads today's usage and every balance under row
@@ -3840,19 +4039,27 @@ async def retry_payout_allocation(
     # that would send somebody hunting through account limits for a problem that is a
     # switch on the Settings screen.
     if not await automation_mode.is_enabled(db):
+        if tx.status == TxStatus.NO_ELIGIBLE_ACCOUNT:
+            # Never stranded behind the switch: moved into the manual queue, where it is paid from a
+            # named account with automation off.
+            return await _recover_to_account_requested(db, tx, actor)
         raise HTTPException(
             status_code=409,
             detail="Automation Update is switched off. Assign the paying account manually, or enable automation in Admin → Settings → Automation Control.")
 
-    placed = await _auto_allocate_withdrawal(db, tx, actor=actor)
-    # A withdrawal sitting in the exception state moves on the moment it CAN be paid; one still
+    was = tx.status
+    placed = await _auto_allocate_withdrawal(db, tx, actor=actor, announce_failure=False)
+    # An approved withdrawal waiting for an account moves on the moment it CAN be paid; one still
     # awaiting its Manager keeps its place in that queue, because allocation decides who pays, not
     # whether the request is approved.
-    if tx.status == TxStatus.NO_ELIGIBLE_ACCOUNT and placed:
-        tx.status = TxStatus.ACCOUNT_SUBMITTED
-    elif tx.status == TxStatus.ACCOUNT_SUBMITTED and not placed:
-        tx.status = TxStatus.NO_ELIGIBLE_ACCOUNT
+    if was in (TxStatus.ACCOUNT_REQUESTED, TxStatus.NO_ELIGIBLE_ACCOUNT):
+        tx.status = TxStatus.ACCOUNT_SUBMITTED if placed else TxStatus.ACCOUNT_REQUESTED
+    elif was == TxStatus.ACCOUNT_SUBMITTED and not placed:
+        # It HAD an account and a re-run released it: a genuinely new entry into ACCOUNT_REQUESTED.
+        tx.status = TxStatus.ACCOUNT_REQUESTED
     await db.flush()
+    if was == TxStatus.ACCOUNT_SUBMITTED and not placed:
+        await _alert_withdrawal_account_request(db, tx)
     await record_audit(db, "WITHDRAWAL_ALLOCATION_RETRIED", actor=actor, entity_type=tx.type.value,
                        entity_id=tx.ref, new=tx.status.value, ip=_client_ip(request))
     await _refresh_with_images(db, tx)
@@ -4784,11 +4991,13 @@ async def _reviewer_action(
             # in the UI. The paying account is confirmed (allocated at creation, or allocated now
             # if that attempt found nothing), and the withdrawal lands in ACCOUNT_SUBMITTED — the
             # platform's existing "the account is assigned" state — ready for the Admin to PAY, not
-            # to choose. Where nothing is eligible it lands in NO_ELIGIBLE_ACCOUNT, the existing
-            # EXCEPTION state, which is the only case that still needs an Admin's judgement.
+            # to choose. Where nothing can be placed it lands in ACCOUNT_REQUESTED — the Admin's
+            # existing manual queue — with the reason on the payout-allocation journal and ONE
+            # ACCOUNT_REQUESTED alert, which is the only case that still needs an Admin's judgement.
             #
             # Settlements never reach here (they skip the review gate), so this only ever splits
             # deposit vs withdrawal.
+            placed: Optional[bool] = None      # whether automation placed the withdrawal (None: not asked)
             if tx.type.value.startswith("WITHDRAWAL"):
                 # AUTOMATION OFF takes the pre-allocation path verbatim: ACCOUNT_REQUESTED, which
                 # for a withdrawal has always meant "an Admin must now choose which account pays".
@@ -4799,11 +5008,14 @@ async def _reviewer_action(
                 # retry endpoint that itself refuses while automation is off — so live withdrawals
                 # were stranded with no way forward, and the release had to be rolled back. The
                 # switch is asked here, before the engine is consulted at all.
+                # With automation ON and nothing placeable the result is the SAME state: the Admin
+                # works it by hand (pay from a named account, which the engine still validates, or
+                # retry once the cause is fixed). There is no separate exception state to get stuck in.
                 if not await automation_mode.is_enabled(db):
                     tx.status = TxStatus.ACCOUNT_REQUESTED
                 else:
                     placed = await _ensure_withdrawal_allocation(db, tx, actor=reviewer)
-                    tx.status = TxStatus.ACCOUNT_SUBMITTED if placed else TxStatus.NO_ELIGIBLE_ACCOUNT
+                    tx.status = TxStatus.ACCOUNT_SUBMITTED if placed else TxStatus.ACCOUNT_REQUESTED
             else:
                 tx.status = TxStatus.SLIP_SUBMITTED
             _append_remark(tx, role=actor_role, user=reviewer.name, username=reviewer.username, action=action, remark=remark)
@@ -4811,8 +5023,13 @@ async def _reviewer_action(
             await _notify_admin(db, tx, f"{tx.ref}: approved by {actor_label} {reviewer.name} — awaiting your final approval", "✅")
             await _notify_merchant(db, tx, f"{tx.ref}: approved by the {actor_label} and forwarded to Admin for final approval", "✅")
             # Telegram (demo, next-step only): reviewer approved → notify the Admin for final action.
+            # A withdrawal automation could not place gets the ACCOUNT_REQUESTED alert INSTEAD of
+            # "Complete the withdrawal payment" — there is no account to pay from yet, and saying
+            # so is the Admin's actual next step.
             if role == "SUPERVISOR":
                 await tgn.notify(db, tx, "ADMIN", "supervisor_approved", actor=reviewer.name)
+            elif tx.type.value.startswith("WITHDRAWAL") and placed is False:
+                await _alert_withdrawal_account_request(db, tx)
             else:
                 await tgn.notify(db, tx, "ADMIN", "manager_verified", actor=reviewer.name)
     elif decision == "reject":

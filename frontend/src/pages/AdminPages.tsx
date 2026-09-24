@@ -126,10 +126,10 @@ const RequestModal: React.FC<{
   // own step and is excluded from the account picker. Every later step is shared, so the
   // reviewer-approved (SLIP_SUBMITTED) hop below covers Card exactly like any other deposit.
   const cardLinkStep = canAct && isCardDeposit && tx.status === 'ACCOUNT_REQUESTED';
-  // Automatic allocation assigns the account the moment a deposit is created, so ACCOUNT_REQUESTED
-  // is no longer a normal deposit state. The account picker below is now reached only through the
-  // EXCEPTION — NO_ELIGIBLE_ACCOUNT — plus any request raised before allocation existed, which
-  // must stay actionable. Retrying the engine is the intended fix; the picker is the last resort.
+  // Automatic allocation assigns the account the moment a deposit is created. A deposit it could
+  // NOT place — nothing eligible, or the note asked for an account / bank that cannot take it —
+  // waits in ACCOUNT_REQUESTED, the Admin's manual queue, with the reason on its allocation record.
+  // (NO_ELIGIBLE_ACCOUNT is the retired name of that state; any such row is treated the same.)
   // The retry banner covers BOTH unplaced states: the engine's own exception, and any request
   // raised before automatic allocation existed and left sitting in the old Admin queue. One click
   // places those too, which beats asking an Admin to pick an account by hand.
@@ -139,7 +139,6 @@ const RequestModal: React.FC<{
   // the request is stuck when it is simply waiting to be accepted.
   const allocationFailed = canAct && isDeposit && !isCardDeposit && !isCdm
     && (tx.status === 'NO_ELIGIBLE_ACCOUNT' || tx.status === 'ACCOUNT_REQUESTED');
-  const allocationExplicitFailure = canAct && isDeposit && !isCardDeposit && !isCdm && tx.status === 'NO_ELIGIBLE_ACCOUNT';
   // The Admin still picks the account by hand for a CDM request — that is the acceptance step.
   const chooseStep = canAct && isDeposit && !isCardDeposit
     && (tx.status === 'ACCOUNT_REQUESTED' || tx.status === 'NO_ELIGIBLE_ACCOUNT');
@@ -149,11 +148,8 @@ const RequestModal: React.FC<{
   // step PAYS them. ACCOUNT_REQUESTED stays payable for settlements and for any withdrawal raised
   // before automatic allocation existed.
   const payStep = canAct && !isDeposit
-    && (tx.status === 'SLIP_SUBMITTED' || tx.status === 'ACCOUNT_REQUESTED' || tx.status === 'ACCOUNT_SUBMITTED');
-  // The withdrawal exception: the engine could not place this one. This is the ONE case that still
-  // needs an Admin, and the intended fix is to remove the cause and retry the ENGINE — not to
-  // assign an account by hand.
-  const payoutUnplaced = canAct && isWithdrawal && tx.status === 'NO_ELIGIBLE_ACCOUNT';
+    && (tx.status === 'SLIP_SUBMITTED' || tx.status === 'ACCOUNT_REQUESTED'
+        || tx.status === 'ACCOUNT_SUBMITTED' || tx.status === 'NO_ELIGIBLE_ACCOUNT');
   // Payout details are captured on a WITHDRAWAL completion only. Deposits and settlements keep
   // exactly the completion they have always had.
   const needsPayout = payStep && !isSettlement;
@@ -162,6 +158,12 @@ const RequestModal: React.FC<{
   // found nothing and has not been retried.
   const allocatedLegs = (payoutInfo?.legs || []).filter(l => l.status !== 'RELEASED');
   const needsManualAccount = needsPayout && payMethod === 'BANK' && allocatedLegs.length === 0;
+  // An approved withdrawal automation could not place: it waits in ACCOUNT_REQUESTED with no live
+  // payout leg and a NO_ACCOUNT decision on record. The Admin sees why, and either pays it from a
+  // named account below (the engine still validates it) or fixes the cause and retries.
+  const payoutUnplaced = canAct && isWithdrawal && allocatedLegs.length === 0
+    && (tx.status === 'NO_ELIGIBLE_ACCOUNT'
+        || (tx.status === 'ACCOUNT_REQUESTED' && payoutInfo?.decision?.outcome === 'NO_ACCOUNT'));
   const payoutBalMap = Object.fromEntries(payoutBalances.map(b => [b.referenceNumber, b]));
   const selectedPayoutAcc = accounts.find(a => a.referenceNumber === payoutAccountRef);
   // Display-only: the balance the server last reported for the chosen account. The debit itself is
@@ -257,14 +259,17 @@ const RequestModal: React.FC<{
 
   // The intended fix for a request the engine could not place: correct the configuration, then
   // re-run the engine. The Admin never names an account here — that is the whole point.
-  // The recorded reason the engine could not place this request. Fetched only for the exception
-  // state, from the admin-only endpoint — it carries daily credit figures that never go to a
-  // merchant. Shown verbatim so the Admin sees the actual problem, not a guess at it.
+  // The recorded reason the engine could not place this request, with what the note asked for.
+  // Fetched from the admin-only endpoint — it carries limits and daily figures that never go to a
+  // merchant. Shown verbatim so the Admin sees the actual problem, not a guess at it. A deposit in
+  // ACCOUNT_REQUESTED with NO decision on record was never put to the engine (automation off, or
+  // raised before it existed).
   const [allocFail, setAllocFail] = useState<AllocationDecision | null>(null);
   useEffect(() => {
-    if (!allocationExplicitFailure) { setAllocFail(null); return; }
+    if (!allocationFailed) { setAllocFail(null); return; }
     transactionAPI.allocationDecision(tx.id).then(setAllocFail).catch(() => setAllocFail(null));
-  }, [allocationExplicitFailure, tx.id]);
+  }, [allocationFailed, tx.id]);
+  const allocationExplicitFailure = allocationFailed && allocFail?.outcome === 'NO_ACCOUNT';
 
   // The withdrawal's payout allocation — which account(s) the engine chose, and (when it could
   // choose none) why. Admin-only, so the capacity figures behind the decision never travel on a
@@ -626,7 +631,13 @@ const RequestModal: React.FC<{
         <div style={{ marginTop:18,paddingTop:16,borderTop:`1px solid ${T.border}` }}>
           <div style={{ background:T.warningBg,border:`1px solid ${T.warning}`,borderRadius:10,padding:'12px 14px',marginBottom:12 }}>
             <p style={{ margin:0,fontSize:12.5,fontWeight:800,color:T.textMain }}>
-              <Icon name="warning" size={14} /> No Eligible Payout Account
+              <Icon name="warning" size={14} /> Account Requested — No Payout Account Could Be Allocated
+            </p>
+            <p style={{ margin:'4px 0 0',fontSize:11.5,color:T.textMuted }}>
+              {[tx.memberId && `Member ${tx.memberId}${tx.member ? ` · ${tx.member}` : ''}`,
+                `Amount ${fmt(tx.amount)}`,
+                payoutInfo?.decision?.transactionMode && `Mode ${payoutInfo.decision.transactionMode}`,
+                tx.notes && `Note "${tx.notes}"`].filter(Boolean).join(' · ')}
             </p>
             <p style={{ margin:'6px 0 0',fontSize:12,color:T.textMuted }}>
               {payoutInfo?.decision?.reason
@@ -649,30 +660,40 @@ const RequestModal: React.FC<{
               </p>
             ) : null}
           </div>
+          <p style={{ margin:'0 0 10px',fontSize:11,color:T.textMuted,lineHeight:1.5 }}>
+            <b>Action:</b> pay it from a named account in the payout step below (the account is still
+            checked against its limits and balance), or fix the cause — raise a Bank Daily Debit
+            Limit, activate or fund an account, enable the mode — and retry.
+          </p>
           <Btn size="sm" onClick={retryPayout} disabled={saving}>
             {saving ? 'Allocating…' : <><Icon name="refresh" size={13} /> Retry Automatic Allocation</>}
           </Btn>
         </div>
       )}
 
-      {/* The DEPOSIT allocation exception. This is the ONE deposit case that still needs an Admin,
-          and the fix is configuration — raise a Highest Credit, activate an account, add one —
-          followed by a retry. Choosing an account by hand is offered underneath as the last
-          resort, not the first move. */}
+      {/* ACCOUNT_REQUESTED — a DEPOSIT automation could not place. Everything the Admin needs to
+          decide is here: who, how much, the note and what it asked for, why it was refused, and the
+          requested account's own limits. All of it is Admin-only (GET /{id}/allocation); the
+          merchant sees "Account Requested" and nothing else. The Admin then assigns an account
+          with the manual send below — which enforces every limit itself — or fixes the cause and
+          retries the engine. */}
       {allocationFailed && (
         <div style={{ display:'flex',gap:10,alignItems:'flex-start',background:T.dangerBg,border:`1px solid ${T.danger}55`,borderRadius:10,padding:'12px 14px',marginTop:18 }}>
           <span style={{ lineHeight:1 }}><Icon name="warning" size={18} /></span>
           <div style={{ flex:1,minWidth:0 }}>
             <p style={{ margin:0,fontSize:12,fontWeight:800,color:T.danger,textTransform:'uppercase',letterSpacing:'0.05em' }}>
-              {allocationExplicitFailure ? 'No Eligible Account' : 'No Account Assigned Yet'}
+              {allocationExplicitFailure ? 'Account Requested — Admin Action Required' : 'No Account Assigned Yet'}
             </p>
             <p style={{ margin:'3px 0 0',fontSize:12.5,color:T.textMain,lineHeight:1.5 }}>
               {allocationExplicitFailure
                 ? (allocFail?.reason || `The automatic allocation could not place ${fmt(tx.amount)}.`)
-                : 'This request was raised before automatic allocation and has no account. Run the allocation to place it.'}
+                : 'Automatic allocation has not placed this request (automation is off, or it was raised before automatic allocation). Assign an account below, or run the allocation.'}
             </p>
-            <p style={{ margin:'6px 0 0',fontSize:11,color:T.textMuted,lineHeight:1.5 }}>
-              Fix the account configuration, then retry — the engine picks the account, not you.
+            {allocationExplicitFailure && allocFail && (
+              <AllocationRequestFacts decision={allocFail} amount={tx.amount} />
+            )}
+            <p style={{ margin:'8px 0 0',fontSize:11,color:T.textMuted,lineHeight:1.5 }}>
+              <b>Action:</b> {accountRequestAction(allocFail?.failure)}
               {allocFail?.candidatesConsidered != null && ` ${allocFail.candidatesConsidered} account(s) evaluated, ${allocFail.candidatesEligible ?? 0} eligible.`}
             </p>
             <div style={{ marginTop:10 }}>
@@ -2101,6 +2122,80 @@ const limitValue = (v: number | null | undefined): React.ReactNode =>
 // The six fixed Payin Summary rows — the buckets GET /accounts/balances reports in payinByMode.
 const PAYIN_SUMMARY_ROWS = ['UPI', 'Bank Transfer', 'CDM', 'Credit Card', 'Debit Card', 'Other'];
 
+// ── ACCOUNT_REQUESTED: what the Admin is shown about a request automation could not place ─────────
+// The required next step per engine failure code. An explicit request (exact / same / bank) is
+// never substituted automatically, so the Admin confirms it; a capacity or configuration failure
+// is fixed in Account Management or worked around by assigning an account by hand.
+const accountRequestAction = (failure?: string | null): string => {
+  switch (failure) {
+    case 'REQUESTED_ACCOUNT_AMBIGUOUS':
+    case 'REQUESTED_ACCOUNT_NOT_FOUND':
+      return 'Confirm which account the merchant means, then assign it manually below.';
+    case 'REQUESTED_ACCOUNT_NOT_ELIGIBLE':
+    case 'SAME_ACCOUNT_NOT_ELIGIBLE':
+    case 'REQUESTED_BANK_NOT_ELIGIBLE':
+      return 'The requested account/bank cannot take this amount automatically. Assign an account manually below (every limit is still checked), or free up the requested account and retry.';
+    case 'NO_PREVIOUS_SUCCESSFUL_ACCOUNT':
+      return 'There is no previous account to reuse. Assign an account manually below.';
+    default:
+      return 'Assign an eligible account manually below, or fix the account configuration (limits, status, Payin Mode) and retry.';
+  }
+};
+
+const REQUEST_TYPE_LABEL: Record<string, string> = {
+  EXACT_ACCOUNT: 'Exact account', SAME_ACCOUNT: 'Same / last account', BANK: 'Specific bank',
+};
+
+// The parsed note and the requested account's position, for the ACCOUNT_REQUESTED panel.
+const AllocationRequestFacts: React.FC<{ decision: AllocationDecision; amount: number }> = ({ decision, amount }) => {
+  const req = decision.request;
+  const acc = req?.account;
+  const facts: [string, React.ReactNode][] = [];
+  if (decision.memberId) facts.push(['Customer', `${decision.memberId}${decision.memberName ? ` · ${decision.memberName}` : ''}`]);
+  facts.push(['Amount', fmt(amount)]);
+  if (decision.merchantNote) facts.push(['Note', `"${decision.merchantNote}"`]);
+  if (req?.type) {
+    facts.push(['Parsed request', REQUEST_TYPE_LABEL[req.type] || req.type]);
+    if (req.type === 'EXACT_ACCOUNT') {
+      const status = req.accountStatus && req.accountStatus !== 'RESOLVED'
+        ? ` (${req.accountStatus.replace('_', ' ').toLowerCase()}${req.candidates?.length ? `: ${req.candidates.join(', ')}` : ''})`
+        : '';
+      facts.push(['Requested account', `${req.identifier || req.matchedText || '—'}${status}`]);
+    }
+    if (req.type === 'SAME_ACCOUNT') facts.push(['Requested same account', req.sameAccountRef || 'none on record']);
+    if (req.bankName) facts.push(['Requested bank', req.bankName]);
+  }
+  if (acc) {
+    facts.push([`${acc.accountName || acc.accountRef} (${acc.accountRef})`,
+      `Highest Credit ${fmt(acc.highestCredit)} · Daily Limit ${fmt(acc.bankDailyCreditLimit)} · used ${fmt(acc.creditUsedToday)} · ${fmt(acc.remainingCapacity)} left · ${acc.status || '—'}`]);
+  }
+  const own = decision.ownAccount;
+  if (own && own.triggered) {
+    facts.push(['Customer successful transactions', String(own.successfulDeposits)]);
+    facts.push(['Own Account preference', 'Triggered']);
+    facts.push(['Own Account candidates', String(own.candidates)]);
+    facts.push(['Eligible Own Accounts', String(own.eligible)]);
+    facts.push(['Fallback eligible accounts', String(own.fallbackEligible)]);
+    for (const a of own.accounts || []) {
+      facts.push([`Own: ${a.accountName || a.accountRef} (${a.accountRef})`, a.eligible ? 'eligible' : (a.why || a.rejectReason || 'not eligible')]);
+    }
+  }
+  for (const b of (req?.bankAccounts || [])) {
+    facts.push([`${b.accountName || b.accountRef} (${b.accountRef})`,
+      `${b.eligible ? 'eligible' : (b.rejectReason || 'not eligible').replace(/_/g, ' ').toLowerCase()} · ${fmt(b.remainingCapacity)} left of ${fmt(b.bankDailyCreditLimit)} · Highest Credit ${fmt(b.highestCredit)}`]);
+  }
+  return (
+    <div style={{ marginTop:8,display:'grid',gridTemplateColumns:'minmax(110px,max-content) 1fr',gap:'3px 12px',fontSize:11.5 }}>
+      {facts.map(([k, v]) => (
+        <React.Fragment key={k}>
+          <span style={{ color:T.textMuted }}>{k}</span>
+          <span style={{ color:T.textMain,overflowWrap:'anywhere' }}>{v}</span>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
+
 const ACCOUNT_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 const ACCOUNT_IMAGE_MAX = 5 * 1024 * 1024;
 const ACCOUNT_IMAGE_ACCEPT = 'image/jpeg,image/jpg,image/png,image/webp,.jpg,.jpeg,.png,.webp';
@@ -2516,8 +2611,9 @@ export const AdminAccountsPage: React.FC = () => {
     } finally { setSavingLimits(false); }
   };
 
-  // Own Account is configuration: the backend records it and carries it into every allocation
-  // decision, but it is not a ranking input, so this cannot change where a deposit is sent.
+  // Own Account is an allocation rule: from a customer's 6th successful deposit, an eligible Own
+  // Account is preferred for their deposits. It never lets an account past a limit — the engine
+  // only prefers it among accounts that are already eligible.
   const saveOwnAccount = async (value: boolean) => {
     if (!detail) return;
     setSavingOwn(true);
@@ -2999,9 +3095,9 @@ export const AdminAccountsPage: React.FC = () => {
                     <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>{hint}</p>
                   </React.Fragment>
                 ))}
-                {/* The Admin's "Own Account" classification — an explicit Yes / No. Recorded on
-                    every deposit allocation decision; it is not a ranking input, so changing it
-                    moves no money and changes no account's eligibility. */}
+                {/* The Admin's "Own Account" classification — an explicit Yes / No. Yes = preferred
+                    for customers with more than 5 successful deposits, among accounts that are
+                    already eligible; it never makes an account eligible and never bypasses a limit. */}
                 <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
                   <span style={{ fontSize:12,color:T.textMuted }}>Own Account{canEditLimits && <span style={{ color:T.danger }}> *</span>}</span>
                   {canEditLimits ? (
@@ -3015,6 +3111,7 @@ export const AdminAccountsPage: React.FC = () => {
                     <span style={{ fontSize:13,fontWeight:700,color:T.textMain }}>{detail.isOwnAccount ? 'Yes' : 'No'}</span>
                   )}
                 </div>
+                <p style={{ margin:'4px 0 0',fontSize:11,color:T.textMuted }}>Preferred for customers with more than 5 successful transactions.</p>
                 {/* ── Today's position against the Bank Daily Credit Limit ──
                     Credit Remaining Today = Bank Daily Credit Limit − Credit Used Today, and
                     nothing else: Highest Credit is a per-transaction cap and has no "remaining".
@@ -3398,11 +3495,12 @@ export const AdminAccountsPage: React.FC = () => {
             <Input label="Highest Debit (₹)" required={form.status === 'ACTIVE'} type="text" inputMode="decimal" value={form.highest_debit} onChange={e=>set('highest_debit',formatIndianAmountInput(e.target.value))} hint="Max amount per WITHDRAWAL transaction. Required while Active — at 0 no withdrawal is ever routed here."/>
             <Input label="Bank Daily Debit Limit (₹)" type="text" inputMode="decimal" value={form.bank_daily_debit_limit} onChange={e=>set('bank_daily_debit_limit',formatIndianAmountInput(e.target.value))} hint="Max TOTAL sent per day. Leave at 0 to default to the per-transaction Highest Debit."/>
           </div>
-          {/* Own Account is recorded on the account and carried into every allocation decision.
-              It is not a ranking input, so setting it here changes no account's eligibility. */}
+          {/* Own Account = Yes: preferred for customers with more than 5 successful deposits,
+              among accounts that are already eligible. It never makes an account eligible. */}
           <Sel label="Own Account" required value={form.is_own_account ? 'YES' : 'NO'}
             onChange={e=>setForm(f=>({...f,is_own_account:e.target.value === 'YES'}))}
-            options={[{ value:'YES', label:'Yes' }, { value:'NO', label:'No' }]} />
+            options={[{ value:'YES', label:'Yes' }, { value:'NO', label:'No' }]} style={{ marginBottom:4 }} />
+          <p style={{ margin:'0 0 16px',fontSize:11,color:T.textMuted }}>Preferred for customers with more than 5 successful transactions.</p>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>
             <Btn variant="secondary" onClick={closeCreate}>Cancel</Btn>

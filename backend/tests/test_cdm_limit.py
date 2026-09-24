@@ -397,7 +397,12 @@ async def test_yesterdays_cdm_deposits_do_not_consume_todays_capacity(db):
     await _account(db, "ACC1", cdm_limit=100000.0)
     tx_id = await _cdm_assigned(db, merchant, 100000.0)
     tx = await txr._get_tx(tx_id, db)
+    # A deposit raised AND assigned on an earlier day. Its usage belongs to the day the account
+    # was assigned (account_assigned_on), so both are moved back — backdating only tx_date would
+    # describe a request raised then but placed today, which DOES count today (see
+    # test_account_request_workflow::test_a_request_raised_yesterday_and_placed_today_counts_today).
     tx.tx_date = date(2020, 1, 1)
+    tx.account_assigned_on = date(2020, 1, 1)
     await db.flush()
 
     assert (await cdm_capacity.used_today(db, ["ACC1"])).get("ACC1", 0.0) == 0.0

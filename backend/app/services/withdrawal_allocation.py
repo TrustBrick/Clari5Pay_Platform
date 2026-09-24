@@ -1121,7 +1121,9 @@ async def allocate_withdrawal_accounts(
         # headroom, and if it does not, the request is refused rather than forced. That is what
         # makes an account reference arriving from a browser safe to accept.
         accounts = [a for a in accounts if a.reference_number == force_account_ref]
-    parsed = parse_note(note, accounts)
+    # identifiers=False: digits in a withdrawal note describe the beneficiary, so the deposit-side
+    # exact-account identification (reference / number / trailing digits) is not applied here.
+    parsed = parse_note(note, accounts, identifiers=False)
     same_ref = await last_payout_account(db, member_id, exclude_tx_id=exclude_tx_id) \
         if parsed.same_account else None
 

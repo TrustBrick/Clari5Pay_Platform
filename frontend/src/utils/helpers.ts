@@ -172,6 +172,10 @@ const REVIEW_STATUS_FOR_ROLE: Record<string, string> = {
 };
 
 export const displayStatus = (status: string, type?: string, viewerRole?: string, approverRole?: string | null): string => {
+  // NO_ELIGIBLE_ACCOUNT is the retired name of ACCOUNT_REQUESTED (a request automation could not
+  // place). The API already reports it as ACCOUNT_REQUESTED; this keeps any stray value from ever
+  // reading as "No Eligible Account" — an internal reason — to anyone.
+  if (status === 'NO_ELIGIBLE_ACCOUNT') status = 'ACCOUNT_REQUESTED';
   const appr = String(approverRole || '').toUpperCase();
   if (appr && (status === 'SUPERVISOR_REVIEW' || status === 'MANAGER_REVIEW')) {
     // Only a role that maps to a real review gate may rewrite the label. An unrecognised role
@@ -211,6 +215,7 @@ const CARD_STATUS_LABELS: Record<string, string> = {
 // `approverRole` names who the request was sent to, so a Card deposit reads "Supervisor Approved"
 // or "Manager Approved" on the rung between the review and the operator's Mark Deposit.
 export const statusLabel = (status: string, type?: string, viewerRole?: string, depositType?: string | null, approverRole?: string | null): string => {
+  if (status === 'NO_ELIGIBLE_ACCOUNT') status = 'ACCOUNT_REQUESTED';   // see displayStatus
   const isDeposit = !!type && type.startsWith('DEPOSIT');
   if (isDeposit && CARD_TXN_TYPES.includes(String(depositType || '').toUpperCase())) {
     const card = CARD_STATUS_LABELS[status];

@@ -1314,11 +1314,12 @@ async def update_own_account_flag(
 ):
     """Admin edit of ONE account's "Own Account" classification.
 
-    The flag is configuration, not money: no balance, deposit, withdrawal or settlement reads it,
-    and neither does the ranking in the deposit allocation engine. It is recorded on the account,
-    carried into every allocation decision and stored on the allocation journal, so the
-    information is preserved and visible without inventing a priority the platform has never
-    defined — which would silently change which account real money is sent to.
+    The flag is an allocation rule, not money: no balance, withdrawal or settlement reads it. The
+    DEPOSIT allocation engine does — from a customer's 6th successful deposit (more than 5), an
+    eligible Own Account is preferred over other eligible accounts (services/deposit_allocation,
+    RULES.OWN_ACCOUNT). It is only a preference among accounts that already pass every hard rule:
+    it never makes an account eligible and never lets one past a limit. It is also carried into
+    every allocation decision and stored on the allocation journal.
 
     Permission is the module's existing gate, ``get_current_admin``; the account is resolved from
     the URL alone, so a request can only touch the account it addresses. A change writes the same

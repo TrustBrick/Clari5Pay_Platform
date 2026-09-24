@@ -431,9 +431,9 @@ class AccountCreate(BaseModel):
     # Which deposit types this account may receive (Payin Mode). Empty or omitted = every mode —
     # see AccountPayinModesUpdate.
     payin_modes: Optional[list[str]] = None
-    # The Admin's "Own Account" classification. Recorded on the account and carried into every
-    # deposit allocation decision; it is deliberately not a ranking input (see
-    # services/deposit_allocation), so setting it cannot change which account receives money.
+    # The Admin's "Own Account" classification. Yes = preferred for DEPOSITS of customers with
+    # more than 5 successful deposits, among accounts that are already eligible (see
+    # services/deposit_allocation, RULES.OWN_ACCOUNT). It never makes an account eligible.
     is_own_account: bool = False
 
 

@@ -154,6 +154,11 @@ _NEW_COLUMNS = [
     # convention the other two ceilings use. Additive: no existing row's behaviour changes until
     # an Admin sets a limit.
     ("account_master", "cdm_daily_limit", "DOUBLE PRECISION DEFAULT 0 NOT NULL"),
+    # The IST date a deposit's receiving account was assigned — the date its daily credit usage
+    # belongs to — and the once-only marker for the ACCOUNT_REQUESTED Admin alert. Both NULL on
+    # existing rows; usage falls back to tx_date for NULL, so no historical figure changes.
+    ("transactions", "account_assigned_on", "DATE"),
+    ("transactions", "account_request_alerted_at", "TIMESTAMP"),
     # Cancellation reason capture (merchant cancels a pending request).
     ("transactions", "cancel_reason", "TEXT"),
     ("transactions", "cancelled_by", "VARCHAR(128)"),
@@ -770,6 +775,17 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         await conn.execute(text(
             "UPDATE account_master SET bank_daily_debit_limit = highest_debit "
             "WHERE COALESCE(bank_daily_debit_limit, 0) = 0 AND COALESCE(highest_debit, 0) > 0"
+        ))
+        # ── 2026-09-23: NO_ELIGIBLE_ACCOUNT is retired as a workflow status ──
+        # A request automation could not place now waits in ACCOUNT_REQUESTED, the Admin's existing
+        # manual queue (the reason stays on the allocation journal). Any row still parked in the old
+        # exception state is moved there, so it can be worked by hand whatever the Automation switch
+        # says — the old state's only exit was a Retry that refuses while automation is OFF, which
+        # stranded real withdrawals. Compared as text so this is a no-op (not an error) on a
+        # database whose enum never had the value. Idempotent: nothing matches on later startups.
+        await conn.execute(text(
+            "UPDATE transactions SET status = 'ACCOUNT_REQUESTED' "
+            "WHERE status::text = 'NO_ELIGIBLE_ACCOUNT'"
         ))
         # The former Lowest Credit column is superseded by Highest Debit — drop it once (idempotent).
         await conn.execute(text("ALTER TABLE account_master DROP COLUMN IF EXISTS lowest_credit"))

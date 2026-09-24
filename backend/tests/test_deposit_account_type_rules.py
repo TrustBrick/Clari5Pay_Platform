@@ -92,7 +92,7 @@ async def test_money_lands_in_an_account_of_the_kind_it_was_sent_from(db, sender
         assert out["status"] == TxStatus.ACCOUNT_SUBMITTED
     else:
         assert out["adminRef"] is None, "a mismatched account is not a choice"
-        assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+        assert out["status"] == TxStatus.ACCOUNT_REQUESTED
 
 
 @pytest.mark.asyncio
@@ -257,23 +257,25 @@ async def test_the_journal_records_the_count_the_verdict_rested_on(db):
     assert r.detail["customerType"] == "OLD"
 
 
-# ═══ Rule 7 — computed, still no action ═════════════════════════════════════════════════════════
+# ═══ Rule 7 — the >5 count comes from the SENDING account's received deposits ════════════════════
 
 @pytest.mark.asyncio
-async def test_five_plus_deposits_is_carried_but_changes_nothing(db):
-    """Its business action is undefined, so none is invented — the flag is journalled and the
-    allocation is exactly what it would have been at four deposits."""
+async def test_the_own_account_count_is_the_sending_accounts_received_deposits(db):
+    """The Own Account rule counts what NEW/OLD counts — deposits RECEIVED from this sending
+    account. With no Own Account configured the allocation is exactly what the account-history
+    rule gives; the preference itself is pinned in test_own_account_preference.py."""
     merchant = await _merchant(db)
     await _account(db, "ACC1", name="a", credit=100000.0)
     for i in range(6):
         await _received(db, merchant, f"D{i}", upi=UPI_A, admin_ref="ACC1")
 
     out = await txr.create_deposit(_dep(accountType="CURRENT"), db, merchant)
-    assert out["adminRef"] == "ACC1", "same account history rule, unchanged by the 5+ flag"
+    assert out["adminRef"] == "ACC1", "same account history rule — no Own Account exists"
     r = await alloc.allocate_deposit_account(
         db, amount=45000, member_id=MEMBER,
         sender_account_type=CURRENT, sender_account_deposits=6)
-    assert r.detail["fivePlusDeposits"] is True
+    assert r.detail["successfulDeposits"] == 6
+    assert r.detail["ownAccountPreference"] is True
 
 
 # ═══ No eligible account — the manual fallback ══════════════════════════════════════════════════
@@ -285,7 +287,7 @@ async def test_nothing_is_allocated_or_consumed_when_no_account_matches(db):
 
     out = await txr.create_deposit(_dep(accountType="SAVINGS"), db, merchant)
 
-    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+    assert out["status"] == TxStatus.ACCOUNT_REQUESTED
     assert out["adminRef"] is None, "no fake allocation"
     # And no capacity was taken: the account is still wholly free today.
     used = await alloc.credit_used_today(db, ["CUR"])

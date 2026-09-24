@@ -292,6 +292,19 @@ class Transaction(Base):
     # allocation. Written once, at allocation; NULL on every manually-sent and historical row,
     # which keeps their existing `admin_bank_details` rendering exactly as it is.
     allocation_snapshot: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # The IST business date the receiving account was ASSIGNED to this deposit (automatically or by
+    # an Admin). That is the moment the deposit starts consuming the account's Bank Daily Credit
+    # Limit, so daily usage is attributed to THIS date — not to `tx_date`, the day the request was
+    # raised. A request raised yesterday and placed today counts against today. NULL on every row
+    # assigned before the column existed; readers fall back to `tx_date` for those, which is
+    # exactly how they were counted before, so no historical figure moves.
+    account_assigned_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # When the Admins were alerted (Telegram) that automation could not place this request and it
+    # is waiting in ACCOUNT_REQUESTED. The idempotency marker for that alert: it is claimed with a
+    # conditional UPDATE, so retries and re-checks while the request sits there never send a second
+    # alert. Cleared when the request is placed, so a genuinely NEW entry into ACCOUNT_REQUESTED
+    # later (a withdrawal whose re-allocation fails) alerts again.
+    account_request_alerted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # ── CDM (Cash Deposit Machine) manual verification ────────────────────────────
     # A CDM deposit is physical cash pushed into a machine: no rail confirms it, the allocation

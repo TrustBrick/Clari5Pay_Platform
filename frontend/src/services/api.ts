@@ -604,8 +604,8 @@ export const accountAPI = {
     const res = await api.patch<Account>(`/api/accounts/${ref}/payin-modes`, { payinModes, reason });
     return res.data;
   },
-  // Admin edit of an account's "Own Account" classification. Configuration only: it is recorded
-  // on every allocation decision but is not a ranking input, so this moves no money. Admin-gated
+  // Admin edit of an account's "Own Account" classification. Yes = preferred for deposits of
+  // customers with more than 5 successful deposits, among already-eligible accounts. Admin-gated
   // server-side like every other Account Management route.
   updateOwnAccount: async (ref: string, isOwnAccount: boolean, reason?: string) => {
     const res = await api.patch<Account>(`/api/accounts/${ref}/own-account`, { is_own_account: isOwnAccount, reason });

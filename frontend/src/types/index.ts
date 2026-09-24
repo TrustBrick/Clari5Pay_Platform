@@ -111,8 +111,8 @@ export type TxStatus =
   | 'MANAGER_REVIEW'
   | 'RESUBMITTED'
   | 'DEPOSITED'
-  // Automatic deposit allocation found no eligible account. An EXCEPTION, not a queue — the only
-  // deposit case that still needs an Admin, who frees capacity (or adds an account) and retries.
+  // RETIRED — a request automation could not place is now ACCOUNT_REQUESTED. Kept only so an old
+  // stored value still type-checks; the API reports it as ACCOUNT_REQUESTED.
   | 'NO_ELIGIBLE_ACCOUNT';
 
 export type TxType =
@@ -227,6 +227,59 @@ export interface AllocationDecision {
   candidatesConsidered: number | null;
   candidatesEligible: number | null;
   createdAtIst: string | null;
+  // ── Why a request is waiting in ACCOUNT_REQUESTED (Admin-only; never on a merchant payload) ──
+  memberId?: string | null;
+  memberName?: string | null;
+  merchantNote?: string | null;
+  /** The engine's failure code (FAIL_*), or null when it allocated. */
+  failure?: string | null;
+  /** What the merchant's note asked for, and whether it was met. */
+  request?: AllocationRequest | null;
+  /** The Own Account preference (>5 successful deposits): whether it applied, and each Own Account. */
+  ownAccount?: OwnAccountDecision | null;
+}
+
+export interface OwnAccountDecision {
+  successfulDeposits: number;
+  threshold: number;
+  triggered: boolean;
+  candidates: number;
+  eligible: number;
+  fallbackEligible: number;
+  selectedIsOwn: boolean | null;
+  accounts: Array<{ accountRef: string; accountName: string | null; bankName: string | null;
+                    eligible: boolean; rejectReason: string | null; why: string | null }>;
+}
+
+/** One account as the engine measured it for a decision (Admin-only). */
+export interface AllocationAccountSnapshot {
+  accountRef: string;
+  accountName: string | null;
+  bankName: string | null;
+  status: string | null;
+  highestCredit: number;
+  bankDailyCreditLimit: number;
+  creditUsedToday: number;
+  remainingCapacity: number;
+  customersServed?: number;
+  eligible: boolean;
+  rejectReason: string | null;
+}
+
+/** The note's request, as parsed: an exact account, the same/last account, or a bank. */
+export interface AllocationRequest {
+  type: 'EXACT_ACCOUNT' | 'SAME_ACCOUNT' | 'BANK' | null;
+  matchedText?: string | null;
+  match?: string | null;             // ACCOUNT_ID | ACCOUNT_NUMBER | ACCOUNT_ENDING | ACCOUNT_NAME | UNSPECIFIED
+  identifier?: string | null;
+  accountStatus?: 'RESOLVED' | 'NOT_FOUND' | 'AMBIGUOUS' | null;
+  candidates?: string[];
+  accountRef?: string | null;
+  bankName?: string | null;
+  sameAccountRef?: string | null;
+  fulfilled?: boolean | null;
+  account?: AllocationAccountSnapshot | null;
+  bankAccounts?: AllocationAccountSnapshot[];
 }
 
 /** The Admin's manual verification of a CDM (Cash Deposit Machine) deposit.
@@ -436,8 +489,8 @@ export interface Account {
   highestDebitState?: 'CONFIGURED' | 'NOT_CONFIGURED' | 'UNCONFIRMED' | 'SUSPICIOUS';
   highestDebitConfiguredAt?: string | null;
   highestDebitConfiguredBy?: string | null;
-  // The Admin's "Own Account" classification. Recorded and carried into every allocation
-  // decision; it is deliberately not a ranking input, so changing it moves no money.
+  // The Admin's "Own Account" classification. Yes = preferred for deposits of customers with
+  // more than 5 successful deposits, among accounts that are already eligible.
   isOwnAccount?: boolean;
   // Which transaction modes this account can PAY OUT by. An account with none configured is
   // returned as all four — unconfigured means fully capable, never unusable.

@@ -2160,9 +2160,8 @@ export const TransactionDetailsModal: React.FC<{ tx: Transaction; viewerRole?: s
         && (d.payoutMode || '').toUpperCase() !== 'CRYPTO' && (
         <PayoutAllocationPanel
           legs={d.payoutLegs} amount={d.amount} mode={d.payoutTransactionMode || d.payoutMode}
-          emptyNote={d.status === 'NO_ELIGIBLE_ACCOUNT'
-            ? 'No payout account is available for this request yet. Our team has been notified and will place it shortly.'
-            : undefined}
+          /* No note when no account is allocated: the status already says where the request is,
+             and WHY no account could be allocated is internal — the Admin sees it, not this portal. */
         />
       )}
 
@@ -2353,9 +2352,8 @@ const ReviewModal: React.FC<{ tx: Transaction; onClose: () => void; onDone: () =
       {d.type.startsWith('WITHDRAWAL') && (
         <PayoutAllocationPanel
           legs={d.payoutLegs} amount={d.amount} mode={d.payoutTransactionMode || d.payoutMode}
-          emptyNote={d.status === 'NO_ELIGIBLE_ACCOUNT'
-            ? 'No payout account could be allocated for this amount. An Admin is reviewing it.'
-            : undefined}
+          /* No note when no account is allocated: the status already says where the request is,
+             and WHY no account could be allocated is internal — the Admin sees it, not this portal. */
         />
       )}
 

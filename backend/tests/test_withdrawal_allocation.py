@@ -18,9 +18,8 @@ ones that would cost money if they broke:
      exceeds its own account's usable capacity.
   7. **No partial completion.** Capacity short of the amount produces an exception, never a
      smaller payout.
-  8. **A no-account outcome is an EXCEPTION, not a queue.** Nothing is assigned and the
-     withdrawal goes to NO_ELIGIBLE_ACCOUNT with the reason journalled — never back to
-     ACCOUNT_REQUESTED, which used to mean "waiting for an Admin to pick an account".
+  8. **A no-account outcome goes to the Admin.** Nothing is assigned and the approved
+     withdrawal waits in ACCOUNT_REQUESTED — the Admin's manual queue — with the reason journalled.
   9. **Completion is idempotent and atomic**, and never debits an account twice.
 
 NO PRODUCTION REFERENCE IDS ARE CONSUMED. ``_next_ref`` draws from the live Postgres DEP/WIT/SET
@@ -1009,8 +1008,8 @@ async def test_manager_approval_no_longer_parks_a_withdrawal_in_account_requeste
 
 @pytest.mark.asyncio
 async def test_a_withdrawal_with_no_eligible_account_becomes_an_exception_not_a_queue(db):
-    """Negative scenario A. NO_ELIGIBLE_ACCOUNT is an explicit exception carrying a reason — not
-    ACCOUNT_REQUESTED, which used to mean "waiting for an Admin to pick an account"."""
+    """Negative scenario A. Nothing eligible → ACCOUNT_REQUESTED, the Admin's manual queue, with
+    the reason on the payout-allocation journal. Never a separate exception state to get stuck in."""
     merchant = await _merchant(db)
     manager = await _manager(db)
     await _account(db, "ACC1", debit=1000.0)
@@ -1020,7 +1019,7 @@ async def test_a_withdrawal_with_no_eligible_account_becomes_an_exception_not_a_
 
     out = await txr.manager_approve(created["id"], RemarkRequest(remark="ok"), None, db, manager)
 
-    assert out["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+    assert out["status"] == TxStatus.ACCOUNT_REQUESTED
     journal = (await db.execute(select(WithdrawalAllocation))).scalars().all()
     assert journal[-1].outcome == wa.OUTCOME_NO_ACCOUNT
     assert journal[-1].failure_code == wa.FAIL_CAPACITY

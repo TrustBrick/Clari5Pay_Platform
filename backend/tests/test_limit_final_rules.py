@@ -116,7 +116,7 @@ async def test_brief_tests_3_and_4_daily_limit_decides_after_per_txn_passes(db):
     await _deposit(db, "D1", 75000, "ACC1")
     await _deposit(db, "D2", 75000, "ACC1")
     over = await txr.create_deposit(_dep(60000), db, merchant)
-    assert over["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+    assert over["status"] == TxStatus.ACCOUNT_REQUESTED
     exact = await txr.create_deposit(_dep(50000), db, merchant)
     assert exact["adminRef"] == "ACC1"
 
@@ -193,7 +193,7 @@ async def test_brief_test_7_manual_credit_consumes_daily_credit_and_blocks_autom
     assert (await alloc.credit_used_today(db, ["ACC1"]))["ACC1"] == 170000.0
 
     refused = await txr.create_deposit(_dep(40000), db, merchant)
-    assert refused["status"] == TxStatus.NO_ELIGIBLE_ACCOUNT
+    assert refused["status"] == TxStatus.ACCOUNT_REQUESTED
     fits = await txr.create_deposit(_dep(30000), db, merchant)
     assert fits["adminRef"] == "ACC1"
 

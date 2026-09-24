@@ -30,7 +30,7 @@ Exactly what the deposit engine counts, narrowed to CDM: every CDM deposit route
 today that is still live, plus every completed one.
 
     type LIKE 'DEPOSIT%'  AND  deposit_type = 'CDM'  AND  admin_ref = <account>
-    AND  tx_date = <today, IST>  AND  status NOT IN (REJECTED, SA_REJECTED, CANCELLED)
+    AND  assigned date (else tx_date) = <today, IST>  AND  status NOT IN (REJECTED, SA_REJECTED, CANCELLED)
 
 Capacity is therefore consumed the moment an Admin ASSIGNS the account, not when the cash lands —
 which is what makes the ceiling real. If only completed deposits counted, two assignments seconds
@@ -54,7 +54,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import AccountMaster, Transaction
 from app.services.cdm import CDM_DEPOSIT_TYPE
-from app.services.deposit_allocation import DEPOSIT_TYPES, RELEASED_STATUSES, ist_today
+from app.services.deposit_allocation import DEPOSIT_TYPES, RELEASED_STATUSES, ist_today, usage_date
 
 # The refusal an Admin sees. Both name the figure, because "it does not fit" without the number is
 # an answer nobody can act on.
@@ -97,7 +97,7 @@ async def used_today(
             Transaction.type.in_(DEPOSIT_TYPES),
             func.upper(func.trim(Transaction.deposit_type)) == CDM_DEPOSIT_TYPE,
             Transaction.admin_ref.isnot(None),
-            Transaction.tx_date == day,
+            usage_date() == day,        # the day the account was assigned (tx_date for older rows)
             Transaction.status.notin_(RELEASED_STATUSES),
         )
         .group_by(Transaction.admin_ref)
