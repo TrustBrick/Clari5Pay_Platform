@@ -830,14 +830,14 @@ class MemberHistory:
     def successful_count(self) -> int:
         """The customer's SUCCESSFUL deposits — what the Own Account rule counts.
 
-        The same count NEW/OLD is decided on, so the two rules can never disagree about who the
-        customer is: the deposits RECEIVED from the sending account when it is known (supplied by
-        services/member_account.successful_deposit_count), otherwise the member's received deposits.
-        Received means COMPLETED or DEPOSITED — pending, account-requested, rejected, cancelled
-        and every other state count for nothing.
+        The MEMBER's total, across EVERY account they have sent from: 3 received from one account
+        and 3 from another is 6. It is deliberately NOT the sending-account count NEW/OLD uses —
+        a member who starts paying from a new account is still the same long-standing customer,
+        so a new sending account must never reset their Own Account standing to zero.
+
+        Received means COMPLETED or DEPOSITED (SUCCESSFUL_STATUSES, the platform's one definition);
+        pending, account-requested, rejected, cancelled and every other state count for nothing.
         """
-        if self.sender_account_deposits is not None:
-            return self.sender_account_deposits
         return self.successful_deposits
 
     @property
@@ -1437,8 +1437,9 @@ async def allocate_deposit_account(
       1. EXACT ACCOUNT the note names (reference, full number, unique trailing digits, name).
       2. SAME / LAST ACCOUNT — the account of the member's last SUCCESSFUL deposit.
       3. SPECIFIC BANK — the best eligible account AT that bank (by rules 4-6 within it).
-      4. OWN ACCOUNT — from the customer's 6th SUCCESSFUL deposit (count > 5), an eligible Own
-         Account first; when none is eligible, every other eligible account (a preference only).
+      4. OWN ACCOUNT — from the MEMBER's 6th SUCCESSFUL deposit, counted across all their
+         sending accounts (count > 5), an eligible Own Account first; when none is eligible,
+         every other eligible account (a preference only).
       5. NEW customer — the eligible account that has served the fewest OTHER customers.
       6. EXISTING customer — the existing rules: UPI-capable (UPI deposits), an account already
          given to this member, then nearest remaining daily credit capacity.

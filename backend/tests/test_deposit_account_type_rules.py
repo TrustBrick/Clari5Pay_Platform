@@ -257,13 +257,13 @@ async def test_the_journal_records_the_count_the_verdict_rested_on(db):
     assert r.detail["customerType"] == "OLD"
 
 
-# ═══ Rule 7 — the >5 count comes from the SENDING account's received deposits ════════════════════
+# ═══ Rule 7 — the >5 count is the MEMBER's received deposits ═══════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_the_own_account_count_is_the_sending_accounts_received_deposits(db):
-    """The Own Account rule counts what NEW/OLD counts — deposits RECEIVED from this sending
-    account. With no Own Account configured the allocation is exactly what the account-history
-    rule gives; the preference itself is pinned in test_own_account_preference.py."""
+async def test_the_own_account_count_is_the_members_received_deposits(db):
+    """The Own Account rule counts the member's RECEIVED deposits across all sending accounts.
+    With no Own Account configured the allocation is exactly what the account-history rule gives;
+    the preference itself is pinned in test_own_account_preference.py."""
     merchant = await _merchant(db)
     await _account(db, "ACC1", name="a", credit=100000.0)
     for i in range(6):

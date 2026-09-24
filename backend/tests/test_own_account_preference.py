@@ -1,8 +1,9 @@
 """The Own Account preference — an ACTIVE account-selection rule for deposits.
 
-  • A customer's SUCCESSFUL deposits are counted (COMPLETED / DEPOSITED — the platform's one
-    definition of "received"; the same count NEW/OLD uses: deposits received from the sending
-    account, or the member's when no sending account is known).
+  • The MEMBER's SUCCESSFUL deposits are counted (COMPLETED / DEPOSITED — the platform's one
+    definition of "received") across EVERY sending account they have used: 3 from account A +
+    3 from account B = 6. A new sending account never resets the count. (NEW/OLD is a separate
+    rule and is still decided per sending account.)
   • 1-5 → the normal rules. MORE than 5 (the 6th onward) → an eligible Own Account = Yes is
     preferred, ranked among the Own Accounts by the normal rules.
   • A PREFERENCE, never an override: an Own Account must pass every hard limit, and when none is
@@ -35,6 +36,8 @@ from tests.test_deposit_allocation import db, safe_refs_and_no_cache  # noqa: F4
 TODAY = alloc.ist_today()
 YESTERDAY = TODAY - timedelta(days=1)
 UPI = "member.one@ybl"
+UPI_B = "member.one.second@okaxis"
+UPI_NEW = "member.one.brand.new@ibl"
 
 
 # ── Fixtures / builders ────────────────────────────────────────────────────────────────────────
@@ -91,8 +94,20 @@ async def _use_today(db, account: str, amount: float) -> None:
 
 
 async def _allocate(db, amount: float, *, successful: int | None = 6, **kw):
-    """The engine, for a customer whose sending account has received ``successful`` deposits."""
-    kw.setdefault("member_id", "MBR1")
+    """The engine, for a member with ``successful`` received deposits in total.
+
+    The deposits are really written — split across TWO sending accounts, because the Own Account
+    count is the member's total, not one account's — and topped up rather than duplicated if a
+    test calls this twice. ``successful=None`` writes nothing: the test seeded the rows itself.
+    The sending account's own figure (what NEW/OLD reads) is passed as the same number, so the
+    NEW/OLD classification in these tests is exactly what it was.
+    """
+    member = kw.setdefault("member_id", "MBR1")
+    if successful:
+        have = (await alloc.member_history(db, member)).successful_count
+        for i in range(have, successful):
+            await _row(db, f"seed-{member}-{i}", 1000.0, None, member=member,
+                       sender_upi_id=UPI if i % 2 == 0 else UPI_B)
     return await alloc.allocate_deposit_account(
         db, amount=amount, sender_account_deposits=successful, **kw)
 
@@ -113,17 +128,17 @@ async def _admin(db) -> User:
     return u
 
 
-async def _received(db, n: int, *, status: TxStatus = TxStatus.DEPOSITED, start: int = 0) -> None:
-    """``n`` deposits in ``status`` sent from the customer's sending account (UPI) — the count the
-    route derives through services/member_account."""
+async def _received(db, n: int, *, status: TxStatus = TxStatus.DEPOSITED, start: int = 0,
+                    upi: str = UPI) -> None:
+    """``n`` deposits of MBR1 in ``status``, sent from the sending account ``upi``."""
     for i in range(start, start + n):
-        await _row(db, f"rcv{status.value}{i}", 1000.0, None, member="MBR1", status=status,
-                   sender_upi_id=UPI)
+        await _row(db, f"rcv{upi}{status.value}{i}", 1000.0, None, member="MBR1", status=status,
+                   sender_upi_id=upi)
 
 
-def _dep(amount: float, note: str | None = None) -> DepositCreate:
+def _dep(amount: float, note: str | None = None, upi: str = UPI) -> DepositCreate:
     return DepositCreate(amount=amount, depositType="UPI", memberName="Member One", memberId="MBR1",
-                         senderUpiId=UPI, accountType="CURRENT", notes=note)
+                         senderUpiId=upi, accountType="CURRENT", notes=note)
 
 
 # ═══ The threshold (1, 2, 16, 18 / A, B) ════════════════════════════════════════════════════════
@@ -222,9 +237,9 @@ async def test_7_8_completed_and_deposited_both_count(db, mix):
 
 
 @pytest.mark.asyncio
-async def test_the_route_counts_the_sending_accounts_received_deposits(db, telegram):
-    """End to end: the route derives the count from the sending account's RECEIVED deposits
-    (services/member_account). 5 received + 3 pending → normal; the 6th received → Own Account."""
+async def test_the_route_counts_the_members_received_deposits(db, telegram):
+    """End to end through the route: 5 received + 3 pending → normal; the 6th received → Own
+    Account. (All from one sending account here; the multi-account cases are below.)"""
     merchant = await _merchant(db)
     await _acc(db, "ACC0000001", own=True, daily_credit=500000.0)
     await _acc(db, "ACC0000002", own=False, daily_credit=60000.0)
@@ -237,6 +252,123 @@ async def test_the_route_counts_the_sending_accounts_received_deposits(db, teleg
     await _received(db, 1, start=100)
     six = await txr.create_deposit(_dep(5000), db, merchant)
     assert six["adminRef"] == "ACC0000001", "6 successful — Own Account"
+
+
+# ═══ The MEMBER's total across every sending account ═════════════════════════════════════════════
+# Every case below goes through the real deposit route, so the sending-account figure is the one
+# services/member_account derives — and the Own Account rule must NOT be reading it.
+
+async def _two_accounts(db):
+    await _acc(db, "ACC0000001", own=True, daily_credit=500000.0)
+    await _acc(db, "ACC0000002", own=False, daily_credit=60000.0)      # nearer capacity
+
+
+@pytest.mark.asyncio
+async def test_member_5_total_across_two_sending_accounts_is_off(db, telegram):
+    """3 from account A + 2 from account B = 5 → NOT more than 5 → the normal rules."""
+    merchant = await _merchant(db)
+    await _two_accounts(db)
+    await _received(db, 3, upi=UPI)
+    await _received(db, 2, upi=UPI_B)
+
+    out = await txr.create_deposit(_dep(5000, upi=UPI), db, merchant)
+    assert out["adminRef"] == "ACC0000002"
+    decision = (await txr.get_allocation_decision(out["id"], db, await _admin(db)))["decision"]
+    assert decision["ownAccount"]["successfulDeposits"] == 5
+    assert decision["ownAccount"]["triggered"] is False
+
+
+@pytest.mark.asyncio
+async def test_member_6_total_across_two_sending_accounts_is_on(db, telegram):
+    """3 from account A + 3 from account B = 6 → Own Account, although the account this deposit
+    is sent from has only 3 of its own."""
+    merchant = await _merchant(db)
+    await _two_accounts(db)
+    await _received(db, 3, upi=UPI)
+    await _received(db, 3, upi=UPI_B)
+
+    out = await txr.create_deposit(_dep(5000, upi=UPI), db, merchant)
+    assert out["adminRef"] == "ACC0000001"
+    decision = (await txr.get_allocation_decision(out["id"], db, await _admin(db)))["decision"]
+    assert decision["ownAccount"]["successfulDeposits"] == 6
+    assert decision["ownAccount"]["triggered"] is True
+    assert decision["rule"] == alloc.RULES.OWN_ACCOUNT
+
+
+@pytest.mark.asyncio
+async def test_member_6_from_one_sending_account_is_on(db, telegram):
+    merchant = await _merchant(db)
+    await _two_accounts(db)
+    await _received(db, 6, upi=UPI)
+
+    out = await txr.create_deposit(_dep(5000, upi=UPI), db, merchant)
+    assert out["adminRef"] == "ACC0000001"
+
+
+@pytest.mark.asyncio
+async def test_a_new_sending_account_does_not_reset_the_member_count(db, telegram):
+    """6 received from two old accounts; this deposit comes from an account the platform has
+    NEVER received from. NEW/OLD (a per-sending-account rule) says NEW — and the Own Account rule,
+    which sits ABOVE it in the priority, still applies, because the member has 6."""
+    merchant = await _merchant(db)
+    await _two_accounts(db)
+    await _received(db, 4, upi=UPI)
+    await _received(db, 2, upi=UPI_B)
+
+    out = await txr.create_deposit(_dep(5000, upi=UPI_NEW), db, merchant)
+    assert out["adminRef"] == "ACC0000001"
+    decision = (await txr.get_allocation_decision(out["id"], db, await _admin(db)))["decision"]
+    assert decision["customerType"] == "NEW", "the sending account is new…"
+    assert decision["ownAccount"]["successfulDeposits"] == 6, "…the member is not"
+    assert decision["rule"] == alloc.RULES.OWN_ACCOUNT
+
+
+@pytest.mark.asyncio
+async def test_only_completed_and_deposited_count_across_sending_accounts(db, telegram):
+    """3 DEPOSITED (A) + 2 COMPLETED (B) = 5 successful; everything else — on either account —
+    counts for nothing, however many there are. → normal rules. One more COMPLETED → 6 → ON."""
+    merchant = await _merchant(db)
+    await _two_accounts(db)
+    await _received(db, 3, upi=UPI, status=TxStatus.DEPOSITED)
+    await _received(db, 2, upi=UPI_B, status=TxStatus.COMPLETED)
+    for i, status in enumerate([TxStatus.PENDING, TxStatus.ACCOUNT_REQUESTED, TxStatus.REJECTED,
+                                TxStatus.CANCELLED, TxStatus.SA_REJECTED, TxStatus.SLIP_SUBMITTED,
+                                TxStatus.ACCOUNT_SUBMITTED, TxStatus.SUCCESSFUL]):
+        await _received(db, 1, upi=UPI if i % 2 else UPI_B, status=status, start=50 + i)
+
+    assert (await alloc.member_history(db, "MBR1")).successful_count == 5
+    five = await txr.create_deposit(_dep(5000, upi=UPI), db, merchant)
+    assert five["adminRef"] == "ACC0000002"
+
+    await _received(db, 1, upi=UPI_B, status=TxStatus.COMPLETED, start=99)
+    six = await txr.create_deposit(_dep(5000, upi=UPI), db, merchant)
+    assert six["adminRef"] == "ACC0000001"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("note,expected,rule", [
+    ("Use account 1234567890", "ACC0000003", alloc.RULES.EXACT_ACCOUNT),   # exact — non-own
+    ("same account", "ACC0000002", alloc.RULES.SAME_ACCOUNT),              # last — non-own
+    ("Use SBI", "ACC0000004", alloc.RULES.NOTE_BANK),                      # bank — non-own, only SBI
+])
+async def test_explicit_requests_still_outrank_own_account_for_a_multi_account_member(
+        db, telegram, note, expected, rule):
+    """A member with 6 received deposits over two sending accounts: exact account, same / last
+    account and a bank request all still come before the Own Account preference."""
+    merchant = await _merchant(db)
+    await _acc(db, "ACC0000001", own=True, daily_credit=500000.0)
+    await _acc(db, "ACC0000002", own=False)
+    await _acc(db, "ACC0000003", own=False, number="1234567890")
+    await _acc(db, "ACC0000004", own=False, bank="State Bank of India")
+    await _received(db, 3, upi=UPI)
+    await _received(db, 2, upi=UPI_B)
+    await _row(db, "last-ok", 1000.0, "ACC0000002", member="MBR1", sender_upi_id=UPI_B)  # 6th
+
+    out = await txr.create_deposit(_dep(5000, note, upi=UPI), db, merchant)
+    assert out["adminRef"] == expected
+    decision = (await txr.get_allocation_decision(out["id"], db, await _admin(db)))["decision"]
+    assert decision["ownAccount"]["triggered"] is True
+    assert decision["rule"] == rule
 
 
 # ═══ A preference, never an override (10, 11 / C, D, E, §6) ═══════════════════════════════════════
