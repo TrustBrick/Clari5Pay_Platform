@@ -2723,7 +2723,7 @@ export const AdminAccountsPage: React.FC = () => {
                     Highest Credit/Debit, the Bank Daily Credit/Debit limits, both account images,
                     the CDM limit) lives in View: it is set once, read rarely, and a dozen-plus
                     columns made the figures that do move hard to find. */}
-                {['Account Name','Account Number','IFSC Code','Branch','Used Today','Remaining','Debit Used','Debit Left','Available','Users','Status','Details'].map(h=>(
+                {['Account Name','Account Number','IFSC Code','Branch','Credit Used','Credit Left','Debit Used','Debit Left','Available','Users','Status','Details'].map(h=>(
                   <th key={h} style={{ padding:'10px 14px',textAlign:'left',fontSize:10,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.06em',borderBottom:`2px solid ${T.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -2983,83 +2983,42 @@ export const AdminAccountsPage: React.FC = () => {
 
       {detail && (
         <Modal title="Account Details" onClose={()=>setDetail(null)} closeOnEsc={!replaceKind}>
-          {[['Account Name',detail.accountName],['Account Number',detail.accountNumber],['IFSC Code',detail.ifscCode],['Bank Name',detail.bankName],['Branch',detail.branch],['Account Type',detail.accountType],['Reference Number',detail.referenceNumber],['Status',detail.status]].map(([k,v])=>(
+          {/* ── Account Information ─────────────────────────────────────
+              Identity of the account. Status has its own section at the end of the popup. */}
+          <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Account Information</p>
+          {[['Account Name',detail.accountName],['Account Number',detail.accountNumber],['Bank',detail.bankName],['IFSC Code',detail.ifscCode],['Branch',detail.branch],['Account Type',detail.accountType],['Reference Number',detail.referenceNumber]].map(([k,v])=>(
             <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'10px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
               <span style={{ fontSize:12,color:T.textMuted }}>{k}</span>
               <span style={{ fontSize:13,fontWeight:700,color:T.textMain,textAlign:'right' }}>
-                {k==='Bank Name' && detail.bankName
+                {k==='Bank' && detail.bankName
                   ? <BankLogo name={detail.bankName} ifsc={detail.ifscCode}/>
                   : v}
               </span>
             </div>
           ))}
 
-          {/* ── Account Details Image ─────────────────────────────────
-              Uploaded ONCE against this account, and this is the ONLY place it is managed. Every
-              deposit routed here sends the merchant this image AS the account details. Not an
-              allocation rule: an account with no image is exactly as eligible as one with one.
-              View + Replace only — a replacement needs a reason and is audited. */}
-          <AccountImagePanel title="Account Details Image" img={detImg} loading={detImgLoading}
-            busy={detImgBusy} canEdit={canEditLimits} inputRef={detImgInput}
-            onFirstFile={onFirstImageFile('ACCOUNT')} onReplace={()=>setReplaceKind('ACCOUNT')}
-            history={detImgHist}
-            emptyText="Account details image is not configured for this account. Deposits routed here send the merchant no account details until one is uploaded — the account stays eligible either way."
-            helpText="Shown to the merchant when this account is assigned to a deposit. JPG, JPEG, PNG or WEBP · up to 5 MB." />
-
-          {/* ── CDM Account Details Image ──────────────────────────────
-              The SECOND image, shown to a merchant depositing CASH into a machine. Separate from
-              the one above in every way and never a substitute for it: a CDM deposit whose
-              account has no CDM image tells the merchant so rather than showing the normal one. */}
-          <AccountImagePanel title="CDM Account Details Image" img={cdmImg} loading={detImgLoading}
-            busy={cdmImgBusy} canEdit={canEditLimits} inputRef={cdmImgInput}
-            onFirstFile={onFirstImageFile('CDM')} onReplace={()=>setReplaceKind('CDM')}
-            history={cdmImgHist}
-            emptyText="CDM account details image is not configured for this account. CDM deposits routed here tell the merchant exactly that — the normal Account Details Image is never shown in its place."
-            helpText="Shown only to merchants depositing cash into a machine (Deposit Type = CDM). Separate from the image above. JPG, JPEG, PNG or WEBP · up to 5 MB." />
-
-          {/* ── CDM Daily Limit ─────────────────────────────────────
-              How much CASH this account may take through a machine in a day. A hard ceiling and a
-              SEPARATE one: it is never derived from Highest Credit, reaching it does not touch
-              Highest Credit, and only CDM deposits consume it. 0 means no CDM capacity has been
-              granted — the account cannot be assigned to a CDM deposit at all until a number is
-              set, which is the same thing 0 means for the two limits below. */}
+          {/* ── Account Preference ──────────────────────────────────────
+              An account-SELECTION preference, not a financial limit — which is why it sits apart
+              from Account Limits and outside Edit Limits. It saves on change, as before. */}
           <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
-            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap' }}>
-              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>CDM Daily Limit</p>
-              {canEditLimits && !editCdmLimit && (
-                <Btn size="sm" variant="secondary" onClick={startEditCdmLimit}><Icon name="edit" size={13} /> Edit</Btn>
+            <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Account Preference</p>
+            {/* The Admin's "Own Account" classification — an explicit Yes / No. Yes = preferred
+                for customers with more than 5 successful deposits, among accounts that are
+                already eligible; it never makes an account eligible and never bypasses a limit. */}
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
+              <span style={{ fontSize:12,color:T.textMuted }}>Own Account{canEditLimits && <span style={{ color:T.danger }}> *</span>}</span>
+              {canEditLimits ? (
+                <select aria-label="Own Account" value={detail.isOwnAccount ? 'YES' : 'NO'} disabled={savingOwn}
+                  onChange={e=>saveOwnAccount(e.target.value === 'YES')}
+                  style={{ padding:'6px 10px',borderRadius:8,border:`1px solid ${T.border}`,background:T.surface,color:T.textMain,fontSize:13,fontWeight:700,cursor:savingOwn?'wait':'pointer' }}>
+                  <option value="YES">Yes</option>
+                  <option value="NO">No</option>
+                </select>
+              ) : (
+                <span style={{ fontSize:13,fontWeight:700,color:T.textMain }}>{detail.isOwnAccount ? 'Yes' : 'No'}</span>
               )}
             </div>
-            {editCdmLimit ? (
-              <>
-                <Input label="CDM Daily Limit (₹)" value={cdmLimitInput} inputMode="decimal"
-                  onChange={e=>setCdmLimitInput(formatIndianAmountInput(e.target.value))}
-                  placeholder="e.g. 1,00,000"
-                  hint="Cash through a machine only. 0 means no CDM capacity — the account cannot be assigned to a CDM deposit." />
-                <div style={{ display:'flex',gap:8 }}>
-                  <Btn size="sm" disabled={cdmLimitBusy} onClick={saveCdmLimit}>{cdmLimitBusy ? 'Saving…' : 'Save CDM Limit'}</Btn>
-                  <Btn size="sm" variant="ghost" disabled={cdmLimitBusy} onClick={()=>setEditCdmLimit(false)}>Cancel</Btn>
-                </div>
-              </>
-            ) : (
-              <>
-                <Row k="CDM Daily Limit" v={(detail.cdmDailyLimit || 0) > 0
-                  ? fmt(detail.cdmDailyLimit || 0)
-                  : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
-                {(() => {
-                  const cdmBal = balances.find(b => b.referenceNumber === detail.referenceNumber);
-                  return <>
-                    <Row k="CDM Used Today" v={fmt(cdmBal?.cdmUsedToday || 0)} />
-                    <Row k="CDM Remaining Today" v={<b style={{ color:(cdmBal?.cdmRemainingToday || 0) > 0 ? T.success : T.danger }}>{fmt(cdmBal?.cdmRemainingToday || 0)}</b>} />
-                  </>;
-                })()}
-                <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>
-                  {(detail.cdmDailyLimit || 0) > 0
-                    ? 'Only CDM deposits consume this. It is separate from Highest Credit in both directions — neither is derived from the other.'
-                    : 'No CDM capacity has been granted, so this account cannot be assigned to a CDM deposit. Set a limit to allow one.'}
-                </p>
-              </>
-            )}
+            <p style={{ margin:'4px 0 0',fontSize:11,color:T.textMuted }}>Preferred for customers with more than 5 successful deposits.</p>
           </div>
 
           {/* ── Account Limits ────────────────────────────────────────
@@ -3095,110 +3054,6 @@ export const AdminAccountsPage: React.FC = () => {
                     <p style={{ margin:'0 0 8px',fontSize:11,color:T.textMuted }}>{hint}</p>
                   </React.Fragment>
                 ))}
-                {/* The Admin's "Own Account" classification — an explicit Yes / No. Yes = preferred
-                    for customers with more than 5 successful deposits, among accounts that are
-                    already eligible; it never makes an account eligible and never bypasses a limit. */}
-                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:`1px solid ${T.borderLight}`,gap:12 }}>
-                  <span style={{ fontSize:12,color:T.textMuted }}>Own Account{canEditLimits && <span style={{ color:T.danger }}> *</span>}</span>
-                  {canEditLimits ? (
-                    <select aria-label="Own Account" value={detail.isOwnAccount ? 'YES' : 'NO'} disabled={savingOwn}
-                      onChange={e=>saveOwnAccount(e.target.value === 'YES')}
-                      style={{ padding:'6px 10px',borderRadius:8,border:`1px solid ${T.border}`,background:T.surface,color:T.textMain,fontSize:13,fontWeight:700,cursor:savingOwn?'wait':'pointer' }}>
-                      <option value="YES">Yes</option>
-                      <option value="NO">No</option>
-                    </select>
-                  ) : (
-                    <span style={{ fontSize:13,fontWeight:700,color:T.textMain }}>{detail.isOwnAccount ? 'Yes' : 'No'}</span>
-                  )}
-                </div>
-                <p style={{ margin:'4px 0 0',fontSize:11,color:T.textMuted }}>Preferred for customers with more than 5 successful transactions.</p>
-                {/* ── Today's position against the Bank Daily Credit Limit ──
-                    Credit Remaining Today = Bank Daily Credit Limit − Credit Used Today, and
-                    nothing else: Highest Credit is a per-transaction cap and has no "remaining".
-                    Used Today includes manual credits. DISPLAY figures only — the backend
-                    recomputes all of them under a row lock before it allocates anything. */}
-                {(() => {
-                  const b = balMap[detail.referenceNumber];
-                  // Used / Remaining are measured against the CUMULATIVE daily credit ceiling, not
-                  // the per-transaction Highest Credit.
-                  const limit = detail.bankDailyCreditLimit ?? 0;
-                  const used = b?.creditUsedToday ?? 0;
-                  const left = b?.remainingCredit ?? Math.max(0, limit - used);
-                  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
-                  const full = limit > 0 && left <= 0;
-                  return (
-                    <div style={{ marginTop:12,background:T.canvas,borderRadius:10,padding:'12px 14px' }}>
-                      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:8 }}>
-                        <span style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Today's Credit Usage</span>
-                        <span style={{ fontSize:11,color:T.textMuted }}>{b?.depositsToday ?? 0} deposit{(b?.depositsToday ?? 0) === 1 ? '' : 's'} today</span>
-                      </div>
-                      <div style={{ height:6,borderRadius:3,background:T.border,overflow:'hidden',marginBottom:10 }}>
-                        <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.success,transition:'width .3s' }} />
-                      </div>
-                      <Row k="Credit Used Today" v={fmt(used)} />
-                      <Row k="Credit Remaining Today" v={limit > 0
-                        ? <span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>
-                        : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
-                      {limit <= 0 && (
-                        <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
-                          No Bank Daily Credit Limit configured — this account is never allocated a deposit. Set one above.
-                        </p>
-                      )}
-                      {full && (
-                        <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
-                          Daily credit limit reached — no further deposit is allocated here until tomorrow.
-                        </p>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* ── Today's position against the Bank Daily Debit Limit ──
-                    Debit Remaining Today = Bank Daily Debit Limit − Debit Used Today; Highest
-                    Debit is a per-transaction cap with no "remaining". Capacity is consumed the
-                    moment a withdrawal is ALLOCATED (and by manual debits), which is what stops
-                    two requests being given the same headroom. Display only — the backend
-                    recomputes every figure under a row lock before it allocates anything. */}
-                {(() => {
-                  const b = balMap[detail.referenceNumber];
-                  // Used / Remaining are measured against the CUMULATIVE daily debit ceiling, not
-                  // the per-transaction Highest Debit.
-                  const limit = detail.bankDailyDebitLimit ?? 0;
-                  const used = b?.debitUsedToday ?? 0;
-                  const left = b?.remainingDebit ?? Math.max(0, limit - used);
-                  const reserved = b?.reservedForPayouts ?? 0;
-                  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
-                  const full = limit > 0 && left <= 0;
-                  return (
-                    <div style={{ marginTop:12,background:T.canvas,borderRadius:10,padding:'12px 14px' }}>
-                      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:8 }}>
-                        <span style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Today's Debit Usage</span>
-                        <span style={{ fontSize:11,color:T.textMuted }}>{b?.payoutsToday ?? 0} payout{(b?.payoutsToday ?? 0) === 1 ? '' : 's'} today</span>
-                      </div>
-                      <div style={{ height:6,borderRadius:3,background:T.border,overflow:'hidden',marginBottom:10 }}>
-                        <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.blue,transition:'width .3s' }} />
-                      </div>
-                      <Row k="Debit Used Today" v={fmt(used)} />
-                      <Row k="Debit Remaining Today" v={limit > 0
-                        ? <span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>
-                        : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
-                      {reserved > 0 && (
-                        <Row k="Reserved for Payouts" v={<span title="Allocated to withdrawals that have not been paid yet. No money has moved, so it is not deducted from the balance.">{fmt(reserved)}</span>} />
-                      )}
-                      {limit <= 0 && (
-                        <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
-                          No Bank Daily Debit Limit configured — this account is never allocated a withdrawal. Set one above.
-                        </p>
-                      )}
-                      {full && (
-                        <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
-                          Daily debit limit reached — no further withdrawal is paid from here until tomorrow.
-                        </p>
-                      )}
-                    </div>
-                  );
-                })()}
-
                 {/* ── Payin Mode ──
                     Which deposit types this account may RECEIVE. The deposit allocation engine and
                     the Admin's manual assignment both refuse a type left out here, and the API
@@ -3327,6 +3182,175 @@ export const AdminAccountsPage: React.FC = () => {
                     onClick={()=>{ setEditLimits(false); setLimitErr({}); }}>Cancel</Btn>
                   <Btn size="sm" onClick={saveLimits} disabled={savingLimits}>{savingLimits ? 'Saving…' : 'Save Changes'}</Btn>
                 </div>
+              </>
+            )}
+          </div>
+
+          {/* ── Account Usage ───────────────────────────────────────────
+              Today's position against the two daily ceilings. Hidden while the limits are being
+              edited, exactly as before the sections were split. */}
+          {!editLimits && (
+            <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>Account Usage</p>
+              {/* ── Today's position against the Bank Daily Credit Limit ──
+                  Credit Remaining Today = Bank Daily Credit Limit − Credit Used Today, and
+                  nothing else: Highest Credit is a per-transaction cap and has no "remaining".
+                  Used Today includes manual credits. DISPLAY figures only — the backend
+                  recomputes all of them under a row lock before it allocates anything. */}
+              {(() => {
+                const b = balMap[detail.referenceNumber];
+                // Used / Remaining are measured against the CUMULATIVE daily credit ceiling, not
+                // the per-transaction Highest Credit.
+                const limit = detail.bankDailyCreditLimit ?? 0;
+                const used = b?.creditUsedToday ?? 0;
+                const left = b?.remainingCredit ?? Math.max(0, limit - used);
+                const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+                const full = limit > 0 && left <= 0;
+                return (
+                  <div style={{ marginTop:12,background:T.canvas,borderRadius:10,padding:'12px 14px' }}>
+                    <div style={{ display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:8 }}>
+                      <span style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Today's Credit Usage</span>
+                      <span style={{ fontSize:11,color:T.textMuted }}>{b?.depositsToday ?? 0} deposit{(b?.depositsToday ?? 0) === 1 ? '' : 's'} today</span>
+                    </div>
+                    <div style={{ height:6,borderRadius:3,background:T.border,overflow:'hidden',marginBottom:10 }}>
+                      <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.success,transition:'width .3s' }} />
+                    </div>
+                    <Row k="Credit Used Today" v={fmt(used)} />
+                    <Row k="Credit Remaining Today" v={limit > 0
+                      ? <span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>
+                      : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
+                    {limit <= 0 && (
+                      <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
+                        No Bank Daily Credit Limit configured — this account is never allocated a deposit. Set one above.
+                      </p>
+                    )}
+                    {full && (
+                      <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
+                        Daily credit limit reached — no further deposit is allocated here until tomorrow.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* ── Today's position against the Bank Daily Debit Limit ──
+                  Debit Remaining Today = Bank Daily Debit Limit − Debit Used Today; Highest
+                  Debit is a per-transaction cap with no "remaining". Capacity is consumed the
+                  moment a withdrawal is ALLOCATED (and by manual debits), which is what stops
+                  two requests being given the same headroom. Display only — the backend
+                  recomputes every figure under a row lock before it allocates anything. */}
+              {(() => {
+                const b = balMap[detail.referenceNumber];
+                // Used / Remaining are measured against the CUMULATIVE daily debit ceiling, not
+                // the per-transaction Highest Debit.
+                const limit = detail.bankDailyDebitLimit ?? 0;
+                const used = b?.debitUsedToday ?? 0;
+                const left = b?.remainingDebit ?? Math.max(0, limit - used);
+                const reserved = b?.reservedForPayouts ?? 0;
+                const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+                const full = limit > 0 && left <= 0;
+                return (
+                  <div style={{ marginTop:12,background:T.canvas,borderRadius:10,padding:'12px 14px' }}>
+                    <div style={{ display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,marginBottom:8 }}>
+                      <span style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em' }}>Today's Debit Usage</span>
+                      <span style={{ fontSize:11,color:T.textMuted }}>{b?.payoutsToday ?? 0} payout{(b?.payoutsToday ?? 0) === 1 ? '' : 's'} today</span>
+                    </div>
+                    <div style={{ height:6,borderRadius:3,background:T.border,overflow:'hidden',marginBottom:10 }}>
+                      <div style={{ width:`${pct}%`,height:'100%',background: full ? T.danger : T.blue,transition:'width .3s' }} />
+                    </div>
+                    <Row k="Debit Used Today" v={fmt(used)} />
+                    <Row k="Debit Remaining Today" v={limit > 0
+                      ? <span style={{ color: full ? T.danger : T.textMain }}>{fmt(left)}</span>
+                      : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
+                    {reserved > 0 && (
+                      <Row k="Reserved for Payouts" v={<span title="Allocated to withdrawals that have not been paid yet. No money has moved, so it is not deducted from the balance.">{fmt(reserved)}</span>} />
+                    )}
+                    {limit <= 0 && (
+                      <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
+                        No Bank Daily Debit Limit configured — this account is never allocated a withdrawal. Set one above.
+                      </p>
+                    )}
+                    {full && (
+                      <p style={{ margin:'8px 0 0',fontSize:11,color:T.danger }}>
+                        Daily debit limit reached — no further withdrawal is paid from here until tomorrow.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* ── Account Details Image ─────────────────────────────────
+              Uploaded ONCE against this account, and this is the ONLY place it is managed. Every
+              deposit routed here sends the merchant this image AS the account details. Not an
+              allocation rule: an account with no image is exactly as eligible as one with one.
+              View + Replace only — a replacement needs a reason and is audited. */}
+          <AccountImagePanel title="Account Details Image" img={detImg} loading={detImgLoading}
+            busy={detImgBusy} canEdit={canEditLimits} inputRef={detImgInput}
+            onFirstFile={onFirstImageFile('ACCOUNT')} onReplace={()=>setReplaceKind('ACCOUNT')}
+            history={detImgHist}
+            emptyText="Account details image is not configured for this account. Deposits routed here send the merchant no account details until one is uploaded — the account stays eligible either way."
+            helpText="Shown to the merchant when this account is assigned to a deposit. JPG, JPEG, PNG or WEBP · up to 5 MB." />
+
+          {/* ── CDM Account Details Image ──────────────────────────────
+              The SECOND image, shown to a merchant depositing CASH into a machine. Separate from
+              the one above in every way and never a substitute for it: a CDM deposit whose
+              account has no CDM image tells the merchant so rather than showing the normal one. */}
+          <AccountImagePanel title="CDM Account Details Image" img={cdmImg} loading={detImgLoading}
+            busy={cdmImgBusy} canEdit={canEditLimits} inputRef={cdmImgInput}
+            onFirstFile={onFirstImageFile('CDM')} onReplace={()=>setReplaceKind('CDM')}
+            history={cdmImgHist}
+            emptyText="CDM account details image is not configured for this account. CDM deposits routed here tell the merchant exactly that — the normal Account Details Image is never shown in its place."
+            helpText="Shown only to merchants depositing cash into a machine (Deposit Type = CDM). Separate from the image above. JPG, JPEG, PNG or WEBP · up to 5 MB." />
+
+          {/* ── Status ─────────────────────────────────────────────────── */}
+          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+            <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:'0 0 4px' }}>Status</p>
+            <Row k="Status" v={<span style={{ color: detail.status==='ACTIVE' ? T.success : T.danger }}>{detail.status==='ACTIVE' ? 'Active' : 'Inactive'}</span>} />
+          </div>
+
+          {/* ── CDM Daily Limit ─────────────────────────────────────
+              How much CASH this account may take through a machine in a day. A hard ceiling and a
+              SEPARATE one: it is never derived from Highest Credit, reaching it does not touch
+              Highest Credit, and only CDM deposits consume it. 0 means no CDM capacity has been
+              granted — the account cannot be assigned to a CDM deposit at all until a number is
+              set, which is the same thing 0 means for the two limits below. */}
+          <div style={{ marginTop:18,paddingTop:14,borderTop:`1px solid ${T.border}` }}>
+            <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap' }}>
+              <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',margin:0 }}>CDM Daily Limit</p>
+              {canEditLimits && !editCdmLimit && (
+                <Btn size="sm" variant="secondary" onClick={startEditCdmLimit}><Icon name="edit" size={13} /> Edit</Btn>
+              )}
+            </div>
+            {editCdmLimit ? (
+              <>
+                <Input label="CDM Daily Limit (₹)" value={cdmLimitInput} inputMode="decimal"
+                  onChange={e=>setCdmLimitInput(formatIndianAmountInput(e.target.value))}
+                  placeholder="e.g. 1,00,000"
+                  hint="Cash through a machine only. 0 means no CDM capacity — the account cannot be assigned to a CDM deposit." />
+                <div style={{ display:'flex',gap:8 }}>
+                  <Btn size="sm" disabled={cdmLimitBusy} onClick={saveCdmLimit}>{cdmLimitBusy ? 'Saving…' : 'Save CDM Limit'}</Btn>
+                  <Btn size="sm" variant="ghost" disabled={cdmLimitBusy} onClick={()=>setEditCdmLimit(false)}>Cancel</Btn>
+                </div>
+              </>
+            ) : (
+              <>
+                <Row k="CDM Daily Limit" v={(detail.cdmDailyLimit || 0) > 0
+                  ? fmt(detail.cdmDailyLimit || 0)
+                  : <span style={{ color:T.warning,fontWeight:700 }}>Not configured</span>} />
+                {(() => {
+                  const cdmBal = balances.find(b => b.referenceNumber === detail.referenceNumber);
+                  return <>
+                    <Row k="CDM Used Today" v={fmt(cdmBal?.cdmUsedToday || 0)} />
+                    <Row k="CDM Remaining Today" v={<b style={{ color:(cdmBal?.cdmRemainingToday || 0) > 0 ? T.success : T.danger }}>{fmt(cdmBal?.cdmRemainingToday || 0)}</b>} />
+                  </>;
+                })()}
+                <p style={{ fontSize:11,color:T.textMuted,margin:'8px 0 0' }}>
+                  {(detail.cdmDailyLimit || 0) > 0
+                    ? 'Only CDM deposits consume this. It is separate from Highest Credit in both directions — neither is derived from the other.'
+                    : 'No CDM capacity has been granted, so this account cannot be assigned to a CDM deposit. Set a limit to allow one.'}
+                </p>
               </>
             )}
           </div>
@@ -3500,7 +3524,7 @@ export const AdminAccountsPage: React.FC = () => {
           <Sel label="Own Account" required value={form.is_own_account ? 'YES' : 'NO'}
             onChange={e=>setForm(f=>({...f,is_own_account:e.target.value === 'YES'}))}
             options={[{ value:'YES', label:'Yes' }, { value:'NO', label:'No' }]} style={{ marginBottom:4 }} />
-          <p style={{ margin:'0 0 16px',fontSize:11,color:T.textMuted }}>Preferred for customers with more than 5 successful transactions.</p>
+          <p style={{ margin:'0 0 16px',fontSize:11,color:T.textMuted }}>Preferred for customers with more than 5 successful deposits.</p>
           <div style={{ display:'flex',gap:10 }}>
             <Btn onClick={create}>Create Account</Btn>
             <Btn variant="secondary" onClick={closeCreate}>Cancel</Btn>
