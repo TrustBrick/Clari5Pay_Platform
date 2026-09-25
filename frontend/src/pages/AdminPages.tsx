@@ -103,6 +103,11 @@ const RequestModal: React.FC<{
   // completion already recorded instead of debiting the account twice.
   const payoutKey = useRef(newRequestId());
   const [saving, setSaving] = useState(false);
+  // ADMIN OVERRIDE & SEND: the deliberate exception for a deposit the customer asked to route to a
+  // specific account that is over its configured credit limit. Opening the confirm modal is the
+  // ONLY way to reach the override endpoint; the reason is mandatory (validated again server-side).
+  const [showOverride, setShowOverride] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [rejecting, setRejecting] = useState(false);
   const [riskConfirm, setRiskConfirm] = useState(false);
@@ -327,6 +332,23 @@ const RequestModal: React.FC<{
       showToast(imageOnly ? `${tx.ref} — account assigned` : `${tx.ref} — account details sent`);
       onDone?.(); onClose();
     } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to send account', 'error'); }
+    finally { setSaving(false); }
+  };
+
+  // Admin Override & Send — assign an account the customer asked for that is over its configured
+  // credit limit. The reason is mandatory here AND re-validated by the backend, which also re-reads
+  // the account's limits under a lock (so the figures on screen are never trusted) and journals the
+  // override. The configured limits are NOT changed — this is a one-transaction exception.
+  const sendOverride = async () => {
+    const reason = overrideReason.trim();
+    if (!accountRef) { showToast('Select an account to override & send', 'error'); return; }
+    if (!reason) { showToast('Enter an override reason', 'error'); return; }
+    setSaving(true);
+    try {
+      await transactionAPI.overrideAccount(tx.id, { adminRef: accountRef, reason });
+      showToast(`${tx.ref} — account sent with override`);
+      setShowOverride(false); onDone?.(); onClose();
+    } catch (e: any) { showToast(e?.response?.data?.detail || 'Failed to override & send', 'error'); }
     finally { setSaving(false); }
   };
 
@@ -768,12 +790,25 @@ const RequestModal: React.FC<{
                 );
               })()}
               {!isCdm && (() => {
-                const left = payoutBalances.find(b => b.referenceNumber === accountRef)?.remainingCredit;
-                return accountRef && left !== undefined && left < tx.amount ? (
+                const bal = payoutBalances.find(b => b.referenceNumber === accountRef);
+                if (!accountRef || !bal) return null;
+                const exceedsPerTxn = bal.highestCredit !== undefined && tx.amount > bal.highestCredit;
+                const left = bal.remainingCredit;
+                const exceedsDaily = left !== undefined && tx.amount > left;
+                if (!exceedsPerTxn && !exceedsDaily) return null;
+                // The account the customer asked for cannot take this deposit under its configured
+                // limits. Naming exactly which one is over is what tells the Admin this needs the
+                // deliberate Override & Send below rather than a different account.
+                return (
                   <p style={{ fontSize:11,color:T.danger,margin:'-8px 0 10px',fontWeight:700 }}>
-                    <Icon name="warning" size={12} /> This account has only {fmt(left)} left against its Bank Daily Credit Limit — sending {fmt(tx.amount)} here exceeds today's remaining capacity.
+                    <Icon name="warning" size={12} /> {exceedsPerTxn && exceedsDaily
+                      ? `Sending ${fmt(tx.amount)} here exceeds this account's Highest Credit (${fmt(bal.highestCredit || 0)}) and its remaining Bank Daily Credit Limit (${fmt(left || 0)} left).`
+                      : exceedsPerTxn
+                        ? `${fmt(tx.amount)} is more than this account's Highest Credit (${fmt(bal.highestCredit || 0)}) for one deposit.`
+                        : `This account has only ${fmt(left || 0)} left against its Bank Daily Credit Limit — sending ${fmt(tx.amount)} here exceeds today's remaining capacity.`}
+                    {' '}Use Override &amp; Send to assign it anyway.
                   </p>
-                ) : null;
+                );
               })()}
               {reusedRef && accountRef === reusedRef && (
                 <p style={{ fontSize:11,color:T.success,margin:'-8px 0 10px',fontWeight:600 }}><Icon name="refresh" size={12} /> Reused from Member {tx.memberId}'s previous deposit — change it if needed.</p>
@@ -805,16 +840,32 @@ const RequestModal: React.FC<{
                 );
               })()}
               <div style={{ display:'flex',gap:10 }}>
-                {/* For CDM the button is held back when the figures on screen already say the
-                    server will refuse: over the remaining capacity, or no limit configured at all.
-                    The server enforces the same rule under a row lock — this only saves a
-                    round-trip and names the reason before the click. */}
-                <Btn onClick={sendAccount} disabled={saving||!accountRef||(isCdm && (() => {
+                {/* A non-CDM account the customer asked for that is over its Highest Credit or its
+                    Bank Daily Credit Limit cannot take a NORMAL send (the backend refuses it). It
+                    takes Override & Send instead — a deliberate, reasoned exception. The button
+                    choice here is UX only; the backend re-checks the limits under a lock and is the
+                    authority on whether an override is really needed. For CDM the normal Send is
+                    held back when the figures already say the server will refuse. */}
+                {(() => {
                   const bal = payoutBalances.find(b => b.referenceNumber === accountRef);
-                  if (!bal) return false;                       // figures not loaded — let the server answer
-                  const configured = bal.cdmLimitConfigured !== false && (bal.cdmDailyLimit || 0) > 0;
-                  return !configured || tx.amount > (bal.cdmRemainingToday ?? 0);
-                })())}>{saving ? 'Sending...' : <><Icon name="bank" size={14} /> Send Account</>}</Btn>
+                  const needsOverride = !isCdm && !!accountRef && !!bal && (
+                    (bal.highestCredit !== undefined && tx.amount > bal.highestCredit) ||
+                    (bal.remainingCredit !== undefined && tx.amount > bal.remainingCredit));
+                  if (needsOverride) {
+                    return (
+                      <Btn variant="danger" onClick={()=>{ setOverrideReason(''); setShowOverride(true); }} disabled={saving||!accountRef}>
+                        <Icon name="warning" size={14} /> Override &amp; Send
+                      </Btn>
+                    );
+                  }
+                  return (
+                    <Btn onClick={sendAccount} disabled={saving||!accountRef||(isCdm && (() => {
+                      if (!bal) return false;                    // figures not loaded — let the server answer
+                      const configured = bal.cdmLimitConfigured !== false && (bal.cdmDailyLimit || 0) > 0;
+                      return !configured || tx.amount > (bal.cdmRemainingToday ?? 0);
+                    })())}>{saving ? 'Sending...' : <><Icon name="bank" size={14} /> Send Account</>}</Btn>
+                  );
+                })()}
                 <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
               </div>
             </>
@@ -1118,6 +1169,58 @@ const RequestModal: React.FC<{
           )}
         </div>
       )}
+
+      {/* ADMIN OVERRIDE & SEND — the confirm step. Deliberately a second modal so the override is a
+          separate, explicit action: it states plainly that a configured credit limit is being
+          overridden for THIS transaction, shows exactly which limit(s) and the account's real
+          figures, and requires a reason before Confirm is enabled. The configured limits themselves
+          are NOT changed — only this deposit is let through, and the backend re-checks and journals
+          it. All of this is Admin-only; the merchant never sees any of it. */}
+      {showOverride && (() => {
+        const bal = payoutBalances.find(b => b.referenceNumber === accountRef);
+        const acc = accounts.find(a => a.referenceNumber === accountRef);
+        const perTxn = bal?.highestCredit ?? 0;
+        const daily = bal?.bankDailyCreditLimit ?? 0;
+        const used = bal?.creditUsedToday ?? 0;
+        const remaining = bal?.remainingCredit ?? (daily - used);
+        const exceedsPerTxn = bal?.highestCredit !== undefined && tx.amount > perTxn;
+        const exceedsDaily = bal?.remainingCredit !== undefined ? tx.amount > remaining : false;
+        return (
+          <Modal title="Admin Override Required" onClose={()=>setShowOverride(false)}>
+            <div style={{ display:'flex',gap:10,alignItems:'flex-start',background:T.dangerBg,border:`1px solid ${T.danger}55`,borderRadius:10,padding:'10px 12px',marginBottom:14 }}>
+              <span style={{ lineHeight:1 }}><Icon name="warning" size={16} /></span>
+              <p style={{ margin:0,fontSize:12.5,color:T.textMain,lineHeight:1.5,fontWeight:600 }}>
+                This action overrides the configured account credit limit for this transaction. The
+                account's configured limits are not changed — only this deposit is let through.
+              </p>
+            </div>
+            <div style={{ background:T.canvas,borderRadius:10,padding:'10px 14px',marginBottom:14 }}>
+              <Row k="Customer" v={memberLabel(tx.memberId, tx.member) || tx.memberId || '—'} />
+              <Row k="Account" v={acc?.accountName || accountRef} />
+              <Row k="Bank" v={acc?.bankName || '—'} />
+              <Row k="Account Ref" v={accountRef} />
+              <Row k="Deposit Amount" v={<b>{fmt(tx.amount)}</b>} />
+              <Row k="Highest Credit" v={fmt(perTxn)} />
+              <Row k="Bank Daily Credit Limit" v={fmt(daily)} />
+              <Row k="Used Today" v={fmt(used)} />
+              <Row k="Remaining" v={<b style={{ color: remaining > 0 ? T.success : T.danger }}>{fmt(remaining)}</b>} />
+            </div>
+            <p style={{ fontSize:11,fontWeight:800,color:T.textMuted,textTransform:'uppercase',letterSpacing:'0.05em',marginBottom:8 }}>Limits exceeded</p>
+            <div style={{ marginBottom:14,fontSize:12.5,color:T.textMain }}>
+              {exceedsPerTxn && <div style={{ marginBottom:4 }}><Icon name="approve" size={13} /> Highest Credit</div>}
+              {exceedsDaily && <div style={{ marginBottom:4 }}><Icon name="approve" size={13} /> Bank Daily Credit Limit</div>}
+              {!exceedsPerTxn && !exceedsDaily && <div style={{ color:T.textMuted }}>This account is within its limits — a normal Send Account is enough.</div>}
+            </div>
+            <label style={{ display:'block',fontSize:12,fontWeight:700,color:T.textMuted,marginBottom:6,textTransform:'uppercase',letterSpacing:'0.05em' }}>Override Reason<span style={{ color:T.danger }}> *</span></label>
+            <textarea value={overrideReason} onChange={e=>setOverrideReason(e.target.value)} placeholder="Customer specifically requested this account..." autoFocus
+              style={{ width:'100%',padding:'10px 14px',border:`1.5px solid ${overrideReason.trim() ? T.border : T.danger}`,borderRadius:10,fontSize:14,color:T.textMain,background:T.surface,outline:'none',boxSizing:'border-box',fontFamily:'inherit',resize:'vertical',minHeight:70,marginBottom:14 }}/>
+            <div style={{ display:'flex',gap:10 }}>
+              <Btn variant="danger" onClick={sendOverride} disabled={saving||!overrideReason.trim()}>{saving ? 'Sending...' : <><Icon name="warning" size={14} /> Confirm Override &amp; Send</>}</Btn>
+              <Btn variant="secondary" onClick={()=>setShowOverride(false)}>Cancel</Btn>
+            </div>
+          </Modal>
+        );
+      })()}
     </Modal>
   );
 };

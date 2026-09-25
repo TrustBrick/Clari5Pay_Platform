@@ -1,20 +1,21 @@
 import json
 import re
+from dataclasses import dataclass
 from typing import Optional
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, case, func, text, literal, union_all, update
 from app.db.session import get_db
-from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction, DepositAllocation, WithdrawalAllocation, WithdrawalPayoutLeg
+from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction, DepositAllocation, DepositAccountOverride, WithdrawalAllocation, WithdrawalPayoutLeg
 from app.core.deps import (
     get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer,
     get_current_supervisor, get_current_manager, OVERSIGHT_MERCHANT_ROLES,
 )
 from app.schemas.schemas import (
     DepositCreate, WithdrawalCreate, SettlementCreate,
-    AccountSubmitRequest, SlipRequest, CompleteRequest, RejectRequest, ReasonRequest, RemarkRequest,
-    SettlementSupervisorComplete, ProofsAppend, CdmVerification,
+    AccountSubmitRequest, AccountOverrideRequest, SlipRequest, CompleteRequest, RejectRequest,
+    ReasonRequest, RemarkRequest, SettlementSupervisorComplete, ProofsAppend, CdmVerification,
 )
 from app.api.routes.system_logs import log_event, record_audit, _a as _audit_row
 from app.services.membership import lookup_member_name, resolve_member_name, normalize_member_id
@@ -2800,10 +2801,46 @@ async def _sender_account_facts(
     return label, view.successful_deposits
 
 
+@dataclass
+class _DepositCapacity:
+    """One point-in-time reading of a managed account against a deposit's credit rules.
+
+    Snapshotted under the account's row lock, so the figures are the same ones a write in the same
+    transaction will act on. ``used_today`` and ``remaining_today`` are the position BEFORE this
+    deposit is routed to the account; assigning it makes the deposit count from then on."""
+    ref: str
+    account_id: Optional[int]
+    account_name: Optional[str]
+    bank_name: Optional[str]
+    account_type: Optional[str]
+    is_own_account: Optional[bool]
+    per_txn_limit: float          # Highest Credit (per transaction)
+    daily_limit: float            # Bank Daily Credit Limit (cumulative)
+    used_today: float             # today's credit usage, before this deposit
+    remaining_today: float        # daily_limit - used_today (kept signed; never clamped)
+    amount: float
+    highest_credit_exceeded: bool
+    daily_credit_exceeded: bool
+
+    @property
+    def any_exceeded(self) -> bool:
+        return self.highest_credit_exceeded or self.daily_credit_exceeded
+
+    @property
+    def exceeded_limits(self) -> list[str]:
+        out: list[str] = []
+        if self.highest_credit_exceeded:
+            out.append("Highest Credit")
+        if self.daily_credit_exceeded:
+            out.append("Bank Daily Credit Limit")
+        return out
+
+
 async def _validate_manual_deposit_account(
-    db: AsyncSession, tx: Transaction, ref: str,
-) -> None:
-    """Refuse an Admin-chosen deposit account that the engine itself would not choose.
+    db: AsyncSession, tx: Transaction, ref: str, *, allow_credit_override: bool = False,
+) -> _DepositCapacity:
+    """Refuse an Admin-chosen deposit account that the engine itself would not choose, and return
+    the account's credit position at that instant.
 
     The hard rules, in the engine's own order and using its own figures — nothing is
     re-implemented here beyond reading them:
@@ -2815,9 +2852,18 @@ async def _validate_manual_deposit_account(
       * PER-TRANSACTION: this deposit's amount <= Highest Credit;
       * CUMULATIVE DAILY: today's credit usage + this deposit <= Bank Daily Credit Limit.
 
+    ``allow_credit_override`` relaxes ONLY the last two — the credit-CAPACITY rules — for the
+    Admin's deliberate Override & Send. Everything above them (existence, ACTIVE, Payin Mode,
+    configured-at-all limits, account type) is a fundamental safety/integrity rule and is enforced
+    exactly the same either way: an override can send an account over its limit, never a deleted,
+    inactive, mistyped or wrong-type one. Whichever mode, the returned snapshot records which of the
+    two credit rules the amount breaches, so the caller can journal a real override.
+
     The account row is LOCKED (``SELECT … FOR UPDATE`` — the same lock the engine and a manual
     adjustment take) before today's usage is read, so two concurrent assignments, or an assignment
     racing an automatic allocation or a manual credit, cannot both pass on the same stale capacity.
+    The override takes this same lock and re-reads usage, so it is decided on current state, never
+    on the figures the Admin's screen showed.
 
     Each refusal says which rule stopped it and what the numbers were, because "invalid account"
     tells an Admin nothing about which fix to reach for.
@@ -2857,24 +2903,38 @@ async def _validate_manual_deposit_account(
                     f"{acc_type or 'different type'}. Select an account of the same type."))
 
     amount = round(float(tx.amount or 0.0), 2)
-    if amount > per_txn:
-        raise HTTPException(
-            status_code=400,
-            detail=(f"{ref} cannot take ₹{amount:,.2f} in one deposit: its Highest Credit "
-                    f"(per transaction) is ₹{per_txn:,.2f}."))
-
     used = round((await alloc.credit_used_today(db, [ref])).get(ref, 0.0), 2)
     # Today's usage already includes THIS deposit whenever it is routed to this account and still
     # live — re-sending the same account, or confirming one the engine chose. Adding the amount
     # again would count it twice and refuse a send that breaches nothing.
     already_counted = (tx.admin_ref or "") == ref and tx.status not in alloc.RELEASED_STATUSES
     projected = round(used + (0.0 if already_counted else amount), 2)
-    if projected > daily:
-        raise HTTPException(
-            status_code=400,
-            detail=(f"{ref} cannot take ₹{amount:,.2f}: it has used ₹{used:,.2f} of its "
-                    f"₹{daily:,.2f} Bank Daily Credit Limit today, leaving "
-                    f"₹{max(daily - used, 0):,.2f}."))
+    highest_credit_exceeded = amount > per_txn
+    daily_credit_exceeded = projected > daily
+
+    if not allow_credit_override:
+        # Highest Credit first, then the daily ceiling — the order the engine and the existing tests
+        # expect, so a both-exceeded account reports the per-transaction breach.
+        if highest_credit_exceeded:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"{ref} cannot take ₹{amount:,.2f} in one deposit: its Highest Credit "
+                        f"(per transaction) is ₹{per_txn:,.2f}."))
+        if daily_credit_exceeded:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"{ref} cannot take ₹{amount:,.2f}: it has used ₹{used:,.2f} of its "
+                        f"₹{daily:,.2f} Bank Daily Credit Limit today, leaving "
+                        f"₹{max(daily - used, 0):,.2f}."))
+
+    return _DepositCapacity(
+        ref=ref, account_id=acc.id, account_name=acc.account_name, bank_name=acc.bank_name,
+        account_type=acc_type or None, is_own_account=bool(acc.is_own_account),
+        per_txn_limit=per_txn, daily_limit=daily, used_today=used,
+        remaining_today=round(daily - used, 2), amount=amount,
+        highest_credit_exceeded=highest_credit_exceeded,
+        daily_credit_exceeded=daily_credit_exceeded,
+    )
 
 
 # ─── ACCOUNT_REQUESTED: the one exception state, and its Admin alert ──────────────────────────────
@@ -3751,6 +3811,22 @@ async def account_submit(
     generated payment gateway link instead of an account, and the request moves Link Requested →
     Link Submitted. Every other deposit type is untouched below."""
     tx = await _get_tx(tx_id, db)
+    return await _account_submit(db, tx, data, actor)
+
+
+async def _account_submit(
+    db: AsyncSession, tx: Transaction, data: AccountSubmitRequest, actor: User, *,
+    allow_credit_override: bool = False, override_reason: Optional[str] = None,
+) -> dict:
+    """The body of the Admin's account send, shared by the normal route and Override & Send.
+
+    ``allow_credit_override`` is the ONLY difference between the two. When True, the credit-capacity
+    gate in :func:`_validate_manual_deposit_account` is relaxed and, if the amount actually breaches
+    a configured Highest Credit or Bank Daily Credit Limit, the override is journalled to
+    ``deposit_account_override`` with the account's exact position at that instant. Everything
+    else — the image/text/UPI/CDM handling, the ACCOUNT_REQUESTED → ACCOUNT_SUBMITTED transition,
+    the notifications, and the merchant-facing payload — is byte-for-byte identical, so a member can
+    never tell an overridden send from an ordinary one, and no second transaction lifecycle exists."""
     if _is_card_deposit(tx):
         return await _card_link_submit(db, tx, data, actor)
     if data.adminProof or data.adminBankImage:
@@ -3812,8 +3888,16 @@ async def account_submit(
     # chosen UPI above — so all of them are checked. Deliberately NOT gated on an "ACC" prefix:
     # the reference format is data, and a rule that depends on how a reference happens to be
     # spelled is a rule that stops applying the day the format changes.
+    override_cap: Optional[_DepositCapacity] = None
     if ref:
-        await _validate_manual_deposit_account(db, tx, ref)
+        cap = await _validate_manual_deposit_account(
+            db, tx, ref, allow_credit_override=allow_credit_override)
+        # An override only counts as one when the account is ACTUALLY over a configured limit right
+        # now. If usage has since fallen back under it (a racing deposit was released between the
+        # Admin's screen and this confirm), there is nothing to override — the send is ordinary and
+        # no override row is written.
+        if allow_credit_override and cap.any_exceeded:
+            override_cap = cap
 
     # The deposit consumes the account's daily credit capacity from the day it is ASSIGNED — so a
     # request raised yesterday and sent today counts against today. Re-sending the SAME account
@@ -3833,6 +3917,11 @@ async def account_submit(
     tx.status = TxStatus.ACCOUNT_SUBMITTED
     tx.approved_by = actor.name
     await db.flush()
+    # The deliberate limit override, journalled AFTER the assignment is flushed (so the deposit now
+    # counts against the account and the snapshot's "used before" is genuinely before) but with the
+    # pre-assignment figures captured at validation. Admin-only; nothing here reaches the merchant.
+    if override_cap is not None:
+        await _record_deposit_override(db, tx, override_cap, actor, override_reason or "")
     # Tell the user (deposit creator) plainly that they can now pay; the owning admin gets a
     # send confirmation. (Previously a single "account details sent to <merchant>" line went to both.)
     await _notify_merchant(db, tx, f"{tx.ref}: account details received — you can now make the payment and submit your slip", "🏦")
@@ -3843,6 +3932,124 @@ async def account_submit(
     await record_audit(db, "ACCOUNT_SUBMITTED", actor=actor, entity_type=tx.type.value, entity_id=tx.ref, new="ACCOUNT_SUBMITTED")
     await _refresh_with_images(db, tx)
     return _with_admin_account_record(tx, _t(tx))      # Admin-only route: their own record
+
+
+async def _parsed_request_type(db: AsyncSession, tx: Transaction) -> Optional[str]:
+    """The customer request the note carries (EXACT / SAME / BANK), read the engine's own way, for
+    the override journal. Best-effort: nothing here raises, and an empty note is simply None."""
+    if not (tx.notes or "").strip():
+        return None
+    accounts = (await db.execute(select(AccountMaster))).scalars().all()
+    try:
+        return alloc.parse_note(tx.notes, accounts).request_type
+    except Exception:
+        return None
+
+
+async def _record_deposit_override(
+    db: AsyncSession, tx: Transaction, cap: _DepositCapacity, actor: User, reason: str,
+) -> None:
+    """Write the one immutable ``deposit_account_override`` row for a successful Override & Send,
+    plus the matching entries in the shared system log and audit trail. Captures the account's
+    CONFIGURED limits and its usage as they stood at the override — the configured figures are
+    copies, and the account's own limit columns are never touched. Admin-only end to end."""
+    now = _ist_now()
+    automation_enabled = await automation_mode.is_enabled(db)
+    exceeded = ", ".join(cap.exceeded_limits)
+    db.add(DepositAccountOverride(
+        transaction_ref=tx.ref, transaction_id=tx.id, member_id=tx.member_id,
+        member_name=tx.member_name, amount=cap.amount, deposit_type=tx.deposit_type,
+        account_ref=cap.ref, account_id=cap.account_id, account_name=cap.account_name,
+        bank_name=cap.bank_name, account_type=cap.account_type, is_own_account=cap.is_own_account,
+        merchant_note=tx.notes, parsed_request=await _parsed_request_type(db, tx),
+        configured_highest_credit=cap.per_txn_limit,
+        configured_bank_daily_credit_limit=cap.daily_limit,
+        credit_used_today=cap.used_today, credit_remaining_today=cap.remaining_today,
+        highest_credit_exceeded=cap.highest_credit_exceeded,
+        daily_credit_exceeded=cap.daily_credit_exceeded, exceeded_limits=exceeded,
+        override=True, reason=reason, admin_id=actor.id, admin_username=actor.username,
+        admin_name=actor.name, automation_enabled=automation_enabled,
+        created_at=datetime.utcnow(), created_at_ist=now.strftime("%d %b %Y, %I:%M %p") + " IST",
+    ))
+    detail = (f"{tx.ref}: Admin credit-limit override — {cap.ref} ({cap.account_name}, "
+              f"{cap.bank_name}) sent {_inr(cap.amount)} over [{exceeded}]. "
+              f"Highest Credit {_inr(cap.per_txn_limit)}, Bank Daily Credit Limit "
+              f"{_inr(cap.daily_limit)}, used {_inr(cap.used_today)} before. Reason: {reason}")
+    await log_event(db, "DEPOSIT_ACCOUNT_OVERRIDE", detail, actor=actor)
+    await record_audit(
+        db, "DEPOSIT_ACCOUNT_OVERRIDE", actor=actor, entity_type=tx.type.value, entity_id=tx.ref,
+        old=f"limit: Highest Credit {_inr(cap.per_txn_limit)} / Daily {_inr(cap.daily_limit)}",
+        new=f"override → {cap.ref} for {_inr(cap.amount)} (exceeded {exceeded})", reason=reason,
+    )
+
+
+@router.post("/{tx_id}/override-account")
+async def override_account(
+    tx_id: str,
+    data: AccountOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_admin),
+):
+    """ADMIN-ONLY: send an explicitly-requested account that is over its configured credit limit.
+
+    The one deliberate exception to the rule that a manual send obeys the same credit limits the
+    engine does. It exists because a customer can insist on an account (same/last, a specific bank,
+    a specific number or name) that cannot take the money under its Highest Credit or Bank Daily
+    Credit Limit; the request then waits in ACCOUNT_REQUESTED, and the Admin may choose to honour it.
+
+    What this DOES bypass: the two credit-CAPACITY rules, for THIS transaction only. What it does
+    NOT: the configured limits themselves (unchanged — this is a one-off, not a re-configuration),
+    the actual daily usage (the deposit still counts, so the account may now be over for the rest of
+    the day and automation will keep rejecting it), or any fundamental safety rule. A deleted,
+    inactive, wrong-type or unsupported-mode account is refused here exactly as on the normal send.
+    The reason is mandatory and validated server-side, and every successful override is journalled.
+
+    Card and CDM deposits do not take this route: a Card is a payment link, and a CDM has its own
+    separate cash limit and workflow — neither turns on Highest Credit / Bank Daily Credit Limit."""
+    reason = (data.reason or "").strip()
+    if not reason:
+        # Server-side, so an empty or whitespace-only reason is refused even if the UI let it past.
+        raise HTTPException(status_code=400, detail="An override reason is required.")
+    ref = (data.adminRef or "").strip()
+    if not ref:
+        raise HTTPException(status_code=400, detail="Select an account to override & send.")
+
+    tx = await _get_tx(tx_id, db)
+    if not tx.type.value.startswith("DEPOSIT"):
+        raise HTTPException(status_code=400, detail="Override & Send applies to deposits only.")
+    if _is_card_deposit(tx) or cdm.is_cdm(tx.deposit_type):
+        raise HTTPException(
+            status_code=400,
+            detail=("Override & Send applies to account-backed deposits. A Card deposit uses a "
+                    "payment link, and a CDM deposit has its own cash limit."))
+
+    # Lock the TRANSACTION row before the status gate (§ concurrency). Two confirms racing on the
+    # same request now serialise here: the first places it and commits, the second wakes on
+    # ACCOUNT_SUBMITTED and takes the idempotent path below rather than assigning a second time.
+    # ``populate_existing`` is essential — without it the ORM would hand back the identity-mapped
+    # row this session already loaded, with its STALE status, so the second confirm would read
+    # ACCOUNT_REQUESTED and assign again. Forcing the locked read to overwrite the instance is what
+    # makes the status gate reflect what the first confirm just committed. SQLite ignores FOR UPDATE,
+    # which is fine — the SQLite suites test the arithmetic, not the race.
+    tx = (await db.execute(
+        select(Transaction).where(Transaction.id == tx.id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one()
+
+    # Idempotency: a repeated confirm (double-click, retried request) for a request that is already
+    # placed on this very account returns the existing state and writes NO second override row. Any
+    # other non-ACCOUNT_REQUESTED status means the request has moved on and must not be re-sent.
+    if tx.status == TxStatus.ACCOUNT_SUBMITTED and (tx.admin_ref or "") == ref:
+        await _refresh_with_images(db, tx)
+        return _with_admin_account_record(tx, _t(tx))
+    if tx.status != TxStatus.ACCOUNT_REQUESTED:
+        raise HTTPException(
+            status_code=400,
+            detail="This request is no longer awaiting an account and cannot be overridden.")
+
+    return await _account_submit(
+        db, tx, AccountSubmitRequest(adminRef=ref), actor,
+        allow_credit_override=True, override_reason=reason)
 
 
 @router.get("/{tx_id}/allocation")

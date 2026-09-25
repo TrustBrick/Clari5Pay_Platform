@@ -36,9 +36,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.api.routes import transactions as txr
 from app.db.session import Base
 from app.models.models import (
-    AccountLedgerEntry, AccountMaster, AccountType, Transaction, TxStatus, TxType, User, UserRole,
-    WithdrawalPayoutLeg,
+    AccountLedgerEntry, AccountMaster, AccountType, DepositAccountOverride, Transaction, TxStatus,
+    TxType, User, UserRole, WithdrawalPayoutLeg,
 )
+from app.schemas.schemas import AccountOverrideRequest
 from app.services import account_ledger as ledger
 from app.services import deposit_allocation as alloc
 from app.services import tg_notify as tgn
@@ -205,6 +206,44 @@ async def test_46_two_simultaneous_deposits_cannot_both_take_the_last_50000(pg, 
     assert sorted(r.status.value for r in rows.values()) == ["ACCOUNT_REQUESTED", "ACCOUNT_SUBMITTED"]
     assert used == 190000.0, "₹1,50,000 + ONE ₹40,000 — never ₹2,30,000"
     assert used <= 200000.0
+
+
+# ═══ 48. Admin Override & Send race — one request, two confirms ═════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_48_two_simultaneous_overrides_on_one_request_assign_once(pg, monkeypatch):
+    """Two Admins (or a double-click) confirm Override & Send on the SAME request at the same
+    instant. The transaction row lock serialises them: exactly one assignment is made and exactly
+    one override journal row is written — the second confirm wakes on ACCOUNT_SUBMITTED and returns
+    the placed state without assigning again or double-counting the deposit."""
+    async def _on(_db):
+        return True
+    monkeypatch.setattr(txr.automation_mode, "is_enabled", _on)
+    # ₹50,000 daily credit limit, ₹40,000 already used → ₹10,000 left; a ₹40,000 send needs override.
+    await _seed(pg, credit_daily=50000.0, debit_daily=200000.0, used_credit=40000.0, used_debit=0)
+    await _requests(pg, _deposit_request("DEP-X", "RACE"))
+
+    admin = User(id=1, username="admin1", name="Admin One", role=UserRole.ADMIN,
+                 hashed_password="x", email="admin1@test.local")
+
+    def place(db, tx):
+        return txr.override_account(
+            f"TXN{str(tx.id).zfill(3)}",
+            AccountOverrideRequest(adminRef="ACC0000001",
+                                   reason="Customer specifically requested this account."),
+            db, admin)
+
+    results = await _race(pg, ["DEP-X", "DEP-X"], place)
+
+    assert all(r.get("status") == "ACCOUNT_SUBMITTED" for r in results), results
+    async with _sessions(pg)() as db:
+        overrides = (await db.execute(select(DepositAccountOverride))).scalars().all()
+        used = (await alloc.credit_used_today(db, ["ACC0000001"]))["ACC0000001"]
+        placed = (await db.execute(
+            select(Transaction).where(Transaction.ref == "DEP-X"))).scalar_one()
+    assert len(overrides) == 1, "exactly one override row despite two concurrent confirms"
+    assert placed.admin_ref == "ACC0000001" and placed.status == TxStatus.ACCOUNT_SUBMITTED
+    assert used == 80000.0, "₹40,000 already + ONE ₹40,000 override — never ₹1,20,000"
 
 
 # ═══ 47. Withdrawal race ════════════════════════════════════════════════════════════════════════

@@ -247,6 +247,16 @@ class AccountSubmitRequest(BaseModel):
     paymentLink: Optional[str] = None
 
 
+class AccountOverrideRequest(BaseModel):
+    """Admin-only: send an explicitly-requested account that is over its configured credit limit.
+
+    ``adminRef`` is the managed account the Admin has deliberately chosen (the same reference the
+    normal account-submit takes). ``reason`` is mandatory — the backend rejects an empty or
+    whitespace-only reason regardless of what the client sends, so it is never trusted to the UI."""
+    adminRef: str
+    reason: str
+
+
 class SlipRequest(BaseModel):
     merchantProof: Optional[str] = None
     # Any number of slip files. They are ADDED to whatever the request already carries — a later

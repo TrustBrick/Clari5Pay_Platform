@@ -1504,6 +1504,74 @@ class DepositAllocation(Base):
     created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
 
 
+class DepositAccountOverride(Base):
+    """Append-only, immutable journal of every ADMIN CREDIT-LIMIT OVERRIDE on a deposit.
+
+    An Admin's manual send normally obeys the same hard credit rules the engine does — a per
+    transaction Highest Credit and a cumulative Bank Daily Credit Limit. When a customer explicitly
+    asks for an account (same/last, a specific bank, a specific number/name) that cannot take the
+    money under those limits, the request waits in ACCOUNT_REQUESTED, and the Admin may deliberately
+    choose to send that account anyway. That deliberate exception — and ONLY that — is recorded here.
+
+    Like ``DepositAllocation`` this is NOT a second accounting system and stores no money movement:
+    the deposit stays the record of the money and the account balance stays derived. What is captured
+    is the DECISION and the account's exact credit position AT THE MOMENT OF OVERRIDE — figures that
+    are point-in-time and unreproducible later (today's usage moves with every deposit; the Admin may
+    re-configure the limit tomorrow). Crucially, the CONFIGURED limits are snapshotted, never
+    changed: an override is a one-transaction exception, not a re-configuration, so
+    ``configured_highest_credit`` / ``configured_bank_daily_credit_limit`` here are copies for the
+    record and the account's own columns are untouched.
+
+    Rows are write-once. One successful override writes exactly one row; a repeated (idempotent)
+    request writes none. Admin-only — nothing here is ever exposed on a merchant payload.
+    """
+    __tablename__ = "deposit_account_override"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # ── The transaction and who it was for ──
+    transaction_ref: Mapped[str] = mapped_column(String(32), index=True, nullable=False)   # DEP000123
+    transaction_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
+    member_id: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    member_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    deposit_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    # ── The account that was sent, over its limit ──
+    account_ref: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    account_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    bank_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    account_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    is_own_account: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # ── What the customer asked for ──
+    merchant_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parsed_request: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # EXACT/SAME/BANK/None
+
+    # ── The account's CONFIGURED limits and its usage AT OVERRIDE TIME (copies, never mutated) ──
+    configured_highest_credit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    configured_bank_daily_credit_limit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    credit_used_today: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    credit_remaining_today: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Which of the two credit rules this override bypassed, and a human summary of both.
+    highest_credit_exceeded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    daily_credit_exceeded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    exceeded_limits: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # ── The Admin's deliberate decision ──
+    override: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    admin_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    admin_username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    admin_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    automation_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    # ── When ──
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+
+
 class WithdrawalPayoutLeg(Base):
     """ONE account's share of ONE withdrawal's payout.
 

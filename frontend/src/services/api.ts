@@ -360,6 +360,14 @@ export const transactionAPI = {
     const res = await api.post<Transaction>(`/api/transactions/${id}/account-submit`, data);
     return res.data;
   },
+  // ADMIN-ONLY: send an explicitly-requested account that is over its configured credit limit.
+  // A deliberate one-transaction exception — the backend re-checks the limits under a lock, records
+  // an immutable override journal row, and never changes the account's configured limits. `reason`
+  // is mandatory and validated server-side, so an empty one is refused regardless of the UI.
+  overrideAccount: async (id: string, data: { adminRef: string; reason: string }) => {
+    const res = await api.post<Transaction>(`/api/transactions/${id}/override-account`, data);
+    return res.data;
+  },
   submitSlip: async (id: string, data: { merchantProof?: string; merchantProofs?: string[]; merchantRef?: string; atmId?: string; txnNo?: string; approverUserId?: number }) => {
     const res = await api.post<Transaction>(`/api/transactions/${id}/slip`, data);
     return res.data;
