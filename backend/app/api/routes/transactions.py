@@ -3173,7 +3173,14 @@ async def create_deposit(
         await record_audit(db, action, actor=current_user, entity_type="deposit", entity_id=tx.ref,
                            new=f"{tx.member_id or '—'} · {tx.member_name or '—'} · {data.depositType} · {tx.amount}")
     else:
-        await log_event(db, "DEPOSIT_REQUESTED", f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})", actor=current_user)
+        # Detail line for the activity/audit log. Append the payment mode (the deposit_type stored
+        # on this very row) when we have one, matching the raw-code convention the Cash/Crypto line
+        # above already uses. A legacy/blank mode falls back to the original, mode-less format.
+        detail = f"{tx.merchant_name} requested deposit {tx.ref} ({tx.amount})"
+        mode = (tx.deposit_type or "").strip()
+        if mode:
+            detail = f"{detail} — Payment Mode: {mode}"
+        await log_event(db, "DEPOSIT_REQUESTED", detail, actor=current_user)
         await record_audit(db, "DEPOSIT_REQUESTED", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=str(tx.amount))
     if tx.approver_name:
         await record_audit(db, "SENT_FOR_APPROVAL", actor=current_user, entity_type="deposit", entity_id=tx.ref, new=tx.approver_name)
