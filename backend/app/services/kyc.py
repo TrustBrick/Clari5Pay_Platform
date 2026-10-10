@@ -70,6 +70,17 @@ async def _melento_post(path_or_url: str, payload: dict) -> tuple[dict, int]:
     masked and credentials never emitted. A single retry is made on timeout. Callers store the
     returned dict verbatim as the response record.
     """
+    # Never call the provider without credentials: without api_id/api_key the request can only
+    # fail at the provider, so short-circuit with a clean, actionable 503 instead of making a
+    # pointless outbound call with blank auth headers. Preserves the (data, http_status) contract
+    # the routes already handle (non-"success" status → surfaced error).
+    if not settings.kyc_configured:
+        logger.warning("KYC ✗ not configured (MELENTO_API_ID/MELENTO_API_KEY missing) — skipping outbound call")
+        return {
+            "status": "error",
+            "error": "KYC verification service is not configured. Set MELENTO_API_ID and "
+                     "MELENTO_API_KEY in the environment.",
+        }, 503
     url = path_or_url if path_or_url.startswith("http") else f"{settings.MELENTO_VERIFY_BASE_URL.rstrip('/')}{path_or_url}"
     ref = payload.get("reference_id")
     logger.info("KYC → POST %s ref=%s payload=%s", url, ref, _mask_payload(payload))

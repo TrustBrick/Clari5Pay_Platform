@@ -55,6 +55,19 @@ class Settings(BaseSettings):
     # without a code change. Does NOT affect the Agent module (separately demo-gated).
     SEND_TO_APPROVAL_ENABLED: bool = True
 
+    # ── Rate limits for sensitive / costly endpoints (max requests per 60-second window) ──
+    # Per authenticated user (see app/core/ratelimit.rate_limit_user). Env-tunable so a stack can
+    # be adjusted without a code change. Defaults sit well ABOVE normal interactive use so genuine
+    # retries and bursts are never blocked, while still capping automated abuse and the cost of
+    # money-moving workflows, paid KYC provider calls, and AI model usage. A limiter is a coarse
+    # abuse/cost guard only — it never replaces authorization, balance/limit checks or idempotency.
+    RL_DEPOSIT_PER_MIN: int = 30         # merchant deposit-request creation
+    RL_WITHDRAWAL_PER_MIN: int = 20      # merchant withdrawal-request creation
+    RL_SETTLEMENT_PER_MIN: int = 20      # settlement-request creation
+    RL_APPROVAL_PER_MIN: int = 60        # approve / reject / complete / mark-done review actions
+    RL_KYC_PER_MIN: int = 15             # KYC verification calls (hit a paid third-party provider)
+    RL_AI_PER_MIN: int = 20              # AI chat (incurs model usage cost)
+
     # ── Login / password-reset OTP ──
     OTP_EXPIRE_MINUTES: int = 15
     # SMTP — when SMTP_HOST is set, OTPs are emailed for real (production).
@@ -138,12 +151,14 @@ class Settings(BaseSettings):
     # and return a clear "provider not configured yet" response, and the Merchant KYC
     # Update UI shows a graceful message. Credentials are supplied later via env ONLY
     # (never hardcoded); once set, only app/services/kyc.py's provider seams need filling.
-    # Melento.ai UAT (staging) credentials for the live Aadhaar (DigiLocker) + PAN integration.
-    # Defaults are the supplied staging keys so the Demo build works out of the box; override
-    # via env for other environments. MELENTO_VERIFY_BASE_URL is the in-verify-utils host used
-    # by generateUrl / getAadhaarDetails / panVerification (distinct from MELENTO_BASE_URL).
-    MELENTO_API_KEY: str = "d0075c09c1227bba5356ee34305ff85f"
-    MELENTO_API_ID: str = "trustbrickrealtyfintechprivatelimited_user_1"
+    # Melento.ai UAT (staging) credentials drive the live Aadhaar (DigiLocker) + PAN integration.
+    # MELENTO_VERIFY_BASE_URL is the in-verify-utils host used by generateUrl / getAadhaarDetails /
+    # panVerification (distinct from MELENTO_BASE_URL).
+    # Credentials are read from the environment ONLY — never hardcoded here. Empty by default so
+    # the service layer stays inert (routes fail with a clean 503) until an operator supplies the
+    # real values via env (e.g. .env on each box). See app/services/kyc.py and `kyc_configured`.
+    MELENTO_API_KEY: str = ""
+    MELENTO_API_ID: str = ""
     MELENTO_BASE_URL: str = "https://api.melento.ai"
     MELENTO_VERIFY_BASE_URL: str = "https://in-verify-utils.melento.ai"
     # Full endpoint URLs for every Melento verification API on the in-verify-utils host. All are
@@ -206,3 +221,61 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ── JWT / secret hardening (SEC) ────────────────────────────────────────────────────────────
+# A protected environment (production / demo) must never run on the shipped placeholder secret,
+# an empty secret, or a secret too short to be safe. This is validated at STARTUP (see
+# main.py's lifespan), not at import, so importing this module — as the test suite does with the
+# default values — never fails. Local development (any ENVIRONMENT other than production/demo)
+# is deliberately left usable on the default so `uvicorn main:app` works out of the box.
+
+# The secret shipped as the field default above; acceptable for local dev, rejected in prod/demo.
+DEFAULT_DEV_SECRET_KEY = "changeme-super-secret-jwt-key-at-least-32-chars"
+# Placeholder strings that appear in the committed .env.*.example templates — if one of these
+# reaches a protected environment it means the operator never filled in a real value.
+KNOWN_PLACEHOLDER_SECRETS = {
+    DEFAULT_DEV_SECRET_KEY,
+    "CHANGE_ME_generate_a_long_random_string",
+}
+# Environments whose misconfiguration must stop startup rather than serve insecurely.
+PROTECTED_ENVIRONMENTS = {"production", "demo"}
+# HS256 keys below this are brute-forceable; 32 chars is the documented minimum for this app.
+MIN_SECRET_KEY_LENGTH = 32
+
+
+class InsecureConfigurationError(RuntimeError):
+    """Raised at startup when a protected environment is misconfigured.
+
+    The message is always safe to log: it names WHAT is wrong and HOW to fix it, and never
+    contains the secret value itself.
+    """
+
+
+def validate_security_config(s: "Settings" = settings) -> None:
+    """Fail fast on an unsafe JWT secret in a protected (production/demo) environment.
+
+    Rejects a missing/empty secret, the shipped default, any committed placeholder, and a secret
+    shorter than ``MIN_SECRET_KEY_LENGTH``. A non-protected environment (local development) is left
+    untouched so the default remains usable there. Never prints the configured secret.
+    """
+    env = (s.ENVIRONMENT or "").strip().lower()
+    if env not in PROTECTED_ENVIRONMENTS:
+        return
+    key = s.SECRET_KEY or ""
+    if not key.strip():
+        raise InsecureConfigurationError(
+            f"SECRET_KEY is not set for the '{env}' environment. Generate a unique value with "
+            "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"` and set SECRET_KEY "
+            "via the environment."
+        )
+    if key in KNOWN_PLACEHOLDER_SECRETS:
+        raise InsecureConfigurationError(
+            f"SECRET_KEY is still a shipped placeholder in the '{env}' environment. Generate a "
+            "unique value and set SECRET_KEY via the environment — do not reuse the demo secret."
+        )
+    if len(key) < MIN_SECRET_KEY_LENGTH:
+        raise InsecureConfigurationError(
+            f"SECRET_KEY is too short for the '{env}' environment "
+            f"(minimum {MIN_SECRET_KEY_LENGTH} characters)."
+        )

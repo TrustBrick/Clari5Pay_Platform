@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
-from app.core.config import settings
+from app.core.config import settings, validate_security_config
 from app.db.session import engine, Base
 from app.db.migrate import ensure_schema
 from app.api.routes import auth, users, transactions, ai, accounts, support, notifications, system_logs, bank_accounts, news, admin_upis, blogs, risk, whatsapp, active_users, support_management, kyc, telegram
@@ -10,6 +10,10 @@ from app.api.routes import auth, users, transactions, ai, accounts, support, not
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Refuse to start a protected (production/demo) environment on an unsafe JWT secret. Raises a
+    # clear, non-sensitive InsecureConfigurationError before anything else runs; local development
+    # is unaffected. See app/core/config.validate_security_config.
+    validate_security_config(settings)
     # Create tables on startup (use Alembic in production)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
