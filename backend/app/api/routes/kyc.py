@@ -26,7 +26,9 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.deps import get_current_kyc_admin, get_current_kyc_user, get_current_kyc_verifier
+from app.core.ratelimit import rate_limit_user
 from app.db.session import get_db
 from app.models.models import KycVerificationHistory, User, UserRole
 from app.services import kyc as kyc_service
@@ -734,7 +736,7 @@ async def kyc_member_lookup(
     }
 
 
-@router.post("/aadhaar/generate-link")
+@router.post("/aadhaar/generate-link", dependencies=[Depends(rate_limit_user(settings.RL_KYC_PER_MIN, 60, "kyc-verify"))])
 async def aadhaar_generate_link(
     body: MembershipRequest,
     db: AsyncSession = Depends(get_db),
@@ -789,7 +791,7 @@ async def aadhaar_generate_link(
     }
 
 
-@router.post("/aadhaar/status")
+@router.post("/aadhaar/status", dependencies=[Depends(rate_limit_user(settings.RL_KYC_PER_MIN, 60, "kyc-verify"))])
 async def aadhaar_status(
     body: AadhaarStatusRequest,
     db: AsyncSession = Depends(get_db),
@@ -841,7 +843,7 @@ async def aadhaar_status(
             "referenceId": row.reference_id, "matchScore": None}
 
 
-@router.post("/aadhaar/verify-image")
+@router.post("/aadhaar/verify-image", dependencies=[Depends(rate_limit_user(settings.RL_KYC_PER_MIN, 60, "kyc-verify"))])
 async def aadhaar_verify_image(
     body: AadhaarImageRequest,
     db: AsyncSession = Depends(get_db),
@@ -902,7 +904,7 @@ async def aadhaar_verify_image(
             "referenceId": row.reference_id, "matchScore": row.match_score, "raw": data}
 
 
-@router.post("/pan/verify-membership")
+@router.post("/pan/verify-membership", dependencies=[Depends(rate_limit_user(settings.RL_KYC_PER_MIN, 60, "kyc-verify"))])
 async def pan_verify_membership(
     body: PanVerifyRequest,
     db: AsyncSession = Depends(get_db),
@@ -965,7 +967,7 @@ async def pan_verify_membership(
             "referenceId": row.reference_id, "matchScore": row.match_score, "result": result, "raw": data}
 
 
-@router.post("/passport/verify-membership")
+@router.post("/passport/verify-membership", dependencies=[Depends(rate_limit_user(settings.RL_KYC_PER_MIN, 60, "kyc-verify"))])
 async def passport_verify_membership(
     body: PassportVerifyRequest,
     db: AsyncSession = Depends(get_db),
@@ -1036,7 +1038,7 @@ async def passport_verify_membership(
             "referenceId": row.reference_id, "matchScore": row.match_score, "result": result, "raw": data}
 
 
-@router.post("/ocr/verify-membership")
+@router.post("/ocr/verify-membership", dependencies=[Depends(rate_limit_user(settings.RL_KYC_PER_MIN, 60, "kyc-verify"))])
 async def ocr_verify_membership(
     body: OcrVerifyRequest,
     db: AsyncSession = Depends(get_db),

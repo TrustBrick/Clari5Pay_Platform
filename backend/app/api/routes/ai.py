@@ -2,10 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException
 import anthropic
 from app.core.config import settings
 from app.core.deps import get_current_user
+from app.core.ratelimit import rate_limit_user
 from app.models.models import User
 from app.schemas.schemas import AIChatRequest, AIChatResponse
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
+
+# Bound the input so a single request cannot run up an unbounded model bill. Generous enough for
+# normal conversational use; over the cap → a clean 400 (never silently truncated). Tunable here.
+MAX_AI_MESSAGES = 50
+MAX_AI_TOTAL_CHARS = 20_000
 
 SYSTEM_PROMPT = """You are an intelligent AI assistant for Clari5Pay, an enterprise Payment Service Provider (PSP) platform.
 
@@ -29,13 +35,24 @@ Platform roles:
 """
 
 
-@router.post("/chat", response_model=AIChatResponse)
+@router.post(
+    "/chat",
+    response_model=AIChatResponse,
+    dependencies=[Depends(rate_limit_user(settings.RL_AI_PER_MIN, 60, "ai-chat"))],
+)
 async def ai_chat(
     request: AIChatRequest,
     current_user: User = Depends(get_current_user),
 ):
     if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(status_code=503, detail="AI service not configured")
+
+    # Bound the input before spending any model tokens on it.
+    if len(request.messages) > MAX_AI_MESSAGES:
+        raise HTTPException(status_code=400, detail="Conversation is too long. Please start a new chat.")
+    total_chars = sum(len(m.content or "") for m in request.messages)
+    if total_chars > MAX_AI_TOTAL_CHARS:
+        raise HTTPException(status_code=400, detail="Message is too long. Please shorten it and try again.")
 
     client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 

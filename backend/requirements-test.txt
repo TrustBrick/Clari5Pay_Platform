@@ -1,0 +1,7 @@
+# Test-only dependencies. NOT installed into the runtime Docker image — install these in CI (or
+# locally) AFTER requirements.txt. The backend test suite runs entirely against in-memory SQLite
+# (aiosqlite) with mocked third-party services: it needs no external database, no Redis, and no
+# network, and must never reach a real/Production database or provider.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+aiosqlite==0.22.1
