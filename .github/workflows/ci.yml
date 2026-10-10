@@ -54,7 +54,11 @@ jobs:
         working-directory: backend
         env:
           PYTHONPATH: .
-        run: pytest -q
+        # Scope collection to the real suite. The automated tests all live in backend/tests/;
+        # backend/ also holds manual, developer-run diagnostic/seed scripts (e.g.
+        # test_aws_connection.py, seed_storage_migration_test.py) whose names match pytest's
+        # default pattern but which connect to real infrastructure and are NOT unit tests.
+        run: pytest -q tests/
 
   frontend:
     name: Frontend type-check & build
