@@ -11,10 +11,16 @@ independent brute-force protections.
 """
 import logging
 import time
-from fastapi import Request, HTTPException
+from fastapi import Request, HTTPException, Depends
+from fastapi.security import OAuth2PasswordBearer
 from app.core.config import settings
 
 logger = logging.getLogger("clari5pay.ratelimit")
+
+# Reused only to pull the bearer token off the request for a per-user key; auto_error=False so a
+# missing token never turns rate limiting into an auth gate (the endpoint's own auth dependency
+# stays the single source of authorization).
+_bearer = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 _redis = None  # lazy singleton async client
 
@@ -55,9 +61,21 @@ async def _allow(key: str, limit: int, window: int) -> tuple[bool, int]:
         return True, 0
 
 
+def _too_many(retry: int) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail="Too many attempts. Please wait a moment and try again.",
+        headers={"Retry-After": str(max(1, retry))},
+    )
+
+
 def rate_limit(limit: int, window: int, scope: str):
     """FastAPI dependency factory — allow `limit` requests per `window` seconds per client IP,
-    isolated by `scope`. Over the limit → HTTP 429 (with Retry-After) and a security log line."""
+    isolated by `scope`. Over the limit → HTTP 429 (with Retry-After) and a security log line.
+
+    IP-keyed. Use this for UNAUTHENTICATED endpoints (login / OTP / password reset) where there
+    is no identity yet. For authenticated endpoints prefer ``rate_limit_user`` — the client IP is
+    derived from X-Forwarded-For and can be spoofed, whereas the token subject cannot."""
     async def _dep(request: Request) -> None:
         ip = client_ip(request)
         allowed, retry = await _allow(f"{scope}:{ip}", limit, window)
@@ -66,9 +84,40 @@ def rate_limit(limit: int, window: int, scope: str):
                 "[RATE_LIMITED] scope=%s ip=%s path=%s limit=%d/%ds retry_after=%ds",
                 scope, ip, request.url.path, limit, window, retry,
             )
-            raise HTTPException(
-                status_code=429,
-                detail="Too many attempts. Please wait a moment and try again.",
-                headers={"Retry-After": str(max(1, retry))},
+            raise _too_many(retry)
+    return _dep
+
+
+def _subject_from_token(token: str | None) -> str | None:
+    """The `sub` claim of a valid, signed token, or None. Import is local to avoid a circular
+    import (security → config → ratelimit)."""
+    if not token:
+        return None
+    from app.core.security import decode_token
+    payload = decode_token(token)
+    sub = payload.get("sub") if payload else None
+    return str(sub) if sub is not None else None
+
+
+def rate_limit_user(limit: int, window: int, scope: str):
+    """FastAPI dependency factory for AUTHENTICATED endpoints — allow `limit` requests per
+    `window` seconds per authenticated user, isolated by `scope`.
+
+    The key is the signed token's `sub` claim (not spoofable). When no/invalid token is present
+    it falls back to the client IP so the limit still applies; it never rejects for a missing
+    token — the endpoint's own auth dependency remains the single authorization gate. This is a
+    coarse abuse/cost guard layered ON TOP OF (never in place of) authorization, transaction-state
+    validation, idempotency, balance checks and account-limit enforcement.
+
+    Shares the same Redis fixed-window backend as ``rate_limit`` (fails open if Redis is down)."""
+    async def _dep(request: Request, token: str | None = Depends(_bearer)) -> None:
+        subject = _subject_from_token(token)
+        key = f"{scope}:u:{subject}" if subject else f"{scope}:ip:{client_ip(request)}"
+        allowed, retry = await _allow(key, limit, window)
+        if not allowed:
+            logger.warning(
+                "[RATE_LIMITED] scope=%s key=%s path=%s limit=%d/%ds retry_after=%ds",
+                scope, (f"u:{subject}" if subject else "ip"), request.url.path, limit, window, retry,
             )
+            raise _too_many(retry)
     return _dep

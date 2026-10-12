@@ -33,6 +33,7 @@ from app.core.uploads import IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
 from app.core import proofs as proofs_core
 from app.core.config import settings
+from app.core.ratelimit import rate_limit_user
 
 
 # Human-facing transaction timestamps (tx_date / tx_time) are recorded in IST — the
@@ -3400,7 +3401,7 @@ async def _ensure_withdrawal_allocation(
     return await _auto_allocate_withdrawal(db, tx, actor=actor)
 
 
-@router.post("/deposit")
+@router.post("/deposit", dependencies=[Depends(rate_limit_user(settings.RL_DEPOSIT_PER_MIN, 60, "tx-deposit"))])
 async def create_deposit(
     data: DepositCreate,
     db: AsyncSession = Depends(get_db),
@@ -3532,7 +3533,7 @@ async def create_deposit(
     return _t(tx)
 
 
-@router.post("/withdrawal")
+@router.post("/withdrawal", dependencies=[Depends(rate_limit_user(settings.RL_WITHDRAWAL_PER_MIN, 60, "tx-withdrawal"))])
 async def create_withdrawal(
     data: WithdrawalCreate,
     request: Request,
@@ -3692,7 +3693,7 @@ def _settlement_destination(data: SettlementCreate) -> tuple[str, dict]:
     return method, {k: v for k, v in details.items() if v}   # blank optional fields are not persisted
 
 
-@router.post("/settlement")
+@router.post("/settlement", dependencies=[Depends(rate_limit_user(settings.RL_SETTLEMENT_PER_MIN, 60, "tx-settlement"))])
 async def create_settlement(
     data: SettlementCreate,
     request: Request,
@@ -4861,7 +4862,7 @@ async def _require_cdm_verified(db: AsyncSession, tx: Transaction) -> None:
             detail="This CDM deposit cannot be completed yet — " + " ".join(reasons))
 
 
-@router.post("/{tx_id}/done")
+@router.post("/{tx_id}/done", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def mark_done(
     tx_id: str,
     request: Request,
@@ -5287,28 +5288,28 @@ async def _reviewer_action(
     return await _with_payout_legs(db, tx)
 
 
-@router.post("/{tx_id}/supervisor/approve")
+@router.post("/{tx_id}/supervisor/approve", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def supervisor_approve(tx_id: str, data: RemarkRequest, request: Request,
                              db: AsyncSession = Depends(get_db),
                              reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "approve", data.remark)
 
 
-@router.post("/{tx_id}/supervisor/reject")
+@router.post("/{tx_id}/supervisor/reject", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def supervisor_reject(tx_id: str, data: RemarkRequest, request: Request,
                             db: AsyncSession = Depends(get_db),
                             reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "reject", data.remark)
 
 
-@router.post("/{tx_id}/supervisor/resubmit")
+@router.post("/{tx_id}/supervisor/resubmit", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def supervisor_resubmit(tx_id: str, data: RemarkRequest, request: Request,
                               db: AsyncSession = Depends(get_db),
                               reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "SUPERVISOR", "resubmit", data.remark)
 
 
-@router.post("/{tx_id}/supervisor/settle")
+@router.post("/{tx_id}/supervisor/settle", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def supervisor_settle_settlement(
     tx_id: str,
     data: SettlementSupervisorComplete,
@@ -5359,21 +5360,21 @@ async def supervisor_settle_settlement(
     return _t(tx)
 
 
-@router.post("/{tx_id}/manager/approve")
+@router.post("/{tx_id}/manager/approve", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def manager_approve(tx_id: str, data: RemarkRequest, request: Request,
                           db: AsyncSession = Depends(get_db),
                           reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "approve", data.remark)
 
 
-@router.post("/{tx_id}/manager/reject")
+@router.post("/{tx_id}/manager/reject", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def manager_reject(tx_id: str, data: RemarkRequest, request: Request,
                          db: AsyncSession = Depends(get_db),
                          reviewer: User = Depends(get_transactions_overseer)):
     return await _reviewer_action(db, request, tx_id, reviewer, "MANAGER", "reject", data.remark)
 
 
-@router.post("/{tx_id}/manager/resubmit")
+@router.post("/{tx_id}/manager/resubmit", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def manager_resubmit(tx_id: str, data: RemarkRequest, request: Request,
                            db: AsyncSession = Depends(get_db),
                            reviewer: User = Depends(get_transactions_overseer)):
@@ -5408,7 +5409,7 @@ async def record_view(
 
 
 # ─── Legacy approval workflow (kept for backward compatibility) ────────────────
-@router.post("/{tx_id}/approve")
+@router.post("/{tx_id}/approve", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def approve_transaction(
     tx_id: str,
     db: AsyncSession = Depends(get_db),
@@ -5420,7 +5421,7 @@ async def approve_transaction(
     return _t(tx)
 
 
-@router.post("/{tx_id}/reject")
+@router.post("/{tx_id}/reject", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def reject_transaction(
     tx_id: str,
     data: RejectRequest,
@@ -5447,7 +5448,7 @@ async def reject_transaction(
     return _t(tx)
 
 
-@router.post("/{tx_id}/complete")
+@router.post("/{tx_id}/complete", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def complete_transaction(
     tx_id: str,
     db: AsyncSession = Depends(get_db),
@@ -5461,7 +5462,7 @@ async def complete_transaction(
     return _t(tx)
 
 
-@router.post("/{tx_id}/sa-reject")
+@router.post("/{tx_id}/sa-reject", dependencies=[Depends(rate_limit_user(settings.RL_APPROVAL_PER_MIN, 60, "tx-approval"))])
 async def sa_reject_transaction(
     tx_id: str,
     db: AsyncSession = Depends(get_db),
