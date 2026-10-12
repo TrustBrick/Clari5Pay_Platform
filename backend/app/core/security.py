@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
@@ -61,6 +62,22 @@ def decode_token(token: str) -> Optional[dict]:
 # apart. A missing claim reads as 0, which is what keeps tokens minted before this feature valid.
 
 TOKEN_VERSION_CLAIM = "ver"
+
+# Per-token unique id (JWT standard "jti"). Present on every token minted after the logout-
+# revocation feature; absent on older tokens, which therefore cannot be individually revoked.
+TOKEN_ID_CLAIM = "jti"
+
+
+def new_token_id() -> str:
+    """A fresh unique token id (jti). Stamped on every session token so that one session can be
+    revoked on logout without touching the user's other sessions (see RevokedToken)."""
+    return uuid.uuid4().hex
+
+
+def token_jti(payload: dict | None) -> str | None:
+    """The token's unique id, or None for a token minted before the feature (or a malformed one)."""
+    jti = (payload or {}).get(TOKEN_ID_CLAIM)
+    return jti if isinstance(jti, str) and jti else None
 
 
 def token_claim_version(payload: dict | None) -> int:

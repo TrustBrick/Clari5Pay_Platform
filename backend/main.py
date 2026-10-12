@@ -28,6 +28,19 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await seed_blog(db)
         await db.commit()
+    # Purge expired logout-revocation rows (their tokens are already invalid by expiry, so the
+    # rows are dead weight). Advisory cleanup only — never blocks boot.
+    try:
+        from app.core.revocation import purge_expired
+        async with AsyncSessionLocal() as db:
+            removed = await purge_expired(db)
+            await db.commit()
+        if removed:
+            import logging
+            logging.getLogger("clari5pay.startup").info("purged %d expired token-revocation row(s)", removed)
+    except Exception:  # noqa: BLE001 — cleanup must never stop the app booting
+        import logging
+        logging.getLogger("clari5pay.startup").exception("token-revocation purge failed")
     # Report, at boot, whether the withdrawal allocation engine can actually place a payout.
     # Highest Debit is a hard daily limit and an account without one is never chosen, so a
     # database whose accounts are all unconfigured allocates nothing and sends every withdrawal to

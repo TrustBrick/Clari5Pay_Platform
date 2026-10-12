@@ -8,10 +8,12 @@ from app.db.session import get_db
 from app.core.config import settings
 from app.models.models import User, LoginOtp, UserRole, AppSetting, Notification
 from app.core.security import (
-    verify_password, create_access_token, decode_token, TOKEN_VERSION_CLAIM,
+    verify_password, create_access_token, decode_token,
+    TOKEN_VERSION_CLAIM, TOKEN_ID_CLAIM, token_jti, new_token_id,
 )
+from app.core import revocation
 from app.core.passwords import assert_password_allowed, set_password
-from app.core.deps import get_current_user, get_current_super_admin
+from app.core.deps import get_current_user, get_current_super_admin, oauth2_scheme
 from app.core.email import send_otp_email, mask_email
 from app.core.ratelimit import rate_limit
 
@@ -47,10 +49,17 @@ def _issue_session_token(user: User) -> str:
     incrementing that column — see security.token_version_matches and SEC-002. EVERY path that
     mints a session token must go through here; the support direct-login path below is the one
     that historically did not.
+
+    The `jti` claim is a unique per-session id, so a single session can be revoked on logout
+    (see RevokedToken / core.revocation) without disturbing the user's other sessions. It is
+    stamped here — and NOT in create_access_token — so only real session tokens are individually
+    revocable; short-lived OTP/intermediate tokens are not.
     """
     expires = timedelta(days=settings.ADMIN_TOKEN_EXPIRE_DAYS) if user.role in NO_TIMEOUT_ROLES else None
     return create_access_token(
-        {"sub": str(user.id), TOKEN_VERSION_CLAIM: int(user.token_version or 0)}, expires
+        {"sub": str(user.id), TOKEN_VERSION_CLAIM: int(user.token_version or 0),
+         TOKEN_ID_CLAIM: new_token_id()},
+        expires,
     )
 
 
@@ -322,13 +331,23 @@ async def logout(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    token: str = Depends(oauth2_scheme),
 ):
-    """Best-effort logout hook for the client (called on manual logout and on the
-    inactivity timeout). Access tokens here are stateless JWTs, so they are not
-    server-side revoked — the client clears its own token/cookies/storage. This
-    endpoint records the event for the audit trail. Always returns 200 so a logout
-    is never blocked by a transient backend issue (the client ignores failures).
-    """
+    """Log out of the CURRENT session: the presented token is revoked server-side by its `jti`
+    (see RevokedToken / core.revocation), so it stops authenticating on the next request on both
+    the HTTP and WebSocket paths — while the user's other sessions keep working (that is the
+    difference from /logout-all). The client still also clears its own stored token. Idempotent:
+    a repeated logout of an already-revoked token is a safe no-op. A token minted before this
+    feature has no `jti` and cannot be individually revoked here (the audit event is still
+    recorded); such sessions end via expiry, /logout-all, or a password change. Always returns 200
+    so a logout is never blocked by a transient backend issue (the client ignores failures)."""
+    payload = decode_token(token) or {}
+    exp = payload.get("exp")
+    if exp:
+        await revocation.revoke_token(
+            db, jti=token_jti(payload), user_id=current_user.id,
+            expires_at=datetime.utcfromtimestamp(exp),
+        )
     await log_event(db, "LOGOUT", f"{current_user.name} ({current_user.role.value}) signed out", actor=current_user)
     await record_audit(db, "LOGOUT", actor=current_user, entity_type="user",
                        entity_id=current_user.id, ip=_client_ip(request))

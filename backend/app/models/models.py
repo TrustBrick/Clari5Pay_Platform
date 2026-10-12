@@ -1524,3 +1524,29 @@ class WithdrawalAllocation(Base):
     triggered_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True, nullable=False)
     created_at_ist: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+
+
+class RevokedToken(Base):
+    """Per-session JWT denylist (SEC — logout revocation).
+
+    A session token carries a unique ``jti`` claim. Recording that ``jti`` here revokes ONLY that
+    one token, so a normal logout ends the current device's session without disturbing the user's
+    other sessions (that is what distinguishes it from token_version, which revokes all of them).
+    Authentication (HTTP and WebSocket) rejects a token whose ``jti`` is listed here.
+
+    Backward compatible: tokens minted before this feature have no ``jti``; they are simply not
+    individually revocable (nothing to list) and keep working until they expire — logout-all and
+    password change/reset still revoke them via token_version.
+
+    ``expires_at`` mirrors the token's own ``exp``: once that passes the token is already invalid
+    on its own, so the row is dead weight and may be purged (see core.revocation.purge_expired).
+    The table is created by ``Base.metadata.create_all`` at startup like every other table (the
+    project uses no Alembic); it is purely additive, so a rollback is a plain DROP TABLE.
+    """
+    __tablename__ = "revoked_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)  # audit only; no FK
+    revoked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)

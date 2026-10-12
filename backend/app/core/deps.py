@@ -2,7 +2,8 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.core.security import decode_token, token_version_matches
+from app.core.security import decode_token, token_version_matches, token_jti
+from app.core.revocation import is_jti_revoked
 from app.db.session import get_db
 from app.models.models import User, UserRole
 
@@ -35,6 +36,12 @@ async def get_current_user(
     # feature keep working. NOTE: the support WebSocket (support.py) authenticates on its own
     # code path and performs the same check — both must stay in step.
     if not token_version_matches(payload, user):
+        raise credentials_exception
+    # Per-session revocation (logout): a token whose `jti` has been denylisted is rejected, even
+    # though its signature and version are still valid. A token with no `jti` (minted before this
+    # feature) is never revocable here and passes — logout-all / password change still cover it
+    # via token_version above. The support WebSocket performs the same check on its own path.
+    if await is_jti_revoked(db, token_jti(payload)):
         raise credentials_exception
     return user
 
