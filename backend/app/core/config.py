@@ -92,6 +92,15 @@ class Settings(BaseSettings):
     )
     SMTP_TLS: bool = True
 
+    # AWS SES — set EMAIL_BACKEND=ses to send OTP email through Amazon SES (boto3, API not SMTP).
+    # Credentials come from the instance role / environment; no key is stored here. The sender
+    # (SES_FROM, falling back to SMTP_FROM) must be a verified SES identity, and while the account
+    # is in the SES sandbox the recipient must be verified too.
+    EMAIL_BACKEND: str = "smtp"          # "smtp" | "ses"
+    SES_REGION: str = ""                 # falls back to AWS_REGION; production is ap-south-1
+    SES_FROM: str = ""
+    SES_CONFIGURATION_SET: str = ""      # optional
+
     # ── WhatsApp notifications (internal users: Admin / Supervisor / Manager) ──
     # Provider-agnostic. When WHATSAPP_PROVIDER + WHATSAPP_TOKEN are set, in-app
     # notifications for eligible internal users are ALSO delivered to their phone.
@@ -180,6 +189,8 @@ class Settings(BaseSettings):
 
     @property
     def email_configured(self) -> bool:
+        if self.EMAIL_BACKEND.lower() == "ses":
+            return bool(self.SES_FROM or self.SMTP_FROM)
         return bool(self.SMTP_HOST)
 
     @property
