@@ -1856,6 +1856,15 @@ async def get_archived_attachment(
     the backend (never a host path or a public URL); if the volume copy is unreadable it falls back
     to the retained S3 original, so a historical image never disappears in V1.
     """
+    # Strict OFF: when the archive feature is disabled, this archived-attachment path is closed
+    # entirely — a controlled 404, before any lookup, regardless of caller. Ordinary (hot) image
+    # retrieval is unaffected: with the feature off, the detail view's `_archived_key_map` returns
+    # {} and resolves images via presigned S3 (storage.resolve_value), so this endpoint is simply
+    # never referenced. A 404 (not 403) is deliberate: it reveals nothing about whether an archived
+    # object exists while the feature is off. When ENABLED, the existing ownership/role checks below
+    # (via `_tx_with_view_access`) are unchanged.
+    if not settings.ARCHIVE_ENABLED:
+        raise HTTPException(status_code=404, detail="Archived file not found")
     tx = await _tx_with_view_access(tx_id, db, current_user)
     row = (await db.execute(
         select(ArchivedFile).where(ArchivedFile.id == archived_file_id)
