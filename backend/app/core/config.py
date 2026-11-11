@@ -37,6 +37,23 @@ class Settings(BaseSettings):
     S3_PREFIX: str = "uploads"           # key namespace inside the bucket
     S3_URL_TTL: int = 900                # presigned GET lifetime, seconds (15 min)
 
+    # ── 14-day archive (eligible S3 attachments → persistent Docker-host volume) ──
+    # COPY-AND-VERIFY ONLY: the worker never deletes an S3 original. Everything here defaults to a
+    # safe, inert state, exactly like STORAGE_BACKEND: deploying the code changes NOTHING until an
+    # operator both enables it and turns off the dry run. See ARCHIVE_PHASE2_DESIGN.md.
+    #   ARCHIVE_ENABLED     — master switch. Off → the worker refuses to run and the detail view's
+    #                         archive-aware resolution is skipped (byte-for-byte today's behaviour).
+    #   ARCHIVE_VOLUME_PATH — the persistent Docker named volume mounted into the container.
+    #   ARCHIVE_AFTER_DAYS  — retention window; files of terminal txns older than this are eligible.
+    #   ARCHIVE_DRY_RUN     — default true; the worker reports sizes/counts and writes nothing until
+    #                         this is explicitly set false.
+    #   ARCHIVE_PREFIX      — key namespace in the volume (reuses the S3 key verbatim by default).
+    ARCHIVE_ENABLED: bool = False
+    ARCHIVE_VOLUME_PATH: str = "/archive"
+    ARCHIVE_AFTER_DAYS: int = 14
+    ARCHIVE_DRY_RUN: bool = True
+    ARCHIVE_PREFIX: str = "uploads"
+
     # ── Connection-pool sizing (env-configurable so a stack can be tuned — e.g. when running
     # multiple uvicorn workers — without a code change). Defaults preserve the single-worker
     # values. IMPORTANT: each uvicorn worker gets its OWN pool, so keep

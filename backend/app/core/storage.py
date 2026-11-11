@@ -216,6 +216,21 @@ def get_bytes(key: str) -> bytes:
         raise StorageError(f"Could not read {key}: {exc}") from exc
 
 
+def object_size(key: str) -> int:
+    """The object's size in bytes via a HEAD — no download.
+
+    Used by the archive worker's dry run to estimate transfer size without reading the body. Raises
+    StorageError if the object is absent or storage is disabled, so a dry run reports a missing
+    source rather than silently sizing it at zero.
+    """
+    if not is_enabled():
+        raise StorageError("Object storage is not enabled.")
+    try:
+        return int(_client().head_object(Bucket=settings.S3_BUCKET, Key=key)["ContentLength"])
+    except Exception as exc:
+        raise StorageError(f"Could not head {key}: {exc}") from exc
+
+
 # ──────────────────────────────────────────────────────────────────────────────────────────
 # Column-value helpers
 #

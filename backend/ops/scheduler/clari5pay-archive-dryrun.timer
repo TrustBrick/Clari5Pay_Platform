@@ -1,0 +1,13 @@
+# Fires the read-only probe once daily at 02:30 UTC (08:00 IST), with jitter. Demo only.
+# Pairs with clari5pay-archive-dryrun.service. NOT installed/activated by this repo.
+[Unit]
+Description=Daily Clari5Pay Demo archive eligibility probe
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+Unit=clari5pay-archive-dryrun.service
+
+[Install]
+WantedBy=timers.target
