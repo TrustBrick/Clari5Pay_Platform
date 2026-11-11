@@ -136,6 +136,40 @@ async def test_admin_streams_archived_image(db, s3, archive_on):
 
 
 @pytest.mark.asyncio
+async def test_superadmin_streams_archived_image(db, s3, archive_on):
+    await _user(db, 10, UserRole.MERCHANT, merchant_role="DATA_OPERATOR")
+    sa = await _user(db, 2, UserRole.SUPER_ADMIN, name="Super Admin")
+    tx, row = await _archived_txn(db, merchant_id=10)
+    resp = await txr.get_archived_attachment(f"TXN{tx.id:03d}", row.id, db, sa)
+    assert resp.body == PROOF_BYTES
+
+
+# ── Strict OFF (DECISION 1): disabled feature → controlled 404 for everyone ────────────────────
+@pytest.mark.asyncio
+async def test_disabled_feature_returns_404(db, s3, archive_on, monkeypatch):
+    owner = await _user(db, 10, UserRole.MERCHANT, merchant_role="DATA_OPERATOR")
+    tx, row = await _archived_txn(db, merchant_id=owner.id)   # archived while enabled
+    # Now flip the feature OFF: the endpoint must reject with a controlled 404, even for the owner.
+    monkeypatch.setattr(cfg, "ARCHIVE_ENABLED", False, raising=False)
+    with pytest.raises(HTTPException) as exc:
+        await txr.get_archived_attachment(f"TXN{tx.id:03d}", row.id, db, owner)
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_disabled_feature_detail_still_resolves_via_s3(db, s3, archive_on, monkeypatch):
+    """Ordinary (hot) image retrieval must keep working when archival is disabled: the detail
+    resolver returns a presigned S3 URL, not a backend archive URL."""
+    owner = await _user(db, 10, UserRole.MERCHANT, merchant_role="DATA_OPERATOR")
+    tx, row = await _archived_txn(db, merchant_id=owner.id)
+    monkeypatch.setattr(cfg, "ARCHIVE_ENABLED", False, raising=False)
+    amap = await txr._archived_key_map(db, tx.id)
+    assert amap == {}, "archived-key map must be empty when the feature is off"
+    url = txr._resolve_archive_aware(storage.key_to_ref(row.object_key), amap, f"TXN{tx.id:03d}")
+    assert url.startswith("https://") and "sig=" in url, "image must resolve via presigned S3"
+
+
+@pytest.mark.asyncio
 async def test_other_merchant_is_forbidden(db, s3, archive_on):
     await _user(db, 10, UserRole.MERCHANT, merchant_role="DATA_OPERATOR", name="BELLAGIO")
     stranger = await _user(db, 20, UserRole.MERCHANT, merchant_role="DATA_OPERATOR", name="MGM")
