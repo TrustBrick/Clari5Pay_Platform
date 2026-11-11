@@ -285,6 +285,34 @@ async def test_source_is_retained_after_archive(db, s3, archive_on):
     assert s3.objects == before, "the S3 original must still be present after archiving"
 
 
+# ── preview_archive: the read-only probe behind the scheduled dry-run ─────────────────────────
+@pytest.mark.asyncio
+async def test_preview_counts_without_writing(db, s3, archive_on):
+    m = await _merchant(db)
+    await _txn(db, tid=1, merchant_id=m.id, status=TxStatus.COMPLETED, age_days=30,
+               proofs=[_img("p1"), _img("p2")])
+    await _txn(db, tid=2, merchant_id=m.id, status=TxStatus.COMPLETED, age_days=1, proofs=[_img("recent")])
+    res = await archive.preview_archive(db, days=14, now=NOW)
+    assert res["mode"] == "probe" and res["wrote"] is False
+    assert res["eligibleTransactions"] == 1 and res["eligibleFiles"] == 2
+    assert res["estimatedBytes"] > 0 and res["sizeUnavailable"] == 0
+    # Nothing was persisted: no batch, no manifest rows, nothing on the volume.
+    assert (await db.execute(select(ArchiveBatch))).scalars().all() == []
+    assert (await db.execute(select(ArchivedFile))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_preview_runs_with_feature_disabled(db, s3, monkeypatch, tmp_path):
+    # ARCHIVE_ENABLED stays FALSE — the probe is pure read and must still work.
+    monkeypatch.setattr(cfg, "ARCHIVE_ENABLED", False, raising=False)
+    monkeypatch.setattr(cfg, "ARCHIVE_VOLUME_PATH", str(tmp_path), raising=False)
+    m = await _merchant(db)
+    await _txn(db, tid=1, merchant_id=m.id, status=TxStatus.COMPLETED, age_days=30, proofs=[_img("x")])
+    res = await archive.preview_archive(db, days=14, now=NOW)
+    assert res["eligibleFiles"] == 1 and res["wrote"] is False
+    assert (await db.execute(select(ArchivedFile))).scalars().all() == []
+
+
 # ── verify_archive audits the volume ──────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_verify_archive_reports_integrity(db, s3, archive_on):

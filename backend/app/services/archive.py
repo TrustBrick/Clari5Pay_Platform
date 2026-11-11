@@ -255,6 +255,56 @@ def _summary(batch: ArchiveBatch) -> dict:
     }
 
 
+async def preview_archive(db: AsyncSession, *, days: int | None = None,
+                          now: datetime | None = None) -> dict:
+    """Read-only eligibility probe — the safe engine behind the scheduled Demo dry-run.
+
+    Counts the terminal transactions and files older than the cutoff and estimates their total
+    size via an S3 HEAD (no download). It writes NOTHING: no ``archive_batch`` row, no
+    ``archived_file`` row, nothing to the volume, and it does NOT require ``ARCHIVE_ENABLED``. That
+    is exactly what the brief's scheduled job needs — ``ARCHIVE_ENABLED`` stays false, no source or
+    metadata is modified, and the counts/bytes are logged. ``run_archive(dry_run=True)`` differs
+    deliberately: it DOES record a batch + PENDING manifest rows, so it is for an operator probing
+    with the feature enabled, not for an unattended scheduler.
+    """
+    from app.core.config import settings
+    days = settings.ARCHIVE_AFTER_DAYS if days is None else days
+    now = now or datetime.utcnow()
+    cutoff = now - timedelta(days=days)
+
+    stmt = (select(Transaction)
+            .where(Transaction.created_at < cutoff)
+            .options(*(undefer(getattr(Transaction, f)) for f in ARCHIVABLE_FIELDS)))
+    candidates = (await db.execute(stmt)).scalars().all()
+
+    eligible_txns = eligible_files = bytes_total = size_errors = 0
+    for tx in candidates:
+        if tx.status not in TERMINAL_STATUSES:
+            continue
+        if _completion_ts(tx) >= cutoff:
+            continue
+        refs = list(_iter_refs(tx))
+        if not refs:
+            continue
+        eligible_txns += 1
+        for _field, object_key in refs:
+            eligible_files += 1
+            try:
+                bytes_total += storage.object_size(object_key)
+            except storage.StorageError:
+                size_errors += 1   # object missing or storage disabled — counted, not sized
+    return {
+        "mode": "probe",
+        "wrote": False,
+        "cutoffDays": days,
+        "cutoffAt": cutoff.isoformat() + "Z",
+        "eligibleTransactions": eligible_txns,
+        "eligibleFiles": eligible_files,
+        "estimatedBytes": bytes_total,
+        "sizeUnavailable": size_errors,
+    }
+
+
 async def verify_archive(db: AsyncSession) -> dict:
     """Re-check every VERIFIED manifest row against the volume (restore / integrity audit).
 

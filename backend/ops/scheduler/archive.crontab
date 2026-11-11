@@ -1,0 +1,9 @@
+# Cron alternative to the systemd timer (Demo only). Install (when approved):
+#   crontab -l | { cat; cat backend/ops/scheduler/archive.crontab; } | crontab -
+# NOT installed by this repo. Both jobs are read-only / non-destructive.
+
+# 02:30 UTC daily — read-only eligibility probe (writes nothing; ARCHIVE_ENABLED stays false).
+30 2 * * *  cd /home/ubuntu/Clari5Pay_Platform && bash backend/ops/archive_dryrun.sh >> /var/log/clari5pay/archive-dryrun.cron.log 2>&1
+
+# 03:00 UTC daily — capacity / backup-age / failed-batch monitor (read-only; alerts on threshold).
+0 3 * * *   cd /home/ubuntu/Clari5Pay_Platform && bash backend/ops/archive_monitor.sh >> /var/log/clari5pay/archive-monitor.cron.log 2>&1

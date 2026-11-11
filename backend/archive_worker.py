@@ -32,27 +32,35 @@ async def _main() -> int:
     parser.add_argument("--days", type=int, default=None)
     parser.add_argument("--verify", action="store_true",
                         help="Audit archived objects against the volume; no copying.")
+    parser.add_argument("--probe", action="store_true",
+                        help="Read-only eligibility probe: counts + estimated bytes only. Writes "
+                             "nothing and does NOT require ARCHIVE_ENABLED — this is the mode the "
+                             "scheduled Demo dry-run uses.")
     args = parser.parse_args()
 
     from app.core.config import settings
     from app.db.session import AsyncSessionLocal
     from app.services import archive
 
-    if not settings.ARCHIVE_ENABLED:
-        print("ARCHIVE_ENABLED is false — refusing to run. Enable it in the environment first.",
-              file=sys.stderr)
+    # --probe and --verify are strictly read-only, so they run regardless of the master switch.
+    # A real/dry-run archive still requires explicit enablement.
+    if not args.probe and not args.verify and not settings.ARCHIVE_ENABLED:
+        print("ARCHIVE_ENABLED is false — refusing to run. Enable it in the environment first, "
+              "or use --probe for a safe read-only eligibility check.", file=sys.stderr)
         return 2
 
     async with AsyncSessionLocal() as db:
-        if args.verify:
+        if args.probe:
+            result = await archive.preview_archive(db, days=args.days)   # writes nothing
+        elif args.verify:
             result = await archive.verify_archive(db)
         else:
             result = await archive.run_archive(db, days=args.days, dry_run=args.dry_run)
-        await db.commit()
+            await db.commit()
 
     print(json.dumps(result, indent=2))
     # A run that recorded any failed file exits non-zero so a scheduler/CI notices.
-    return 1 if (not args.verify and result.get("failedFiles")) else 0
+    return 1 if (not args.verify and not args.probe and result.get("failedFiles")) else 0
 
 
 if __name__ == "__main__":
