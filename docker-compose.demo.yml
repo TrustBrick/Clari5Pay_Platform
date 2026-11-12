@@ -39,6 +39,12 @@ services:
         condition: service_healthy
     expose:
       - "8000"                     # internal only (reached via the nginx /api proxy)
+    volumes:
+      # Persistent 14-day archive store (see ARCHIVE_PHASE2_DESIGN.md). A NAMED volume, so it
+      # survives container recreation and image rebuilds and is NOT part of any image layer. Inert
+      # until ARCHIVE_ENABLED=true in .env; the archive worker reads S3 and writes here, and the
+      # backend streams archived images back from it. COPY-AND-VERIFY ONLY — never deletes S3.
+      - archive_files:/archive
 
   frontend:
     build:
@@ -60,3 +66,5 @@ services:
 
 volumes:
   redisdata_demo:
+  # Persistent host-managed store for archived transaction attachments (14-day archive).
+  archive_files:

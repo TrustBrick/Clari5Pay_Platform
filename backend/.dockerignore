@@ -1,0 +1,12 @@
+# Keep archived data OUT of the image build. The 14-day archive lives on a persistent Docker
+# NAMED VOLUME mounted at /archive (see ARCHIVE_PHASE2_DESIGN.md), never inside the application
+# image. This guard ensures that even if an operator points ARCHIVE_VOLUME_PATH at a path inside
+# the build context, the archived payment slips/bank images are never copied into an image layer.
+archive/
+/archive/
+
+# Python / test cruft that never belongs in the image.
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_cache

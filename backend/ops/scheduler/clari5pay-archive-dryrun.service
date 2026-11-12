@@ -1,0 +1,18 @@
+# systemd service for the scheduled read-only archive eligibility probe (Demo only).
+# Install (when approved):  sudo cp clari5pay-archive-dryrun.{service,timer} /etc/systemd/system/
+#                           sudo systemctl daemon-reload && sudo systemctl enable --now clari5pay-archive-dryrun.timer
+# NOT installed by this repo. It only ever runs archive_dryrun.sh, which runs --probe (no writes).
+[Unit]
+Description=Clari5Pay Demo 14-day archive eligibility probe (read-only)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Demo box only. Adjust the path to the checkout.
+WorkingDirectory=/home/ubuntu/Clari5Pay_Platform
+ExecStart=/usr/bin/env bash backend/ops/archive_dryrun.sh
+# Optional alert sink and retention knobs:
+# Environment=ARCHIVE_ALERT_WEBHOOK=https://...
+Nice=10
+IOSchedulingClass=idle
