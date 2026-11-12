@@ -60,6 +60,26 @@ run_case_noaws() {
   )
 }
 
+# run_case_static <profiles> <role> -> "<rc>|<AWS_PROFILE>|<AKI>|<SAK>|<TOK>"
+# Starts with static AWS credential env vars PRE-SET, so we can prove a successful selection scrubs
+# them (and that a failed selection leaves them but fails closed, so nothing reaches an aws call).
+run_case_static() {
+  local profiles="$1" role="$2"
+  (
+    export PATH="$FAKE_BIN:/usr/bin:/bin"
+    export FAKE_PROFILES="$profiles"
+    unset AWS_PROFILE ARCHIVE_BACKUP_AWS_PROFILE ARCHIVE_RESTORE_AWS_PROFILE
+    export AWS_ACCESS_KEY_ID="AKIAEXAMPLESTATIC"
+    export AWS_SECRET_ACCESS_KEY="secretstaticvalue"
+    export AWS_SESSION_TOKEN="sessionstatictoken"
+    # shellcheck source=/dev/null
+    . "$HELPER"
+    local rc=0; archive_select_aws_profile "$role" >/dev/null 2>&1 || rc=$?
+    printf '%s|%s|%s|%s|%s' "$rc" "${AWS_PROFILE:-}" \
+      "${AWS_ACCESS_KEY_ID:-}" "${AWS_SECRET_ACCESS_KEY:-}" "${AWS_SESSION_TOKEN:-}"
+  )
+}
+
 BOTH="archive-backup-write archive-restore-read"
 
 echo "# profile selection"
@@ -89,6 +109,18 @@ eq "no profiles at all -> rc4, AWS_PROFILE unset"           "4|" "$(run_case "" 
 echo "# failure handling"
 eq "unknown role kind -> rc3"        "3|" "$(run_case "$BOTH" bogus-role)"
 eq "aws CLI not found -> rc5"        "5|" "$(run_case_noaws backup-write)"
+
+echo "# static credential env vars cannot override the selected profile"
+# Success: AWS_PROFILE set to the right profile AND all three static vars scrubbed (trailing '|||').
+eq "backup-write success scrubs static creds" "0|archive-backup-write|||" \
+   "$(run_case_static "$BOTH" backup-write)"
+eq "restore-read success scrubs static creds" "0|archive-restore-read|||" \
+   "$(run_case_static "$BOTH" restore-read)"
+# Fail closed with statics present: rc4, no AWS_PROFILE, statics left as-is — the caller aborts
+# (|| exit $?) before any aws call, so the static creds never reach AWS CLI execution.
+eq "missing profile stays fail-closed even with static creds present" \
+   "4||AKIAEXAMPLESTATIC|secretstaticvalue|sessionstatictoken" \
+   "$(run_case_static "some-other-profile" backup-write)"
 
 echo "# shell syntax checks (bash -n)"
 for f in "$HELPER" "$OPS/archive_backup.sh" "$OPS/archive_restore_verify.sh" "$OPS/archive_monitor.sh"; do

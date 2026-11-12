@@ -43,6 +43,11 @@ archive_profile_for() {
 #     3  unknown role kind
 #     4  named profile not configured (fail closed — AWS_PROFILE left unset)
 #     5  aws CLI not found on PATH
+#
+# On success it also SCRUBS any static credential env vars (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+# / AWS_SESSION_TOKEN, plus the legacy AWS_SECURITY_TOKEN). Those outrank a profile in the AWS CLI
+# provider chain, so leaving them set could silently bypass the assumed role and run under ambient
+# static credentials. Scrubbing them pins the selected named profile as the ONLY credential source.
 archive_select_aws_profile() {
   local kind="${1:-}" profile
   if ! profile="$(archive_profile_for "$kind")"; then
@@ -63,6 +68,10 @@ archive_select_aws_profile() {
     echo "  Refusing the ambient instance role — that would break backup-write / restore-read separation." >&2
     return 4
   fi
+  # Pin the selected profile as the ONLY credential source: drop any static credential env vars that
+  # would otherwise outrank AWS_PROFILE in the AWS CLI provider chain and silently bypass the assumed
+  # role. Static creds never flow into any subsequent `aws` call from the sourcing script.
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
   export AWS_PROFILE="$profile"
   return 0
 }
