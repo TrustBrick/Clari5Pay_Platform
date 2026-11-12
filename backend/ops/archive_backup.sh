@@ -18,6 +18,13 @@
 set -Eeuo pipefail
 set +x   # never trace — secrets flow through here
 
+# Role separation: this job runs ONLY under the dedicated backup-WRITE identity (STS AssumeRole via a
+# named AWS CLI profile, EC2 instance-metadata creds; no static keys). The helper fails closed if its
+# profile is absent rather than using the ambient instance role.
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_archive_aws_profile.sh
+. "$OPS_DIR/_archive_aws_profile.sh"
+
 CONFIRM="plan"
 [ "${1:-}" = "--confirm" ] && CONFIRM="run"
 
@@ -34,6 +41,7 @@ trap 'rm -rf "$WORK"' EXIT
 say() { echo "[$CONFIRM] $*"; }
 
 say "Demo archive backup — volume='$VOLUME' bucket='${BUCKET:-<unset>}' region='$REGION' prefix='$PREFIX'"
+say "AWS identity: profile '$(archive_profile_for backup-write)' (backup-WRITE role; STS AssumeRole, EC2 metadata; no static keys)"
 
 if [ "$CONFIRM" = "plan" ]; then
   cat <<EOF
@@ -58,6 +66,10 @@ fi
 [ -n "$BUCKET" ]    || { echo "ARCHIVE_BACKUP_BUCKET is required for --confirm" >&2; exit 2; }
 [ -n "$PASS_FILE" ] && [ -f "$PASS_FILE" ] || { echo "ARCHIVE_BACKUP_PASSPHRASE_FILE must point to an existing file" >&2; exit 2; }
 [ -f "$REPO/.env" ] || { echo "missing $REPO/.env for DB creds" >&2; exit 2; }
+
+# Assume the dedicated backup-WRITE identity before any S3/KMS call (fail closed if absent).
+archive_select_aws_profile backup-write || exit $?
+say "using AWS_PROFILE=$AWS_PROFILE for upload"
 
 # 1. Volume (read-only mount).
 docker run --rm -v "$VOLUME":/src:ro -v "$WORK":/out alpine \
