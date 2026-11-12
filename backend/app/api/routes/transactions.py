@@ -3,11 +3,12 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 from datetime import date, datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, and_, case, func, text, literal, union_all, update
 from app.db.session import get_db
 from app.models.models import Transaction, TxType, TxStatus, User, UserRole, Notification, MerchantBankAccount, AccountTransaction, AdminUpi, AuditLog, AccountMaster, AgentTransaction, DepositAllocation, DepositAccountOverride, WithdrawalAllocation, WithdrawalPayoutLeg
+from app.models.archive_models import ArchivedFile  # 14-day archive manifest (isolated registry)
 from app.core.deps import (
     get_current_user, get_current_admin, get_current_super_admin, get_transactions_overseer,
     get_current_supervisor, get_current_manager, OVERSIGHT_MERCHANT_ROLES,
@@ -31,6 +32,7 @@ from app.services import withdrawal_allocation as walloc
 from app.core.cache import cache_delete, cached_json
 from app.core.uploads import IMAGE_TYPES, IMAGE_PDF_TYPES
 from app.core import storage
+from app.core import archive_storage
 from app.core import proofs as proofs_core
 from app.core.config import settings
 from app.core.ratelimit import rate_limit_user
@@ -1094,6 +1096,53 @@ async def _refresh_with_images(db: AsyncSession, tx: Transaction) -> None:
     await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_proofs", "admin_bank_image"])
 
 
+# ── 14-day archive: transparent retrieval of images moved to the Docker volume ──
+# Content type for an archived object, inferred from its content-addressed key's extension. The
+# archive only ever holds the already-validated upload types (see app.core.uploads / storage._EXT).
+_ARCHIVE_CONTENT_TYPES = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "webp": "image/webp", "pdf": "application/pdf",
+}
+
+
+def _archive_content_type(key: str) -> str:
+    return _ARCHIVE_CONTENT_TYPES.get(key.rsplit(".", 1)[-1].lower(), "application/octet-stream")
+
+
+async def _archived_key_map(db: AsyncSession, source_id: int) -> dict[str, int]:
+    """``{object_key: archived_file_id}`` for this transaction's VERIFIED archived files.
+
+    Empty when the feature is off or nothing is archived — in which case the detail view resolves
+    images exactly as it always has (presigned S3 / legacy base64), so behaviour is unchanged.
+    """
+    if not settings.ARCHIVE_ENABLED:
+        return {}
+    rows = (await db.execute(
+        select(ArchivedFile.object_key, ArchivedFile.id).where(
+            ArchivedFile.source_entity == "transactions",
+            ArchivedFile.source_id == source_id,
+            ArchivedFile.archive_status == "VERIFIED",
+        )
+    )).all()
+    return {key: fid for key, fid in rows}
+
+
+def _resolve_archive_aware(value: str | None, archived: dict[str, int], tx_id: str) -> str | None:
+    """Like ``storage.resolve_value`` but routes an ARCHIVED object through the authorized backend
+    stream instead of a presigned S3 URL. A non-archived or legacy value is resolved as before, so
+    an ``<img src>`` consumes either identically and no frontend change is needed."""
+    if storage.is_ref(value):
+        fid = archived.get(storage.ref_to_key(value))
+        if fid is not None:
+            return f"/api/transactions/{tx_id}/attachment/{fid}"
+    return storage.resolve_value(value)
+
+
+def _resolve_proofs_archive_aware(raw: str | None, archived: dict[str, int], tx_id: str) -> list[str] | None:
+    resolved = [_resolve_archive_aware(p, archived, tx_id) for p in proofs_core.parse_proofs(raw)]
+    return [p for p in resolved if p] or None
+
+
 async def _with_payout_legs(db: AsyncSession, tx: Transaction, *, unmask: bool = False) -> dict:
     """``_t(tx)`` plus the withdrawal's payout allocation — which account(s) pay it, and how much.
 
@@ -1792,6 +1841,9 @@ async def get_transaction_detail(
     # never drag them). This detail view is the one place they're needed — load them explicitly
     # here; async SQLAlchemy can't lazy-load them on attribute access.
     await db.refresh(tx, attribute_names=["merchant_proof", "merchant_proofs", "admin_proof", "admin_proofs", "admin_bank_image"])
+    # Which of this transaction's images (if any) have been archived to the Docker volume. Empty
+    # unless the feature is on AND something is VERIFIED, so the default path below is unchanged.
+    archived = await _archived_key_map(db, tx.id)
     # The withdrawal's payout allocation travels with the detail view: which account(s) pay it and
     # how much. An Admin sees the account numbers unmasked — the same information Account
     # Management already shows them — and every other viewer, the owning merchant included, sees
@@ -1799,6 +1851,15 @@ async def get_transaction_detail(
     payload = await _with_payout_legs(
         db, tx, unmask=current_user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN))
     payload.update({k: v for k, v in _t(tx, full=True).items() if k not in payload})
+    # Re-resolve the image fields so any ARCHIVED object is served through the authorized backend
+    # stream (volume) rather than a presigned S3 URL. Non-archived/legacy values are untouched, so
+    # when nothing is archived (or the feature is off) the payload is byte-for-byte as before.
+    if archived:
+        payload["merchantProof"] = _resolve_archive_aware(tx.merchant_proof, archived, tx_id)
+        payload["merchantProofs"] = _resolve_proofs_archive_aware(tx.merchant_proofs, archived, tx_id)
+        payload["adminProof"] = _resolve_archive_aware(tx.admin_proof, archived, tx_id)
+        payload["adminProofs"] = _resolve_proofs_archive_aware(tx.admin_proofs, archived, tx_id)
+        payload["adminBankImage"] = _resolve_archive_aware(tx.admin_bank_image, archived, tx_id)
     # The Account Details Image uploaded on the receiving account THIS deposit was routed to,
     # resolved from the deposit's own admin_ref — never copied onto the row, and never looked up by
     # an account the viewer names. The viewer was authorized for this transaction just above, which
@@ -1882,6 +1943,67 @@ async def get_transaction_detail(
                 ).order_by(Transaction.id.desc()).limit(1)
             )).scalar_one_or_none()
     return payload
+
+
+@router.get("/{tx_id}/attachment/{archived_file_id}")
+async def get_archived_attachment(
+    tx_id: str,
+    archived_file_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Stream an ARCHIVED transaction image back from the persistent Docker volume.
+
+    Authorisation is IDENTICAL to the detail view (``_tx_with_view_access``): only the owning
+    merchant, an oversight Supervisor/Manager, and Admin/Super Admin may read it. The
+    ``archived_file_id`` is bound to this transaction — its ``source_id`` must match ``tx.id`` — so
+    no caller can read another transaction's object by guessing an id. The bytes are served THROUGH
+    the backend (never a host path or a public URL); if the volume copy is unreadable it falls back
+    to the retained S3 original, so a historical image never disappears in V1.
+    """
+    # Strict OFF: when the archive feature is disabled, this archived-attachment path is closed
+    # entirely — a controlled 404, before any lookup, regardless of caller. Ordinary (hot) image
+    # retrieval is unaffected: with the feature off, the detail view's `_archived_key_map` returns
+    # {} and resolves images via presigned S3 (storage.resolve_value), so this endpoint is simply
+    # never referenced. A 404 (not 403) is deliberate: it reveals nothing about whether an archived
+    # object exists while the feature is off. When ENABLED, the existing ownership/role checks below
+    # (via `_tx_with_view_access`) are unchanged.
+    if not settings.ARCHIVE_ENABLED:
+        raise HTTPException(status_code=404, detail="Archived file not found")
+    tx = await _tx_with_view_access(tx_id, db, current_user)
+    row = (await db.execute(
+        select(ArchivedFile).where(ArchivedFile.id == archived_file_id)
+    )).scalar_one_or_none()
+    if (row is None or row.source_entity != "transactions" or row.source_id != tx.id
+            or row.archive_status != "VERIFIED"):
+        raise HTTPException(status_code=404, detail="Archived file not found")
+
+    data = None
+    try:
+        data = archive_storage.read(row.object_key)
+    except archive_storage.ArchiveStorageError:
+        try:
+            data = storage.get_bytes(row.object_key)   # retained S3 original — the safety net
+        except storage.StorageError:
+            data = None
+    if data is None:
+        raise HTTPException(status_code=404, detail="Archived file is currently unavailable")
+
+    try:  # best-effort access stamp — never fails the response
+        row.last_access_at = datetime.utcnow()
+        await db.flush()
+    except Exception:  # noqa: BLE001
+        pass
+
+    filename = row.object_key.rsplit("/", 1)[-1]
+    return Response(
+        content=data,
+        media_type=_archive_content_type(row.object_key),
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=0, no-store",
+        },
+    )
 
 
 @router.get("/{tx_id}/audit")
