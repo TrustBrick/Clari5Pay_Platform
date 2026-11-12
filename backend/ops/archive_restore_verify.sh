@@ -16,6 +16,13 @@
 set -Eeuo pipefail
 set +x
 
+# Role separation: restore + verify run ONLY under the dedicated restore-READ identity (STS
+# AssumeRole via a named AWS CLI profile, EC2 instance-metadata creds; no static keys). READ-only:
+# this identity can Get/List + KMS-decrypt backups but cannot write or delete them.
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_archive_aws_profile.sh
+. "$OPS_DIR/_archive_aws_profile.sh"
+
 CONFIRM="plan"; [ "${1:-}" = "--confirm" ] && CONFIRM="run"; shift || true
 BACKUP_PREFIX="${1:-<s3://bucket/archive-backups/STAMP>}"
 PASS_FILE="${ARCHIVE_BACKUP_PASSPHRASE_FILE:-}"
@@ -36,6 +43,7 @@ PLAN (no changes made) — verify backup '$BACKUP_PREFIX':
   # 5. for each VERIFIED archived_file: test -f \$RESTORE_DIR/<dest_path> && sha256 == <checksum>
   # 6. optional: run a TEST backend (ARCHIVE_VOLUME_PATH=$RESTORE_DIR, test DB) and GET the
   #    attachment endpoint as the owner to confirm authorized retrieval.
+  # AWS identity: profile '$(archive_profile_for restore-read)' (restore-READ role; no write/delete).
 Nothing above touches the live volume ($LIVE_VOLUME_PATH) or the live database.
 Run the local synthetic check:  ARCHIVE_BACKUP_PASSPHRASE_FILE=... \\
   bash backend/ops/archive_restore_verify.sh --confirm s3://BUCKET/archive-backups/STAMP
@@ -44,6 +52,10 @@ EOF
 fi
 
 [ -n "$PASS_FILE" ] && [ -f "$PASS_FILE" ] || { echo "ARCHIVE_BACKUP_PASSPHRASE_FILE must exist" >&2; exit 2; }
+
+# Assume the dedicated restore-READ identity before any S3/KMS call (fail closed if absent).
+archive_select_aws_profile restore-read || exit $?
+say "using AWS_PROFILE=$AWS_PROFILE for download"
 
 # 1. download
 aws s3 cp --recursive "$BACKUP_PREFIX" "$WORK/dl/" --only-show-errors

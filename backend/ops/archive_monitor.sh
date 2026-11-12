@@ -12,6 +12,12 @@
 # the support-outage alert already uses (SUPPORT_ALERT_TELEGRAM_CHAT_ID) via a tiny relay if wanted.
 set -Eeuo pipefail
 
+# Role separation: S3 backup inspection uses ONLY the restore-READ identity (STS AssumeRole via a
+# named AWS CLI profile, EC2 instance-metadata creds; no static keys; list/read only — no write/delete).
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=_archive_aws_profile.sh
+. "$OPS_DIR/_archive_aws_profile.sh"
+
 CONTAINER="${ARCHIVE_CONTAINER:-clari5pay_demo_api}"
 BUCKET="${ARCHIVE_BACKUP_BUCKET:-}"
 REGION="${ARCHIVE_BACKUP_REGION:-ap-south-1}"
@@ -47,14 +53,19 @@ fi
 [ "${FAILED_BATCHES:-0}" -gt 0 ] && emit WARN "$FAILED_BATCHES failed archive batch(es) on record"
 [ "${FAILED_FILES:-0}" -gt 0 ]   && emit WARN "$FAILED_FILES file(s) in FAILED state"
 
-# Backup age (newest object under the backup prefix).
+# Backup age (newest object under the backup prefix) — read-only, under the restore-READ identity.
 if [ -n "$BUCKET" ]; then
-  NEWEST="$(aws s3 ls "s3://$BUCKET/archive-backups/" --recursive --region "$REGION" 2>/dev/null \
-            | sort | tail -1 | awk '{print $1" "$2}')"
-  if [ -z "$NEWEST" ]; then emit CRIT "no off-host backup found in s3://$BUCKET/archive-backups/";
+  if archive_select_aws_profile restore-read; then
+    NEWEST="$(aws s3 ls "s3://$BUCKET/archive-backups/" --recursive --region "$REGION" 2>/dev/null \
+              | sort | tail -1 | awk '{print $1" "$2}')"
+    if [ -z "$NEWEST" ]; then emit CRIT "no off-host backup found in s3://$BUCKET/archive-backups/";
+    else
+      AGE_H=$(( ( $(date -u +%s) - $(date -u -d "$NEWEST" +%s) ) / 3600 ))
+      [ "$AGE_H" -gt "$BACKUP_MAX_AGE_H" ] && emit CRIT "newest backup is ${AGE_H}h old (> ${BACKUP_MAX_AGE_H}h)"
+    fi
   else
-    AGE_H=$(( ( $(date -u +%s) - $(date -u -d "$NEWEST" +%s) ) / 3600 ))
-    [ "$AGE_H" -gt "$BACKUP_MAX_AGE_H" ] && emit CRIT "newest backup is ${AGE_H}h old (> ${BACKUP_MAX_AGE_H}h)"
+    # Fail closed, but don't crash the monitor: alert that the read identity is missing and skip.
+    emit CRIT "restore-READ AWS profile '$(archive_profile_for restore-read)' not configured — cannot verify off-host backup age"
   fi
 else
   echo "$(date -u +%FT%TZ) [INFO] ARCHIVE_BACKUP_BUCKET unset — backup-age check skipped" >&2
